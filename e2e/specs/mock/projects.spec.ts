@@ -73,7 +73,9 @@ test.describe('chat projects', () => {
     await expect(page.getByRole('button', { name }).first()).toBeVisible();
   });
 
-  test('hands keyboard focus from the file menu to the picker and back', async ({ page }) => {
+  test('hands keyboard focus from the file menu to the picker and back @scenario:project-picker-keyboard-focus-round-trip', async ({
+    page,
+  }) => {
     await page.route(
       (url) => url.pathname === '/api/config',
       async (route) => {
@@ -94,10 +96,10 @@ test.describe('chat projects', () => {
     await page.keyboard.press('Enter');
     const picker = page.getByRole('dialog');
     await expect(picker.locator(':focus')).toHaveCount(1);
+    /* Closing the picker closes the menu that opened it, so focus returns to the menu button. */
     await page.keyboard.press('Escape');
     await expect(picker).toBeHidden();
-    await expect(page.getByRole('menuitem', { name: 'Choose from your files' })).toBeFocused();
-    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
     await expect(addFiles).toBeFocused();
   });
 

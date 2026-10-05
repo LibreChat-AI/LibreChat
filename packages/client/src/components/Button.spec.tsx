@@ -31,7 +31,7 @@ describe('Button', () => {
 
     const button = screen.getByRole('button', { name: 'My agents' });
     expect(button).toHaveClass(
-      'h-8',
+      'h-theme-button-compact',
       'gap-1.5',
       'px-2.5',
       'text-xs',
@@ -188,7 +188,12 @@ describe('Button', () => {
 
     const button = screen.getByRole('button', { name: 'Open' });
 
-    expect(button).toHaveClass('size-8', 'p-0', 'rounded-md', 'hover:bg-surface-hover-alt');
+    expect(button).toHaveClass(
+      'size-theme-icon-button-sm',
+      'p-0',
+      'rounded-md',
+      'hover:bg-surface-hover-alt',
+    );
     expect(button).not.toHaveClass('rounded-lg');
   });
 
@@ -205,7 +210,7 @@ describe('Button', () => {
     );
     const button = screen.getByRole('button', { name: 'Filter' });
 
-    expect(button).toHaveClass('size-7', 'rounded-md', 'focus-visible:ring-inset');
+    expect(button).toHaveClass('size-theme-button-xs', 'rounded-md', 'focus-visible:ring-inset');
     expect(button).not.toHaveClass('rounded-lg', 'focus-visible:ring-offset-2');
   });
 
@@ -238,6 +243,34 @@ describe('Button', () => {
     /** A heading is not a control: nothing fills under the pointer. */
     /** Only the disabled recipe's `theme-disabled:hover:` pin may name a hover fill. */
     expect(header).not.toMatch(/(^|\s)hover:bg-/);
+  });
+
+  /** A tool call's fold header reads as its own label: holding the pointer
+   *  down on it must not flash the ghost pressed fill. */
+  it('gives a disclosure header no hover or pressed fill and no default size', () => {
+    const header = cn(buttonVariants({ variant: 'disclosure' }));
+
+    expect(header).toContain('h-auto');
+    expect(header).toContain('p-0');
+    expect(header).toContain('rounded-none');
+    expect(header).not.toContain('h-theme-button');
+    expect(header).not.toMatch(/(^|\s)hover:bg-/);
+    expect(header).not.toMatch(/(^|\s)(hover:)?active:bg-/);
+  });
+
+  it('gives an option row an instant fill, a slow disabled fade and its own height', () => {
+    const row = cn(buttonVariants({ variant: 'option' }));
+
+    /** Only opacity eases while enabled, so the hover fill stays instant. */
+    expect(row).toContain('transition-opacity');
+    expect(row).toContain('enabled:duration-500');
+    expect(row).toContain('disabled:duration-500');
+    /** Reduced motion drops both fades, the disabled one included. */
+    expect(row).toContain('motion-reduce:transition-none');
+    expect(row).toContain('motion-reduce:disabled:transition-none');
+    expect(row).toContain('h-auto');
+    expect(row).not.toContain('h-theme-button');
+    expect(row).not.toMatch(/(^|\s)transition-colors(\s|$)/);
   });
 
   it('still takes a size when a caller asks for one', () => {

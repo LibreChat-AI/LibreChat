@@ -1,20 +1,20 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
-import { getDefaultStore } from 'jotai';
-import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
-import { act, render, screen, within, fireEvent } from '@testing-library/react';
+import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '~/hooks/Chat/useSteering';
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 import {
   QueuedTurnPortalProvider,
   useQueuedTurnPortal,
 } from '~/components/Chat/Steering/QueuedTurnPortal';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
 import { hasQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import Queue from '../Queue';
-import store from '~/store';
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string, options?: Record<string, string | number>) => {
     if (!options) {
@@ -28,6 +28,7 @@ jest.mock('~/hooks', () => ({
 const mockShowToast = jest.fn();
 jest.mock('@librechat/client', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
+  const AriakitActual = jest.requireActual('@ariakit/react') as typeof import('@ariakit/react');
   const IconButton = ReactActual.forwardRef(
     (
       {
@@ -48,6 +49,41 @@ jest.mock('@librechat/client', () => {
     Button: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) =>
       ReactActual.createElement('button', { type: 'button', ...props }, children),
     IconButton,
+    /* The real menu portals its items in on open; flattening them keeps every row's
+       actions queryable by label without driving the popup in each test. */
+    DropdownPopup: ({
+      trigger,
+      items,
+    }: {
+      trigger: React.ReactNode;
+      items: Array<{
+        id?: string;
+        label?: string;
+        show?: boolean;
+        disabled?: boolean;
+        onClick?: () => void;
+      }>;
+    }) =>
+      ReactActual.createElement(
+        AriakitActual.MenuProvider,
+        null,
+        trigger,
+        items
+          .filter((item) => item.show !== false)
+          .map((item) =>
+            ReactActual.createElement(
+              'button',
+              {
+                key: item.id,
+                type: 'button',
+                'aria-label': item.label,
+                disabled: item.disabled,
+                onClick: item.onClick,
+              },
+              item.label,
+            ),
+          ),
+      ),
     TooltipAnchor: ({
       children,
       render,
@@ -136,11 +172,14 @@ function renderQueue(
     onEditToComposer?: jest.Mock;
     onRestoreToComposer?: jest.Mock;
     canRestoreToComposer?: jest.Mock;
+    onStartNewChat?: jest.Mock;
     portalRequestId?: string;
   } = {},
 ) {
   return render(
-    <RecoilRoot initializeState={({ set }) => set(store.queuedMessagesByConvoId(CONVO_ID), items)}>
+    <RecoilRoot
+      initializeState={() => getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), items)}
+    >
       {/* Mirrors `App`, which mounts the provider around the whole tree. */}
       <DndProvider backend={HTML5Backend}>
         <QueuedTurnPortalProvider>
@@ -151,6 +190,7 @@ function renderQueue(
               handlers.onRestoreToComposer ?? handlers.onEditToComposer ?? jest.fn()
             }
             canRestoreToComposer={handlers.canRestoreToComposer ?? jest.fn().mockReturnValue(true)}
+            onStartNewChat={handlers.onStartNewChat ?? jest.fn()}
           />
           {handlers.portalRequestId != null && (
             <PendingTurnTarget requestId={handlers.portalRequestId} />
@@ -161,6 +201,8 @@ function renderQueue(
   );
 }
 
+beforeEach(() => resetQueueFamilies());
+
 describe('Queue', () => {
   beforeEach(() => jest.clearAllMocks());
 
@@ -169,7 +211,7 @@ describe('Queue', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('renders a row per queued message with every action visible, none behind a menu', () => {
+  it('renders a row per queued message with send now, remove and one options menu', () => {
     renderQueue([queued({ id: 'q1' }), queued({ id: 'q2' })]);
     const rows = screen.getAllByTestId('queued-message-row');
     expect(rows).toHaveLength(2);
@@ -177,9 +219,51 @@ describe('Queue', () => {
     const firstRow = within(rows[0]);
     expect(firstRow.getByRole('button', { name: 'com_ui_send_now' })).toBeInTheDocument();
     expect(firstRow.getByTestId('queued-interrupt-now')).toBeInTheDocument();
-    expect(firstRow.getByLabelText('com_ui_edit_message')).toBeInTheDocument();
     expect(firstRow.getByLabelText('com_ui_remove_queued')).toBeInTheDocument();
-    expect(firstRow.queryByLabelText('com_ui_more_options')).not.toBeInTheDocument();
+    expect(firstRow.getByLabelText('com_ui_more_options')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('com_ui_edit_message')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('com_ui_queue_start_new_chat')).toBeInTheDocument();
+    expect(firstRow.getByLabelText('com_ui_queue_disable')).toBeInTheDocument();
+  });
+
+  it('starts a queued message in a new chat and drops it from the queue', async () => {
+    const onStartNewChat = jest.fn();
+    renderQueue([queued({ id: 'q1', text: 'carry me over' })], steering, { onStartNewChat });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('com_ui_queue_start_new_chat'));
+    });
+    expect(mockDiscardQueued).toHaveBeenCalled();
+    expect(mockRemoveQueued).toHaveBeenCalledWith('q1');
+    expect(onStartNewChat).toHaveBeenCalledWith('carry me over');
+  });
+
+  it('keeps a message with attachments out of "Start in a new chat"', () => {
+    renderQueue([queued({ id: 'q1', files: [{ file_id: 'f1' }] as never })]);
+    expect(screen.getByLabelText('com_ui_queue_start_new_chat')).toBeDisabled();
+  });
+
+  it('holds a row out of the drain and releases it from the same menu item', () => {
+    const toggle = jest.fn();
+    renderQueue([queued({ id: 'q1' })], steeringWith({ toggleQueuedHold: toggle }));
+    fireEvent.click(screen.getByLabelText('com_ui_queue_disable'));
+    expect(toggle).toHaveBeenCalledWith('q1', true);
+  });
+
+  it('offers to re-enable a row the user disabled, and wakes the drain when released', () => {
+    const toggle = jest.fn();
+    renderQueue(
+      [queued({ id: 'q1', needsExplicitSend: true, heldByUser: true })],
+      steeringWith({ toggleQueuedHold: toggle }),
+    );
+    expect(screen.getByText('com_ui_queue_held')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('com_ui_queue_enable'));
+    expect(toggle).toHaveBeenCalledWith('q1', false);
+    expect(mockRewakeDrain).toHaveBeenCalledWith(CONVO_ID);
+  });
+
+  it('does not let the user release a hold that a rejected steer placed', () => {
+    renderQueue([queued({ id: 'q1', needsExplicitSend: true })]);
+    expect(screen.getByLabelText('com_ui_queue_disable')).toBeDisabled();
   });
 
   it('sends the row that was clicked, not the first one', () => {
@@ -617,36 +701,34 @@ describe('Queue', () => {
   /* Split view mounts two composers at once. A module-global id duplicated the
      hint element and pointed every handle at whichever copy won. */
   it('scopes the reorder hint to its own rail', () => {
+    /** Split view: both panes share the app's store and differ by conversation. */
+    const store = getDefaultStore();
+    store.set(queuedMessagesByConvoId('left-convo'), [
+      queued({ id: 'q1', text: 'left first' }),
+      queued({ id: 'q2', text: 'left second' }),
+    ]);
+    store.set(queuedMessagesByConvoId('right-convo'), [
+      queued({ id: 'q3', text: 'right first' }),
+      queued({ id: 'q4', text: 'right second' }),
+    ]);
     render(
       <DndProvider backend={HTML5Backend}>
-        <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
-              queued({ id: 'q1' }),
-              queued({ id: 'q2' }),
-            ])
-          }
-        >
+        <RecoilRoot>
           <Queue
-            steering={steering}
-            conversationId={CONVO_ID}
+            steering={{ ...steering, queueKey: 'left-convo' }}
+            conversationId="left-convo"
             onRestoreToComposer={jest.fn()}
             canRestoreToComposer={() => true}
+            onStartNewChat={jest.fn()}
           />
         </RecoilRoot>
-        <RecoilRoot
-          initializeState={({ set }) =>
-            set(store.queuedMessagesByConvoId(CONVO_ID), [
-              queued({ id: 'q3' }),
-              queued({ id: 'q4' }),
-            ])
-          }
-        >
+        <RecoilRoot>
           <Queue
-            steering={steering}
-            conversationId={CONVO_ID}
+            steering={{ ...steering, queueKey: 'right-convo' }}
+            conversationId="right-convo"
             onRestoreToComposer={jest.fn()}
             canRestoreToComposer={() => true}
+            onStartNewChat={jest.fn()}
           />
         </RecoilRoot>
       </DndProvider>,
@@ -657,6 +739,11 @@ describe('Queue', () => {
     expect(hints[0].id).not.toBe(hints[1].id);
 
     const rails = screen.getAllByTestId('composer-queue');
+    expect(within(rails[0]).getAllByTestId('queued-message-grip')).toHaveLength(2);
+    expect(within(rails[1]).getAllByTestId('queued-message-grip')).toHaveLength(2);
+    expect(rails[0]).toHaveTextContent('left first');
+    expect(rails[0]).not.toHaveTextContent('right first');
+    expect(rails[1]).toHaveTextContent('right first');
     for (const [railIndex, rail] of rails.entries()) {
       for (const grip of within(rail).getAllByTestId('queued-message-grip')) {
         expect(grip).toHaveAttribute('aria-describedby', hints[railIndex].id);
@@ -669,13 +756,16 @@ describe('Queue', () => {
   it('forgets its last announcement once the queue empties', () => {
     let setQueue: (items: QueuedMessage[]) => void = () => undefined;
     const Driver = () => {
-      setQueue = useSetRecoilState(store.queuedMessagesByConvoId(CONVO_ID));
+      setQueue = useSetAtom(queuedMessagesByConvoId(CONVO_ID));
       return null;
     };
     render(
       <RecoilRoot
-        initializeState={({ set }) =>
-          set(store.queuedMessagesByConvoId(CONVO_ID), [queued({ id: 'q1' }), queued({ id: 'q2' })])
+        initializeState={() =>
+          getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
+            queued({ id: 'q1' }),
+            queued({ id: 'q2' }),
+          ])
         }
       >
         <Driver />
@@ -685,6 +775,7 @@ describe('Queue', () => {
             conversationId={CONVO_ID}
             onRestoreToComposer={jest.fn()}
             canRestoreToComposer={() => true}
+            onStartNewChat={jest.fn()}
           />
         </DndProvider>
       </RecoilRoot>,
@@ -854,7 +945,7 @@ describe('Queue', () => {
     }
   });
 
-  it('moves a claimed turn’s sole remove action into the pending user turn', () => {
+  it('moves a claimed turn’s sole remove action into the pending user turn', async () => {
     const jotaiStore = getDefaultStore();
     jotaiStore.set(revealedQueuedTurnFamily(CONVO_ID), {
       clientRequestId: 'req-1',
@@ -879,6 +970,8 @@ describe('Queue', () => {
       expect(turn.getByLabelText('com_ui_remove_queued')).toBeEnabled();
       expect(turn.queryByRole('button', { name: 'com_ui_send_now' })).not.toBeInTheDocument();
       expect(turn.queryByLabelText('com_ui_edit_message')).not.toBeInTheDocument();
+      /* The row that moved into the turn plays its exit before it leaves the rail. */
+      await waitFor(() => expect(screen.getAllByTestId('queued-message-row')).toHaveLength(1));
       const row = screen.getByTestId('queued-message-row');
       expect(row).toHaveTextContent('another queued message');
       expect(row).not.toHaveTextContent('follow up on this');

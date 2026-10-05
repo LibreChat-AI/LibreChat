@@ -88,6 +88,10 @@ export default function ModelPanel({
   /** The rendered set omits role-gated controls; `parameterSettings.parameters`
    *  stays complete so the pruning effect below still recognises them. */
   const { visibleParameters: parameters } = parameterSettings;
+  const webSearchBlocked =
+    !webSearchAllowed &&
+    (modelParameters?.web_search === true ||
+      parameterSettings.parameters.some((parameter) => parameter.key === 'web_search'));
 
   /**
    * Prunes `model_parameters` entries that no longer have a visible control (e.g. a
@@ -122,14 +126,17 @@ export default function ModelPanel({
           size="icon"
           onClick={() => setActivePanel(Panel.builder)}
           aria-label={localize('com_ui_back_to_builder')}
-          className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary h-10 w-10 shrink-0 rounded-xl"
+          className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary shrink-0 rounded-xl"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
         </Button>
         <h2 className="text-text-primary text-center text-base font-semibold">
           {localize('com_ui_model_parameters')}
         </h2>
-        <span aria-hidden="true" className="h-10 w-10" />
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
       </header>
       <div>
         {/* Endpoint aka Provider for Agents */}
@@ -263,6 +270,11 @@ export default function ModelPanel({
           )}
         </div>
       </div>
+      {webSearchBlocked && (
+        <Alert variant="warning" role="status">
+          {localize('com_ui_native_web_search_denied')}
+        </Alert>
+      )}
       {/* Model Parameters */}
       {parameters && (
         <div className="h-auto max-w-full">

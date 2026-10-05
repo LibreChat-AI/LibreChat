@@ -177,7 +177,7 @@ export default function VersionItem({
               </OGDialogTrigger>
               <OGDialogTemplate
                 title={localize('com_ui_agent_version_restore_confirm')}
-                className="max-w-[450px]"
+                className="max-w-[28.125rem]"
                 main={
                   <div className="flex w-full flex-col gap-3 text-sm">
                     <Label className="text-text-primary text-left font-medium">

@@ -1,5 +1,6 @@
 export enum QueryKeys {
   messages = 'messages',
+  ownerMessageTexts = 'ownerMessageTexts',
   sharedMessages = 'sharedMessages',
   sharedStartupConfig = 'sharedStartupConfig',
   sharedLinks = 'sharedLinks',
@@ -81,6 +82,8 @@ export enum QueryKeys {
   mcpServer = 'mcpServer',
   /* Active Jobs */
   activeJobs = 'activeJobs',
+  /** A running chat's sidebar row, for chats no loaded conversation list holds. */
+  runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   /* Skills */
@@ -99,6 +102,7 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Scheduled chats */
   schedules = 'schedules',
+  scheduleMCPConsent = 'scheduleMCPConsent',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
@@ -119,6 +123,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
@@ -172,12 +177,17 @@ export enum MutationKeys {
   updateSkillNode = 'updateSkillNode',
   deleteSkillNode = 'deleteSkillNode',
   updateSkillNodeContent = 'updateSkillNodeContent',
+  /** Artifact code save, keyed so the editor pane can see a save started by
+   *  another instance of itself — the pane is remounted when it changes hosts. */
+  editArtifact = 'editArtifact',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
   createSchedule = 'createSchedule',
   updateSchedule = 'updateSchedule',
   deleteSchedule = 'deleteSchedule',
   runSchedule = 'runSchedule',
+  confirmScheduleMCPConsent = 'confirmScheduleMCPConsent',
+  revokeScheduleMCPConsent = 'revokeScheduleMCPConsent',
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',

@@ -160,16 +160,19 @@ jest.mock('~/cache', () => ({
 let mongoServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({ instance: { launchTimeout: 30_000 } });
   await mongoose.connect(mongoServer.getUri());
-});
+}, 60_000);
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
+  await mongoServer?.stop();
 });
 
 afterEach(async () => {
+  if (mongoose.connection.readyState !== 1) {
+    return;
+  }
   const collections = mongoose.connection.collections;
   for (const key in collections) {
     await collections[key].deleteMany({});

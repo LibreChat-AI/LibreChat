@@ -179,7 +179,7 @@ export function SubagentActivityScrollSurface({
         className={cn('min-h-0 flex-1 overflow-y-auto', padded && 'px-4 py-4')}
         data-subagent-activity-scroll-surface
       >
-        <div ref={contentRef} className={cn(headerInset && 'pt-[52px]')}>
+        <div ref={contentRef} className={cn(headerInset && 'pt-13')}>
           {children}
         </div>
       </div>
@@ -420,6 +420,7 @@ export default function SubagentActivity({
   showPrompt = true,
   headerInset = false,
   onCancelControl,
+  notice,
 }: {
   activity: ChildActivity;
   activityId?: string;
@@ -427,6 +428,7 @@ export default function SubagentActivity({
   embedded?: boolean;
   showPrompt?: boolean;
   headerInset?: boolean;
+  notice?: React.ReactNode;
   onCancelControl?: (controlId: string) => void;
 }) {
   const statusHeader = isAbnormalTerminalStatus(activity.status) ? (
@@ -435,13 +437,16 @@ export default function SubagentActivity({
     </div>
   ) : null;
   const content = (
-    <SubagentActivityContent
-      activity={activity}
-      activityId={activityId}
-      state={state}
-      showPrompt={showPrompt}
-      onCancelControl={onCancelControl}
-    />
+    <>
+      {notice}
+      <SubagentActivityContent
+        activity={activity}
+        activityId={activityId}
+        state={state}
+        showPrompt={showPrompt}
+        onCancelControl={onCancelControl}
+      />
+    </>
   );
 
   if (embedded) {

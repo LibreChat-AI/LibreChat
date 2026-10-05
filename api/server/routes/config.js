@@ -10,6 +10,7 @@ const {
   getAppConfigOptionsFromUser,
   resolveBuildInfo,
   resolveTitleTiming,
+  getConversationTitleCapabilities,
   sanitizeModelSpecs,
   excludeHiddenModelSpecs,
   isFileSnapshotEnabled,
@@ -108,6 +109,7 @@ function buildPreLoginPayload() {
     socialLoginEnabled: isEnabled(process.env.ALLOW_SOCIAL_LOGIN),
     emailEnabled: checkEmailConfig(),
     passwordResetEnabled,
+    twoFactorAuthenticationRequired: isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION),
   };
 
   const minPasswordLength = parseInt(process.env.MIN_PASSWORD_LENGTH, 10);
@@ -302,6 +304,7 @@ router.get('/', async function (req, res) {
       ...preLoginPayload,
       ...publicSharePayload,
       ...buildPostLoginPayload(appConfig),
+      ...getConversationTitleCapabilities(appConfig?.interfaceConfig),
       conversationListLimits,
       sharedLinksSnapshotFilesEnabled: sharedLinksEnabled && isFileSnapshotEnabled(appConfig),
       socialLogins: appConfig?.registration?.socialLogins ?? defaultSocialLogins,

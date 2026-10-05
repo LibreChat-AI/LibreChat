@@ -22,12 +22,14 @@ import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { parseSubagentBackgroundHandle } from './handle';
 import { isError } from '../ToolOutput/OutputRenderer';
+import { useToolPreparation } from '../preparation';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
 import { useFailedReveal } from '../reveal';
 import { cn, parseToolName } from '~/utils';
+import { FOLD_GLYPH_CLASS } from '../rows';
 import { useLocalize } from '~/hooks';
 
 interface SubagentCallProps {
@@ -267,10 +269,12 @@ export default function SubagentCall({
   /** Model-authored live label (subagent carries `intent` natively); wins
    *  over the generic verb, never over error/cancellation framing. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
   const getHeaderText = () => {
     if (hasError) return localize('com_ui_subagent_errored');
     if (cancelled) return localize('com_ui_subagent_cancelled');
     if (detachedStatusUnknown) return localize('com_ui_subagent_activity');
+    if (running && preparationText != null) return preparationText;
     if (intent != null) return intent;
     if (running) return localize('com_ui_subagent_running');
     return localize('com_ui_subagent_complete');
@@ -403,7 +407,7 @@ export default function SubagentCall({
         data-subagent-part-index={partIndex}
         className={cn(
           'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-left transition',
-          canOpenDetails ? 'group hover:bg-surface-tertiary' : 'cursor-default opacity-80',
+          canOpenDetails ? 'group' : 'cursor-default opacity-80',
           running && !detachedStatusUnknown && 'animate-pulse-slow',
         )}
         aria-label={headerText}
@@ -411,6 +415,7 @@ export default function SubagentCall({
         <div className="text-text-primary flex items-center gap-2 text-sm font-medium">
           <div
             className={cn(
+              FOLD_GLYPH_CLASS,
               'flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full',
               running && !subagentAgent && 'text-text-primary animate-pulse',
             )}

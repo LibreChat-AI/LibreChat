@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import mongoose, { type FilterQuery } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { EModelEndpoint, RetentionMode } from 'librechat-data-provider';
+import { EModelEndpoint, RetentionMode, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type {
   Document,
   Filter,
@@ -387,7 +387,7 @@ describe('Conversation Operations', () => {
       });
       expect(convo?.lastResponseAt).toBeInstanceOf(Date);
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThanOrEqual(before.getTime());
-      expect(convo?.lastSeenAt == null).toBe(true);
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('returns the durable conversation when the optional reply stamp fails', async () => {
@@ -438,7 +438,7 @@ describe('Conversation Operations', () => {
         conversationId: mockConversationData.conversationId,
       });
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThan(newer.getTime());
-      expect(convo?.lastSeenAt).toBeUndefined();
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('leaves the reply stamp alone for a save that does not carry one', async () => {
@@ -653,6 +653,143 @@ describe('Conversation Operations', () => {
       expect(result).not.toBeNull();
       expect(result?.title).toBe('Updated Title');
       expect(result?.conversationId).toBe(mockConversationData.conversationId);
+    });
+
+    describe('generated title ownership', () => {
+      const generated = { titleSource: 'generated' as const, appendMessageIds: [] };
+      const manual = { titleSource: 'manual' as const, appendMessageIds: [] };
+
+      it('does not upsert a missing conversation', async () => {
+        const conversationId = uuidv4();
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect(await Conversation.countDocuments({ conversationId })).toBe(0);
+      });
+
+      it.each(['Renamed', 'New Chat', ''])('preserves an explicit rename to %s', async (title) => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await saveConvo(mockCtx, { conversationId, title }, manual);
+        expect(
+          await saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+        ).toBeNull();
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe(title);
+        await saveConvo(mockCtx, { conversationId, titleSetByUser: false });
+        expect(await saveConvo(mockCtx, { conversationId, title: 'Later' }, generated)).toBeNull();
+      });
+
+      it('projects manual title authority and unread intent while ordering repeated renames', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await methods.markConvoUnread(mockCtx.userId, conversationId);
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'First' }, manual),
+          saveConvo(mockCtx, { conversationId, title: 'New Chat' }, manual),
+        ]);
+        const current = await getConvo(mockCtx.userId, conversationId);
+        expect(current?.titleRevision).toBe(2);
+        expect(await methods.getConvoTitleState(mockCtx.userId, conversationId)).toEqual({
+          title: current?.title,
+          titleSetByUser: true,
+          titleRevision: 2,
+        });
+        expect(await methods.getConvoTitleState('another-owner', conversationId)).toBeNull();
+
+        const page = await getConvosByCursor(mockCtx.userId);
+        expect(page.conversations.find((row) => row.conversationId === conversationId)).toEqual(
+          expect.objectContaining({ titleSetByUser: true, titleRevision: 2, isMarkedUnread: true }),
+        );
+        await saveConvo(
+          mockCtx,
+          { conversationId, titleRevision: 99, titleSetByUser: false },
+          {
+            unsetFields: { titleRevision: 1, titleSetByUser: 1 },
+            appendMessageIds: [],
+          },
+        );
+        expect(await getConvo(mockCtx.userId, conversationId)).toEqual(
+          expect.objectContaining({
+            titleSetByUser: true,
+            titleRevision: 2,
+          }),
+        );
+      });
+
+      it('preserves remembered approvals while claiming manual title ownership', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await methods.addConvoToolApprovalAllows({
+          user: mockCtx.userId,
+          conversationId,
+          toolNames: ['kept'],
+          max: 64,
+        });
+        const stale = {
+          conversationId,
+          toolApprovalAllows: ['*'],
+          titleSetByUser: false,
+          titleRevision: 99,
+        };
+        const unsetFields = { toolApprovalAllows: 1, titleSetByUser: 1, titleRevision: 1 };
+        const saved = await saveConvo(
+          mockCtx,
+          { ...stale, title: 'Renamed' },
+          { ...manual, unsetFields },
+        );
+        expect(saved).toEqual(
+          expect.objectContaining({
+            title: 'Renamed',
+            titleSetByUser: true,
+            titleRevision: 1,
+            toolApprovalAllows: ['kept'],
+          }),
+        );
+        expect(
+          await saveConvo(mockCtx, { ...stale, title: 'Generated' }, { ...generated, unsetFields }),
+        ).toBeNull();
+        expect(await getConvo(mockCtx.userId, conversationId)).toEqual(
+          expect.objectContaining({
+            title: 'Renamed',
+            titleSetByUser: true,
+            titleRevision: 1,
+            toolApprovalAllows: ['kept'],
+          }),
+        );
+      });
+
+      it('preserves renamed legacy rows without an ownership flag', async () => {
+        await saveConvo(mockCtx, mockConversationData);
+        expect(
+          await saveConvo(mockCtx, { ...mockConversationData, title: 'Generated' }, generated),
+        ).toBeNull();
+      });
+
+      it('atomically preserves a rename that races generation', async () => {
+        const conversationId = uuidv4();
+        await saveConvo(mockCtx, { conversationId });
+        await Promise.all([
+          saveConvo(mockCtx, { conversationId, title: 'Generated' }, generated),
+          saveConvo(mockCtx, { conversationId, title: 'Renamed' }, manual),
+        ]);
+        expect((await getConvo(mockCtx.userId, conversationId))?.title).toBe('Renamed');
+      });
+
+      it('publishes a generated title without moving activity or messages', async () => {
+        const conversationId = uuidv4();
+        const initial = await saveConvo(mockCtx, { conversationId });
+        const saved = await saveConvo(
+          mockCtx,
+          { conversationId, title: 'Generated' },
+          {
+            ...generated,
+            preserveUpdatedAt: true,
+          },
+        );
+        expect(saved?.title).toBe('Generated');
+        expect(saved?.updatedAt).toEqual(initial?.updatedAt);
+        expect(saved?.messages).toEqual(initial?.messages);
+      });
     });
 
     it('should still upsert by default when noUpsert is not provided', async () => {
@@ -1338,6 +1475,42 @@ describe('Conversation Operations', () => {
     const userId = 'user123';
     const unsetFields = { codeEnvironmentMode: 1, codeWorkspaces: 1 };
 
+    it.each(['source', 'isolated'] as const)(
+      'preserves the %s checkout through save, reload and a stale save',
+      async (checkout) => {
+        const conversationId = uuidv4();
+        const codeWorkspaces = [{ ...mac, checkout }];
+        await saveConvo(
+          { userId },
+          { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+        );
+        expect((await getConvo(userId, conversationId))?.codeWorkspaces).toEqual(codeWorkspaces);
+        await saveConvo({ userId }, { conversationId, codeWorkspaces: [mac], title: 'Later save' });
+        expect(
+          (await methods.readAdmittedConvoCodeEnvironmentDecision(userId, conversationId))
+            ?.codeWorkspaces,
+        ).toEqual(codeWorkspaces);
+      },
+    );
+
+    it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
+      const conversationId = uuidv4();
+      const codeWorkspaces = [{ ...mac, agentIds: ['primary', 'reviewer'] }];
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+      );
+      expect((await getConvo(userId, conversationId))?.codeWorkspaces).toEqual(codeWorkspaces);
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces: [vm] },
+      );
+      expect(
+        (await methods.readAdmittedConvoCodeEnvironmentDecision(userId, conversationId))
+          ?.codeWorkspaces,
+      ).toEqual(codeWorkspaces);
+    });
+
     it.each([
       { codeEnvironmentMode: 'attached', codeWorkspaces: [mac] },
       { codeEnvironmentMode: 'without_attached' },
@@ -1785,6 +1958,27 @@ describe('Conversation Operations', () => {
       expect(result?.title).toBe('appended');
       const stored = await Conversation.findOne({ conversationId }).lean();
       expect(stored?.messages?.map(String)).toEqual([...seeded, appended].map(String));
+    });
+
+    it('keeps response references when an explicit rename lands concurrently', async () => {
+      const userMessage = new mongoose.Types.ObjectId();
+      const responseMessage = new mongoose.Types.ObjectId();
+      await saveConvo(ctx, { conversationId }, { appendMessageIds: [userMessage] });
+      await Promise.all([
+        saveConvo(
+          ctx,
+          { conversationId, title: 'Renamed while running' },
+          {
+            titleSource: 'manual',
+            appendMessageIds: [],
+          },
+        ),
+        saveConvo(ctx, { conversationId }, { appendMessageIds: [responseMessage] }),
+      ]);
+      const stored = await getConvo(ctx.userId, conversationId);
+      expect(stored?.messages?.map(String)).toEqual([userMessage, responseMessage].map(String));
+      expect(stored?.title).toBe('Renamed while running');
+      expect(getMessages).not.toHaveBeenCalled();
     });
 
     it('does not duplicate an id that is already recorded', async () => {
@@ -3067,7 +3261,7 @@ describe('Conversation Operations', () => {
       }).lean<IConversation>();
       expect(convo?.lastResponseAt).toBeInstanceOf(Date);
       expect(convo?.lastResponseIsManual).toBeUndefined();
-      expect(convo?.lastSeenAt == null).toBe(true);
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
     it('advances past a future reply stamp when this host clock is behind', async () => {
       const newer = new Date(Date.now() + 60_000);
@@ -3086,7 +3280,7 @@ describe('Conversation Operations', () => {
         conversationId: mockConversationData.conversationId,
       }).lean<IConversation>();
       expect(convo?.lastResponseAt?.getTime()).toBeGreaterThan(newer.getTime());
-      expect(convo?.lastSeenAt).toBeUndefined();
+      expect(convo?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
     });
 
     it('does not stamp another user’s conversation', async () => {
@@ -3145,6 +3339,7 @@ describe('Conversation Operations', () => {
 
       const result = await markConvoUnread('user123', mockConversationData.conversationId);
       expect(result.modified).toBe(true);
+      expect(result.isMarkedUnread).toBe(true);
 
       const convo = await Conversation.findOne({
         conversationId: mockConversationData.conversationId,
@@ -3152,6 +3347,7 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeUndefined();
       expect(convo?.lastResponseAt?.toISOString()).toBe('2026-08-16T10:00:00.000Z');
       expect(convo?.lastResponseIsManual).toBeUndefined();
+      expect(convo?.isMarkedUnread).toBe(true);
     });
 
     it('returns the stamp it settled on so the client never invents one', async () => {
@@ -3257,6 +3453,129 @@ describe('Conversation Operations', () => {
       expect(convo?.lastSeenAt).toBeInstanceOf(Date);
     });
   });
+
+  describe('manual unread reminders', () => {
+    it('survives reload and is cleared by a persisted real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'original-reply',
+      });
+      await methods.markConvoUnread('user123', mockConversationData.conversationId);
+      const unread = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(unread?.isMarkedUnread).toBe(true);
+      expect(unread?.lastResponseMessageId).toBe('original-reply');
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'new-reply',
+      );
+      const replied = await Conversation.findOne({
+        conversationId: mockConversationData.conversationId,
+      }).lean<IConversation>();
+      expect(replied?.isMarkedUnread).toBe(false);
+      expect(replied?.lastResponseMessageId).toBe('new-reply');
+    });
+
+    it('leaves legacy intent unknown through listing and metadata saves, until a real reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: new Date('2026-08-16T10:00:00.000Z'),
+        lastResponseMessageId: 'legacy-reply',
+      });
+      await saveConvo(mockCtx, {
+        conversationId: mockConversationData.conversationId,
+        title: 'Reminder',
+      });
+      const { conversations } = await getConvosByCursor('user123');
+      expect(conversations[0].isMarkedUnread).toBeUndefined();
+      expect(conversations[0].lastResponseMessageId).toBe('legacy-reply');
+      expect(conversations[0].lastSeenAt).toBeUndefined();
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'confirmed-reply',
+      );
+      const reloaded = await getConvo('user123', mockConversationData.conversationId);
+      expect(reloaded?.isMarkedUnread).toBe(false);
+      expect(reloaded?.lastResponseMessageId).toBe('confirmed-reply');
+    });
+
+    it('keeps legacy replica seen/unread writes distinguishable after an upgraded reply', async () => {
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+      });
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'upgraded-reply',
+      );
+      let stored = await getConvo('user123', mockConversationData.conversationId);
+      expect(stored?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
+      expect(stored?.isMarkedUnread).toBe(false);
+      /* Exact operators used by the pre-upgrade backend. */
+      await Conversation.updateOne(
+        { conversationId: mockConversationData.conversationId, user: 'user123' },
+        { $set: { lastSeenAt: new Date() } },
+        { timestamps: false },
+      );
+      await Conversation.findOneAndUpdate(
+        { conversationId: mockConversationData.conversationId, user: 'user123' },
+        { $unset: { lastSeenAt: '' } },
+        { timestamps: false, new: true },
+      );
+      const { conversations } = await getConvosByCursor('user123');
+      expect(conversations[0].isMarkedUnread).toBe(false);
+      expect(conversations[0].lastSeenAt).toBeUndefined();
+      await methods.stampConvoLastResponse(
+        'user123',
+        mockConversationData.conversationId,
+        'next-upgraded-reply',
+      );
+      stored = await getConvo('user123', mockConversationData.conversationId);
+      expect(stored?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
+      expect(stored?.lastResponseMessageId).toBe('next-upgraded-reply');
+    });
+
+    it('is cleared only by an acknowledgement of the current reply', async () => {
+      const responseAt = new Date('2026-08-16T10:00:00.000Z');
+      await Conversation.create({
+        conversationId: mockConversationData.conversationId,
+        user: 'user123',
+        endpoint: EModelEndpoint.openAI,
+        lastResponseAt: responseAt,
+        isMarkedUnread: true,
+      });
+      await methods.markConvoSeen(
+        'user123',
+        mockConversationData.conversationId,
+        new Date(responseAt.getTime() - 1),
+      );
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBe(true);
+      await methods.markConvoSeen('user123', mockConversationData.conversationId, responseAt);
+      expect(
+        (
+          await Conversation.findOne({
+            conversationId: mockConversationData.conversationId,
+          }).lean<IConversation>()
+        )?.isMarkedUnread,
+      ).toBeUndefined();
+    });
+  });
   describe('unseen-reply fields', () => {
     it('returns lastResponseAt, manual marker, and lastSeenAt from the cursor listing', async () => {
       const lastResponseAt = new Date('2026-08-16T10:00:00.000Z');
@@ -3268,6 +3587,7 @@ describe('Conversation Operations', () => {
         lastResponseAt,
         lastResponseMessageId: 'reply-listed',
         lastResponseIsManual: true,
+        isMarkedUnread: true,
         lastSeenAt,
       });
 
@@ -3276,6 +3596,7 @@ describe('Conversation Operations', () => {
       expect(conversations[0].lastResponseAt?.toISOString()).toBe(lastResponseAt.toISOString());
       expect(conversations[0].lastResponseMessageId).toBe('reply-listed');
       expect(conversations[0].lastResponseIsManual).toBe(true);
+      expect(conversations[0].isMarkedUnread).toBe(true);
       expect(conversations[0].lastSeenAt?.toISOString()).toBe(lastSeenAt.toISOString());
     });
 
@@ -8952,6 +9273,88 @@ describe('Conversation Operations', () => {
       });
 
       expect(result.conversations.map((c) => c.conversationId)).toEqual([convo.conversationId]);
+    });
+  });
+
+  describe('addConvoToolApprovalAllows', () => {
+    const seed = async (user = 'allow-user') => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user, title: 'Allow test', endpoint: 'agents' });
+      return conversationId;
+    };
+
+    it('stores tools owner-scoped and idempotently', async () => {
+      const conversationId = await seed();
+      const input = { conversationId, toolNames: ['search_mcp_github'], max: 64 };
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'intruder' })).toBe(false);
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'allow-user' })).toBe(true);
+      expect(await methods.addConvoToolApprovalAllows({ ...input, user: 'allow-user' })).toBe(true);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['search_mcp_github']);
+    });
+
+    it('refuses a write that would exceed the bound', async () => {
+      const conversationId = await seed();
+      const user = 'allow-user';
+      expect(
+        await methods.addConvoToolApprovalAllows({
+          user,
+          conversationId,
+          toolNames: ['a', 'b'],
+          max: 2,
+        }),
+      ).toBe(true);
+      expect(
+        await methods.addConvoToolApprovalAllows({
+          user,
+          conversationId,
+          toolNames: ['c'],
+          max: 2,
+        }),
+      ).toBe(false);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['a', 'b']);
+    });
+
+    it('charges only names not stored yet against the bound', async () => {
+      const conversationId = await seed();
+      const write = (toolNames: string[]) =>
+        methods.addConvoToolApprovalAllows({
+          user: 'allow-user',
+          conversationId,
+          toolNames,
+          max: 2,
+        });
+      expect(await write(['a'])).toBe(true);
+      expect(await write(['a', 'b'])).toBe(true);
+      expect(await write(['b'])).toBe(true);
+      expect(await write(['a', 'c'])).toBe(false);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['a', 'b']);
+    });
+
+    it('cannot be written or cleared through generic saves or bulk imports', async () => {
+      const conversationId = await seed();
+      const user = 'allow-user';
+      await methods.addConvoToolApprovalAllows({
+        user,
+        conversationId,
+        toolNames: ['kept'],
+        max: 64,
+      });
+      await saveConvo(
+        { userId: user },
+        { conversationId, toolApprovalAllows: ['*'] },
+        { unsetFields: { toolApprovalAllows: 1 } },
+      );
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        { conversationId: imported, user, title: 'Imported', toolApprovalAllows: ['*'] },
+      ]);
+      const stored = await Conversation.findOne({ conversationId }).lean();
+      expect(stored?.toolApprovalAllows).toEqual(['kept']);
+      const importedDoc = await Conversation.findOne({ conversationId: imported }).lean();
+      expect(importedDoc?.toolApprovalAllows).toBeUndefined();
     });
   });
 });

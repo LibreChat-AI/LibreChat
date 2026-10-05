@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { useSetAtom } from 'jotai';
+import { useSetAtom, useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import { Constants, QueryKeys, isAssistantsEndpoint } from 'librechat-data-provider';
-import { useRecoilState, useRecoilValue, useSetRecoilState, useRecoilCallback } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { ChatContract } from './contract';
 import {
@@ -12,6 +12,7 @@ import {
 } from '~/data-provider';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
+import { drainAfterAbortByIndex, runEndByIndex } from '~/hooks/Chat/queue';
 import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { resolveAbortSteerTarget } from '~/utils';
@@ -36,19 +37,19 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
   /** Async abort responses can settle after this pane has moved to another
    * conversation and armed its own interrupt. Clear only the intent owned by
    * the request that produced the response. */
-  const clearInterruptDrain = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (convoId: string, generationCreatedAt: number) => {
-        const armed = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
-        if (
-          armed !== false &&
-          armed.conversationId === convoId &&
-          armed.generationCreatedAt === generationCreatedAt
-        ) {
-          set(store.drainAfterAbortByIndex(index), false);
-        }
-      },
-    [index],
+  const queueStore = useStore();
+  const clearInterruptDrain = useCallback(
+    (convoId: string, generationCreatedAt: number) => {
+      const armed = queueStore.get(drainAfterAbortByIndex(index));
+      if (
+        armed !== false &&
+        armed.conversationId === convoId &&
+        armed.generationCreatedAt === generationCreatedAt
+      ) {
+        queueStore.set(drainAfterAbortByIndex(index), false);
+      }
+    },
+    [index, queueStore],
   );
 
   /**
@@ -60,28 +61,27 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
    * final DOES arrive later, its signal finds the flag already consumed and
    * an `aborted` outcome drains nothing, so there is no double fire.
    */
-  const signalInterruptDrain = useRecoilCallback(
-    ({ snapshot, set }) =>
-      (convoId: string, generationCreatedAt: number, armedConversationId = convoId) => {
-        const armed = snapshot.getLoadable(store.drainAfterAbortByIndex(index)).getValue();
-        const runEnd = snapshot.getLoadable(store.runEndByIndex(index)).getValue();
-        const matchesArm =
-          armed !== false &&
-          armed.conversationId === armedConversationId &&
-          armed.generationCreatedAt === generationCreatedAt;
-        const alreadySignaled =
-          runEnd?.conversationId === convoId && runEnd.generationCreatedAt === generationCreatedAt;
-        if (!matchesArm || alreadySignaled) {
-          return;
-        }
-        set(store.runEndByIndex(index), {
-          conversationId: convoId,
-          outcome: 'aborted',
-          endedAt: Date.now(),
-          generationCreatedAt,
-        });
-      },
-    [index],
+  const signalInterruptDrain = useCallback(
+    (convoId: string, generationCreatedAt: number, armedConversationId = convoId) => {
+      const armed = queueStore.get(drainAfterAbortByIndex(index));
+      const runEnd = queueStore.get(runEndByIndex(index));
+      const matchesArm =
+        armed !== false &&
+        armed.conversationId === armedConversationId &&
+        armed.generationCreatedAt === generationCreatedAt;
+      const alreadySignaled =
+        runEnd?.conversationId === convoId && runEnd.generationCreatedAt === generationCreatedAt;
+      if (!matchesArm || alreadySignaled) {
+        return;
+      }
+      queueStore.set(runEndByIndex(index), {
+        conversationId: convoId,
+        outcome: 'aborted',
+        endedAt: Date.now(),
+        generationCreatedAt,
+      });
+    },
+    [index, queueStore],
   );
 
   const { newConversation } = useNewConvo(index);

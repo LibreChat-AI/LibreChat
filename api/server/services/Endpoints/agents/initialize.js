@@ -2,6 +2,7 @@ const { logger } = require('@librechat/data-schemas');
 const { createContentAggregator, GraphNodeKeys } = require('@librechat/agents');
 const {
   resolveSender,
+  copyToolApprovalAdmissionMetadata,
   resolveRunConversation,
   resolveAdmittedCodeEnvironmentDecision,
   createConcurrencyLimiter,
@@ -24,6 +25,7 @@ const {
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
   optsOutOfAttachedCodeEnvironment,
   isImplicitStatefulCodeRouteAvailable,
   resolveCodeExecutionWorkspaceContext,
@@ -42,6 +44,10 @@ const {
   encodeAndFormatVideos,
   extractFileContext,
   createScheduleUpstreamTokenProviderResolver,
+  initializeWithScheduleMCPExecution,
+  retainScheduleMCPCompletion,
+  getScheduleMCPExecution,
+  getMCPRequestContext,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -92,6 +98,7 @@ const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const AgentClient = require('~/server/controllers/agents/client');
 const { processAddedConvo } = require('./addedConvo');
+const { getLinkedInstructionsResolver } = require('./linkedInstructions');
 const subagentThreadTaskStore = require('./subagentThreadStore');
 const {
   preregisterBackgroundToolCompletion,
@@ -195,6 +202,10 @@ function createToolLoader(
  * @param {import('@librechat/api').MCPRuntimeRequestBody} [params.requestBody]
  * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
  * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
+ * @param {boolean} [params.isResume] Whether this initialization is replaying an
+ *   already-in-flight turn (a resumed stream), rather than starting a new one.
+ *   Resolution of every agent's `instructionsPrompt` link still runs, cache-first,
+ *   but usage is not recorded again for the same turn.
  */
 const initializeClientWithProvider = async ({
   req,
@@ -208,6 +219,7 @@ const initializeClientWithProvider = async ({
   toolTimingReplayEvents,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
+  isResume,
 }) => {
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
@@ -286,6 +298,12 @@ const initializeClientWithProvider = async ({
       : null;
   const backgroundToolsAvailable = enabledCapabilities.has(AgentCapabilities.run_in_background);
   const toolIntentsAvailable = enabledCapabilities.has(AgentCapabilities.tool_intents);
+  /** Resolves any agent's `instructionsPrompt` link this run encounters — primary,
+   *  handoff, subagent, or added-conversation agent. A resumed turn records no
+   *  usage at all, including for a lazy subagent spawned for the first time
+   *  during that resumed turn: only a fresh turn records usage. */
+  const resolveLinkedInstructions = getLinkedInstructionsResolver();
+  const recordLinkedPromptUsage = !isResume;
   const deferredToolsAvailable = enabledCapabilities.has(AgentCapabilities.deferred_tools);
   const programmaticToolsAvailable = enabledCapabilities.has(AgentCapabilities.programmatic_tools);
   const statefulSessionsAvailable = enabledCapabilities.has(
@@ -440,6 +458,7 @@ const initializeClientWithProvider = async ({
 
   const invokedSkillIdentities = new Map();
   const toolExecuteOptions = {
+    scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(req, res)),
     // Keep foreground cancellation owned by this request even when the agents
     // SDK rebuilds a graph for approval resume. The SDK event's breaker signal
     // is composed with this authoritative job signal by the handler.
@@ -752,6 +771,8 @@ const initializeClientWithProvider = async ({
       skillAuthoringAvailable: primarySkillAuthoringAvailable,
       codeEnvAvailable,
       fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
       backgroundToolsAvailable,
       toolIntentsAvailable,
       statefulSessionsAvailable,
@@ -845,6 +866,8 @@ const initializeClientWithProvider = async ({
       defaultActiveOnShare,
       codeEnvAvailable,
       fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
       backgroundToolsAvailable,
       toolIntentsAvailable,
       statefulSessionsAvailable,
@@ -932,6 +955,8 @@ const initializeClientWithProvider = async ({
     defaultActiveOnShare,
     codeEnvAvailable,
     fileSearchAvailable,
+    resolveLinkedInstructions,
+    recordLinkedPromptUsage,
     backgroundToolsAvailable,
     toolIntentsAvailable,
     statefulSessionsAvailable,
@@ -1141,6 +1166,13 @@ const initializeClientWithProvider = async ({
           statefulSessions: statefulCodeSessions,
           environment: statefulCodeEnvironment,
           environmentId: agent.code_environment_id,
+          environmentIds: agent.code_environment_ids,
+          allowEnvironmentSelection:
+            appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+          workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+            conversation: admittedConversation,
+            request: runtimeRequestBody,
+          }),
           environments: configuredCodeEnvironments,
           userId,
           agentId: agent.id,
@@ -1166,30 +1198,38 @@ const initializeClientWithProvider = async ({
       codeExecutionAvailable: lazyCodeEnvAvailable,
       memoryAvailable,
     });
-    return {
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      provider: agent.provider,
-      model: agent.model,
-      model_parameters: { model: agent.model_parameters?.model },
-      recursion_limit: agent.recursion_limit,
-      memory_scope: agent.memory_scope,
-      memoryToolsRegistered:
-        memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
-      subagents: agent.subagents,
-      configId: getLazySubagentConfigId(agent),
-      codeEnvAvailable: lazyCodeEnvAvailable,
-      statefulCodeSessions,
-      statefulCodeEnvironment,
-      codeExecutionContext,
-      codeSessionKey: codeExecutionContext?.codeSessionKey,
-      includeReasoningHistory: getIncludeReasoningHistory(agent),
-      alwaysApplySkillPrimes,
-      historicalToolNames,
-      historicalMcpServerNames,
-      skillAuthoringAvailable: skillAuthoringAvailable === true,
-    };
+    return copyToolApprovalAdmissionMetadata(
+      {
+        id: agent.id,
+        name: agent.name,
+        description: agent.description,
+        provider: agent.provider,
+        model: agent.model,
+        model_parameters: { model: agent.model_parameters?.model },
+        recursion_limit: agent.recursion_limit,
+        memory_scope: agent.memory_scope,
+        memoryToolsRegistered:
+          memoryAvailable === true && agent.tools?.includes(Tools.memory) === true,
+        subagents: agent.subagents,
+        configId: getLazySubagentConfigId(agent),
+        codeEnvAvailable: lazyCodeEnvAvailable,
+        statefulCodeSessions,
+        statefulCodeEnvironment,
+        codeExecutionContext,
+        codeSessionKey: codeExecutionContext?.codeSessionKey,
+        includeReasoningHistory: getIncludeReasoningHistory(agent),
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable: skillAuthoringAvailable === true,
+      },
+      agent,
+      {
+        skillPrimes: alwaysApplySkillPrimes,
+        rawMcpServerNames: historicalMcpServerNames,
+        toolsAvailable: enabledCapabilities.has(AgentCapabilities.tools),
+      },
+    );
   };
 
   const loadSubagentMetadata = async (agentId) => {
@@ -1332,6 +1372,8 @@ const initializeClientWithProvider = async ({
           }),
           codeEnvAvailable,
           fileSearchAvailable,
+          resolveLinkedInstructions,
+          recordLinkedPromptUsage,
           backgroundToolsAvailable,
           toolIntentsAvailable,
           statefulSessionsAvailable,
@@ -1436,44 +1478,47 @@ const initializeClientWithProvider = async ({
         const lazyChildren = childDescriptors.filter((child) => child.configId);
         const eagerChildren = childDescriptors.filter((child) => !child.configId);
         const subagentGraphMemberMetadata = await loadGraphMemberCapabilityMetadata(metadata);
-        return {
-          id: metadata.id,
-          name: metadata.name,
-          description: metadata.description,
-          provider: metadata.provider,
-          model: metadata.model,
-          model_parameters: metadata.model_parameters,
-          recursion_limit: metadata.recursion_limit,
-          memory_scope: metadata.memory_scope,
-          memoryToolsRegistered: metadata.memoryToolsRegistered,
-          subagents: metadata.subagents,
-          configId: metadata.configId,
-          codeEnvAvailable: metadata.codeEnvAvailable,
-          statefulCodeSessions: metadata.statefulCodeSessions,
-          statefulCodeEnvironment: metadata.statefulCodeEnvironment,
-          codeExecutionContext: metadata.codeExecutionContext,
-          codeSessionKey: metadata.codeSessionKey,
-          includeReasoningHistory: metadata.includeReasoningHistory,
-          skillAuthoringAvailable: metadata.skillAuthoringAvailable,
-          alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
-          historicalToolNames: metadata.historicalToolNames,
-          historicalMcpServerNames: metadata.historicalMcpServerNames,
-          lazySubagentConfigs: lazyChildren,
-          subagentAgentConfigs: eagerChildren,
-          subagentGraphMemberMetadata,
-          resolve: async (context) =>
-            initializeLazySubagent({
-              agentId: metadata.id,
-              configId: metadata.configId,
-              context,
-              lazyChildren,
-            }).then(async (config) => {
-              config.subagentAgentConfigs = eagerChildren;
-              graphMemberConfigsById.set(config.id, config);
-              await resolveGraphSubagentsFor(config, context.signal);
-              return config;
-            }),
-        };
+        return copyToolApprovalAdmissionMetadata(
+          {
+            id: metadata.id,
+            name: metadata.name,
+            description: metadata.description,
+            provider: metadata.provider,
+            model: metadata.model,
+            model_parameters: metadata.model_parameters,
+            recursion_limit: metadata.recursion_limit,
+            memory_scope: metadata.memory_scope,
+            memoryToolsRegistered: metadata.memoryToolsRegistered,
+            subagents: metadata.subagents,
+            configId: metadata.configId,
+            codeEnvAvailable: metadata.codeEnvAvailable,
+            statefulCodeSessions: metadata.statefulCodeSessions,
+            statefulCodeEnvironment: metadata.statefulCodeEnvironment,
+            codeExecutionContext: metadata.codeExecutionContext,
+            codeSessionKey: metadata.codeSessionKey,
+            includeReasoningHistory: metadata.includeReasoningHistory,
+            skillAuthoringAvailable: metadata.skillAuthoringAvailable,
+            alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
+            historicalToolNames: metadata.historicalToolNames,
+            historicalMcpServerNames: metadata.historicalMcpServerNames,
+            lazySubagentConfigs: lazyChildren,
+            subagentAgentConfigs: eagerChildren,
+            subagentGraphMemberMetadata,
+            resolve: async (context) =>
+              initializeLazySubagent({
+                agentId: metadata.id,
+                configId: metadata.configId,
+                context,
+                lazyChildren,
+              }).then(async (config) => {
+                config.subagentAgentConfigs = eagerChildren;
+                graphMemberConfigsById.set(config.id, config);
+                await resolveGraphSubagentsFor(config, context.signal);
+                return config;
+              }),
+          },
+          metadata,
+        );
       }),
     );
     return descriptors.filter(Boolean);
@@ -1635,7 +1680,10 @@ const initializeClientWithProvider = async ({
               ? { tenantId: req.user.tenantId }
               : {}),
           },
-          { completionWakeups: completionWakeupsEnabled },
+          {
+            completionWakeups: completionWakeupsEnabled,
+            scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
+          },
         )
       : undefined;
   let hasExistingSubagentTask = false;
@@ -1915,7 +1963,29 @@ function createInitializeClient(dependencies = {}) {
       params.signal,
       params.scheduledTokenContext,
     );
-    return initializeClientWithProvider({ ...params, upstreamTokenProviderResolver });
+    return initializeWithScheduleMCPExecution(
+      {
+        req: params.req,
+        signal: params.signal,
+        context: require('~/server/services/MCPRequestContext').getMCPRequestContext(
+          params.req,
+          params.res,
+        ),
+        restoredContext: params.scheduledTokenContext,
+        restoredJob: params.scheduleJobIdentity,
+      },
+      () => require('~/server/services/Schedules/consent'),
+      () => initializeClientWithProvider({ ...params, upstreamTokenProviderResolver }),
+      (identity) =>
+        retainScheduleMCPCompletion(
+          identity,
+          {
+            streamId: params.req._resumableStreamId,
+            createdAt: params.jobCreatedAt,
+          },
+          GenerationJobManager.getJobStore(),
+        ),
+    );
   };
 }
 

@@ -172,7 +172,7 @@ function PickerShell({
           aria-labelledby={labelledBy == null ? valueId : `${labelledBy} ${valueId}`}
           className={cn(
             fieldControl,
-            'text-text-primary items-center justify-between gap-2',
+            'items-center justify-between gap-2',
             'hover:bg-surface-hover data-[state=open]:bg-surface-hover',
             className,
           )}
@@ -193,7 +193,7 @@ function PickerShell({
         align="start"
         sideOffset={6}
         className={cn(
-          'border-border-light bg-surface-secondary z-[999] rounded-xl border p-2 shadow-lg outline-hidden',
+          'border-border-light bg-surface-secondary z-[999] max-w-[min(calc(100vw-1rem),var(--radix-popover-content-available-width))] rounded-xl border p-2 shadow-lg outline-hidden',
           // Same enter/exit motion as the shared Radix primitives (Combobox,
           // Select, DropdownMenu): fade + zoom from the trigger edge, with Radix's
           // own transform origin so the zoom grows out of wherever it was placed.

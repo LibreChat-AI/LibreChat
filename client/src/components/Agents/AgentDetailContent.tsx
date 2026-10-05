@@ -29,6 +29,7 @@ import { useMarketplaceHost } from './MarketplaceContext';
 import { useFavorites, useLocalize } from '~/hooks';
 import DescriptionWords from './DescriptionWords';
 import { cn, renderAgentAvatar } from '~/utils';
+import ResetApprovals from './ResetApprovals';
 import AgentCategoryBadge from './Category';
 import CopyLink from './CopyLink';
 
@@ -399,7 +400,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                 onFocusCapture={handleActionFocusCapture}
                 onBlurCapture={handleActionBlurCapture}
               >
-                <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-2">
+                <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
                     aria-label={favoriteLabel}
@@ -421,6 +422,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                     <span className="truncate">{favoriteLabel}</span>
                   </Button>
                   <CopyLink url={shareUrl} disabled={actionsDisabled} />
+                  <ResetApprovals agentId={agent.id} disabled={actionsDisabled} />
                 </div>
                 <Button
                   className="w-full sm:w-auto"

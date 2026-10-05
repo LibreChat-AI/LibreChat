@@ -13,6 +13,15 @@ const DialogDepthContext = React.createContext(0);
 export const useDialogDepth = (): number => React.useContext(DialogDepthContext);
 
 /**
+ * Counts a dialog that is not an OGDialog, such as a Headless UI panel, as one dialog level, so
+ * the popovers portaled out of it layer above it the way they do inside an OGDialog.
+ */
+export const DialogLayer = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+  const depth = React.useContext(DialogDepthContext);
+  return <DialogDepthContext.Provider value={depth + 1}>{children}</DialogDepthContext.Provider>;
+};
+
+/**
  * z-index for a portaled popover so it renders above the dialog it lives in.
  * Outside any dialog (depth 0) it falls back to a low default (50).
  */
@@ -372,8 +381,8 @@ const DialogContent: React.ForwardRefExoticComponent<
             aria-hidden="true"
           />
           {showCloseButton && (
-            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary absolute top-4 right-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
-              <X className="h-6 w-6" aria-hidden="true" />
+            <DialogPrimitive.Close className="ring-ring-primary ring-offset-surface-dialog focus:ring-focus-control data-[state=open]:bg-surface-hover data-[state=open]:text-text-secondary min-h-theme-target min-w-theme-target absolute top-4 right-4 inline-flex items-center justify-center rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+              <X className="size-theme-icon-lg" aria-hidden="true" />
               <span className="sr-only">Close</span>
             </DialogPrimitive.Close>
           )}

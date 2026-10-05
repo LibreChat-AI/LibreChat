@@ -6,7 +6,6 @@ import { useAgentPanelContext } from '~/Providers';
 import AgentSubagents from './AgentSubagents';
 import AgentHandoffs from './AgentHandoffs';
 import { groupHeadingClass } from './ui';
-import AgentChain from './AgentChain';
 import { useLocalize } from '~/hooks';
 
 interface OrchestrationHubProps {
@@ -14,9 +13,7 @@ interface OrchestrationHubProps {
 }
 
 /**
- * Unifies the multi-agent collaboration patterns (delegate / hand off / chain)
- * into a single hub with one shared visual language. Each pattern is gated by
- * the agent endpoint's enabled capabilities; handoffs are always available.
+ * Settings for the native orchestration tool. Handoffs are always available.
  */
 export default function OrchestrationHub({ currentAgentId }: OrchestrationHubProps) {
   const localize = useLocalize();
@@ -27,19 +24,15 @@ export default function OrchestrationHub({ currentAgentId }: OrchestrationHubPro
     () => agentsConfig?.capabilities.includes(AgentCapabilities.subagents) ?? false,
     [agentsConfig],
   );
-  const chainEnabled = useMemo(
-    () => agentsConfig?.capabilities.includes(AgentCapabilities.chain) ?? false,
-    [agentsConfig],
-  );
   const maxSubagents = agentsConfig?.maxSubagents ?? MAX_SUBAGENTS;
 
   return (
     <section className="flex flex-col gap-1">
       <div className="flex flex-col gap-0.5">
         <span className={groupHeadingClass}>{localize('com_ui_agent_orchestration')}</span>
-        <p className="text-xs text-text-secondary">{localize('com_ui_agent_orchestration_hint')}</p>
+        <p className="text-text-secondary text-xs">{localize('com_ui_agent_orchestration_hint')}</p>
       </div>
-      <div className="divide-y divide-border-light">
+      <div className="divide-border-light divide-y">
         {subagentsEnabled && (
           <Controller
             name="subagents"
@@ -60,14 +53,6 @@ export default function OrchestrationHub({ currentAgentId }: OrchestrationHubPro
           defaultValue={[]}
           render={({ field }) => <AgentHandoffs field={field} currentAgentId={currentAgentId} />}
         />
-        {chainEnabled && (
-          <Controller
-            name="agent_ids"
-            control={control}
-            defaultValue={[]}
-            render={({ field }) => <AgentChain field={field} currentAgentId={currentAgentId} />}
-          />
-        )}
       </div>
     </section>
   );

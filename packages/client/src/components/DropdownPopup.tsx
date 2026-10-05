@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
@@ -15,6 +15,8 @@ interface DropdownProps {
   iconClassName?: string;
   itemClassName?: string;
   sameWidth?: boolean;
+  /** Preferred CSS minimum width, capped to the space available to the menu. */
+  minWidth?: string;
   anchor?: { x: string; y: string };
   gutter?: number;
   modal?: boolean;
@@ -26,6 +28,8 @@ interface DropdownProps {
   mountByState?: boolean;
   unmountOnHide?: boolean;
   finalFocus?: React.RefObject<HTMLElement>;
+  autoFocusOnShow?: Ariakit.MenuProps['autoFocusOnShow'];
+  getAnchorRect?: Ariakit.MenuProps['getAnchorRect'];
 }
 
 type MenuProps = Omit<
@@ -40,21 +44,27 @@ const DropdownPopup: React.FC<DropdownProps> = ({
   setIsOpen,
   focusLoop,
   mountByState,
+  autoFocusOnShow,
   ...props
 }) => {
   const menu = Ariakit.useMenuStore({ open: isOpen, setOpen: setIsOpen, focusLoop });
+  useEffect(() => {
+    if (isOpen && autoFocusOnShow === true) {
+      menu.setAutoFocusOnShow(true);
+    }
+  }, [isOpen, autoFocusOnShow, menu]);
   if (mountByState) {
     return (
       <Ariakit.MenuProvider store={menu}>
         {trigger}
-        {isOpen && <Menu {...props} />}
+        {isOpen && <Menu {...props} autoFocusOnShow={autoFocusOnShow} />}
       </Ariakit.MenuProvider>
     );
   }
   return (
     <Ariakit.MenuProvider store={menu}>
       {trigger}
-      <Menu {...props} />
+      <Menu {...props} autoFocusOnShow={autoFocusOnShow} />
     </Ariakit.MenuProvider>
   );
 };
@@ -69,6 +79,7 @@ const Menu: React.FC<MenuProps> = ({
   modal,
   portal,
   sameWidth,
+  minWidth,
   gutter = 8,
   finalFocus,
   unmountOnHide,
@@ -89,12 +100,19 @@ const Menu: React.FC<MenuProps> = ({
       finalFocus={finalFocus}
       unmountOnHide={unmountOnHide}
       preserveTabOrder={preserveTabOrder}
+      style={{
+        zIndex,
+        minWidth:
+          minWidth == null
+            ? undefined
+            : `min(${minWidth}, calc(100vw - 1rem), var(--popover-available-width, 100vw))`,
+        ...style,
+      }}
       /* Portaled menus land beside modal OGDialog layers, which set
          `pointer-events: none` on body and re-enable it only on their own
-         content. Without this the menu inherits `none` and its items become
-         hit-transparent (danny-avila/LibreChat#14487). */
-      style={{ zIndex, pointerEvents: 'auto', ...style }}
-      className={cn('popover-ui', className)}
+         content. Without `pointer-events-auto` the menu inherits `none` and its
+         items become hit-transparent (danny-avila/LibreChat#14487). */
+      className={cn('popover-ui pointer-events-auto', className)}
       {...props}
     >
       {items
@@ -124,7 +142,10 @@ const Menu: React.FC<MenuProps> = ({
                 >
                   <span className="flex items-center gap-2">
                     {item.icon != null && (
-                      <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                      <span
+                        className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+                        aria-hidden="true"
+                      >
                         {item.icon}
                       </span>
                     )}
@@ -174,7 +195,10 @@ const Menu: React.FC<MenuProps> = ({
               }}
             >
               {item.icon != null && (
-                <span className={cn('mr-2 size-4', iconClassName)} aria-hidden="true">
+                <span
+                  className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+                  aria-hidden="true"
+                >
                   {item.icon}
                 </span>
               )}

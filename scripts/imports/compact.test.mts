@@ -163,7 +163,9 @@ test('measures complete attributed imports and preserves their syntax at the wid
 });
 
 test('formatter, dependency and tooling inputs select the same local and CI gate', async () => {
-  const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
+  const workflow = (
+    await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8')
+  ).replace(/\r\n?/g, '\n');
   const filter = workflow.match(/^ {12}import_tools:\n((?: {14}- [^\n]+\n)+)/m);
   assert.ok(filter, 'import_tools filter exists');
   const paths = [...filter[1].matchAll(/- '([^']+)'/g)].map((match) => match[1]);
@@ -465,6 +467,7 @@ test('the shared tooling gate fails on tests, types and formatting instead of re
       join(ROOT, 'scripts/static-checks.mts'),
       join(directory, 'scripts/static-checks.mts'),
     );
+    await copyFile(join(ROOT, 'scripts/i18n.mts'), join(directory, 'scripts/i18n.mts'));
     await writeFile(
       join(directory, '.prettierrc'),
       JSON.stringify({ printWidth: 100, singleQuote: true }),
@@ -507,7 +510,9 @@ test('the shared tooling gate fails on tests, types and formatting instead of re
 });
 
 test('changed-file CI checks compare the synthetic merge against its tested dev parent', async () => {
-  const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
+  const workflow = (
+    await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8')
+  ).replace(/\r\n?/g, '\n');
   assert.equal(
     (workflow.match(/git diff -z --name-only --diff-filter=ACMRTUXB HEAD\^1 HEAD/g) ?? []).length,
     3,

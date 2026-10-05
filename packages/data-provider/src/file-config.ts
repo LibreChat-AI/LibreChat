@@ -702,9 +702,17 @@ export type TFileConfig = z.infer<typeof fileConfigSchema>;
  */
 let compileMimeRegex: (pattern: string) => RegexLike = (pattern) => new RegExp(pattern);
 
+type DynamicFileConfig = z.infer<typeof fileConfigSchema>;
+
+/** Merged results are memoized per `dynamic` object identity; callers must treat them as read-only. */
+let mergedConfigCache = new WeakMap<DynamicFileConfig, FileConfig>();
+let staticMergedConfig: FileConfig | undefined;
+
 /** Override the MIME-pattern compiler; the server injects a linear-time engine at startup. */
 export const setFileConfigRegexCompiler = (compile: (pattern: string) => RegexLike): void => {
   compileMimeRegex = compile;
+  mergedConfigCache = new WeakMap();
+  staticMergedConfig = undefined;
 };
 
 /** Returned when every configured pattern fails to compile, so consumers that read an empty
@@ -1220,7 +1228,19 @@ export function getEndpointFileConfig(params: {
   return defaultConfig;
 }
 
-export function mergeFileConfig(dynamic: z.infer<typeof fileConfigSchema> | undefined): FileConfig {
+export function mergeFileConfig(dynamic: DynamicFileConfig | undefined): FileConfig {
+  if (!dynamic) {
+    return (staticMergedConfig ??= buildMergedFileConfig(undefined));
+  }
+  let merged = mergedConfigCache.get(dynamic);
+  if (!merged) {
+    merged = buildMergedFileConfig(dynamic);
+    mergedConfigCache.set(dynamic, merged);
+  }
+  return merged;
+}
+
+function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConfig {
   const mergedConfig: FileConfig = {
     ...fileConfig,
     endpoints: {

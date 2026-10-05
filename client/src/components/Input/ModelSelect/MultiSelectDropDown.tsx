@@ -114,7 +114,7 @@ function MultiSelectDropDown({
                           <div
                             key={i}
                             className="relative"
-                            style={{ width: '16px', height: '16px' }}
+                            style={{ width: '1rem', height: '1rem' }}
                           >
                             {v.icon ? (
                               <img
@@ -175,7 +175,7 @@ function MultiSelectDropDown({
                       <ListboxOption
                         key={i}
                         value={option[optionValueKey]}
-                        className="group border-border-light text-text-primary hover:bg-surface-hover relative flex h-[42px] cursor-pointer items-center overflow-hidden border-b pr-9 pl-3 select-none last:border-0"
+                        className="group border-border-light text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden border-b pr-9 pl-3 select-none last:border-0"
                       >
                         <span className="flex items-center gap-1.5 truncate">
                           {!option.isButton && (

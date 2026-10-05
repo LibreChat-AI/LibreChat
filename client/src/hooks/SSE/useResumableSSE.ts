@@ -41,11 +41,12 @@ import type {
   TContextUsageEvent,
   ChatStreamConnection,
 } from 'librechat-data-provider';
-import type { DrainAfterAbort, QueuedMessageOrigin, PendingSteer } from '~/store/families';
 import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
+import type { DrainAfterAbort, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   logger,
   clearComposerDrafts,
@@ -94,11 +95,14 @@ import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
+import { drainAfterAbortByIndex, queuedMessagesByConvoId, runEndByIndex } from '~/hooks/Chat/queue';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { fetchConvoSnapshot } from '~/utils/convos';
 import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
@@ -579,7 +583,7 @@ const buildOptimisticConversation = (
     submission.initialResponse?.messageId,
   ].filter((messageId): messageId is string => typeof messageId === 'string' && messageId !== '');
 
-  return {
+  const conversation = {
     ...submission.conversation,
     conversationId,
     endpoint: submission.conversation.endpoint ?? null,
@@ -593,6 +597,7 @@ const buildOptimisticConversation = (
      * when true, leaving the legacy `expiredAt` inference untouched otherwise. */
     ...(submission.isTemporary === true ? { isTemporary: true } : {}),
   } as TConversation;
+  return withSubmittedCodeDecision(conversation, submission)!;
 };
 
 const hydrateSubmissionMessages = (
@@ -1009,23 +1014,19 @@ export default function useResumableSSE(
    *  id and is therefore shared by every generation within it. */
   const prefixStateGenerationIdRef = useRef<string | null>(null);
 
-  const restoreQueuedSubmission = useRecoilCallback(
-    ({ set }) =>
-      (failedSubmission: TSubmission, expectedPredecessorCreatedAt?: number) => {
-        const conversationId = failedSubmission.conversation?.conversationId;
-        const origin = failedSubmission.queuedMessageOrigin as QueuedMessageOrigin | undefined;
-        if (!conversationId || origin == null) {
-          return;
-        }
-        set(store.queuedMessagesByConvoId(conversationId), (prev) =>
-          canRestoreRecovery(
-            jotaiStore.get(recoveryDispositionsFamily(conversationId)),
-            origin.item,
-          )
-            ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
-            : prev,
-        );
-      },
+  const restoreQueuedSubmission = useCallback(
+    (failedSubmission: TSubmission, expectedPredecessorCreatedAt?: number) => {
+      const conversationId = failedSubmission.conversation?.conversationId;
+      const origin = failedSubmission.queuedMessageOrigin as QueuedMessageOrigin | undefined;
+      if (!conversationId || origin == null) {
+        return;
+      }
+      jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
+        canRestoreRecovery(jotaiStore.get(recoveryDispositionsFamily(conversationId)), origin.item)
+          ? insertQueuedOrigin(prev, origin, expectedPredecessorCreatedAt)
+          : prev,
+      );
+    },
     [jotaiStore],
   );
 
@@ -1080,7 +1081,7 @@ export default function useResumableSSE(
          *  event was waiting for the response placeholder. The applied event
          *  is authoritative, so evict that recovery copy before it can be
          *  drained as a duplicate follow-up. */
-        set(store.queuedMessagesByConvoId(conversationId), (prev) =>
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) =>
           prev.some(
             (item) =>
               (item.recoverySteerId != null && settledIds.includes(item.recoverySteerId)) ||
@@ -1358,8 +1359,8 @@ export default function useResumableSSE(
     [],
   );
 
-  const setRunEnd = useSetRecoilState(store.runEndByIndex(runIndex));
-  const setDrainAfterAbort = useSetRecoilState(store.drainAfterAbortByIndex(runIndex));
+  const setRunEnd = useSetAtom(runEndByIndex(runIndex));
+  const setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(runIndex));
   const clearDrainAfterAbort = useCallback(
     (conversationId: string, generationCreatedAt?: number) => {
       if (generationCreatedAt == null) {
@@ -3402,11 +3403,13 @@ export default function useResumableSSE(
             // Both fresh and resumed subscriptions can miss every event of a fast turn.
             // A missing job proves neither that the conversation was saved nor that it failed.
             try {
-              const persisted = await dataService.getConversationById(recoveryConvoId);
+              const persisted = await fetchConvoSnapshot(queryClient, recoveryConvoId, () =>
+                dataService.getConversationById(recoveryConvoId),
+              );
               if (!isCurrentSubscription()) return;
               if (persisted?.conversationId === recoveryConvoId) {
                 queryClient.setQueryData([QueryKeys.conversation, recoveryConvoId], persisted);
-                upsertConvoInAllQueries(queryClient, persisted);
+                upsertConvoInAllQueries(queryClient, persisted, true, 'snapshot');
                 if (!isAddedRequest) {
                   setConversation?.((current) => {
                     if (
@@ -4615,7 +4618,11 @@ export default function useResumableSSE(
             let persistedConversation: TConversation | undefined;
             let conversationLookup: 'found' | 'not_found' | 'inconclusive' = 'inconclusive';
             try {
-              persistedConversation = await dataService.getConversationById(settledConversationId);
+              persistedConversation = await fetchConvoSnapshot(
+                queryClient,
+                settledConversationId,
+                () => dataService.getConversationById(settledConversationId),
+              );
               if (!isCurrentEffect()) {
                 return;
               }
@@ -4656,7 +4663,7 @@ export default function useResumableSSE(
                 [QueryKeys.conversation, settledConversationId],
                 conversationRecord,
               );
-              upsertConvoInAllQueries(queryClient, conversationRecord);
+              upsertConvoInAllQueries(queryClient, conversationRecord, true, 'snapshot');
               setConversation?.((current) =>
                 keepLocalCodeApprovalMode(settledCopy, current, localConversationId),
               );

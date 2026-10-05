@@ -87,38 +87,38 @@ export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
 
 const textDocument = {
   paths: TextPaths,
-  fill: '#FF5588',
+  fillClassName: 'fill-file-document',
   title: 'Document',
 };
 
 const spreadsheet = {
   paths: SheetPaths,
-  fill: '#10A37F',
+  fillClassName: 'fill-file-sheet',
   title: 'Spreadsheet',
 };
 
 const codeFile = {
   paths: CodePaths,
-  fill: '#FF6E3C',
+  fillClassName: 'fill-file-code',
   // TODO: make this dynamic to the language
   title: 'Code',
 };
 
 const artifact = {
   paths: CodePaths,
-  fill: '#2D305C',
+  fillClassName: 'fill-file-artifact',
   title: 'Code',
 };
 
 const audioFile = {
   paths: AudioPaths,
-  fill: '#FF6B35',
+  fillClassName: 'fill-file-audio',
   title: 'Audio',
 };
 
 const videoFile = {
   paths: VideoPaths,
-  fill: '#8B5CF6',
+  fillClassName: 'fill-file-video',
   title: 'Video',
 };
 
@@ -126,7 +126,7 @@ export const fileTypes = {
   /* Category matches */
   file: {
     paths: FilePaths,
-    fill: '#0000FF',
+    fillClassName: 'fill-file-generic',
     title: 'File',
   },
   text: textDocument,
@@ -174,7 +174,7 @@ export const getFileType = (
   type = '',
 ): {
   paths: React.FC;
-  fill: string;
+  fillClassName: string;
   title: string;
 } => {
   // Direct match check
@@ -830,23 +830,33 @@ const readSubmittedPastes = (): SubmittedPastes => {
  * draft keeps its provenance, and the run ending (including by Stop or an error) is not evidence
  * the paste is unsent: only this is. Without it, discarding afterwards would delete a file the
  * sent turn already references. */
-export const markPasteSubmitted = (fileId?: string | null): void => {
-  if (fileId == null || fileId === '') {
+export const markPasteSubmitted = (...fileIds: (string | null | undefined)[]): void => {
+  let ids: SubmittedPastes | undefined;
+  const submittedAt = Date.now();
+  for (const fileId of fileIds) {
+    if (fileId == null || fileId === '') {
+      continue;
+    }
+    ids ??= { ...readSubmittedPastes() };
+    ids[fileId] = submittedAt;
+  }
+  if (ids == null) {
     return;
   }
-  const ids: SubmittedPastes = { ...readSubmittedPastes(), [fileId]: Date.now() };
-  let entries = Object.entries(ids);
-  if (entries.length > SUBMITTED_PASTE_LIMIT) {
-    entries = entries.sort((a, b) => b[1] - a[1]).slice(0, SUBMITTED_PASTE_LIMIT);
+  if (Object.keys(ids).length > SUBMITTED_PASTE_LIMIT) {
+    ids = Object.fromEntries(
+      Object.entries(ids)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, SUBMITTED_PASTE_LIMIT),
+    );
   }
-  const bounded = Object.fromEntries(entries);
+  const raw = JSON.stringify(ids);
   try {
-    localStorage.setItem(SUBMITTED_PASTES_STORAGE_KEY, JSON.stringify(bounded));
-    submittedPastesCache = null;
+    localStorage.setItem(SUBMITTED_PASTES_STORAGE_KEY, raw);
+    submittedPastesCache = { raw, ids };
   } catch {
-    /** The write is the protection, so a failure has to be remembered in memory at least: this
-     * tab's own cleanup must not turn around and delete what it just sent. */
-    submittedPastesCache = { raw: submittedPastesCache?.raw ?? null, ids: bounded };
+    /** Keep protection in memory if storage fails. */
+    submittedPastesCache = { raw: submittedPastesCache?.raw ?? null, ids };
   }
 };
 

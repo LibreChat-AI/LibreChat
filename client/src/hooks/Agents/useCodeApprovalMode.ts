@@ -5,8 +5,15 @@ import {
   isEphemeralAgentId,
   getAllowedCodeApprovalModes,
   CODE_APPROVAL_MODES,
+  resolveCodeEnvironmentSelection,
 } from 'librechat-data-provider';
-import type { Agent, TAgentsMap, TConfig, TPublicCodeEnvironment } from 'librechat-data-provider';
+import type {
+  Agent,
+  TAgentsMap,
+  TConfig,
+  TPublicCodeEnvironment,
+  CodeWorkspaceSelection,
+} from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
@@ -45,8 +52,20 @@ export default function useCodeApprovalMode(
           (agent) =>
             agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code),
         )
-        .map((agent) => findExecutionEnvironment(agent, environments)),
-    [environments, reachable],
+        .map((agent) =>
+          findExecutionEnvironment(
+            agent,
+            environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+            conversation?.codeWorkspaces,
+          ),
+        ),
+    [
+      environments,
+      reachable,
+      statefulCodeSessions?.allowEnvironmentSelection,
+      conversation?.codeWorkspaces,
+    ],
   );
   const attachedEnvironments = useMemo(
     () =>
@@ -103,13 +122,76 @@ export default function useCodeApprovalMode(
   return { available, modes, selected };
 }
 
+/** The same per-agent eligibility gate is used for routing and draft discovery. Missing
+ * explicit defaults may recover to an allowed machine; managed defaults never opt in. */
+export function getCodeEnvironmentChoiceIds(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+): string[] | undefined {
+  const defaultEnvironment = agent.code_environment_id
+    ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
+    : environments?.find((candidate) => candidate.default === true);
+  if (
+    allowEnvironmentSelection !== true ||
+    !agent.code_environment_ids?.length ||
+    !(
+      defaultEnvironment?.type === 'attached' ||
+      (defaultEnvironment == null && Boolean(agent.code_environment_id))
+    )
+  ) {
+    return undefined;
+  }
+  return [
+    ...new Set([
+      agent.code_environment_id ?? defaultEnvironment?.id,
+      ...agent.code_environment_ids,
+    ]),
+  ].filter((id): id is string => id != null);
+}
+
 export function findExecutionEnvironment(
   agent: Agent,
   environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
 ): TPublicCodeEnvironment | undefined {
-  return agent.code_environment_id
+  const defaultEnvironment = agent.code_environment_id
     ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
     : environments?.find((candidate) => candidate.default === true);
+  const allowSelection =
+    getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null;
+  const selection = resolveCodeEnvironmentSelection({
+    agentId: agent.id,
+    environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
+    environmentIds: agent.code_environment_ids,
+    allowSelection,
+    selections,
+  });
+  if (!selection.valid) return undefined;
+  const resolved = selection.environmentId
+    ? environments?.find((candidate) => candidate.id === selection.environmentId)
+    : defaultEnvironment;
+  return allowSelection && resolved?.type !== 'attached' ? undefined : resolved;
+}
+
+/** Discovery can expose an authorized recovery target after a default disappears. This never
+ * admits execution: a saved chat must explicitly replace its sealed decision before using it. */
+export function findCodeWorkspaceDiscoveryEnvironment(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
+): TPublicCodeEnvironment | undefined {
+  return (
+    findExecutionEnvironment(agent, environments, allowEnvironmentSelection, selections) ??
+    findExecutionEnvironment(agent, environments) ??
+    environments?.find(
+      ({ id, type }) =>
+        type === 'attached' &&
+        getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection)?.includes(id),
+    )
+  );
 }
 
 export function collectReachableAgents(

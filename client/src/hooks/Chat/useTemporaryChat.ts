@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
-import { useRecoilState, useRecoilValue } from 'recoil';
+import { useRecoilValue } from 'recoil';
 import { Constants, isForcedTemporaryRetention } from 'librechat-data-provider';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
 
@@ -17,7 +18,7 @@ export type UseTemporaryChatResult = {
 
 export default function useTemporaryChat(): UseTemporaryChatResult {
   const { data: startupConfig } = useGetStartupConfig();
-  const [isTemporary, setIsTemporary] = useRecoilState(store.isTemporary);
+  const { isTemporary, setIsTemporary } = useChatSettings();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
   const isEnforced = isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);

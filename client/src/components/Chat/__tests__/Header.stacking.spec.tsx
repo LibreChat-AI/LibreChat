@@ -23,6 +23,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 jest.mock('~/data-provider', () => ({ useGetStartupConfig: () => ({ data: undefined }) }));
 jest.mock('~/hooks', () => ({ useHasAccess: () => false }));
+jest.mock('~/hooks/Nav/useDrawerViewport', () => () => false);
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {

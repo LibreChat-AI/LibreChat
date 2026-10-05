@@ -4,10 +4,11 @@ import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
+import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from '../rows';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import useFollowScroll from './useFollowScroll';
@@ -16,7 +17,6 @@ import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import { parseCommandOutput } from './command';
 import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -215,20 +215,20 @@ export default function BashCall({
               // (`DiffView`, the user-turn code bars) instead of a palette shade a theme
               // cannot reach: the previous dark-only gray-950 fill was Tailwind's blue-black,
               // outside this palette entirely.
-              <div className="bg-surface-code relative">
+              <div className="bg-surface-code group/copy relative">
                 <CopyButton
                   iconOnly
                   isCopied={isCopied}
                   onClick={handleCopy}
-                  className="absolute top-1 right-1.5"
+                  className={cn('bg-surface-code absolute top-1 right-1.5 z-[1]', PANE_COPY_REVEAL)}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
                   ref={commandPaneRef}
                   onScroll={onCommandPaneScroll}
-                  className="max-h-[300px] overflow-auto"
+                  className="max-h-[18.75rem] overflow-auto"
                 >
-                  <pre className="px-3 py-2.5 pr-10 font-mono text-xs break-words whitespace-pre-wrap">
+                  <pre className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap">
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
                     </span>

@@ -85,7 +85,9 @@ describe('Experimental server configuration', () => {
 
   it('configures routed subagent controls before a worker accepts requests', () => {
     const redisReadyIndex = source.indexOf('await waitForKeyvRedisClient();');
-    const routingIndex = source.indexOf('await configureSubagentTaskRouting();');
+    const routingIndex = source.indexOf(
+      'await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);',
+    );
     const listenIndex = source.indexOf('const server = app.listen');
 
     expect(redisReadyIndex).toBeGreaterThan(-1);

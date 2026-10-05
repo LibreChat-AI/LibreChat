@@ -48,6 +48,14 @@
   --font-size-lg: 1.125rem;
   --font-size-xl: 1.25rem;
   --markdown-font-size: 1rem;
+  --ui-scale: 1;
+}
+
+/* Every size in the app is expressed in rem, so scaling the root font size scales
+   the whole interface. A percentage keeps the reader's own browser font-size
+   preference intact instead of pinning the root to a fixed pixel value. */
+html {
+  font-size: calc(100% * var(--ui-scale));
 }
 
 /* transitions-dev tokens: semantic names shared by every t-* class below. */
@@ -519,7 +527,7 @@ p > small {
   max-width: 65ch;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -1164,16 +1172,16 @@ html {
   height: 100%;
 }
 
-/* Scoped to the drawer-gesture breakpoint (useSidebarState's 768px): on small
-   screens the app never scrolls at the root, so chaining out of nested
-   scrollers has nothing legitimate to reach — this kills Chrome Android's
-   pull-to-refresh and horizontal overscroll gliding into browser navigation.
-   Desktop keeps native trackpad back/forward and refresh gestures. */
-@media (max-width: 768px) {
-  body,
-  html {
-    overscroll-behavior: none;
-  }
+/* Scoped to drawer mode rather than a fixed viewport width: that breakpoint is
+   scale-aware and a media query cannot read the scaled root font size, so Root
+   stamps this attribute from the same predicate. In drawer mode the app never
+   scrolls at the root, so chaining out of nested scrollers has nothing legitimate
+   to reach: this kills Chrome Android's pull-to-refresh and horizontal overscroll
+   gliding into browser navigation. Desktop keeps native trackpad back/forward
+   and refresh gestures. */
+html[data-drawer-nav],
+html[data-drawer-nav] body {
+  overscroll-behavior: none;
 }
 
 .dark body,
@@ -1191,7 +1199,7 @@ html {
   max-width: none;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -1230,7 +1238,7 @@ html {
 
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-400));
+  border-color: rgb(var(--border-medium));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
@@ -1245,7 +1253,7 @@ html {
 }
 
 .markdown th {
-  background-color: rgba(236, 236, 241, 0.2);
+  background-color: rgb(var(--table-header-fill));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
@@ -1258,7 +1266,7 @@ html {
 
 .markdown th:last-child {
   border-right-width: 1px;
-  border-color: #d1d5db;
+  border-color: rgb(var(--border-medium));
   border-top-right-radius: 0.375rem;
 }
 
@@ -1373,13 +1381,10 @@ html {
 }
 .markdown blockquote {
   --tw-border-opacity: 1;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   border-left-width: 2px;
   line-height: 1rem;
   padding-left: 1rem;
-}
-.dark .markdown blockquote {
-  border-color: rgb(var(--gray-600));
 }
 .markdown table {
   --tw-border-spacing-x: 0px;
@@ -1387,49 +1392,40 @@ html {
   border-collapse: separate;
   border-spacing: var(--tw-border-spacing-x) var(--tw-border-spacing-y);
   width: 100%;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
 }
 .markdown th {
-  background-color: rgb(var(--gray-100));
+  background-color: rgb(var(--table-header-fill));
+  color: rgb(var(--table-header-text));
   border-bottom-width: 1px;
   border-left-width: 1px;
   border-top-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
   font-weight: 600;
 }
-.dark .markdown th {
-  border-color: rgb(var(--gray-600));
-  background-color: rgb(var(--gray-600));
-}
 .markdown th:first-child {
-  border-top-left-radius: 0.75rem;
+  border-top-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown th:last-child {
   border-right-width: 1px;
-  border-top-right-radius: 0.75rem;
+  border-top-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown td {
   border-bottom-width: 1px;
   border-left-width: 1px;
-  border-color: rgb(var(--gray-300));
+  border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
 }
 .markdown td:last-child {
   border-right-width: 1px;
-  border-color: rgb(var(--gray-300));
-}
-.dark .markdown td {
-  border-color: rgb(var(--gray-600));
-}
-.dark .markdown td:last-child {
-  border-color: rgb(var(--gray-600));
+  border-color: rgb(var(--border-medium));
 }
 .markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.75rem;
+  border-bottom-left-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.75rem;
+  border-bottom-right-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown a {
   text-decoration-line: underline;
@@ -1532,10 +1528,10 @@ html {
   border-radius: 50%;
   content: ' ';
   display: block;
-  height: 12px;
+  height: 0.75rem;
   position: absolute;
-  top: -11px;
-  width: 12px;
+  top: -0.6875rem;
+  width: 0.75rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1605,8 +1601,8 @@ html {
 .result-streaming > pre:last-child code:after {
   display: inline-block;
   content: '⬤';
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   font-family:
     system-ui,
     Inter,
@@ -1643,8 +1639,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 }
 
@@ -1668,8 +1664,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 
   .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,
@@ -2121,7 +2117,7 @@ html[data-input-modality='keyboard']
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }
@@ -2535,9 +2531,19 @@ html[data-input-modality='keyboard']
 /* ask_user_question popover <-> chat-card morph (view transition) */
 ::view-transition-group(ask-question),
 ::view-transition-old(ask-question),
-::view-transition-new(ask-question) {
+::view-transition-new(ask-question),
+::view-transition-group(ask-question-chevron),
+::view-transition-old(ask-question-chevron),
+::view-transition-new(ask-question-chevron) {
   animation-duration: 280ms;
   animation-timing-function: cubic-bezier(0.32, 0.72, 0.22, 1);
+}
+
+/* The move control's chevron is its own group, so the morph also turns it
+   (down in the composer, up in the chat): the group interpolates the icon's
+   rotate-180. Above its card, below the composer like the card itself. */
+::view-transition-group(ask-question-chevron) {
+  z-index: 1;
 }
 
 /* The composer keeps its own snapshot group stacked above the morphing

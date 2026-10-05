@@ -33,6 +33,7 @@ import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
 import BackupCodesItem from '../SettingsTabs/Account/BackupCodesItem';
 import { EngineSTTSetting, EngineTTSSetting } from './SpeechControls';
+import UiScaleSelector from '../SettingsTabs/General/UiScaleSelector';
 import FontSizeSelector from '../SettingsTabs/Chat/FontSizeSelector';
 import ChatTitleInTab from '../SettingsTabs/General/ChatTitleInTab';
 import AdvancedPrompts from '../SettingsTabs/Chat/AdvancedPrompts';
@@ -49,7 +50,6 @@ import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
 import { ClearChats } from '../SettingsTabs/Data/ClearChats';
 import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
-import { showComposerTipsAtom } from '~/store/composerTips';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
@@ -101,6 +101,14 @@ export const registry: SettingEntry[] = [
     Component: FontSizeSelector,
   },
   {
+    id: 'uiScale',
+    tab: GENERAL,
+    section: 'appearance',
+    labelKey: 'com_nav_ui_scale',
+    keywords: ['zoom', 'scale', 'size', 'interface', 'display'],
+    Component: UiScaleSelector,
+  },
+  {
     id: 'chatDirection',
     tab: GENERAL,
     section: 'appearance',
@@ -145,17 +153,6 @@ export const registry: SettingEntry[] = [
       stateAtom: store.centerFormOnLanding,
       localizationKey: 'com_nav_center_chat_input',
       switchId: 'centerFormOnLanding',
-    }),
-  },
-  {
-    id: 'showComposerTips',
-    tab: GENERAL,
-    section: 'layout',
-    labelKey: 'com_nav_composer_tips',
-    Component: toggleControl({
-      stateAtom: showComposerTipsAtom,
-      localizationKey: 'com_nav_composer_tips',
-      switchId: 'showComposerTips',
     }),
   },
   {
@@ -799,7 +796,7 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_2fa',
-    show: (ctx) => ctx.isLocalProvider,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider,
     Component: EnableTwoFactorItem,
   },
   {
@@ -807,7 +804,7 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_backup_codes',
-    show: (ctx) => ctx.isLocalProvider && ctx.twoFactorEnabled,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider && ctx.twoFactorEnabled,
     Component: BackupCodesItem,
   },
   {

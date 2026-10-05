@@ -5,7 +5,10 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useAttachments from '~/hooks/Messages/useAttachments';
+import { ParallelColumns } from '../ParallelContent';
 import ContentParts from '../ContentParts';
+import { FOLD_GLYPH_CLASS } from '../rows';
+import { litFoldPath } from '../rail';
 import { Text } from '../Parts';
 
 jest.mock('~/hooks', () => ({
@@ -1670,7 +1673,7 @@ describe('ContentParts — live activity fold', () => {
   const intentCall = (id: string, intent: string, output = ''): TMessageContentParts =>
     ({
       type: ContentTypes.TOOL_CALL,
-      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: `{"intent":"${intent}`, output },
+      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: JSON.stringify({ intent }), output },
     }) as unknown as TMessageContentParts;
 
   const liveHeader = () =>
@@ -1690,6 +1693,46 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Querying the graph');
     expect(screen.queryByTestId('tool-call')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Running 2 actions/ })).toBeNull();
+  });
+
+  it('keeps the folded status preparing until measured dispatch, then restores its intent', () => {
+    jest.useFakeTimers();
+    const frame = (args: string, toolDispatchedAt?: number) => (
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: {
+                id: 't1',
+                name: 'lookup',
+                args,
+                output: '',
+                toolPreparationStartedAt: 100,
+                toolDispatchedAt,
+              },
+            },
+          ]}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame('{"intent":"Querying the graph","query":"SELECT'));
+    const card = screen.getByTestId('activity-phase-card');
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    expect(liveHeader()).not.toHaveTextContent('Querying the graph');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}'));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}', 200));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(liveHeader()).toHaveTextContent('Querying the graph');
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('folds from the very first call so the block never changes shape as calls arrive', () => {
@@ -2179,5 +2222,54 @@ describe('ContentParts — live activity fold', () => {
       'aria-expanded',
       'true',
     );
+  });
+});
+
+describe('fold paths in parallel columns', () => {
+  it('marks real lane boundaries and selects the header owning each output', () => {
+    const { container } = render(
+      <div data-fold-root="">
+        <div data-fold-panel="">
+          <button type="button" tabIndex={-1} aria-hidden="true" data-fold-rail="" />
+          <ParallelColumns
+            columns={[
+              {
+                agentId: 'left',
+                parts: [{ idx: 0, part: { type: ContentTypes.TEXT, text: 'left' } }],
+              },
+              {
+                agentId: 'right',
+                parts: [{ idx: 1, part: { type: ContentTypes.TEXT, text: 'right' } }],
+              },
+            ]}
+            groupId={1}
+            messageId="parallel-fold"
+            isSubmitting={false}
+            lastContentIdx={1}
+            renderPart={(_part, idx) => (
+              <div key={idx}>
+                <span className={FOLD_GLYPH_CLASS} data-testid={`lane-glyph-${idx}`} />
+                <pre data-testid={`lane-output-${idx}`} />
+              </div>
+            )}
+          />
+        </div>
+      </div>,
+    );
+    expect(container.querySelectorAll('[data-fold-column]')).toHaveLength(2);
+    const root = container.querySelector('[data-fold-root]')!;
+    const rail = container.querySelector<HTMLElement>('[data-fold-rail]')!;
+    rail.getBoundingClientRect = () => ({ top: 40 }) as DOMRect;
+    screen.getByTestId('lane-glyph-0').getBoundingClientRect = () =>
+      ({ top: 300, height: 20 }) as DOMRect;
+    screen.getByTestId('lane-glyph-1').getBoundingClientRect = () =>
+      ({ top: 50, height: 20 }) as DOMRect;
+    const cache = new WeakMap<Element, Element[]>();
+    expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([
+      { rail, length: 268, end: true },
+    ]);
+    expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([
+      { rail, length: 18, end: true },
+    ]);
   });
 });

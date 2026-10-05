@@ -1,12 +1,10 @@
 import { memo, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { SquarePen } from 'lucide-react';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { useActivePanel, DEFAULT_PANEL } from '~/Providers';
 import useNewChat from '~/hooks/Chat/useNewChat';
 import { useLocalize } from '~/hooks';
-import store from '~/store';
 
 /**
  * New chat, in the drawer's header strip beside the panel switcher.
@@ -16,9 +14,14 @@ import store from '~/store';
  * header is where the drawer keeps the controls that mean the same thing
  * whichever panel is showing.
  */
-function NewChat({ onNewChat }: { onNewChat: (afterSlide?: () => void) => void }) {
+function NewChat({
+  onNewChat,
+  switchToHistory,
+}: {
+  onNewChat: (afterSlide?: () => void) => void;
+  switchToHistory: boolean;
+}) {
   const localize = useLocalize();
-  const switchToHistory = useRecoilValue(store.newChatSwitchToHistory);
   const { setActive } = useActivePanel();
   const { startNewChat } = useNewChat();
 

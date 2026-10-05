@@ -513,6 +513,8 @@ export type TMarkConversationUnreadResponse = {
   lastResponseMessageId?: string;
   /** True only when the settled stamp is the synthetic mark-unread marker. */
   lastResponseIsManual?: boolean;
+  /** True: manual reminder; false: real reply; absent: legacy/unknown intent. */
+  isMarkedUnread?: boolean;
 };
 
 export type TSharedMessagesResponse = Omit<TSharedLink, 'messages'> & {
@@ -712,6 +714,9 @@ export type TConfig = {
     allowedEnvironments: StatefulCodeEnvironment[];
     environments?: TPublicCodeEnvironment[];
     approvalsEnabled?: boolean;
+    /** Allow new chats to choose among the agent's explicitly listed machines. */
+    allowEnvironmentSelection?: boolean;
+    maxEnvironmentChoices?: number;
     /** Approval modes the endpoint policy permits the client to offer. */
     approvalModes?: CodeApprovalMode[];
   };
@@ -784,7 +789,9 @@ export type TLoginResponse = {
   token?: string;
   user?: TUser;
   twoFAPending?: boolean;
+  twoFASetupRequired?: boolean;
   tempToken?: string;
+  code?: 'TWO_FACTOR_ENROLLMENT_REQUIRED';
 };
 
 /** Shared payload for any operation that requires OTP or backup-code verification. */
@@ -799,6 +806,37 @@ export type TEnable2FAResponse = {
   otpauthUrl: string;
   backupCodes: string[];
   message?: string;
+};
+
+export type TEnable2FASetupRequest = {
+  tempToken: string;
+};
+
+export type TConfirm2FASetupRequest = {
+  tempToken: string;
+  token: string;
+};
+
+export type TConfirm2FASetupResponse = {
+  backupCodes: string[];
+  acknowledgementToken: string;
+};
+
+export type TAcknowledge2FASetupRequest = {
+  acknowledgementToken: string;
+};
+
+export type TAcknowledge2FASetupResponse = {
+  finalizationToken: string;
+};
+
+export type TFinalize2FASetupRequest = {
+  finalizationToken: string;
+};
+
+export type TFinalize2FASetupResponse = {
+  token: string;
+  user: TUser;
 };
 
 export type TVerify2FARequest = TOTPVerificationPayload;
@@ -1032,8 +1070,12 @@ export type TEmailChangeResponse = {
 };
 
 export type TRefreshTokenResponse = {
-  token: string;
-  user: TUser;
+  token?: string;
+  user?: TUser;
+  twoFAPending?: boolean;
+  twoFASetupRequired?: boolean;
+  tempToken?: string;
+  code?: 'TWO_FACTOR_ENROLLMENT_REQUIRED';
 };
 
 export type TCheckUserKeyResponse = {

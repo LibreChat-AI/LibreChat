@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { clearTwoFactorSetupToken, readTwoFactorSetupToken } from 'librechat-data-provider';
 import { usePasskeySignIn } from '../usePasskey';
 
 type Deferred = {
@@ -14,6 +15,7 @@ function deferred(): Deferred {
   return { promise, reject };
 }
 
+let mockWebAuthnImportError: Error | undefined;
 const mockStartAuthentication = jest.fn();
 const mockGetPasskeyLoginOptions = jest.fn();
 const mockVerifyPasskeyLogin = jest.fn();
@@ -22,11 +24,16 @@ const mockNavigate = jest.fn();
 const mockLocalize = (key: string) => key;
 const mockToastContext = { showToast: mockShowToast };
 
-jest.mock('@simplewebauthn/browser', () => ({
-  startAuthentication: (...args: unknown[]) => mockStartAuthentication(...args),
-  browserSupportsWebAuthn: () => true,
-  browserSupportsWebAuthnAutofill: async () => true,
-}));
+jest.mock('@simplewebauthn/browser', () => {
+  if (mockWebAuthnImportError) {
+    throw mockWebAuthnImportError;
+  }
+  return {
+    startAuthentication: (...args: unknown[]) => mockStartAuthentication(...args),
+    browserSupportsWebAuthn: () => true,
+    browserSupportsWebAuthnAutofill: async () => true,
+  };
+});
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
@@ -55,6 +62,11 @@ jest.mock('~/data-provider', () => ({
 }));
 
 describe('usePasskeySignIn', () => {
+  afterEach(() => {
+    mockWebAuthnImportError = undefined;
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     Object.defineProperty(window, 'PublicKeyCredential', {
@@ -62,6 +74,26 @@ describe('usePasskeySignIn', () => {
       value: function PublicKeyCredential() {},
     });
     mockGetPasskeyLoginOptions.mockResolvedValue({ options: {}, sessionId: 'session' });
+  });
+
+  it('recovers a missing WebAuthn chunk before its local sign-in catch', async () => {
+    mockWebAuthnImportError = new TypeError(
+      'Failed to fetch dynamically imported module: /assets/webauthn-old.js',
+    );
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    const { result } = renderHook(() => usePasskeySignIn({ enabled: true }));
+    await waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await result.current.signIn();
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(mockStartAuthentication).not.toHaveBeenCalled();
+    expect(mockGetPasskeyLoginOptions).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_auth_passkey_error',
+      status: 'error',
+    });
   });
 
   it('keeps the manual ceremony locked when it aborts the pending autofill ceremony', async () => {
@@ -91,5 +123,43 @@ describe('usePasskeySignIn', () => {
     });
     expect(mockGetPasskeyLoginOptions).toHaveBeenCalledTimes(2);
     expect(mockStartAuthentication).toHaveBeenCalledTimes(2);
+  });
+
+  describe('after the ceremony', () => {
+    const signInWith = async (response: Record<string, unknown>) => {
+      mockStartAuthentication.mockImplementation(({ useBrowserAutofill }) =>
+        useBrowserAutofill ? deferred().promise : Promise.resolve({ id: 'credential' }),
+      );
+      mockVerifyPasskeyLogin.mockResolvedValue(response);
+      const { result } = renderHook(() => usePasskeySignIn({ enabled: true }));
+      await act(async () => {
+        await result.current.signIn();
+      });
+    };
+
+    afterEach(() => {
+      clearTwoFactorSetupToken();
+    });
+
+    it('sends an account that must enroll to two-factor setup with its credential', async () => {
+      await signInWith({
+        code: 'TWO_FACTOR_ENROLLMENT_REQUIRED',
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/login/2fa/setup', { replace: true });
+      expect(readTwoFactorSetupToken()).toBe('setup-token');
+    });
+
+    it('sends an enrolled account to the code challenge', async () => {
+      await signInWith({ twoFAPending: true, tempToken: 'challenge-token' });
+
+      expect(mockNavigate).toHaveBeenCalledWith('/login/2fa?tempToken=challenge-token', {
+        replace: true,
+      });
+      expect(readTwoFactorSetupToken()).toBeFalsy();
+    });
   });
 });

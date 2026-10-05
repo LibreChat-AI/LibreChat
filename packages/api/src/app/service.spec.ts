@@ -165,6 +165,55 @@ describe('createAppConfigService', () => {
       expect(custom).toHaveLength(2);
     });
 
+    it.each([false, true])(
+      'prefers tenant providers over same-named global providers (tenant first: %s)',
+      async (tenantFirst) => {
+        const global = {
+          name: 'Claude',
+          apiKey: 'global-key',
+          baseURL: 'https://global.example',
+          models: { default: ['global-model'], fetch: false },
+        };
+        const tenants = ['tenant-a', 'tenant-b'].map((tenantId) => ({
+          ...global,
+          name: 'Claude',
+          tenantId,
+          apiKey: 'tenant-key',
+          baseURL: 'https://tenant.example',
+          models: { default: ['tenant-model'], fetch: false },
+        }));
+        const custom = tenantFirst ? [...tenants, global] : [global, ...tenants];
+        const modelSpecs = {
+          list: [{ name: 'agent-spec', preset: { endpoint: 'Claude' } }],
+          addedEndpoints: ['agents'],
+        };
+        const deps = createDeps({
+          loadBaseConfig: jest.fn().mockResolvedValue({
+            endpoints: { custom },
+            modelSpecs,
+            config: { endpoints: { custom }, modelSpecs },
+          }),
+        });
+        const { getAppConfig } = createAppConfigService(deps);
+
+        for (const tenantId of ['tenant-a', 'tenant-c', 'tenant-b', 'tenant-a']) {
+          const config = await getAppConfig({ role: 'USER', tenantId });
+          const expected = tenants.find((endpoint) => endpoint.tenantId === tenantId) ?? global;
+          expect(config.endpoints?.custom).toEqual([expected]);
+          expect(config.config.endpoints?.custom).toEqual([expected]);
+          expect(config.modelSpecs).toEqual(modelSpecs);
+          const provider = getProviderConfig({ provider: 'Claude', appConfig: config });
+          expect(provider.customEndpointConfig?.apiKey).toBe(expected.apiKey);
+          expect(provider.customEndpointConfig?.models).toEqual(expected.models);
+        }
+
+        const base = await getAppConfig({ baseOnly: true });
+        expect(base.endpoints?.custom).toEqual([global]);
+        expect(custom).toHaveLength(3);
+        expect(deps.loadBaseConfig).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it('removes a prioritized spec when its only endpoint belongs to another tenant', async () => {
       const deps = createDeps({
         loadBaseConfig: jest.fn().mockResolvedValue({

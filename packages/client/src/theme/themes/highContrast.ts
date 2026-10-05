@@ -116,9 +116,12 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-border-medium-alt': '0 0 0', // #000000
   'rgb-border-heavy': '0 0 0', // #000000
   'rgb-border-xheavy': '0 0 0', // #000000
+  'rgb-drawer-edge': '255 255 255', // #ffffff (the drawer's own fill)
   'rgb-border-destructive': '161 0 0', // #a10000
   'rgb-border-control': '0 0 0', // #000000
   'rgb-border-field-focus': '0 0 0', // #000000 (matching focus-control)
+  'rgb-field-fill': '255 255 255', // #ffffff (matching surface-primary)
+  'rgb-field-text': '0 0 0', // #000000 (matching text-primary)
   'rgb-surface-disabled': '255 255 255', // #ffffff
   'rgb-text-disabled': '87 87 87', // #575757
   'rgb-border-disabled': '87 87 87', // #575757
@@ -157,6 +160,15 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  /** File-type tiles: each hue stepped so the glyph clears 6.5:1 on it (white glyph). */
+  'rgb-file-document': '176 0 78', // #b0004e
+  'rgb-file-sheet': '0 107 79', // #006b4f
+  'rgb-file-code': '163 60 0', // #a33c00
+  'rgb-file-artifact': '45 48 92', // #2d305c
+  'rgb-file-audio': '138 69 0', // #8a4500
+  'rgb-file-video': '109 40 217', // #6d28d9
+  'rgb-file-generic': '0 0 255', // #0000ff
+  'rgb-file-ink': '255 255 255', // #ffffff
 
   /** Code syntax highlighting at AAA on the white code surface. */
   'rgb-syntax-text': '0 0 0', // #000000
@@ -284,9 +296,12 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-border-medium-alt': '255 255 255', // #ffffff
   'rgb-border-heavy': '255 255 255', // #ffffff
   'rgb-border-xheavy': '255 255 255', // #ffffff
+  'rgb-drawer-edge': '255 255 255', // #ffffff (matching border-xheavy)
   'rgb-border-destructive': '255 143 143', // #ff8f8f
   'rgb-border-control': '255 255 255', // #ffffff
   'rgb-border-field-focus': '255 255 255', // #ffffff (matching focus-control)
+  'rgb-field-fill': '0 0 0', // #000000 (matching surface-primary)
+  'rgb-field-text': '255 255 255', // #ffffff (matching text-primary)
   'rgb-surface-disabled': '0 0 0', // #000000
   'rgb-text-disabled': '184 184 184', // #b8b8b8
   'rgb-border-disabled': '184 184 184', // #b8b8b8
@@ -325,6 +340,15 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  /** File-type tiles: each hue stepped so the glyph clears 6.5:1 on it (black glyph, light tiles on the black canvas). */
+  'rgb-file-document': '255 158 194', // #ff9ec2
+  'rgb-file-sheet': '95 224 184', // #5fe0b8
+  'rgb-file-code': '255 164 126', // #ffa47e
+  'rgb-file-artifact': '184 187 232', // #b8bbe8
+  'rgb-file-audio': '255 179 138', // #ffb38a
+  'rgb-file-video': '201 179 255', // #c9b3ff
+  'rgb-file-generic': '159 180 255', // #9fb4ff
+  'rgb-file-ink': '0 0 0', // #000000
 
   /** Code syntax highlighting at AAA on the black code surface. */
   'rgb-syntax-text': '255 255 255', // #ffffff

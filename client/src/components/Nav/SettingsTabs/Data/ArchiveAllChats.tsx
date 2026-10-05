@@ -122,7 +122,7 @@ export const ArchiveAllChats = () => {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_nav_confirm_archive_all')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="break-words">{localize('com_nav_archive_all_confirm_message')}</Label>
           }

@@ -87,6 +87,7 @@ afterEach(() => {
   delete process.env.ALLOW_REGISTRATION;
   delete process.env.ALLOW_SOCIAL_LOGIN;
   delete process.env.ALLOW_PASSWORD_RESET;
+  delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
   delete process.env.DOMAIN_SERVER;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -316,6 +317,16 @@ describe('GET /api/config', () => {
       expect(response.body).toHaveProperty('serverDomain');
     });
 
+    it('should expose the effective two-factor enforcement policy', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.twoFactorAuthenticationRequired).toBe(true);
+    });
+
     it('should omit CloudFront cookie refresh from unauthenticated response (#12688)', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetCloudFrontConfig.mockReturnValue({
@@ -500,7 +511,7 @@ describe('GET /api/config', () => {
       expect(response.body.modelSpecs).toEqual({ list: [{ name: 'test-spec' }] });
       expect(response.body.balance).toEqual({ enabled: true, startBalance: 10000 });
       expect(response.body.webSearch).toEqual({ searchProvider: 'tavily' });
-      expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
+      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
     });
 
     it('does not advertise conversation moves unless the effective policy enables them', async () => {
@@ -525,7 +536,7 @@ describe('GET /api/config', () => {
           },
         },
       });
-      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
@@ -538,15 +549,22 @@ describe('GET /api/config', () => {
       expect(response.body.codeWorkspaceRecoveryVersion).toBe(1);
     });
 
-    it('advertises code environment decisions only after deployment-wide activation', async () => {
-      mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
-      const app = createApp(mockUser);
+    it.each([undefined, '1'])(
+      'advertises code environment decisions by default and when set to 1 (%p)',
+      async (version) => {
+        mockGetAppConfig.mockResolvedValue(baseAppConfig);
+        if (version === undefined) {
+          delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+        } else {
+          process.env.CODE_ENVIRONMENT_DECISION_VERSION = version;
+        }
+        const app = createApp(mockUser);
 
-      const response = await request(app).get('/api/config');
+        const response = await request(app).get('/api/config');
 
-      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
-    });
+        expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
+      },
+    );
 
     it.each(['0', '2', '1.0', 'true'])(
       'does not advertise unsupported code environment decision version %s',

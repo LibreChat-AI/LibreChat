@@ -1,6 +1,7 @@
 .popover-ui {
   display: flex;
   max-height: min(var(--popover-available-height, 1700px), 1700px);
+  max-width: min(calc(100vw - 1rem), var(--popover-available-width, 100vw));
   flex-direction: column;
   overflow: auto;
   overscroll-behavior: contain;
@@ -69,7 +70,7 @@ html.high-contrast .popover-ui {
   scroll-margin: 0.5rem;
   align-items: center;
   gap: 0.5rem;
-  border-radius: 0.5rem;
+  border-radius: var(--theme-radius-lg, 0.5rem);
   padding: 0.5rem;
   outline: none !important;
 }

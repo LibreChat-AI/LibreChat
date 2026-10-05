@@ -35,6 +35,67 @@ describe('parseCommandOutput', () => {
     });
   });
 
+  it.each([
+    ['stdout:\nready\n\n[exit code: 0]', 0, false, ''],
+    ['stderr:\nboom\n[exit code: 2]', 2, true, 'stderr:\nboom\n'],
+    ['Command completed with no output.\n[exit code: 0]', 0, false, ''],
+  ])('preserves directory labels and parses the verdict: %s', (body, exitCode, failed, stderr) => {
+    const directory = `[starting directory: ${JSON.stringify('workspace/folder\t"name')}]\n`;
+    const output = directory + body;
+    const result = parseCommandOutput(output);
+    expect(result).toMatchObject({ exitCode, failed, stderr });
+    expect(result?.head).toContain(directory);
+    expect(`${result?.head}${result?.stderr}${result?.trailer}`).toBe(output);
+  });
+
+  it.each([
+    ['', '\n[directory hint: pass cwd instead of a leading cd.]'],
+    ['\nCommand reached timeoutMs: 10000. Check partial side effects.', ''],
+    [
+      '\nCommand reached timeoutMs: 10000. Check partial side effects.',
+      '\n[directory hint: pass cwd instead of a leading cd.]',
+    ],
+  ])('preserves host guidance following timeout markers: %s %s', (timeoutHint, directoryHint) => {
+    const output =
+      '[starting directory: "workspace/.worktrees/fix-a"]\nstdout:\npartial work\nstderr:\nkilled\n' +
+      '[terminated by SIGKILL][timed out][output truncated]' +
+      timeoutHint +
+      directoryHint;
+    const result = parseCommandOutput(output);
+    expect(result).toMatchObject({
+      exitCode: null,
+      signal: 'SIGKILL',
+      timedOut: true,
+      truncated: true,
+      failed: true,
+      stderr: 'stderr:\nkilled\n',
+    });
+    expect(result?.trailer).toBe(
+      '[terminated by SIGKILL][timed out][output truncated]' + timeoutHint + directoryHint,
+    );
+    expect(`${result?.head}${result?.stderr}${result?.trailer}`).toBe(output);
+  });
+
+  it('uses the final verdict instead of marker-like stdout before host guidance', () => {
+    const output =
+      '[starting directory: "workspace/"]\nstdout:\n[exit code: 1]\n' +
+      '[directory hint: printed by the command]\n\n[exit code: 0]\n' +
+      '[directory hint: pass cwd instead of a leading cd.]';
+    expect(parseCommandOutput(output)).toMatchObject({ exitCode: 0, failed: false });
+  });
+
+  it('rejects malformed headers and unrecognized text after the verdict', () => {
+    expect(
+      parseCommandOutput(
+        '[starting directory: "workspace/unterminated]\nstdout:\nok\n[exit code: 0]',
+      ),
+    ).toBeNull();
+    expect(
+      parseCommandOutput('[starting directory: "workspace/"]\nError: rate limited\n[exit code: 1]'),
+    ).toBeNull();
+    expect(parseCommandOutput('stdout:\nok\n[exit code: 0]\nrandom text')).toBeNull();
+  });
+
   it('returns null for output without the attached-workspace trailer', () => {
     expect(parseCommandOutput('stdout:\nhello\n')).toBeNull();
     expect(parseCommandOutput('')).toBeNull();

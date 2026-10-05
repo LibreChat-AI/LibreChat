@@ -458,6 +458,7 @@ export const getAllPromptGroups = () => `${prompts()}/all`;
 /* Scheduled chats */
 export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
+export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
 /* Skills */
@@ -585,6 +586,10 @@ export const feedback = (conversationId: string, messageId: string) =>
 
 // Two-Factor Endpoints
 export const enableTwoFactor = () => `${BASE_URL}/api/auth/2fa/enable`;
+export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
+export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
+export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
+export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;
@@ -640,3 +645,5 @@ export const getAllEffectivePermissions = (resourceType: ResourceType) =>
 // SharePoint Graph API Token
 export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
+
+export const resetToolApprovalGrants = (): string => `${BASE_URL}/api/agents/tools/approvals/reset`;

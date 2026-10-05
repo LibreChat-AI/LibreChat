@@ -1,4 +1,5 @@
 import { logger } from '@librechat/data-schemas';
+import { ToolMessage } from '@librechat/agents/langchain/messages';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import { patchConfig, pickRunnableConfigKeys } from '@langchain/core/runnables';
 import { AsyncLocalStorageProviderSingleton } from '@langchain/core/singletons';
@@ -8,14 +9,16 @@ import {
   normalizeServerName,
   stripServerNamePrefixes,
 } from 'librechat-data-provider';
+import type { JsonSchemaType, SubagentExecutionContext } from '@librechat/agents';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { JsonSchemaType } from '@librechat/agents';
 import type { LCAvailableTools, LCFunctionTool, ParsedServerConfig } from './types';
 import type { MCPClientCapabilityProfile } from './capabilities';
+import { assertToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
 import { canUseAppConnection, requiresEphemeralUserConnection } from './utils';
 import { normalizeJsonSchema, resolveJsonSchemaRefs } from './zod';
 import { STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { getMCPToolCatalogGeneration } from './toolsChanged';
+import { isMCPToolResultError } from './status';
 import { isToolHiddenFromModel } from './apps';
 
 type DynamicStructuredToolFields = ConstructorParameters<typeof DynamicStructuredTool>[0];
@@ -28,16 +31,42 @@ export function createMCPStructuredTool(
   ) => ReturnType<DynamicStructuredToolFunction>,
   fields: Omit<DynamicStructuredToolFields, 'func'>,
 ): DynamicStructuredTool<unknown> {
-  return new DynamicStructuredTool({
+  const tool = new DynamicStructuredTool({
     ...fields,
-    func: (input, runManager, config) => {
+    func: async (input, runManager, config) => {
+      const invocation = config as typeof config & {
+        toolCall?: { id?: string };
+        configurable?: { __librechatBackgroundToolInvocation?: boolean };
+        metadata?: {
+          executingAgentId?: string;
+          activeAgentId?: string;
+          agentId?: string;
+          executionContext?: SubagentExecutionContext;
+        };
+      };
+      const approvalInvocation = await assertToolApprovalExecution(tool, invocation);
       const childConfig = patchConfig(config, { callbacks: runManager?.getChild() });
-      return AsyncLocalStorageProviderSingleton.runWithConfig(
+      const result = await AsyncLocalStorageProviderSingleton.runWithConfig(
         pickRunnableConfigKeys(childConfig),
-        () => func(input, childConfig),
+        () =>
+          withToolApprovalTransport(invocation, () => func(input, childConfig), approvalInvocation),
       );
+      if (Array.isArray(result) && result.length === 2 && isMCPToolResultError(result)) {
+        return [
+          new ToolMessage({
+            content: result[0],
+            artifact: result[1],
+            status: 'error',
+            tool_call_id: invocation?.toolCall?.id ?? '',
+            name: fields.name,
+          }),
+          result[1],
+        ];
+      }
+      return result;
     },
   });
+  return tool;
 }
 
 /** `_meta` carries the MCP Apps `ui.visibility` used to hide app-only tools from the model. */

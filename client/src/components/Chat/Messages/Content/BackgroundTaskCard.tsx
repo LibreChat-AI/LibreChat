@@ -1,10 +1,15 @@
+import { useMemo } from 'react';
+import { Button } from '@librechat/client';
 import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
 import type { TranslationKeys } from '~/hooks';
 import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
+import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { formatBackgroundCodeOutput } from './Parts/background';
 import { parseToolName } from '~/utils/toolLabels';
 import { getToolDisplayLabel, cn } from '~/utils';
+import SubagentProgress from './SubagentProgress';
+import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
 const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string }> = {
@@ -35,7 +40,21 @@ export default function BackgroundTaskCard({
   mcpServerNames?: readonly string[];
 }) {
   const localize = useLocalize();
+  const { conversationId } = useMessageContext();
   const isSubagent = task.toolName === 'subagent';
+  const durableTask = useMemo(
+    () =>
+      isSubagent && task.threadId != null
+        ? {
+            threadId: task.threadId,
+            taskId: task.taskId,
+            subagentType: task.subagentType,
+            settled: task.status !== 'running',
+          }
+        : null,
+    [isSubagent, task.status, task.subagentType, task.taskId, task.threadId],
+  );
+  const { selection, open: openActivity } = useSubagentTaskPanel(durableTask, conversationId);
   const parsedName = parseToolName(task.toolName, mcpServerNames);
   const serverName = parsedName.mcpServer;
   let title = getToolDisplayLabel(task.toolName, localize, mcpServerNames);
@@ -97,6 +116,24 @@ export default function BackgroundTaskCard({
           {localize(state.label)}
         </span>
       </div>
+      {task.activity != null && (
+        <SubagentProgress digest={task.activity} serverNames={mcpServerNames} />
+      )}
+      {selection != null && openActivity != null && (
+        <div className="mt-2 flex justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={openActivity}
+            data-subagent-tool-call={selection.toolCallId}
+            data-subagent-parent-message={selection.parentMessageId}
+            data-subagent-part-index={selection.partIndex}
+          >
+            {localize('com_ui_wakeup_view_activity')}
+          </Button>
+        </div>
+      )}
       {result && (
         <div className="border-border-light mt-3 border-t pt-2.5">
           <div

@@ -214,19 +214,18 @@ const DeploymentThemeOverrideContext = createContext<(override: ThemeOverride) =
 
 /**
  * Lets a route whose policy comes from another tenant paint that tenant's theme:
- * once `ready`, `theme` replaces `interface.theme` from the startup config, an
- * absent theme included, until the route unmounts. A route whose theme source
- * failed passes `ready` with no theme, so the viewer's theme does not stand in
- * for the link's. Registered in a layout effect so the wrapper re-renders in the
- * same commit, and `ThemeProvider` applies the change before that commit paints.
+ * from the commit the route mounts until it unmounts, the route's theme replaces
+ * `interface.theme` from the startup config. Until `ready` that theme is absent,
+ * so the viewer's theme never stands in for the link's while its policy loads,
+ * including after an in-app navigation that keeps the viewer's answer on hand; a
+ * route whose theme source failed passes `ready` with no theme for the same reason.
+ * Registered in a layout effect so the wrapper re-renders in the same commit, and
+ * `ThemeProvider` applies the change before that commit paints.
  */
 export function useDeploymentThemeOverride(ready: boolean, theme: DeploymentThemeValue) {
   const setOverride = useContext(DeploymentThemeOverrideContext);
   useLayoutEffect(() => {
-    if (!ready) {
-      return;
-    }
-    setOverride({ theme });
+    setOverride({ theme: ready ? theme : undefined });
     return () => setOverride(undefined);
   }, [ready, theme, setOverride]);
 }

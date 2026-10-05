@@ -78,9 +78,12 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-medium-alt',
   'rgb-border-heavy',
   'rgb-border-xheavy',
+  'rgb-drawer-edge',
   'rgb-border-destructive',
   'rgb-border-control',
   'rgb-border-field-focus',
+  'rgb-field-fill',
+  'rgb-field-text',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -113,6 +116,14 @@ export const themeColorTokens = Object.freeze([
   'rgb-illustration-subtle',
   'rgb-illustration',
   'rgb-illustration-strong',
+  'rgb-file-document',
+  'rgb-file-sheet',
+  'rgb-file-code',
+  'rgb-file-artifact',
+  'rgb-file-audio',
+  'rgb-file-video',
+  'rgb-file-generic',
+  'rgb-file-ink',
   'rgb-syntax-text',
   'rgb-syntax-comment',
   'rgb-syntax-meta',
@@ -219,6 +230,23 @@ const isSwitchLength = (value: unknown): value is string =>
  * never vanishes; its offset may also be zero or negative, drawing the outline on or inside the
  * element's edge.
  */
+/**
+ * A positive px or rem length inside the range its layouts were built for, in px on a 16px root:
+ * the icon and checkbox roles size glyphs that sit in fixed insets and rows, so a theme can retune
+ * them, but not past the room those layouts leave.
+ */
+const lengthWithin =
+  (minPx: number, maxPx: number) =>
+  (value: unknown): value is string => {
+    if (!isSwitchLength(value)) {
+      return false;
+    }
+    const px = parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
+    return px >= minPx && px <= maxPx;
+  };
+/** A pointer target never drops under WCAG 2.5.8's 24px minimum, written in px or rem. */
+const isTargetSize = (value: unknown): value is string =>
+  isSwitchLength(value) && parseFloat(value) >= (value.endsWith('rem') ? 1.5 : 24);
 const isFocusRingOffset = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|-?\d*\.?\d+(px|rem))$/.test(value);
 /** A numeric CSS font weight, 1 to 1000, which is all a label weight needs. */
@@ -332,6 +360,11 @@ const appearanceValidators = {
   menuRadius: isLength,
   tooltipRadius: isLength,
   tabRadius: isLength,
+  tabMinWidth: isTableLength,
+  /** A Select list's narrowest width (`0` to size it by its trigger), and the height it scrolls
+   *  past: never under 8rem, so a few options always show, nor over 40rem. */
+  listMinWidth: isTableLength,
+  listMaxHeight: lengthWithin(128, 640),
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,
@@ -343,15 +376,28 @@ const appearanceValidators = {
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
   controlGap: isLength,
+  /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
+   *  2rem). */
+  iconSize: lengthWithin(12, 20),
+  iconSizeMd: lengthWithin(20, 24),
+  iconSizeLg: lengthWithin(16, 32),
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
+  /** The Button's `xs` and `lg` heights and the `icon-sm` square, each a pointer target. */
+  buttonHeightXs: isTargetSize,
+  buttonHeightLg: isTargetSize,
+  buttonHeightCompact: isTargetSize,
+  iconButtonSizeSm: isTargetSize,
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
   fieldHeight: isLength,
+  fieldHeightLg: isTargetSize,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
+  /** Whether a field stays transparent or paints `field-fill`. */
+  fieldFillStyle: (value: unknown) => value === 'transparent' || value === 'fill',
   /** The keyboard focus outline's width and offset. */
   focusRingWidth: isSwitchLength,
   focusRingOffset: isFocusRingOffset,
@@ -361,6 +407,8 @@ const appearanceValidators = {
   labelFontWeight: (value: unknown) => value === 'inherit' || isFontWeight(value),
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
+  /** A checkbox's box and the check inside it, 1 to 1.5rem: never smaller than the box it was. */
+  checkboxSize: lengthWithin(16, 24),
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,

@@ -1292,3 +1292,89 @@ describe('memory model-bound content preflight', () => {
     expect(Run.create).not.toHaveBeenCalled();
   });
 });
+
+describe('automatic memory canonical token trust', () => {
+  const token = `[EMAIL_1_${'a'.repeat(32)}]`;
+  const filters: FiltersConfig = {
+    messages: {
+      pii: {
+        fields: ['text', 'content_part'],
+        starterPatterns: [],
+        customPatterns: [{ id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}' }],
+      },
+    },
+  };
+  it.each([true, false])('admits only verified generated tokens, trusted: %s', async (trusted) => {
+    await processMemory({
+      res: {} as Response,
+      userId: 'owner',
+      messageId: 'response',
+      conversationId: 'conversation',
+      messages: [new HumanMessage(token)],
+      inspectionMessages: [new HumanMessage(token)],
+      privateTextTokens: trusted ? new Set([token]) : undefined,
+      memory: '',
+      instructions: 'Extract explicitly requested memories',
+      filters,
+      setMemory: jest.fn(),
+      deleteMemory: jest.fn(),
+    });
+    expect(Run.create).toHaveBeenCalledTimes(trusted ? 1 : 0);
+  });
+  it('still rejects raw credentials surrounding a trusted token', async () => {
+    await processMemory({
+      res: {} as Response,
+      userId: 'owner',
+      messageId: 'response',
+      conversationId: 'conversation',
+      messages: [new HumanMessage(`${token} ${'b'.repeat(32)}`)],
+      privateTextTokens: new Set([token]),
+      memory: '',
+      instructions: 'Extract',
+      filters,
+      setMemory: jest.fn(),
+      deleteMemory: jest.fn(),
+    });
+    expect(Run.create).not.toHaveBeenCalled();
+  });
+});
+
+it('does not invoke automatic extraction when its generation has already aborted', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  await processMemory({
+    res: {} as Response,
+    userId: 'owner',
+    messageId: 'response',
+    conversationId: 'conversation',
+    messages: [new HumanMessage('Safe')],
+    memory: '',
+    instructions: 'Extract',
+    signal: controller.signal,
+    setMemory: jest.fn(),
+    deleteMemory: jest.fn(),
+  });
+  expect(Run.create).not.toHaveBeenCalled();
+});
+
+it('forwards generation cancellation into the automatic memory SDK run', async () => {
+  const controller = new AbortController();
+  const processStream = jest.fn(async () => 'success');
+  (Run.create as jest.Mock).mockReturnValueOnce({ processStream });
+  await processMemory({
+    res: {} as Response,
+    userId: 'owner',
+    messageId: 'response',
+    conversationId: 'conversation',
+    messages: [new HumanMessage('Safe')],
+    memory: '',
+    instructions: 'Extract',
+    signal: controller.signal,
+    setMemory: jest.fn(),
+    deleteMemory: jest.fn(),
+  });
+  expect(processStream).toHaveBeenCalledWith(
+    expect.anything(),
+    expect.objectContaining({ signal: controller.signal }),
+  );
+});

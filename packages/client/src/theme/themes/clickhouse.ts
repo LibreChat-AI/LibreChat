@@ -3,7 +3,7 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
 /**
  * ClickHouse reference theme, built from Click UI's design tokens
  * (github.com/ClickHouse/click-ui, `src/theme/tokens/variables.light.ts` and
- * `variables.dark.ts` at tag v0.12.0, e2b3d213798f4223122581a75ebc8dd91e47fd9f). The tokens it
+ * `variables.dark.ts` at tag v0.13.0, bb744e8255a3c97635d2fdc9a546c266b5b8a3e0). The tokens it
  * cites are pinned in `clickui.json`, and `clickui.spec.ts` fails on drift in either one.
  *
  * This is the deliberately different theme that proves the engine repaints the
@@ -105,10 +105,13 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-medium': '230 231 233', // #e6e7e9 (stroke.default)
   'rgb-border-medium-alt': '230 231 233', // #e6e7e9 (stroke.default)
   'rgb-border-heavy': '179 182 189', // #b3b6bd (stroke.intense)
+  'rgb-drawer-edge': '246 247 250', // #f6f7fa (background.split, the drawer's own fill)
   'rgb-border-xheavy': '128 134 145', // #808691 (palette.slate.500, two steps past stroke.intense #b3b6bd (2.03:1 on white))
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
+  'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
+  'rgb-field-text': '48 46 50', // #302e32 (field.color.text.default)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -145,6 +148,14 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
+  'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
+  'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
+  'rgb-file-audio': '138 105 0', // #8a6900 (palette.sunrise.700)
+  'rgb-file-video': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-file-generic': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-ink': '255 255 255', // #ffffff (palette.neutral.0)
 
   // Code syntax
   'rgb-syntax-text': '40 40 40', // #282828 (codeblock.lightMode.color.text.default)
@@ -256,10 +267,13 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-medium': '50 50 50', // #323232 (stroke.default)
   'rgb-border-medium-alt': '50 50 50', // #323232 (stroke.default)
   'rgb-border-heavy': '65 65 65', // #414141 (stroke.intense)
+  'rgb-drawer-edge': '128 128 128', // #808080 (palette.neutral.500, matching border-xheavy)
   'rgb-border-xheavy': '128 128 128', // #808080 (palette.neutral.500, three steps past stroke.intense #414141 (1.62:1 on the canvas))
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
+  'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
+  'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -296,6 +310,14 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
+  'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
+  'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
+  'rgb-file-audio': '138 105 0', // #8a6900 (palette.sunrise.700)
+  'rgb-file-video': '136 0 204', // #8800cc (palette.violet.600)
+  'rgb-file-generic': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-file-ink': '255 255 255', // #ffffff (palette.neutral.0)
 
   // Code syntax
   'rgb-syntax-text': '255 255 255', // #ffffff (codeblock.darkMode.color.text.default)
@@ -338,8 +360,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * `radii.1`, which LibreChat's `sm` also renders at on a 16px root; every larger step tightens.
  *
  * Click UI's mono family is Inconsolata, which the component library ships in `theme/fonts.css`
- * (latin 400 and 700). The tail is the same metric-matched stack the default theme uses (Click
- * UI's own tail names `"SFMono Regular"`, which no platform installs).
+ * (latin 400 and 700), and the stack is Click UI's verbatim. Its `"SFMono Regular"` matches no
+ * installed face, so where Inconsolata has no glyph a browser falls to Consolas or `monospace`.
  *
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
@@ -362,6 +384,14 @@ const clickHouseShape = {
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tabRadius: '0.25rem', // tabs.radii.all
+  /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
+  tabMinWidth: '0',
+  /** Click UI's select list is as wide as its trigger (`select-popover-content` in
+   *  SelectComponents.module.css), which the list's viewport already enforces, so it takes no
+   *  floor of its own. Its height is capped only by the viewport's available height, which a
+   *  length role cannot express, so the cap keeps LibreChat's. */
+  listMinWidth: '0',
+  listMaxHeight: '24rem',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1
@@ -370,8 +400,7 @@ const clickHouseShape = {
   radius3xl: '0.75rem', // border.radii.3
   fontFamily:
     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
-  monoFontFamily:
-    '"Inconsolata", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+  monoFontFamily: '"Inconsolata", Consolas, "SFMono Regular", monospace', // typography.font.families.mono
   displayFontFamily:
     '\'Basier Square\', "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif', // typography.font.families.display
   textXs: '0.75rem', // typography.font.sizes.1
@@ -397,6 +426,15 @@ const clickHouseShape = {
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  /** Click UI draws one button size, so the `lg` step matches the default too. Its icon button is
+   *  a 1rem icon in 0.25rem of `iconButton.sm` space on each side, 1.5rem in all, which still meets
+   *  the 24px target minimum; its `xs` (no space) would not, so `icon-xs` keeps LibreChat's. */
+  buttonHeightLg: '2rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '1.5rem',
+  iconSize: '1rem', // image.sm.size.width
+  iconSizeMd: '1.25rem', // image.md.size.width
+  iconSizeLg: '1.5rem', // image.lg.size.width, the dialog close icon
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
    *  `field.color.stroke.active` and draws no ring (InputWrapper); LibreChat adds a 1px ring in
@@ -404,6 +442,8 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
+  /** Click UI fills its fields in `field.color.background.default`. */
+  fieldFillStyle: 'fill' as const,
   /** Click UI's keyboard focus outline: 2px in `outline.default`, 2px off the edge
    *  (BaseButton.module.css, IconButton, Dropdown and ContextMenu triggers). */
   focusRingWidth: '2px',
@@ -429,8 +469,13 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
+  checkboxSize: '1rem', // checkbox.size.all
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
+  /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the
+   *  one its buttons and fields space icon and label by, and 0.75rem, which already matched. */
+  spaceCompact: '0.5rem', // spaces.2
+  spaceNormal: '0.75rem', // spaces.3
   tableCellSpaceY: '1rem', // table.body.cell.space.md.y
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at

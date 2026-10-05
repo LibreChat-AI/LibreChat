@@ -7,45 +7,20 @@ import useComposerHint from '~/hooks/Input/useComposerHint';
 export const composerHintId = (index: number) => `composer-hint-${index}`;
 
 /**
- * The dim line under the composer carrying whatever the current state affords:
- * most importantly the during-run modifiers (`⌘⏎` queue, `⌥⏎` interrupt & send),
- * which had no on-screen presence at all before.
- *
- * Ambient tips are opt-in and off by default: they are discovery copy, and the
- * row they sit on costs the thread height on every turn. Live state (uploads, a
- * paused question, the during-run modifiers) reports itself either way; those
- * are things happening now, not things worth teaching.
- *
- * The visible line is `aria-hidden`; the same string is mirrored into a
- * visually-hidden node that the textarea points at via `aria-describedby`, which
- * is why hiding the line costs a screen reader nothing. An `aria-live` region
- * here would re-announce on every keystroke as the hint flips between idle and
- * typing, so the description channel carries it instead.
+ * The composer's accessible description: whatever the current state affords
+ * (during-run modifiers, upload progress, a paused question). It is visually
+ * hidden and the textarea points at it via `aria-describedby`; no visible row is
+ * rendered under the composer. An `aria-live` region here would re-announce on
+ * every keystroke as the hint flips between idle and typing, so the description
+ * channel carries it instead.
  */
-function Hints({
-  index,
-  enterToSend,
-  showTips,
-  ...state
-}: ComposerHintState & { index: number; showTips: boolean }) {
+function Hints({ index, enterToSend, ...state }: ComposerHintState & { index: number }) {
   const hint = useComposerHint({ ...state, enterToSend });
-  const visible = showTips || hint.kind === 'state';
 
   return (
-    <>
-      {visible && (
-        <div
-          aria-hidden="true"
-          data-testid="composer-hints"
-          className="text-text-secondary pointer-events-none px-3 pt-1.5 text-center text-xs leading-4 select-none"
-        >
-          {hint.text}
-        </div>
-      )}
-      <span id={composerHintId(index)} className="sr-only">
-        {hint.text}
-      </span>
-    </>
+    <span id={composerHintId(index)} className="sr-only">
+      {hint.text}
+    </span>
   );
 }
 

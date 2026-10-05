@@ -77,13 +77,13 @@ export default function StackedToolIcons({
   }
 
   return (
-    <div className="flex items-center" aria-hidden="true">
+    <div className="isolate flex items-center" aria-hidden="true">
       {visibleIcons.map((icon, index) => (
         <div
           key={icon.key}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
+            'h-[1.375rem] w-[1.375rem]',
             index > 0 && '-ml-2.5',
           )}
           style={{ zIndex: visibleIcons.length - index }}
@@ -104,7 +104,7 @@ export default function StackedToolIcons({
         <div
           className={cn(
             'border-border-medium bg-surface-tertiary relative flex items-center justify-center rounded-full border',
-            'text-text-secondary -ml-2.5 h-[22px] w-[22px] text-xs font-medium',
+            'text-text-secondary -ml-2.5 h-[1.375rem] w-[1.375rem] text-xs font-medium',
           )}
           style={{ zIndex: 0 }}
         >

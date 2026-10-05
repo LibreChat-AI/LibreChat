@@ -1,8 +1,8 @@
 import { memo, useMemo, ReactElement } from 'react';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import CollapsibleText from './CollapsibleText';
 import { cn } from '~/utils';
 

@@ -33,10 +33,18 @@ const emitFrame = (onEvent: EventCallback) => (e: MessageEvent) => {
   }
 };
 
-/** Resolves to the refreshed token, or `null` when the refresh failed. */
-async function refreshToken(): Promise<string | null> {
+/**
+ * Resolves to the refreshed token, `null` when the refresh failed, or `false` when it answered
+ * with a two-factor setup credential and the page is leaving for setup. An access token that
+ * expired first turns enrollment enforcement into a 401 the stream cannot read, so the refresh is
+ * where enrollment surfaces: it succeeds without a token, which is not a failure to report.
+ */
+async function refreshToken(): Promise<string | null | false> {
   try {
     const refreshResponse = await request.refreshToken();
+    if (request.redirectIfTwoFactorSetupPayload(refreshResponse)) {
+      return false;
+    }
     const refreshedToken = refreshResponse?.token ?? '';
     if (!refreshedToken) {
       throw new Error('Token refresh failed.');
@@ -48,6 +56,13 @@ async function refreshToken(): Promise<string | null> {
     return null;
   }
 }
+
+/**
+ * Enrollment enforcement answers the stream with a 403 no retry can clear, and this raw XHR
+ * bypasses the fetch interceptor that turns it into the setup redirect elsewhere.
+ */
+const isTwoFactorSetupRefusal = (e: StreamErrorEvent): boolean =>
+  e.responseCode === 403 && request.redirectIfTwoFactorSetupPayload(e.data);
 
 /**
  * An HTTP failure body is often empty or HTML, so one that is not JSON is
@@ -101,12 +116,15 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
        * live until the retry settles, so an abort meanwhile must still cancel. */
       let refreshing = false;
       sse.addEventListener('error', async (e: StreamErrorEvent) => {
+        if (isTwoFactorSetupRefusal(e)) {
+          return;
+        }
         if (e.responseCode === 401 && !refreshed) {
           refreshed = true;
           refreshing = true;
           const refreshedToken = await refreshToken();
           refreshing = false;
-          if (signal.aborted) {
+          if (signal.aborted || refreshedToken === false) {
             return;
           }
           if (refreshedToken) {
@@ -183,10 +201,13 @@ export function createSSETransport({ token }: { token?: string }): ChatTransport
       let refreshed = false;
       sse.addEventListener('error', async (e: StreamErrorEvent) => {
         failureSeen = true;
+        if (isTwoFactorSetupRefusal(e)) {
+          return;
+        }
         if (e.responseCode === 401 && !refreshed) {
           refreshed = true;
           const refreshedToken = await refreshToken();
-          if (signal.aborted) {
+          if (signal.aborted || refreshedToken === false) {
             return;
           }
           if (refreshedToken) {

@@ -105,6 +105,23 @@ describe('loadDefaultInterface', () => {
     expect(configuredInterface?.composerRecentFiles).toBe(10);
   });
 
+  it('uses and preserves the schema defaults for the client history cache', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.historyCacheTtlMs).toBe(60_000);
+    expect(defaultInterface?.historyCacheRecent).toBe(1);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { historyCacheTtlMs: 0, historyCacheRecent: 3 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.historyCacheTtlMs).toBe(0);
+    expect(configuredInterface?.historyCacheRecent).toBe(3);
+  });
+
   it('uses and preserves the schema default for steer arm confirmation', async () => {
     const configDefaults = getConfigDefaults();
     const interfaceDefaults = {
@@ -162,6 +179,30 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.buildInfo).toBe(true);
+  });
+
+  it('carries a disabled artifact undocking flag to the clients', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        artifactUndocking: false,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(false);
+  });
+
+  it('uses the schema default for artifact undocking when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
   it('preserves enabled build info config', async () => {
@@ -402,4 +443,18 @@ describe('loadDefaultInterface', () => {
 
     expect(interfaceConfig).not.toHaveProperty('theme');
   });
+});
+
+describe('running chat rename deployment fence', () => {
+  it.each([undefined, false, true])(
+    'forwards operator opt-in without enabling it by default: %s',
+    async (enabled) => {
+      const configDefaults = getConfigDefaults();
+      const interfaceConfig = await loadDefaultInterface({
+        config: { interface: enabled === undefined ? {} : { runningChatRename: enabled } },
+        configDefaults,
+      });
+      expect(interfaceConfig?.runningChatRename).toBe(enabled === true);
+    },
+  );
 });

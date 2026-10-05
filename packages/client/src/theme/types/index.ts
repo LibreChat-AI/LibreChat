@@ -93,6 +93,11 @@ export interface IThemeRGB {
   'rgb-border-medium-alt'?: string;
   'rgb-border-heavy'?: string;
   'rgb-border-xheavy'?: string;
+  /** The mobile drawer's trailing edge. Its light default is the drawer's own fill, since the
+   *  scrim already separates it there; dark mode draws a visible edge because the scrim and the
+   *  drawer are both near-black. Follows `rgb-surface-primary-alt` (light) and
+   *  `rgb-border-xheavy` (dark) in a theme that does not set it. */
+  'rgb-drawer-edge'?: string;
   'rgb-border-destructive'?: string;
   /** The boundary of a form control (field, select trigger, OTP slot). Owes the
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
@@ -101,6 +106,11 @@ export interface IThemeRGB {
   /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
    *  `rgb-focus-control` when a theme omits it. */
   'rgb-border-field-focus'?: string;
+  /** A field's fill, painted only under `fieldFillStyle: 'fill'`; follows `rgb-surface-primary`
+   *  when a theme omits it. */
+  'rgb-field-fill'?: string;
+  /** A field's typed value; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-field-text'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -156,6 +166,15 @@ export interface IThemeRGB {
   'rgb-illustration-subtle'?: string;
   'rgb-illustration'?: string;
   'rgb-illustration-strong'?: string;
+  /** File-type tiles: one fill per kind of file and the ink of the glyph drawn on them. */
+  'rgb-file-document'?: string;
+  'rgb-file-sheet'?: string;
+  'rgb-file-code'?: string;
+  'rgb-file-artifact'?: string;
+  'rgb-file-audio'?: string;
+  'rgb-file-video'?: string;
+  'rgb-file-generic'?: string;
+  'rgb-file-ink'?: string;
 
   /**
    * Code syntax highlighting. Declared here rather than left as literals in the
@@ -274,10 +293,13 @@ export interface IThemeVariables {
   '--border-heavy': string;
   '--border-heavy-alpha': string;
   '--border-xheavy': string;
+  '--drawer-edge': string;
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
   '--border-field-focus': string;
+  '--field-fill': string;
+  '--field-text': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -310,6 +332,14 @@ export interface IThemeVariables {
   '--illustration-subtle': string;
   '--illustration': string;
   '--illustration-strong': string;
+  '--file-document': string;
+  '--file-sheet': string;
+  '--file-code': string;
+  '--file-artifact': string;
+  '--file-audio': string;
+  '--file-video': string;
+  '--file-generic': string;
+  '--file-ink': string;
 
   '--syntax-text': string;
   '--syntax-comment': string;
@@ -403,9 +433,12 @@ export interface IThemeColors {
   'border-medium-alt'?: string;
   'border-heavy'?: string;
   'border-xheavy'?: string;
+  'drawer-edge'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
+  'field-fill'?: string;
+  'field-text'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -438,6 +471,14 @@ export interface IThemeColors {
   'illustration-subtle'?: string;
   illustration?: string;
   'illustration-strong'?: string;
+  'file-document'?: string;
+  'file-sheet'?: string;
+  'file-code'?: string;
+  'file-artifact'?: string;
+  'file-audio'?: string;
+  'file-video'?: string;
+  'file-generic'?: string;
+  'file-ink'?: string;
 
   'series-1'?: string;
   'series-2'?: string;
@@ -477,6 +518,12 @@ export interface IThemeAppearance {
   menuRadius: string;
   tooltipRadius: string;
   tabRadius: string;
+  /** The narrowest a tab trigger draws; `0` sizes it by its label. */
+  tabMinWidth: string;
+  /** The narrowest a Select's list draws; `0` sizes it by its trigger and options. */
+  listMinWidth: string;
+  /** The tallest a Select's list draws before it scrolls, 8 to 40rem. */
+  listMaxHeight: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;
@@ -488,19 +535,36 @@ export interface IThemeAppearance {
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
   controlGap: string;
+  /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
+   *  close button draws (1 to 2rem). */
+  iconSize: string;
+  /** The medium icon (1.25 to 1.5rem), such as the exported Dialog's close glyph. */
+  iconSizeMd: string;
+  iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /** The Button's `xs` and `lg` heights; `icon-xs` is as wide as `xs` is tall, `icon` as the
+   *  default, and `icon-sm` takes its own size. */
+  buttonHeightXs: string;
+  buttonHeightLg: string;
+  /** The compact toolbar step the Button and Dropdown `compact` recipes share. */
+  buttonHeightCompact: string;
+  iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
    * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
    * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
+  /** The height of the large `title` field. */
+  fieldHeightLg: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** `transparent` leaves a field on the surface it sits on; `fill` paints it `field-fill`. */
+  fieldFillStyle: 'transparent' | 'fill';
   /** The keyboard focus outline's width and its offset from the element's edge, apart from the
    *  heavier outline the contrast modes keep. */
   focusRingWidth: string;
@@ -512,6 +576,8 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
+  /** A checkbox's box and the check inside it, 1 to 1.5rem. */
+  checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;

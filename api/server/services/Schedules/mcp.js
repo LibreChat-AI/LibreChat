@@ -31,6 +31,7 @@ function createMCPPreflight(options = {}) {
       getMCPServersRegistry().getAllServerConfigs(userId, config, role),
     findPluginAuthsByKeys: methods.findPluginAuthsByKeys,
     resolveUpstreamTokenProvider: options.resolveUpstreamTokenProvider,
+    execution: require('./consent').execution,
     connect: (connectionOptions) =>
       getMCPManager().getConnection({
         ...connectionOptions,

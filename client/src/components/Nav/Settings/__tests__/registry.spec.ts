@@ -1,5 +1,5 @@
 import { isValidElementType } from 'react-is';
-import { SettingsTabValues } from 'librechat-data-provider';
+import { SettingsTabValues, isTwoFactorPolicyProvider } from 'librechat-data-provider';
 import type { SettingsContextValue } from '../types';
 import en from '~/locales/en/translation.json';
 import { registry } from '../registry';
@@ -20,6 +20,7 @@ const settingsContext: SettingsContextValue = {
   emailEnabled: true,
   allowEmailChange: true,
   passkeyLoginEnabled: false,
+  isTwoFactorPolicyProvider: true,
   twoFactorEnabled: false,
   allowAccountDeletion: true,
   aboutEnabled: false,
@@ -30,6 +31,14 @@ const settingsContext: SettingsContextValue = {
   replyNotificationsAllowed: true,
   replyNotificationSoundAllowed: true,
 };
+
+const policyProviders = ['local', 'ldap', null, undefined];
+const federatedProviders = ['openid', 'google', 'saml'];
+
+const contextForProvider = (provider: string | null | undefined): SettingsContextValue => ({
+  ...settingsContext,
+  isTwoFactorPolicyProvider: isTwoFactorPolicyProvider(provider),
+});
 
 describe('settings registry', () => {
   it('has unique ids', () => {
@@ -55,6 +64,49 @@ describe('settings registry', () => {
     for (const entry of registry) {
       expect(isValidElementType(entry.Component)).toBe(true);
     }
+  });
+
+  describe('two-factor security visibility', () => {
+    const twoFactorEntry = registry.find((entry) => entry.id === 'twoFactor');
+    const backupCodesEntry = registry.find((entry) => entry.id === 'backupCodes');
+
+    it.each(policyProviders)(
+      'shows two-factor authentication for policy provider %s',
+      (provider) => {
+        expect(twoFactorEntry?.show?.(contextForProvider(provider))).toBe(true);
+      },
+    );
+
+    it.each(federatedProviders)(
+      'hides two-factor authentication for federated provider %s',
+      (provider) => {
+        expect(twoFactorEntry?.show?.(contextForProvider(provider))).toBe(false);
+      },
+    );
+
+    it.each(policyProviders)('shows backup codes for enrolled policy provider %s', (provider) => {
+      expect(
+        backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: true }),
+      ).toBe(true);
+    });
+
+    it.each(federatedProviders)(
+      'hides backup codes for enrolled federated provider %s',
+      (provider) => {
+        expect(
+          backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: true }),
+        ).toBe(false);
+      },
+    );
+
+    it.each(policyProviders)(
+      'hides backup codes before enrollment for policy provider %s',
+      (provider) => {
+        expect(
+          backupCodesEntry?.show?.({ ...contextForProvider(provider), twoFactorEnabled: false }),
+        ).toBe(false);
+      },
+    );
   });
 
   describe('Langfuse connection visibility', () => {

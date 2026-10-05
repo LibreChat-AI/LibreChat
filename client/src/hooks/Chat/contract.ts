@@ -26,11 +26,9 @@ import type {
   ExtendedFile,
   TAskFunction,
   Artifact,
+  PtcTrace,
 } from '~/common';
-import type { PendingSteer } from '~/store/families';
-import type { PtcTrace } from '~/store/ptc';
-
-export type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
+import type { PendingSteer } from './queue';
 
 /** Options accepted by {@link ChatConversationContract.newConversation}: the shared params plus
  *  the two flags only the root pane's generator honors. */
@@ -186,6 +184,12 @@ export type ChatSettings = {
   steerInterruptsByDefault: boolean;
   /** Closes the artifacts panel, called when the active conversation changes. */
   resetVisibleArtifacts: () => void;
+  /** Whether composer text and attachments are kept as drafts across navigation. */
+  saveDrafts: boolean;
+  /** Whether new turns are sent as a temporary chat that the server does not retain. */
+  isTemporary: boolean;
+  /** Turns temporary chat on or off for the next conversation. */
+  setIsTemporary: Dispatch<SetStateAction<boolean>>;
 };
 
 /** The assistants abort route and the run it stops. */

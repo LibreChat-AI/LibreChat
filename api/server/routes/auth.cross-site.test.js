@@ -36,6 +36,9 @@ jest.mock('~/server/controllers/TwoFactorController', () => ({
 
 jest.mock('~/server/controllers/auth/TwoFactorAuthController', () => ({
   verify2FAWithTempToken: (...args) => mockVerify2FAWithTempToken(...args),
+  confirm2FASetupWithTempToken: jest.fn((req, res) => res.status(204).end()),
+  acknowledge2FASetup: jest.fn((req, res) => res.status(204).end()),
+  finalize2FASetup: jest.fn((req, res) => res.status(204).end()),
 }));
 
 jest.mock('~/server/controllers/auth/PasskeyController', () => ({
@@ -74,7 +77,11 @@ jest.mock('~/server/middleware', () => {
     passkeyLimiter: pass,
     passkeyStepUpLimiter: pass,
     setTwoFactorTempUser: (...args) => mockSetTwoFactorTempUser(...args),
+    setTwoFactorAcknowledgementTempUser: pass,
+    setTwoFactorFinalizationTempUser: pass,
     twoFactorTempLimiter: pass,
+    twoFactorSetupLimiter: pass,
+    blockRetiredSetupToken: pass,
     checkBan: pass,
     validateEmailLogin: jest.requireActual('~/server/middleware/validateEmailLogin'),
     requireLocalAuth: (...args) => mockRequireLocalAuth(...args),

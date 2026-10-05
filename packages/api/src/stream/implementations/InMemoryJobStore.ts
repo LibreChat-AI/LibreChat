@@ -44,6 +44,7 @@ import {
   RecoveredSteerPayloadMismatchError,
 } from '~/stream/SteerRecovery';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
+import { retainScheduleMCPFailure } from '../scheduleFailure';
 import { toPendingSteer } from '~/stream/SteeringLifecycle';
 
 /** Recovery window for parked steers (mirrors Redis's completed-job TTL). */
@@ -724,7 +725,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     // Plain field writer. Membership-aware status transitions
     // (running ⇄ requires_action) go solely through transitionStatus.
-    Object.assign(job, updates);
+    Object.assign(job, retainScheduleMCPFailure(job, updates));
   }
 
   async markProviderExecutionDrained(
@@ -801,7 +802,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     job.status = args.to;
     if (args.patch) {
-      Object.assign(job, args.patch);
+      Object.assign(job, retainScheduleMCPFailure(job, args.patch));
     }
     for (const field of args.clear ?? []) {
       delete job[field];

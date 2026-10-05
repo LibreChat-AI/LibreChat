@@ -3,8 +3,8 @@ import { SquareTerminal } from 'lucide-react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
@@ -185,7 +185,7 @@ export default function ExecuteCode({
               <pre
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
-                className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
               >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? code}
@@ -211,7 +211,7 @@ export default function ExecuteCode({
                 </div>
                 <div
                   className={cn(
-                    'max-h-[200px] overflow-auto',
+                    'max-h-[12.5rem] overflow-auto',
                     outputHasError ? 'text-status-error' : 'text-text-primary',
                   )}
                 >

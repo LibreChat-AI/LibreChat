@@ -40,6 +40,9 @@ interface MultiSelectProps<T extends string> {
   selectClassName?: string;
   selectIcon?: React.ReactNode;
   popoverClassName?: string;
+  /** `widget` paints the popover in the dashboard widget surface (`chart-widget-surface`), for a
+   *  picker that opens over chart widgets; `default` keeps the shared menu surface. */
+  surface?: 'default' | 'widget';
   selectItemsClassName?: string;
   selectedValues: T[];
   setSelectedValues: (values: T[]) => void;
@@ -90,6 +93,7 @@ export default function MultiSelect<T extends string>({
   labelClassName,
   selectClassName,
   popoverClassName,
+  surface = 'default',
   selectItemsClassName,
   selectedValues = [],
   setSelectedValues,
@@ -175,11 +179,12 @@ export default function MultiSelect<T extends string>({
           unmountOnHide
           finalFocus={selectRef}
           className={cn(
-            'animate-popover z-40 flex max-h-[300px]',
-            'flex-col overflow-hidden rounded-xl',
+            'animate-popover z-40 flex max-h-[18.75rem]',
+            'flex-col overflow-auto overscroll-contain rounded-xl',
             'bg-surface-secondary text-text-primary px-1.5 py-1 shadow-lg',
             'border-border-light border',
             'outline-hidden',
+            surface === 'widget' && 'bg-chart-widget-surface',
             popoverClassName,
           )}
         >

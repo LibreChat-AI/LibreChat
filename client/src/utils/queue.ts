@@ -29,7 +29,7 @@ const releaseTail = (key: string, settled: Promise<unknown>): void => {
     tails.delete(key);
   }
 };
-import type { QueuedMessage } from '~/store/families';
+import type { QueuedMessage } from '~/hooks/Chat/queue';
 
 export const compareQueuedMessages = (a: QueuedMessage, b: QueuedMessage): number =>
   Number(b.priority ?? false) - Number(a.priority ?? false) || a.createdAt - b.createdAt;

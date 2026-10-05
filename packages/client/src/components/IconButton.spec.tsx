@@ -33,6 +33,30 @@ describe('IconButton', () => {
     );
   });
 
+  it('offers the theme control corner between square and round', () => {
+    render(
+      <IconButton label="Soft" size="lg" shape="control">
+        soft
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Soft' });
+    expect(button).toHaveClass('size-10', 'rounded-theme-control');
+    expect(button).not.toHaveClass('rounded-full');
+  });
+
+  it('keeps submit glyphs contrasted against the theme fill', () => {
+    render(
+      <IconButton label="Stop" variant="submit" size="theme" shape="theme">
+        stop
+      </IconButton>,
+    );
+
+    const button = screen.getByRole('button', { name: 'Stop' });
+    expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
+    expect(button).not.toHaveClass('text-text-primary', 'bg-text-primary');
+  });
+
   it('provides a theme-aware primary action', () => {
     render(
       <IconButton label="Send" variant="primary">

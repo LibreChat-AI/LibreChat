@@ -1,6 +1,11 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { AgentCapabilities, PermissionTypes, Permissions } from 'librechat-data-provider';
+import {
+  AgentCapabilities,
+  Permissions,
+  PermissionTypes,
+  isTwoFactorPolicyProvider,
+} from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
 import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
 import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
@@ -34,6 +39,7 @@ export function useSettingsContext(): SettingsContextValue {
   const emailEnabled = startupConfig?.emailEnabled === true;
   const allowEmailChange = startupConfig?.allowEmailChange === true;
   const passkeyLoginEnabled = startupConfig?.passkeyLoginEnabled === true;
+  const twoFactorPolicyProvider = user != null && isTwoFactorPolicyProvider(user.provider);
   const twoFactorEnabled = user?.twoFactorEnabled === true;
   const allowAccountDeletion = startupConfig?.allowAccountDeletion !== false;
   const aboutEnabled = startupConfig?.interface?.buildInfo !== false;
@@ -69,6 +75,7 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      isTwoFactorPolicyProvider: twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,
@@ -92,6 +99,7 @@ export function useSettingsContext(): SettingsContextValue {
       emailEnabled,
       allowEmailChange,
       passkeyLoginEnabled,
+      twoFactorPolicyProvider,
       twoFactorEnabled,
       allowAccountDeletion,
       aboutEnabled,

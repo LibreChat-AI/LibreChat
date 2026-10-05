@@ -1,5 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import {
@@ -19,18 +18,18 @@ import type {
 } from 'librechat-data-provider';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
-import { toolPanelSpacingClassName } from './disclosure';
 import { isError } from './ToolOutput/OutputRenderer';
 import parseJsonField from './Parts/parseJsonField';
 import { useToolCallIntent } from './Parts/intent';
+import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
 import { ROW_GLYPH_SLOT } from './rows';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
-import store from '~/store';
 
 type ProgressKeys =
   | 'com_ui_web_searching'
@@ -49,7 +48,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           key={source.link}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
+            'h-[1.375rem] w-[1.375rem]',
             i > 0 && '-ml-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
@@ -86,6 +85,7 @@ export default function WebSearch({
   /** Model-authored live label (web_search carries `intent` natively);
    *  persists as the settled label like the other tool cards. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
   const { searchResults } = useSearchContext();
   const error = (typeof output === 'string' && isError(output)) || runStepStatus === 'failed';
   const legacyError =
@@ -187,6 +187,9 @@ export default function WebSearch({
    *  intent on every delta, so it always gets this value while streaming;
    *  the settled intent is announced once via the completed branch. */
   const genericProgressText = useMemo(() => {
+    if (preparationText != null) {
+      return preparationText;
+    }
     let text: ProgressKeys =
       ownTurn !== '0' ? 'com_ui_web_searching_again' : 'com_ui_web_searching';
     if (showSources) {
@@ -196,31 +199,21 @@ export default function WebSearch({
       text = 'com_ui_web_search_reading';
     }
     return localize(text);
-  }, [ownTurn, localize, showSources, finalizing]);
-  const progressText = intent ?? genericProgressText;
+  }, [ownTurn, localize, showSources, finalizing, preparationText]);
+  const progressText = preparationText ?? intent ?? genericProgressText;
 
-  const autoExpand = useRecoilValue(store.autoExpandTools);
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
-  const [showSourceList, setShowSourceList] = useState(() => autoExpand && sourceCount > 0);
+  const [showSourceList, setShowSourceList] = useToolExpansion(sourceCount > 0);
   const { style: sourceExpandStyle, ref: sourceExpandRef } = useExpandCollapse(showSourceList);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showSourceList);
 
-  useEffect(() => {
-    if (autoExpand && sourceCount > 0) {
-      setShowSourceList(true);
-    }
-  }, [autoExpand, sourceCount]);
-
   const handleToggleSources = () => {
     mountBody();
-    setShowSourceList((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
+    setShowSourceList(!showSourceList);
+    if (!showSourceList) {
+      onExpand?.();
+    }
   };
 
   if (error && runStepStatus !== 'cancelled') {
@@ -257,9 +250,9 @@ export default function WebSearch({
         </span>
         <div className="relative flex h-5 items-center gap-1.5">
           <Button
-            variant="ghost"
+            variant="disclosure"
             className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal hover:bg-transparent',
+              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal',
               /** This row is a status line, not a padded control: the shared
                *  recipe's color transition would turn its hover into a fade,
                *  and the chevron reveal beside it is deliberately instant. */
@@ -358,7 +351,7 @@ export default function WebSearch({
                 <div
                   className={cn(
                     toolPanelSpacingClassName,
-                    'border-border-light mt-1.5 max-h-[280px] overflow-y-auto rounded-lg border',
+                    'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
                   {allSources.map((source, i) => {

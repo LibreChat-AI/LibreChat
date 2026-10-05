@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
-import { dataService } from 'librechat-data-provider';
+import {
+  dataService,
+  clearTwoFactorSetupToken,
+  persistTwoFactorSetupToken,
+} from 'librechat-data-provider';
 import type {
   TPasskey,
   TPasskeyTransport,
@@ -13,12 +17,19 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import { SESSION_KEY, withBasePath, isSafeRedirect, REDIRECT_PARAM } from '~/utils/redirect';
+import {
+  SESSION_KEY,
+  withBasePath,
+  isSafeRedirect,
+  REDIRECT_PARAM,
+  persistRedirectToSession,
+} from '~/utils/redirect';
 import { useRegisterPasskeyMutation } from '~/data-provider';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import useLocalize from '~/hooks/useLocalize';
 
 async function loadWebAuthn() {
-  return import('@simplewebauthn/browser');
+  return importWithRecovery(() => import('@simplewebauthn/browser'));
 }
 
 /** Thrown by the browser when the user dismisses or times out the native prompt. */
@@ -117,6 +128,16 @@ export function usePasskeySignIn({ enabled }: { enabled: boolean }) {
   const complete = useCallback(
     async (credential: TPasskeyAuthenticationResponse, sessionId: string) => {
       const result = await dataService.verifyPasskeyLogin({ credential, sessionId });
+      clearTwoFactorSetupToken();
+      if (result.twoFASetupRequired === true && result.tempToken != null) {
+        const redirectTo = new URLSearchParams(window.location.search).get(REDIRECT_PARAM);
+        if (redirectTo) {
+          persistRedirectToSession(redirectTo);
+        }
+        persistTwoFactorSetupToken(result.tempToken);
+        navigate('/login/2fa/setup', { replace: true });
+        return;
+      }
       if (result.twoFAPending === true && result.tempToken != null) {
         navigate(`/login/2fa?tempToken=${encodeURIComponent(result.tempToken)}`, { replace: true });
         return;
