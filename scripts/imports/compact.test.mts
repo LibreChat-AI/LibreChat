@@ -6,8 +6,9 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { compactTypeImports } from './compact.mts';
+import { readPrintWidth } from './config.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const compact = (source: string, width = 60): string =>
@@ -161,21 +162,57 @@ test('measures complete attributed imports and preserves their syntax at the wid
   }
 });
 
-test('dependency-manifest-only changes select the import tooling CI gate', async () => {
+test('formatter, dependency and tooling inputs select the same local and CI gate', async () => {
   const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
   const filter = workflow.match(/^ {12}import_tools:\n((?: {14}- [^\n]+\n)+)/m);
   assert.ok(filter, 'import_tools filter exists');
   const paths = [...filter[1].matchAll(/- '([^']+)'/g)].map((match) => match[1]);
-  for (const manifest of ['package.json', 'package-lock.json']) {
+  for (const manifest of [
+    'package.json',
+    'package-lock.json',
+    '.prettierrc',
+    'scripts/static-checks.mts',
+    'scripts/sort-imports.mts',
+  ]) {
     assert.ok(
       paths.includes(manifest),
       `${manifest} selects tooling checks without a source change`,
     );
   }
+  const trigger = workflow.slice(
+    workflow.indexOf('    paths:'),
+    workflow.indexOf('\npermissions:'),
+  );
+  assert.ok(trigger.includes("- '.prettierrc'"), 'formatter-only changes start the workflow');
   assert.match(
     workflow,
     /name: Test and typecheck import cleanup tooling\n {8}if: always\(\) && steps\.paths\.outputs\.import_tools == 'true'/,
   );
+  assert.ok(
+    workflow.includes(
+      'run: node scripts/static-checks.mts scripts/imports/compact.mts --only import-tools',
+    ),
+  );
+  for (const input of [
+    ...paths.filter((path) => !path.includes('*')),
+    'scripts/imports/compact.mts',
+    'scripts/imports/tsconfig.json',
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/static-checks.mts', input, '--list', '--only', 'import-tools'],
+      { cwd: ROOT, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Import tooling \(import-tools\)\s+would run/, input);
+  }
+  const unrelated = spawnSync(
+    process.execPath,
+    ['scripts/static-checks.mts', 'client/src/common/types.ts', '--list', '--only', 'import-tools'],
+    { cwd: ROOT, encoding: 'utf8' },
+  );
+  assert.equal(unrelated.status, 0, unrelated.stderr);
+  assert.match(unrelated.stdout, /Import tooling \(import-tools\)\s+not affected/);
 });
 
 test('rewrites documentation types and qualified type queries', () => {
@@ -270,8 +307,12 @@ test('output stays compact after Prettier formats it', async () => {
 test('normal CLI and pre-commit cleanup compact types, and checks reject eligible imports', async () => {
   const directory = await mkdtemp(join(ROOT, 'client/src/.compact-imports-test-'));
   const file = join(directory, 'fixture.ts');
-  const source =
-    "import { useState } from 'react';\nimport type { Message, Conversation, AgentConfiguration, AgentPermission, AgentCapability } from './models';\n\ntype Row = Message;\n";
+  const width = await readPrintWidth(join(ROOT, '.prettierrc'));
+  let names = 'Message, Conversation, AgentConfiguration, AgentPermission, AgentCapability';
+  for (let index = 0; `import type { ${names} } from './models';`.length <= width; index++) {
+    names += `, ExtraType${index}`;
+  }
+  const source = `import { useState } from 'react';\nimport type { ${names} } from './models';\n\ntype Row = Message;\n`;
   const run = (...flags: string[]) =>
     spawnSync(process.execPath, ['scripts/sort-imports.mts', ...flags, file], {
       cwd: ROOT,
@@ -319,9 +360,16 @@ test('normal CLI and pre-commit cleanup compact types, and checks reject eligibl
     assert.equal(await readFile(file, 'utf8'), '// sort-imports-ignore\n' + source);
 
     const longImport = source.split('\n')[1] + '\n';
-    const attributed =
-      header.trimEnd().slice(0, -1) +
-      " with { 'resolution-mode': 'import' };\ntype Row = Message;\n";
+    let attributedNames = 'Message, Conversation, Agent as Assistant';
+    for (
+      let index = 0;
+      `import type { ${attributedNames} } from './models' with { 'resolution-mode': 'import' };`
+        .length <= width;
+      index++
+    ) {
+      attributedNames += `, AttributeType${index}`;
+    }
+    const attributed = `import type { ${attributedNames} } from './models' with { 'resolution-mode': 'import' };\ntype Row = Message;\n`;
     await writeFile(file, attributed);
     assert.equal(run('--check').status, 1);
     assert.equal(staticCheck().status, 1);
@@ -350,6 +398,157 @@ test('normal CLI and pre-commit cleanup compact types, and checks reject eligibl
       assert.equal(run().status, 0, exempt);
       assert.equal(await readFile(file, 'utf8'), exempt);
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('validates the real formatter width and rejects missing or mistyped cleanup policy', async () => {
+  assert.ok((await readPrintWidth(join(ROOT, '.prettierrc'))) > 0);
+  const directory = await mkdtemp(join(ROOT, 'scripts/imports/.width-'));
+  const file = join(directory, '.prettierrc');
+  try {
+    for (const width of [80, 100, 140]) {
+      await writeFile(file, JSON.stringify({ printWidth: width }));
+      assert.equal(await readPrintWidth(file), width);
+    }
+    for (const config of [
+      {},
+      { printWidth: '100' },
+      { printWidth: null },
+      { printWidth: 0 },
+      { printWidth: -1 },
+      { printWidth: 10.5 },
+    ]) {
+      await writeFile(file, JSON.stringify(config));
+      await assert.rejects(readPrintWidth(file), /positive integer printWidth/);
+    }
+    await writeFile(file, '{ invalid');
+    await assert.rejects(readPrintWidth(file), SyntaxError);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the shared tooling gate fails on tests, types and formatting instead of reporting an empty pass', async () => {
+  const directory = await mkdtemp(join(ROOT, 'scripts/imports/.gate-'));
+  const tooling = join(directory, 'scripts/imports');
+  const config = {
+    compilerOptions: {
+      target: 'ES2022',
+      module: 'NodeNext',
+      moduleResolution: 'NodeNext',
+      noEmit: true,
+      allowImportingTsExtensions: true,
+      skipLibCheck: true,
+      types: ['node'],
+    },
+    include: ['*.mts'],
+  };
+  const cleanTest = "import test from 'node:test';\ntest('fixture', () => {});\n";
+  const cleanType = "export const value: string = 'ok';\n";
+  const { NODE_TEST_CONTEXT: _testContext, ...env } = process.env;
+  const run = () =>
+    spawnSync(
+      process.execPath,
+      ['scripts/static-checks.mts', '.prettierrc', '--only', 'import-tools', '--verbose'],
+      { cwd: directory, env, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
+    );
+  try {
+    await mkdir(tooling, { recursive: true });
+    await symlink(
+      join(ROOT, 'node_modules'),
+      join(directory, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await copyFile(
+      join(ROOT, 'scripts/static-checks.mts'),
+      join(directory, 'scripts/static-checks.mts'),
+    );
+    await writeFile(
+      join(directory, '.prettierrc'),
+      JSON.stringify({ printWidth: 100, singleQuote: true }),
+    );
+    await writeFile(
+      join(tooling, 'tsconfig.json'),
+      await prettier.format(JSON.stringify(config), { parser: 'json' }),
+    );
+    await writeFile(join(directory, 'scripts/sort-imports.mts'), 'export {};\n');
+    await writeFile(join(tooling, 'compact.test.mts'), cleanTest);
+    await writeFile(join(tooling, 'fixture.mts'), cleanType);
+    const green = run();
+    assert.equal(green.status, 0, green.stdout + green.stderr);
+    assert.match(green.stdout, /tests 1/);
+    assert.match(green.stdout, /All matched files use Prettier code style/);
+    assert.match(green.stdout, /Import tooling/);
+
+    await writeFile(
+      join(tooling, 'compact.test.mts'),
+      "import test from 'node:test';\ntest('fixture', () => { throw new Error('gate-test-failure'); });\n",
+    );
+    const failedTest = run();
+    assert.equal(failedTest.status, 1);
+    assert.match(failedTest.stdout, /gate-test-failure/);
+    await writeFile(join(tooling, 'compact.test.mts'), cleanTest);
+
+    await writeFile(join(tooling, 'fixture.mts'), 'export const value: string = 1;\n');
+    const failedType = run();
+    assert.equal(failedType.status, 1);
+    assert.match(failedType.stdout, /TS2322/);
+    await writeFile(join(tooling, 'fixture.mts'), cleanType);
+
+    await writeFile(join(tooling, 'fixture.mts'), 'export  const value:string="ok";\n');
+    const failedFormat = run();
+    assert.equal(failedFormat.status, 1);
+    assert.match(failedFormat.stdout, /Code style issues/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('changed-file CI checks compare the synthetic merge against its tested dev parent', async () => {
+  const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
+  assert.equal(
+    (workflow.match(/git diff -z --name-only --diff-filter=ACMRTUXB HEAD\^1 HEAD/g) ?? []).length,
+    3,
+  );
+  const directory = await mkdtemp(join(ROOT, 'scripts/imports/.merge-selection-'));
+  const git = (...args: string[]): string => {
+    const result = spawnSync(
+      'git',
+      [
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        '-c',
+        'rerere.enabled=false',
+        ...args,
+      ],
+      { cwd: directory, encoding: 'utf8' },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git('init', '--initial-branch=dev');
+    await mkdir(join(directory, 'client'), { recursive: true });
+    await mkdir(join(directory, 'scripts'), { recursive: true });
+    await writeFile(join(directory, 'client/upstream.ts'), 'export const value = 1;\n');
+    git('add', '.');
+    git('commit', '-m', 'base');
+    const base = git('rev-parse', 'HEAD');
+    git('switch', '-c', 'feature');
+    await writeFile(join(directory, 'scripts/tooling.mts'), 'export const tool = 1;\n');
+    git('add', '.');
+    git('commit', '-m', 'tooling change');
+    git('switch', 'dev');
+    await writeFile(join(directory, 'client/upstream.ts'), 'export const value = 2;\n');
+    git('add', '.');
+    git('commit', '-m', 'new upstream source');
+    git('merge', '--no-ff', 'feature', '-m', 'synthetic PR merge');
+    assert.ok(git('diff', '--name-only', base, 'HEAD').includes('client/upstream.ts'));
+    assert.equal(git('diff', '--name-only', 'HEAD^1', 'HEAD'), 'scripts/tooling.mts');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

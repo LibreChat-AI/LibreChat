@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["*.mts", "../sort-imports.mts"]
+  "include": ["*.mts", "../sort-imports.mts", "../static-checks.mts"]
 }

@@ -27,6 +27,7 @@ import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { join, relative, resolve, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compactTypeImports } from './imports/compact.mts';
+import { readPrintWidth } from './imports/config.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -223,9 +224,7 @@ async function collectFiles(): Promise<string[]> {
   return files;
 }
 
-const { printWidth } = JSON.parse(await readFile(resolve(ROOT, '.prettierrc'), 'utf8')) as {
-  printWidth: number;
-};
+const printWidth = await readPrintWidth(resolve(ROOT, '.prettierrc'));
 
 let changed = 0;
 let total = 0;
