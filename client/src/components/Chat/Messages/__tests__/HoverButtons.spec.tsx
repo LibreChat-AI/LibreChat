@@ -707,6 +707,25 @@ describe('HoverButtons read aloud', () => {
     expect(spoken).toEqual(['The answer is 4.']);
   });
 
+  it('offers no read aloud for a response that only reasoned', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: {
+        ...userMessage,
+        messageId: 'assistant-1',
+        isCreatedByUser: false,
+        text: 'Let me work out 2 + 2 first.',
+        content: [{ type: ContentTypes.THINK, think: 'Let me work out 2 + 2 first.' }],
+      },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
   it('speaks the answer without a legacy thinking block in plain text', () => {
     readAloud({ text: ':::thinking\nLet me work out 2 + 2 first.\n:::\nThe answer is 4.' });
 

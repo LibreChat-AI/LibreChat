@@ -642,9 +642,9 @@ describe('getSpeechText', () => {
     expect(getSpeechText({ text })).toBe('Answer 1\n\nAnswer 2');
   });
 
-  test('treats a thinking block still open mid-stream as reasoning', () => {
-    expect(getSpeechText({ text: ':::thinking\nStill working' })).toBe('');
-    expect(getSpeechText({ text: 'Intro :::thinking\nStill' })).toBe('Intro');
+  test('speaks an unmatched marker, which the UI shows as answer text', () => {
+    const text = 'Wrap reasoning in a :::thinking block.';
+    expect(getSpeechText({ text })).toBe(text);
   });
 
   test('keeps plain text that merely uses colons', () => {

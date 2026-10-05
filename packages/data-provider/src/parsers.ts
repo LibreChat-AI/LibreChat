@@ -418,13 +418,12 @@ export function parseTextParts(
 
 /** Legacy plain-text reasoning, rendered as the collapsible Thoughts block. */
 const thinkingBlockPattern = /:::thinking[\s\S]*?:::/g;
-const thinkingOpenPattern = /:::thinking[\s\S]*$/;
 
 /**
  * The text Read Aloud speaks for a message: its answer, never its reasoning. Covers both
  * reasoning shapes the UI collapses into Thoughts: `think` content parts and the legacy
- * `:::thinking ... :::` block in plain text. A block still open mid-stream is reasoning too,
- * so the spoken text only ever grows as the answer streams in.
+ * `:::thinking ... :::` block in plain text. Every caller reads a finalized message, so an
+ * unmatched marker is answer text, as the UI shows it.
  */
 export function getSpeechText(message: {
   content?: Array<a.TMessageContentParts | undefined> | string | null;
@@ -434,7 +433,7 @@ export function getSpeechText(message: {
     return parseTextParts(message.content, true);
   }
   const text = typeof message.content === 'string' ? message.content : message.text;
-  return (text ?? '').replace(thinkingBlockPattern, '').replace(thinkingOpenPattern, '').trim();
+  return (text ?? '').replace(thinkingBlockPattern, '').trim();
 }
 
 export const SEPARATORS = ['.', '?', '!', '۔', '。', '‥', ';', '¡', '¿', '\n', '```'];

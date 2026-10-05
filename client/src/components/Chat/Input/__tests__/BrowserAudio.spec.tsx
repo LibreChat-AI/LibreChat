@@ -147,6 +147,22 @@ describe('BrowserAudio autoplay', () => {
     expect(spoken).toEqual([]);
   });
 
+  /** A turn stopped mid-reasoning persists its reasoning as `text` beside the parts. */
+  it('does not autoplay a stopped turn that only reasoned', async () => {
+    renderBrowserAudio({
+      messages: [
+        {
+          ...assistantMessage,
+          text: 'Recalling European capitals.',
+          content: [{ type: ContentTypes.THINK, think: 'Recalling European capitals.' }],
+        },
+      ],
+    });
+    await settle();
+
+    expect(spoken).toEqual([]);
+  });
+
   it('does not speak the user message back to them', async () => {
     const userMessage = { ...assistantMessage, isCreatedByUser: true } as TMessage;
     renderBrowserAudio({ messages: [userMessage] });

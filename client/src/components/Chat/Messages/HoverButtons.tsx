@@ -194,16 +194,17 @@ const HoverButtons = ({
   };
 
   const handleCopy = () => copyToClipboard(setIsCopied);
+  const speechText = getSpeechText(message);
 
   return (
     <div className="group visible flex justify-center gap-0.5 self-end focus-within:outline-hidden lg:justify-start">
       {/* Text to Speech */}
-      {TextToSpeech && !error && !isActiveStreamingMessage && (
+      {TextToSpeech && !error && !isActiveStreamingMessage && speechText.length > 0 && (
         <MessageAudio
           index={index}
           isLast={isLast}
           messageId={message.messageId}
-          content={getSpeechText(message)}
+          content={speechText}
           renderButton={(props) => (
             <HoverButton
               onClick={props.onClick}
