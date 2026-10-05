@@ -9,6 +9,7 @@ import {
   markNativeCodeToolApprovalRequests,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
+  getCodeApprovalPreservedFields,
 } from './byom';
 import { canAgentGraphPause } from './admission';
 
@@ -791,68 +792,34 @@ describe('approval mode without attached targets', () => {
     expect(
       resolvePersistedCodeApprovalMode({
         requested: 'ask',
-        conversationId: 'convo-1',
-        conversation: { conversationId: 'convo-1', codeApprovalMode: 'fullAccess' },
         settingsByAgentId: new Map(),
         approvalsEnabled: false,
       }),
     ).toBeUndefined();
+    expect(getCodeApprovalPreservedFields(new Map(), false)).toEqual([]);
   });
 
   describe('persisted mode', () => {
+    const permissive = new Map([['attached-agent', fullAccessSettings]]);
     const persist = (
       requested: unknown,
-      stored?: string,
       settingsByAgentId: Map<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
-      storedConversationId = 'convo-1',
-    ) =>
-      resolvePersistedCodeApprovalMode({
-        requested,
-        conversationId: 'convo-1',
-        conversation:
-          stored == null
-            ? null
-            : { conversationId: storedConversationId, codeApprovalMode: stored },
-        settingsByAgentId,
-      });
+    ) => resolvePersistedCodeApprovalMode({ requested, settingsByAgentId });
 
-    test('keeps the stored mode through a turn with nothing attached', () => {
-      expect(persist('ask', 'fullAccess')).toBe('fullAccess');
-      expect(persist('fullAccess', 'acceptEdits')).toBe('acceptEdits');
-      expect(persist(undefined, 'acceptEdits')).toBe('acceptEdits');
-    });
-
-    test('records no mode from the request when nothing valid is stored for this chat', () => {
-      expect(persist('fullAccess')).toBeUndefined();
-      expect(persist('ask')).toBeUndefined();
-      expect(persist(undefined)).toBeUndefined();
-      expect(persist('acceptEdits', 'fullAccess', new Map(), 'other-convo')).toBeUndefined();
-      expect(persist('acceptEdits', 'unrestricted')).toBeUndefined();
-      expect(() => persist('unrestricted', 'fullAccess')).toThrow('not permitted');
-    });
-
-    test('never carries the loaded row into a turn saved under another conversation', () => {
-      const persistUnder = (overrideConversationId: unknown) =>
-        resolvePersistedCodeApprovalMode({
-          requested: 'ask',
-          conversationId: 'convo-1',
-          overrideConversationId,
-          conversation: { conversationId: 'convo-1', codeApprovalMode: 'fullAccess' },
-          settingsByAgentId: new Map(),
-        });
-      expect(persistUnder('convo-2__0')).toBeUndefined();
-      expect(persistUnder('convo-2')).toBeUndefined();
-      expect(persistUnder('convo-1__0')).toBe('fullAccess');
-      expect(persistUnder('')).toBe('fullAccess');
-      expect(persistUnder(undefined)).toBe('fullAccess');
+    test('records nothing and keeps the stored mode through a turn with nothing attached', () => {
+      for (const requested of ['ask', 'acceptEdits', 'fullAccess', undefined]) {
+        expect(persist(requested)).toBeUndefined();
+      }
+      expect(getCodeApprovalPreservedFields(new Map())).toEqual(['codeApprovalMode']);
+      expect(() => persist('unrestricted')).toThrow('not permitted');
     });
 
     test('records exactly the validated mode once a target is attached', () => {
-      const permissive = new Map([['attached-agent', fullAccessSettings]]);
-      expect(persist('acceptEdits', 'fullAccess', permissive)).toBe('acceptEdits');
-      expect(persist(undefined, 'fullAccess', permissive)).toBeUndefined();
+      expect(persist('acceptEdits', permissive)).toBe('acceptEdits');
+      expect(persist(undefined, permissive)).toBeUndefined();
+      expect(getCodeApprovalPreservedFields(permissive)).toEqual([]);
       expect(() =>
-        persist('fullAccess', 'fullAccess', new Map([['attached-agent', restrictedSettings]])),
+        persist('fullAccess', new Map([['attached-agent', restrictedSettings]])),
       ).toThrow('not permitted');
     });
   });

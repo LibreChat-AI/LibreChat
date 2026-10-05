@@ -64,6 +64,7 @@ const {
   buildAttachedCodeEnvironmentAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
+  getCodeApprovalPreservedFields,
   markNativeCodeToolApprovalRequests,
   markToolApprovalAllowAlways,
   resolveRunToolApprovalAllows,
@@ -1987,9 +1988,6 @@ class AgentClient extends BaseClient {
     const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
     const codeApprovalMode = resolvePersistedCodeApprovalMode({
       requested: this.options.req.body.codeApprovalMode,
-      conversationId: this.options.req.body.conversationId,
-      overrideConversationId: this.options.req.body.overrideConvoId,
-      conversation: this.options.req.resolvedConversation,
       settingsByAgentId: collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
       approvalsEnabled: agentsEConfig?.toolApproval?.enabled !== false,
     });
@@ -2019,6 +2017,17 @@ class AgentClient extends BaseClient {
         runOptions,
       ),
     );
+  }
+
+  getTurnConversationFields(options, conversationId, endpointOptions, context) {
+    const topLevelAgents = [options.agent, ...(this.agentConfigs?.values() ?? [])];
+    return {
+      ...super.getTurnConversationFields(options, conversationId, endpointOptions, context),
+      preservedFields: getCodeApprovalPreservedFields(
+        collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
+        options.req?.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval?.enabled !== false,
+      ),
+    };
   }
 
   /**

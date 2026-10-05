@@ -2,7 +2,6 @@ import { Constants } from '@librechat/agents';
 import {
   CODE_APPROVAL_MODES,
   CodeApprovalModeError,
-  Constants as ProviderConstants,
   getAllowedCodeApprovalModes,
   resolveCodeApprovalMode,
   resolveCodePermissionDecision,
@@ -286,48 +285,47 @@ export function resolveAttachedCodeApprovalMode(
   return resolved;
 }
 
-type StoredCodeApprovalConversation = {
-  conversationId?: string | null;
-  codeApprovalMode?: string | null;
-};
+/** Approvals are on and no agent the turn can reach runs on an attached machine. */
+function makesNoCodeApprovalDecision(
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  approvalsEnabled: boolean,
+): boolean {
+  return approvalsEnabled && settingsByAgentId.size === 0;
+}
 
 /**
- * The approval mode a turn records on its conversation. A turn with attached targets records the
- * mode it validated. A turn without one makes no approval decision, so it records nothing new:
- * it returns the mode the conversation already stores, since omitting the key would `$unset` it,
- * and otherwise leaves the conversation without a mode so the composer keeps offering the
- * reader's remembered pick. A kept mode grants nothing on its own and is validated again against
- * the targets of whichever later turn uses it.
+ * The approval mode a turn records on its conversation: the mode it validated against its
+ * attached targets. A turn without one still rejects a value that is not an approval mode, but
+ * records nothing; `getCodeApprovalPreservedFields` keeps the stored mode through its writes.
  */
 export function resolvePersistedCodeApprovalMode({
   requested,
-  conversationId,
-  overrideConversationId,
-  conversation,
   settingsByAgentId,
   approvalsEnabled = true,
 }: {
   requested: unknown;
-  conversationId?: string | null;
-  /** The request's `overrideConvoId`: the turn is saved under this conversation instead. */
-  overrideConversationId?: unknown;
-  conversation?: StoredCodeApprovalConversation | null;
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>;
   approvalsEnabled?: boolean;
 }): CodeApprovalMode | undefined {
   const effective = resolveAttachedCodeApprovalMode(requested, settingsByAgentId, approvalsEnabled);
-  if (!approvalsEnabled || settingsByAgentId.size > 0) {
-    return effective;
-  }
-  const savedConversationId =
-    typeof overrideConversationId === 'string' && overrideConversationId !== ''
-      ? overrideConversationId.split(ProviderConstants.COMMON_DIVIDER)[0]
-      : conversationId;
-  const stored =
-    conversation != null && conversation.conversationId === savedConversationId
-      ? conversation.codeApprovalMode
-      : undefined;
-  return isCodeApprovalMode(stored) ? stored : undefined;
+  return makesNoCodeApprovalDecision(settingsByAgentId, approvalsEnabled) ? undefined : effective;
+}
+
+/**
+ * Conversation fields a turn's writes keep as stored although its save options omit them. A turn
+ * with no attached target makes no approval decision, so the mode stored on whichever
+ * conversation it is saved under, including an `overrideConvoId` target, stays as it is: leaving
+ * a workspace for a turn and returning keeps the reader's pick, and a chat that stores none keeps
+ * offering the remembered one. A kept mode grants nothing on its own and is validated again
+ * against the targets of whichever later turn uses it.
+ */
+export function getCodeApprovalPreservedFields(
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  approvalsEnabled = true,
+): Array<'codeApprovalMode'> {
+  return makesNoCodeApprovalDecision(settingsByAgentId, approvalsEnabled)
+    ? ['codeApprovalMode']
+    : [];
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {

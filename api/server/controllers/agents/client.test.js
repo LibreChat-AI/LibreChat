@@ -122,35 +122,39 @@ describe('AgentClient code approval persistence', () => {
     return client;
   };
 
-  it.each(['fullAccess', 'acceptEdits'])(
-    'saves a turn without a workspace that still carries a remembered %s mode',
+  /** The write `BaseClient` performs with these options: an omitted key is `$unset` from the
+   *  stored row unless the write preserves it. */
+  const turnWrite = (client) =>
+    client.getTurnConversationFields(
+      client.options,
+      'convo-1',
+      client.getSaveOptions(),
+      'client.test approval mode',
+    );
+
+  it.each(['fullAccess', 'acceptEdits', 'ask', undefined])(
+    'saves a turn without a workspace that carries %s, keeping the stored mode as it is',
     (requested) => {
-      const saveOptions = noWorkspaceClient({ requested, stored: requested }).getSaveOptions();
-      expect(saveOptions.codeApprovalMode).toBe(requested);
+      const write = turnWrite(noWorkspaceClient({ requested, stored: 'acceptEdits' }));
+      expect(write.endpointOptions).not.toHaveProperty('codeApprovalMode');
+      expect(write.preservedFields).toEqual(['codeApprovalMode']);
     },
   );
 
-  it('keeps the stored mode when a current client sends the gated ask without a workspace', () => {
-    expect(
-      noWorkspaceClient({ requested: 'ask', stored: 'fullAccess' }).getSaveOptions(),
-    ).toMatchObject({ codeApprovalMode: 'fullAccess' });
-    expect(
-      noWorkspaceClient({ requested: undefined, stored: 'acceptEdits' }).getSaveOptions(),
-    ).toMatchObject({ codeApprovalMode: 'acceptEdits' });
-  });
-
-  it('records no mode for a chat without a workspace that stores none of its own', () => {
-    for (const requested of ['ask', 'fullAccess', undefined]) {
-      expect(noWorkspaceClient({ requested }).getSaveOptions()).not.toHaveProperty(
-        'codeApprovalMode',
-      );
-    }
-  });
-
-  it('does not copy the loaded row mode into an overridden conversation', () => {
-    const client = noWorkspaceClient({ requested: 'ask', stored: 'fullAccess' });
-    client.options.req.body.overrideConvoId = `convo-2${Constants.COMMON_DIVIDER}0`;
-    expect(client.getSaveOptions()).not.toHaveProperty('codeApprovalMode');
+  it('preserves nothing once the turn runs on an attached machine', () => {
+    const agent = {
+      id: 'terra',
+      codeExecutionContext: {
+        environmentId: 'terra-vm',
+        environmentType: 'attached',
+        codeEnvironmentConfigSchema: {
+          permissions: { fileWrite: { allowed: ['allow', 'ask'], default: 'ask' } },
+        },
+      },
+    };
+    const write = turnWrite(noWorkspaceClient({ requested: 'acceptEdits', agent }));
+    expect(write.endpointOptions).toMatchObject({ codeApprovalMode: 'acceptEdits' });
+    expect(write.preservedFields).toEqual([]);
   });
 
   it('still rejects a value that is not an approval mode without a workspace', () => {

@@ -12,7 +12,10 @@ import {
   getConversationWriteContext,
   recoverTurnMessageReference,
 } from './save';
-import { resolvePersistedCodeApprovalMode } from '~/agents/hitl/byom';
+import {
+  getCodeApprovalPreservedFields,
+  resolvePersistedCodeApprovalMode,
+} from '~/agents/hitl/byom';
 
 type Store = Pick<ConversationMethods, 'getConvo' | 'saveConvo' | 'appendConvoMessageReference'> &
   Pick<MessageMethods, 'saveMessage'>;
@@ -197,28 +200,27 @@ describe('code approval mode across workspace choices', () => {
     configSchema: { permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } } },
   };
 
-  /** One turn's save as `AgentClient.getSaveOptions` and `BaseClient` perform it: the stored row
-   *  is read at admission, and a key the options omit is `$unset` from that row. */
+  /** One turn's save as `AgentClient` and `BaseClient` perform it: the row admission loaded is
+   *  the existing one, and a key the options omit is `$unset` from it unless the write keeps it.
+   *  `loadedId` names the row admission loaded when the turn is saved under another id. */
   const saveTurn = async (
     userId: string,
     conversationId: string,
     requested: unknown,
     targets: Array<[string, AttachedCodeEnvironmentPolicySettings]>,
+    loadedId = conversationId,
   ) => {
     const req = createRequest(userId);
-    req.resolvedConversation = await store.getConvo(userId, conversationId);
-    const codeApprovalMode = resolvePersistedCodeApprovalMode({
-      requested,
-      conversationId,
-      conversation: req.resolvedConversation,
-      settingsByAgentId: new Map(targets),
-    });
+    req.resolvedConversation = await store.getConvo(userId, loadedId);
+    const settingsByAgentId = new Map(targets);
+    const codeApprovalMode = resolvePersistedCodeApprovalMode({ requested, settingsByAgentId });
     await saveTurnConversation(store, {
       ...seedFields(req, conversationId),
       endpointOptions: {
         ...endpointOptions,
         ...(codeApprovalMode != null && { codeApprovalMode }),
       },
+      preservedFields: getCodeApprovalPreservedFields(settingsByAgentId),
       context: 'save.spec approval mode',
       ctx: getConversationWriteContext(req),
     });
@@ -261,6 +263,20 @@ describe('code approval mode across workspace choices', () => {
       'acceptEdits',
     );
     expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('acceptEdits');
+  });
+
+  it('keeps the mode of a conversation the turn is saved under instead of the loaded one', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const source = randomUUID();
+    const target = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, source, 'fullAccess', attached)).toBe('fullAccess');
+    expect(await saveTurn(userId, target, 'acceptEdits', attached)).toBe('acceptEdits');
+    expect(await saveTurn(userId, target, 'ask', [], source)).toBe('acceptEdits');
+    expect((await store.getConvo(userId, source))?.codeApprovalMode).toBe('fullAccess');
   });
 });
 
