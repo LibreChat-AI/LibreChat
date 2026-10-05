@@ -63,6 +63,7 @@ import type { TerminalSteerHook } from '~/agents/steering/runtime';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
+import type { SubagentCodeHostArgSpecs } from '~/code/targets';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
@@ -529,6 +530,10 @@ type LazySubagentAgent = Pick<
   | 'mcpToolAliases'
 > & {
   configId: string;
+  /** Per-call machine choices declared on the child's subagent call. */
+  subagentHostArgs?: SubagentCodeHostArgSpecs;
+  /** The routes behind those choices, for run-wide gates and approval bindings. */
+  codeExecutionChoices?: CodeExecutionContext[];
   subagentAgentConfigs?: RunAgent[];
   lazySubagentConfigs?: LazySubagentAgent[];
   /** Lightweight graph-member metadata used only by run-wide capability gates. */
@@ -551,6 +556,7 @@ type SubagentTreeNode = Pick<
   | 'includeReasoningHistory'
   | 'mcpToolAliases'
 > & {
+  codeExecutionChoices?: CodeExecutionContext[];
   subagentAgentConfigs?: SubagentTreeNode[];
   lazySubagentConfigs?: SubagentTreeNode[];
   subagentGraphMemberMetadata?: SubagentTreeNode[];
@@ -1619,7 +1625,7 @@ function createLazySubagentConfig(
   prebuiltGraphInputs?: ReadonlyMap<string, AgentInputs>,
   onResolvedAgent?: (agent: RunAgent) => void,
 ): SubagentConfig {
-  return {
+  const config: SubagentConfig = {
     type: child.id,
     name: child.name ?? child.id,
     description:
@@ -1660,6 +1666,10 @@ function createLazySubagentConfig(
       return childInputs;
     },
   };
+  /** Assigned rather than spread so the field typechecks against SDKs that predate it. */
+  return child.subagentHostArgs == null
+    ? config
+    : Object.assign(config, { hostArgs: child.subagentHostArgs });
 }
 
 function enqueueSubagentChildren(
@@ -1762,7 +1772,7 @@ function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
       continue;
     }
     visited.add(agent.id);
-    if (agent.codeEnvAvailable === true) {
+    if (agent.codeEnvAvailable === true || (agent.codeExecutionChoices?.length ?? 0) > 0) {
       return true;
     }
     enqueueSubagentChildren(agent, pending, visited);

@@ -2720,6 +2720,61 @@ describe('initializeClient — subagent loading', () => {
       });
     });
 
+    it('routes a reviewer to the machine its parent names and keeps it there this turn', async () => {
+      const req = await setup();
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+        const routedAgents = [];
+        mockInitializeAgent.mockImplementation(async (params) => {
+          routedAgents.push(params.agent);
+          return {
+            ...makeSubagentConfig(SUBAGENT_ID),
+            codeExecutionContext: {
+              environmentId: params.agent.code_environment_id,
+              environmentType: 'attached',
+            },
+          };
+        });
+
+        await descriptor.resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-routed',
+          hostArgs: { machine: SKYNET },
+        });
+        await descriptor.resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-later',
+        });
+        await expect(
+          descriptor.resolve({
+            signal: new AbortController().signal,
+            executionId: 'run-unadmitted',
+            hostArgs: { machine: 'code-unadmitted' },
+          }),
+        ).rejects.toThrow();
+
+        expect(routedAgents).toHaveLength(2);
+        expect(routedAgents[0]).toMatchObject({
+          id: SUBAGENT_ID,
+          code_environment_id: SKYNET,
+          code_environment_ids: [SKYNET],
+        });
+        expect(routedAgents[1]).toMatchObject({
+          code_environment_id: SKYNET,
+          code_environment_ids: [SKYNET],
+        });
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it('keeps a reviewer that may not use the parent machine on its own default', async () => {
       const req = await setup({ reviewer: { code_environment_ids: [] } });
       const fetchSpy = mockWorkerStatus();

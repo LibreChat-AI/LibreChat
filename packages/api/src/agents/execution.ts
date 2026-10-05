@@ -106,7 +106,38 @@ export function getCodeWorkspaceSelections(
 type CodeExecutionApprovalAgent = {
   id?: string | null;
   codeExecutionContext?: CodeExecutionContext | null;
+  /** Alternate machines a parent may route this subagent to per call. */
+  codeExecutionChoices?: readonly CodeExecutionContext[] | null;
 };
+
+function hashCodeExecutionTarget(agentId: string | null, context: CodeExecutionContext): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        agentId,
+        context.executionProfile,
+        context.baseUrl,
+        context.codeSessionKey,
+        context.executionRouteKey ?? null,
+        context.runtimeSessionHint ?? null,
+        context.environmentId ?? null,
+        context.environmentType ?? null,
+        context.bridgeWorkerId ?? null,
+        context.codeWorkspace == null
+          ? null
+          : {
+              environmentId: context.codeWorkspace.environmentId,
+              workspaceId: context.codeWorkspace.workspaceId,
+              workspaceInstanceId: context.codeWorkspace.workspaceInstanceId ?? null,
+              operations: [...new Set(context.codeWorkspace.operations)].sort(),
+              ...(context.codeWorkspace.environment
+                ? { definitionFingerprint: context.codeWorkspace.environment.fingerprint }
+                : {}),
+            },
+      ]),
+    )
+    .digest('hex');
+}
 
 const CODE_EXECUTION_TARGET_HASH = /^[a-f0-9]{64}$/;
 const MAX_CODE_EXECUTION_APPROVAL_TARGETS = 128;
@@ -120,39 +151,28 @@ export function captureCodeExecutionApprovalBinding(
   agents: readonly (CodeExecutionApprovalAgent | null | undefined)[],
 ): Agents.CodeExecutionApprovalBinding | undefined {
   const targetsByIdentity = new Map<string, Agents.CodeExecutionApprovalTargetBinding>();
-  for (const agent of agents) {
-    const context = agent?.codeExecutionContext;
-    if (context?.statefulSessions !== true) {
-      continue;
-    }
-    const targetHash = createHash('sha256')
-      .update(
-        JSON.stringify([
-          agent?.id ?? null,
-          context.executionProfile,
-          context.baseUrl,
-          context.codeSessionKey,
-          context.executionRouteKey ?? null,
-          context.runtimeSessionHint ?? null,
-          context.environmentId ?? null,
-          context.environmentType ?? null,
-          context.bridgeWorkerId ?? null,
-          context.codeWorkspace == null
-            ? null
-            : {
-                environmentId: context.codeWorkspace.environmentId,
-                workspaceId: context.codeWorkspace.workspaceId,
-                workspaceInstanceId: context.codeWorkspace.workspaceInstanceId ?? null,
-                operations: [...new Set(context.codeWorkspace.operations)].sort(),
-                ...(context.codeWorkspace.environment
-                  ? { definitionFingerprint: context.codeWorkspace.environment.fingerprint }
-                  : {}),
-              },
-        ]),
-      )
-      .digest('hex');
-    const target = { agentId: agent?.id ?? null, targetHash };
+  const addTarget = (target: Agents.CodeExecutionApprovalTargetBinding): void => {
     targetsByIdentity.set(`${target.agentId ?? ''}\u0000${target.targetHash}`, target);
+  };
+  for (const agent of agents) {
+    const agentId = agent?.id ?? null;
+    const context = agent?.codeExecutionContext;
+    if (context?.statefulSessions === true) {
+      addTarget({ agentId, targetHash: hashCodeExecutionTarget(agentId, context) });
+    }
+    /** All of an agent's per-call choices fold into one target, so a graph with many
+     * routable children stays within the binding's target limit. */
+    const choiceHashes = (agent?.codeExecutionChoices ?? [])
+      .filter((choice) => choice.statefulSessions === true)
+      .map((choice) => hashCodeExecutionTarget(agentId, choice));
+    if (choiceHashes.length > 0) {
+      addTarget({
+        agentId,
+        targetHash: createHash('sha256')
+          .update(JSON.stringify(['choices', [...new Set(choiceHashes)].sort()]))
+          .digest('hex'),
+      });
+    }
   }
   const targets = [...targetsByIdentity.values()];
   if (targets.length === 0) {

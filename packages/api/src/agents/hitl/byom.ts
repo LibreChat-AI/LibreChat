@@ -65,6 +65,8 @@ type CodeEnvironmentPolicyAgent = {
     codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
     codeEnvironmentSettings?: CodeEnvironmentUserSettings;
   };
+  /** Machines a parent may route this subagent to per call. */
+  codeExecutionChoices?: readonly { environmentType?: string }[] | null;
   subagentAgentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   lazySubagentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   subagentGraphMemberMetadata?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
@@ -189,7 +191,9 @@ export function collectAttachedCodeEnvironmentAgentIds(
 ): Set<string> {
   const attachedAgentIds = new Set<string>();
   for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
-    if (agent.id && agent.codeExecutionContext?.environmentType === 'attached') {
+    const routable =
+      agent.codeExecutionChoices?.some((choice) => choice.environmentType === 'attached') === true;
+    if (agent.id && (agent.codeExecutionContext?.environmentType === 'attached' || routable)) {
       attachedAgentIds.add(agent.id);
     }
   }

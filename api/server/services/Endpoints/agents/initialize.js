@@ -32,7 +32,7 @@ const {
   resolveCodeExecutionWorkspaceContext,
   resolveSubagentCodeWorkspaceInheritance,
   resolveSubagentCodeAvailability,
-  guardUnavailableSubagent,
+  guardRoutableSubagent,
   createStatefulCodeEnvironmentPolicyError,
   buildSubagentThreadTaskConfig,
   backgroundCompletionWakeupsEnabled,
@@ -53,6 +53,7 @@ const {
   retainScheduleMCPCompletion,
   getScheduleMCPExecution,
   getMCPRequestContext,
+  createSubagentCodeRouting,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -401,6 +402,10 @@ const initializeClientWithProvider = async ({
    * }>}
    */
   const agentToolContexts = new Map();
+  /** Per-call subagent machine routing; assigned once the request's code inputs are known. */
+  let subagentCodeRouting;
+  const getRoutedToolContext = (agentId, executionContext) =>
+    subagentCodeRouting?.getToolContext(agentId, executionContext);
   let runFileBindings;
   const resolveMcpServerName = (toolName, agentId) => {
     if (typeof toolName !== 'string' || typeof agentId !== 'string') {
@@ -449,6 +454,7 @@ const initializeClientWithProvider = async ({
     const soleContext =
       agentToolContexts.size === 1 ? agentToolContexts.values().next().value : null;
     const trustedContext =
+      getRoutedToolContext(executingAgentId, metadata.executionContext) ??
       (typeof executingAgentId === 'string' ? agentToolContexts.get(executingAgentId) : null) ??
       soleContext;
     const callbackMetadata = { ...metadata };
@@ -480,7 +486,10 @@ const initializeClientWithProvider = async ({
       runSignal,
       executionContext,
     ) => {
-      const ctx = runFileBindings.getContext(agentId, executionContext) ?? {};
+      const ctx =
+        getRoutedToolContext(agentId, executionContext) ??
+        runFileBindings.getContext(agentId, executionContext) ??
+        {};
       logger.debug(`[ON_TOOL_EXECUTE] ctx found: ${!!ctx.userMCPAuthMap}, agent: ${ctx.agent?.id}`);
       logger.debug(`[ON_TOOL_EXECUTE] toolRegistry size: ${ctx.toolRegistry?.size ?? 'undefined'}`);
 
@@ -576,6 +585,7 @@ const initializeClientWithProvider = async ({
       req,
       agentToolContexts,
       resolvePrimaryAgentId: () => primaryConfig?.id,
+      resolveExecutionContext: getRoutedToolContext,
     }),
   };
 
@@ -1138,6 +1148,17 @@ const initializeClientWithProvider = async ({
     backgroundToolsAvailable,
   });
 
+  subagentCodeRouting = createSubagentCodeRouting({
+    allowEnvironmentSelection:
+      appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    persistedSelections: admittedConversation?.codeWorkspaces,
+    requestedSelections: runtimeRequestBody?.codeWorkspaces,
+    environments: appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments,
+    userId,
+    conversationId,
+    getAppConfig,
+  });
+
   const toLazySubagentMetadata = async (agent) => {
     const configuredCodeEnvironments =
       appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments;
@@ -1198,16 +1219,22 @@ const initializeClientWithProvider = async ({
       },
     });
     const { codeExecutionContext } = codeAvailability;
-    const {
-      alwaysApplySkillPrimes,
-      historicalToolNames,
-      historicalMcpServerNames,
-      skillAuthoringAvailable,
-    } = await lazyHistoryResolver.resolve({
-      agent,
-      codeExecutionAvailable: lazyCodeEnvAvailable,
-      memoryAvailable,
-    });
+    const [
+      {
+        alwaysApplySkillPrimes,
+        historicalToolNames,
+        historicalMcpServerNames,
+        skillAuthoringAvailable,
+      },
+      { subagentHostArgs, codeExecutionChoices },
+    ] = await Promise.all([
+      lazyHistoryResolver.resolve({
+        agent,
+        codeExecutionAvailable: lazyCodeEnvAvailable,
+        memoryAvailable,
+      }),
+      subagentCodeRouting.describe(agent, { statefulCodeSessions, statefulCodeEnvironment }),
+    ]);
     return copyToolApprovalAdmissionMetadata(
       {
         id: agent.id,
@@ -1225,6 +1252,9 @@ const initializeClientWithProvider = async ({
         ...codeAvailability,
         statefulCodeEnvironment,
         codeSessionKey: codeExecutionContext?.codeSessionKey,
+        subagentHostArgs,
+        codeExecutionChoices,
+        subagentCodeFlags: { statefulCodeSessions, statefulCodeEnvironment },
         includeReasoningHistory: getIncludeReasoningHistory(agent),
         alwaysApplySkillPrimes,
         historicalToolNames,
@@ -1319,6 +1349,8 @@ const initializeClientWithProvider = async ({
     configId,
     context,
     lazyChildren,
+    codeFlags,
+    codeWorkspaceUnavailable,
     viewAccessChecked = false,
   }) => {
     throwIfAborted(context.signal);
@@ -1336,6 +1368,17 @@ const initializeClientWithProvider = async ({
     if (!validation.isValid) {
       throw new Error(validation.error?.message ?? `Subagent ${agentId} failed model validation.`);
     }
+    const placement = await waitForAbort(
+      subagentCodeRouting.place({
+        agent,
+        flags: codeFlags ?? {},
+        context,
+        unavailableReason: codeWorkspaceUnavailable,
+      }),
+      context.signal,
+    );
+    throwIfAborted(context.signal);
+    const routedAgent = placement.agent;
     const scopedSkillIds = resolveAgentScopedSkillIds({
       agent,
       accessibleSkillIds,
@@ -1353,7 +1396,7 @@ const initializeClientWithProvider = async ({
         {
           req,
           res,
-          agent,
+          agent: routedAgent,
           loadTools: createToolLoader(
             req,
             res,
@@ -1428,14 +1471,35 @@ const initializeClientWithProvider = async ({
     if (config.userMCPAuthMap) {
       Object.assign(userMCPAuthMap, config.userMCPAuthMap);
     }
-    agentToolContexts.set(agentId, buildAgentToolContext({ agent, config }));
+    subagentCodeRouting.attach(agentToolContexts, {
+      agentId,
+      context,
+      placement,
+      codeExecutionContext: config.codeExecutionContext,
+      toolContext: buildAgentToolContext({ agent: routedAgent, config }),
+    });
     endpointTokenConfigByAgentId.set(agentId, config.endpointTokenConfig);
     return config;
   };
-  const initializeLazySubagent = async ({ agentId, configId, context, lazyChildren }) => {
+  const initializeLazySubagent = async ({
+    agentId,
+    configId,
+    context,
+    lazyChildren,
+    codeFlags,
+    codeWorkspaceUnavailable,
+  }) => {
     throwIfAborted(context.signal);
     const agent = await waitForAbort(db.getAgentWithVersionCount({ id: agentId }), context.signal);
-    return initializeLoadedSubagent({ agent, agentId, configId, context, lazyChildren });
+    return initializeLoadedSubagent({
+      agent,
+      agentId,
+      configId,
+      context,
+      lazyChildren,
+      codeFlags,
+      codeWorkspaceUnavailable,
+    });
   };
 
   const buildLazySubagentDescriptors = async (agent, depth = 0, ancestors = new Set()) => {
@@ -1509,6 +1573,8 @@ const initializeClientWithProvider = async ({
             statefulCodeEnvironment: metadata.statefulCodeEnvironment,
             codeExecutionContext: metadata.codeExecutionContext,
             codeSessionKey: metadata.codeSessionKey,
+            subagentHostArgs: metadata.subagentHostArgs,
+            codeExecutionChoices: metadata.codeExecutionChoices,
             includeReasoningHistory: metadata.includeReasoningHistory,
             skillAuthoringAvailable: metadata.skillAuthoringAvailable,
             alwaysApplySkillPrimes: metadata.alwaysApplySkillPrimes,
@@ -1517,18 +1583,23 @@ const initializeClientWithProvider = async ({
             lazySubagentConfigs: lazyChildren,
             subagentAgentConfigs: eagerChildren,
             subagentGraphMemberMetadata,
-            ...guardUnavailableSubagent({
+            ...guardRoutableSubagent({
               description: metadata.description,
               codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
+              subagentHostArgs: metadata.subagentHostArgs,
               resolve: async (context) => {
                 const config = await initializeLazySubagent({
                   agentId: metadata.id,
                   configId: metadata.configId,
                   context,
                   lazyChildren,
+                  codeFlags: metadata.subagentCodeFlags,
+                  codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
                 });
                 config.subagentAgentConfigs = eagerChildren;
-                graphMemberConfigsById.set(config.id, config);
+                if (!subagentCodeRouting.isRouted(context.executionId)) {
+                  graphMemberConfigsById.set(config.id, config);
+                }
                 await resolveGraphSubagentsFor(config, context.signal);
                 return config;
               },

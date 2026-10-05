@@ -211,6 +211,27 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
   });
 
+  it('declares per-call machine choices only on lazy children that have them', async () => {
+    const resolve = jest.fn().mockResolvedValue(makeAgent({ id: 'child' }));
+    const subagentHostArgs = {
+      machine: { description: 'Machine the subagent runs on.', enum: ['laptop'] },
+    };
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child', 'plain'] },
+        lazySubagentConfigs: [
+          { id: 'child', configId: 'child:1', resolve, subagentHostArgs },
+          { id: 'plain', configId: 'plain:1', resolve },
+        ],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const [routed, plain] = parentInput.subagentConfigs ?? [];
+
+    expect(routed).toHaveProperty('hostArgs', subagentHostArgs);
+    expect(plain).not.toHaveProperty('hostArgs');
+  });
+
   it.each([false, true])(
     'reconciles a lazy child’s live setup file, parent already provisioned=%s',
     async (parentProvisioned) => {
