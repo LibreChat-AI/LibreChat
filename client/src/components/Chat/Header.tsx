@@ -127,11 +127,15 @@ function Header({
         <HeaderMenu
           startupConfig={startupConfig}
           trace={trace}
+          readOnly={readOnly}
           className={isSmallScreen ? undefined : 'hidden'}
         />
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>
           {trace.show && <TraceButton onClick={trace.open} />}
-          <ExportAndShareMenu isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false} />
+          <ExportAndShareMenu
+            isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
+            readOnly={readOnly}
+          />
           {showTemporaryChat && <TemporaryChat />}
         </div>
       </div>

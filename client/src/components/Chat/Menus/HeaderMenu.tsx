@@ -25,8 +25,11 @@ export default function HeaderMenu({
   startupConfig,
   trace,
   className,
+  readOnly = false,
 }: {
   startupConfig?: TStartupConfig;
+  /** A read-only subagent thread offers share and export but no edits to the chat. */
+  readOnly?: boolean;
   /** Owned by the header, which also renders the desktop trace button from it. */
   trace?: TraceControl;
   className?: string;
@@ -53,6 +56,7 @@ export default function HeaderMenu({
   const bookmarks = useBookmarkItems({ enabled: hasAccessToBookmarks === true });
   const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
+    readOnly,
     closeMenu: () => setIsOpen(false),
   });
 

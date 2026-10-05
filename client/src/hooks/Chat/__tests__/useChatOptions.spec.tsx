@@ -8,6 +8,9 @@ const mockState = {
     unknown
   >,
   cached: undefined as Record<string, unknown> | undefined,
+  route: 'convo-1' as string | undefined,
+  activeJobs: [] as string[],
+  startupConfig: undefined as Record<string, unknown> | undefined,
 };
 const mockPin = jest.fn();
 const mockArchive = jest.fn();
@@ -19,7 +22,10 @@ const mockSetConversation = jest.fn();
 const mockAnnounce = jest.fn();
 
 jest.mock('recoil', () => ({ useRecoilValue: () => mockState.conversation }));
-jest.mock('react-router-dom', () => ({ useNavigate: () => mockNavigate }));
+jest.mock('react-router-dom', () => ({
+  useNavigate: () => mockNavigate,
+  useParams: () => ({ conversationId: mockState.route }),
+}));
 jest.mock('@librechat/client', () => ({ useToastContext: () => ({ showToast: jest.fn() }) }));
 jest.mock('~/store', () => ({ __esModule: true, default: { conversationByIndex: () => ({}) } }));
 jest.mock('~/common', () => ({ NotificationSeverity: { SUCCESS: 'success', ERROR: 'error' } }));
@@ -34,6 +40,8 @@ jest.mock('~/Providers', () => ({
 }));
 jest.mock('~/data-provider', () => ({
   useGetConvoIdQuery: () => ({ data: mockState.cached }),
+  useGetStartupConfig: () => ({ data: mockState.startupConfig }),
+  useActiveJobs: () => ({ data: { activeJobIds: mockState.activeJobs } }),
   usePinConversationMutation: () => ({ mutate: mockPin }),
   useArchiveConvoMutation: () => ({ mutate: mockArchive }),
   useAssignConversationToProjectMutation: () => ({ mutate: mockAssign }),
@@ -55,8 +63,8 @@ jest.mock('../useExportShare', () => ({
   }),
 }));
 
-const setup = () =>
-  renderHook(() => useChatOptions({ isSharedButtonEnabled: true, closeMenu: jest.fn() }));
+const setup = (readOnly = false) =>
+  renderHook(() => useChatOptions({ isSharedButtonEnabled: true, closeMenu: jest.fn(), readOnly }));
 const labels = (items: MenuItemProps[]) =>
   items.filter((item) => item.show !== false && item.separate !== true).map((item) => item.label);
 const find = (items: MenuItemProps[], label: string) => {
@@ -72,6 +80,9 @@ describe('useChatOptions', () => {
     jest.clearAllMocks();
     mockState.conversation = { conversationId: 'convo-1', title: 'Hello', pinned: false };
     mockState.cached = undefined;
+    mockState.route = 'convo-1';
+    mockState.activeJobs = [];
+    mockState.startupConfig = undefined;
   });
 
   it('lists share and export first, then the sidebar actions for the open chat', () => {
@@ -171,6 +182,83 @@ describe('useChatOptions', () => {
     expect(updater({ conversationId: 'convo-1', chatProjectId: 'project-1' })).toEqual({
       conversationId: 'convo-1',
       chatProjectId: null,
+    });
+  });
+
+  it('offers only share and export on a read-only subagent thread', () => {
+    const { result } = setup(true);
+
+    expect(labels(result.current.items)).toEqual(['share', 'export']);
+  });
+
+  it('disables rename while the chat is generating without title ownership support', () => {
+    mockState.activeJobs = ['convo-1'];
+    const { result } = setup();
+
+    expect(find(result.current.items, 'com_ui_rename').disabled).toBe(true);
+  });
+
+  it('keeps rename enabled while generating when the deployment supports title ownership', () => {
+    mockState.activeJobs = ['convo-1'];
+    mockState.startupConfig = {
+      conversationTitleOwnershipVersion: 1,
+      interface: { runningChatRename: true },
+    };
+    const { result } = setup();
+
+    expect(find(result.current.items, 'com_ui_rename').disabled).toBe(false);
+  });
+
+  it('keeps rename enabled for a chat that is not generating', () => {
+    const { result } = setup();
+
+    expect(find(result.current.items, 'com_ui_rename').disabled).toBe(false);
+  });
+
+  it('stays on a chat opened while the archive request was in flight', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_archive').onClick?.({} as never));
+    mockState.route = 'convo-2';
+    rerender();
+    act(() => mockArchive.mock.calls[0][1].onSuccess());
+
+    expect(mockNewConversation).not.toHaveBeenCalled();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('hides history-only actions for a temporary chat', () => {
+    mockState.conversation = {
+      conversationId: 'convo-1',
+      title: 'Hello',
+      isTemporary: true,
+      chatProjectId: 'project-1',
+    };
+    const { result } = setup();
+
+    expect(labels(result.current.items)).toEqual([
+      'share',
+      'export',
+      'com_ui_rename',
+      'com_ui_duplicate',
+      'com_ui_delete',
+    ]);
+  });
+
+  it('tells assistive technology which items open a dialog', () => {
+    const { result } = setup();
+
+    expect(find(result.current.items, 'com_ui_rename')).toMatchObject({
+      ariaHasPopup: 'dialog',
+      ariaControls: 'rename-conversation-dialog',
+    });
+    expect(find(result.current.items, 'com_ui_change_project')).toMatchObject({
+      ariaHasPopup: 'dialog',
+      ariaControls: 'project-conversation-dialog',
+    });
+    expect(find(result.current.items, 'com_ui_delete')).toMatchObject({
+      ariaHasPopup: 'dialog',
+      ariaControls: 'delete-conversation-dialog',
     });
   });
 

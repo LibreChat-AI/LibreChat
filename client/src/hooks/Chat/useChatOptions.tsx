@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
-import { useNavigate } from 'react-router-dom';
 import { useToastContext } from '@librechat/client';
+import { useNavigate, useParams } from 'react-router-dom';
+import { supportsConversationTitleOwnership } from 'librechat-data-provider';
 import {
   Pen,
   Pin,
@@ -16,7 +17,9 @@ import type { TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type * as t from '~/common';
 import {
+  useActiveJobs,
   useGetConvoIdQuery,
+  useGetStartupConfig,
   useArchiveConvoMutation,
   usePinConversationMutation,
   useDuplicateConversationMutation,
@@ -25,6 +28,7 @@ import {
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
 import { ProjectButton } from '~/components/Conversations/ConvoOptions';
 import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
+import { isTemporaryConversation, hasRealTitle } from '~/utils';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { NotificationSeverity } from '~/common';
 import useExportShare from './useExportShare';
@@ -50,9 +54,12 @@ const noop = () => {};
 export default function useChatOptions({
   isSharedButtonEnabled,
   closeMenu,
+  readOnly = false,
 }: {
   isSharedButtonEnabled: boolean;
   closeMenu: () => void;
+  /** A durable subagent thread is a canonical record of its parent's run: only share and export apply. */
+  readOnly?: boolean;
 }): UseChatOptionsResult {
   const localize = useLocalize();
   const navigate = useNavigate();
@@ -61,6 +68,12 @@ export default function useChatOptions({
   const { newConversation } = useNewConvo();
   const { setConversation } = useChatContext();
   const { navigateToConvo } = useNavigateToConvo(0);
+  const { data: startupConfig } = useGetStartupConfig();
+  const { data: activeJobs } = useActiveJobs();
+  const { conversationId: routeConversationId } = useParams();
+  /** A request outlives the click: the route that matters is the one open when it resolves. */
+  const openConvoIdRef = useRef(routeConversationId);
+  openConvoIdRef.current = routeConversationId;
   const exportShare = useExportShare({ isSharedButtonEnabled });
   const conversation = useRecoilValue(store.conversationByIndex(0));
 
@@ -72,6 +85,13 @@ export default function useChatOptions({
   const isArchived = current?.isArchived === true;
   const chatProjectId = current?.chatProjectId ?? null;
   const title = current?.title ?? '';
+  const isTemporary = isTemporaryConversation(current);
+  const isGenerating = activeJobs?.activeJobIds?.includes(conversationId) === true;
+  /** The sidebar's rule: a running chat can only be renamed where the deployment can protect
+   *  the manual title from the pending generated one. */
+  const canRename =
+    supportsConversationTitleOwnership(startupConfig) ||
+    (!isGenerating && (current?.titleSetByUser === true || hasRealTitle(title)));
 
   const renameRef = useRef<HTMLButtonElement>(null);
   const projectRef = useRef<HTMLButtonElement>(null);
@@ -146,8 +166,10 @@ export default function useChatOptions({
             message: localize(isArchived ? 'com_ui_convo_unarchived' : 'com_ui_convo_archived'),
             isStatus: true,
           });
-          /** An archived chat leaves the list, so the open one is replaced; a restored one stays. */
-          if (!isArchived) {
+          /** An archived chat leaves the list, so the open one is replaced; a restored one stays.
+           *  Another chat opened since the click is left alone. */
+          const openConvoId = openConvoIdRef.current;
+          if (!isArchived && (openConvoId === conversationId || openConvoId === 'new')) {
             newConversation();
             navigate('/c/new', { replace: true });
           }
@@ -157,6 +179,10 @@ export default function useChatOptions({
     );
   };
 
+  /** A temporary chat is excluded from the history, pinned, archived and project lists, so
+   *  organizing it would report success and show nowhere. */
+  const canOrganize = !isTemporary;
+
   const items: t.MenuItemProps[] = [
     ...exportShare.items,
     { separate: true },
@@ -164,6 +190,9 @@ export default function useChatOptions({
       label: localize('com_ui_rename'),
       onClick: () => setShowRename(true),
       icon: <Pen className={iconClass} aria-hidden="true" />,
+      disabled: !canRename,
+      ariaHasPopup: 'dialog',
+      ariaControls: 'rename-conversation-dialog',
       /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
       hideOnClick: false,
       ref: renameRef,
@@ -172,12 +201,16 @@ export default function useChatOptions({
     {
       label: localize(isPinned ? 'com_ui_unpin' : 'com_ui_pin'),
       onClick: togglePin,
+      show: canOrganize,
       icon: <Pin className={iconClass} aria-hidden="true" />,
     },
     {
       label: localize('com_ui_change_project'),
       onClick: () => setShowProject(true),
+      show: canOrganize,
       icon: <FolderInput className={iconClass} aria-hidden="true" />,
+      ariaHasPopup: 'dialog',
+      ariaControls: 'project-conversation-dialog',
       /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
       hideOnClick: false,
       ref: projectRef,
@@ -186,7 +219,7 @@ export default function useChatOptions({
     {
       label: localize('com_ui_remove_from_project'),
       onClick: removeFromProject,
-      show: chatProjectId != null,
+      show: canOrganize && chatProjectId != null,
       icon: <FolderX className={iconClass} aria-hidden="true" />,
     },
     {
@@ -198,6 +231,7 @@ export default function useChatOptions({
     {
       label: localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive'),
       onClick: toggleArchive,
+      show: canOrganize,
       icon: isArchived ? (
         <ArchiveRestore className={iconClass} aria-hidden="true" />
       ) : (
@@ -208,6 +242,8 @@ export default function useChatOptions({
       label: localize('com_ui_delete'),
       onClick: () => setShowDelete(true),
       icon: <Trash className={iconClass} aria-hidden="true" />,
+      ariaHasPopup: 'dialog',
+      ariaControls: 'delete-conversation-dialog',
       /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */
       hideOnClick: false,
       ref: deleteRef,
@@ -217,7 +253,7 @@ export default function useChatOptions({
 
   return {
     show: exportShare.show,
-    items,
+    items: readOnly ? exportShare.items : items,
     hasSharedLink: exportShare.hasSharedLink,
     dialogs: exportShare.show ? (
       <>
@@ -228,6 +264,7 @@ export default function useChatOptions({
             onOpenChange={setShowRename}
             conversationId={conversationId}
             title={title}
+            titleSetByUser={current?.titleSetByUser === true}
             triggerRef={renameRef}
           />
         )}

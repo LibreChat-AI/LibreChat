@@ -23,6 +23,8 @@ const INPUT_ID = 'chat-rename-input';
 type RenameProps = {
   conversationId: string;
   title: string;
+  /** Saving an unchanged title is how a user claims an automatic one, so only an owned title short-circuits. */
+  titleSetByUser: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   triggerRef?: RefObject<HTMLButtonElement>;
@@ -31,8 +33,9 @@ type RenameProps = {
 function RenameContent({
   conversationId,
   title,
+  titleSetByUser,
   onOpenChange,
-}: Pick<RenameProps, 'conversationId' | 'title' | 'onOpenChange'>) {
+}: Pick<RenameProps, 'conversationId' | 'title' | 'titleSetByUser' | 'onOpenChange'>) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [value, setValue] = useState(title);
@@ -47,7 +50,7 @@ function RenameContent({
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const next = value.trim() || localize('com_ui_untitled');
-    if (next === title) {
+    if (next === title && titleSetByUser) {
       onOpenChange(false);
       return;
     }
@@ -65,7 +68,11 @@ function RenameContent({
   };
 
   return (
-    <OGDialogContent className="w-11/12 max-w-md" showCloseButton={false}>
+    <OGDialogContent
+      id="rename-conversation-dialog"
+      className="w-11/12 max-w-md"
+      showCloseButton={false}
+    >
       <OGDialogHeader>
         <OGDialogTitle>{localize('com_ui_rename_conversation')}</OGDialogTitle>
       </OGDialogHeader>
@@ -99,13 +106,19 @@ function RenameContent({
 export default function Rename({
   conversationId,
   title,
+  titleSetByUser,
   open,
   onOpenChange,
   triggerRef,
 }: RenameProps) {
   return (
     <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
-      <RenameContent conversationId={conversationId} title={title} onOpenChange={onOpenChange} />
+      <RenameContent
+        conversationId={conversationId}
+        title={title}
+        titleSetByUser={titleSetByUser}
+        onOpenChange={onOpenChange}
+      />
     </OGDialog>
   );
 }

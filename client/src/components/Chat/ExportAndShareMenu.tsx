@@ -7,8 +7,10 @@ import { useLocalize } from '~/hooks';
 
 export default function ExportAndShareMenu({
   isSharedButtonEnabled,
+  readOnly = false,
 }: {
   isSharedButtonEnabled: boolean;
+  readOnly?: boolean;
 }) {
   const localize = useLocalize();
   const menuId = useId();
@@ -16,6 +18,7 @@ export default function ExportAndShareMenu({
   const isSmallScreen = useMediaQuery('(max-width: 768px)');
   const { show, items, hasSharedLink, dialogs } = useChatOptions({
     isSharedButtonEnabled,
+    readOnly,
     closeMenu: () => setIsPopoverActive(false),
   });
 

@@ -35,9 +35,17 @@ jest.mock('~/common', () => ({ NotificationSeverity: { ERROR: 'error' } }));
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('~/utils', () => ({ logger: { error: jest.fn() } }));
 
-const setup = (title = 'Old title') => {
+const setup = (titleSetByUser = true, title = 'Old title') => {
   const onOpenChange = jest.fn();
-  render(<Rename conversationId="convo-1" title={title} open={true} onOpenChange={onOpenChange} />);
+  render(
+    <Rename
+      conversationId="convo-1"
+      title={title}
+      titleSetByUser={titleSetByUser}
+      open={true}
+      onOpenChange={onOpenChange}
+    />,
+  );
   return { onOpenChange, input: screen.getByLabelText('com_ui_new_conversation_title') };
 };
 
@@ -64,6 +72,18 @@ describe('Rename', () => {
     expect(mockMutateAsync).toHaveBeenCalledWith({
       conversationId: 'convo-1',
       title: 'New title',
+    });
+  });
+
+  it('saves an unchanged title to claim ownership while it is still automatic', async () => {
+    const { onOpenChange } = setup(false);
+
+    fireEvent.click(screen.getByText('com_ui_save'));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(mockMutateAsync).toHaveBeenCalledWith({
+      conversationId: 'convo-1',
+      title: 'Old title',
     });
   });
 
