@@ -197,6 +197,9 @@ function buildInitialBalance(user: string, config?: BalanceConfig): IBalanceUpda
     fields.refillIntervalValue = config.refillIntervalValue;
     fields.refillIntervalUnit = config.refillIntervalUnit;
     fields.refillAmount = config.refillAmount;
+    if (config.refillMode != null) {
+      fields.refillMode = config.refillMode;
+    }
     fields.lastRefill = new Date();
   }
   return fields;

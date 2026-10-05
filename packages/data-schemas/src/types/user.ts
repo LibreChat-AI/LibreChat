@@ -1,6 +1,7 @@
 import type {
   TUserFavorite,
   RefillIntervalUnit,
+  BalanceRefillMode,
   StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
@@ -129,6 +130,7 @@ export interface BalanceConfig {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
   reservationTtlMs?: number;
 }
 

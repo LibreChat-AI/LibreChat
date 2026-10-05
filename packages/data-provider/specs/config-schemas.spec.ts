@@ -7,6 +7,7 @@ import {
   isAllDataRetention,
   isForcedTemporaryRetention,
   configSchema,
+  balanceSchema,
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
@@ -1991,5 +1992,28 @@ describe('interfaceSchema agentSelectorLimit', () => {
     expect(normalizeAgentSelectorLimit(0)).toBe(10);
     expect(normalizeAgentSelectorLimit(101)).toBe(10);
     expect(normalizeAgentSelectorLimit('10')).toBe(10);
+  });
+});
+
+describe('balance refill mode', () => {
+  test('keeps additive refill as the default for existing configurations', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillMode).toBe('add');
+  });
+  test('accepts weekly non-accumulating reset with percentage display', () => {
+    expect(
+      balanceSchema.parse({
+        enabled: true,
+        startBalance: 300000000,
+        autoRefillEnabled: true,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAmount: 300000000,
+        refillMode: 'reset',
+        display: 'percent',
+      }),
+    ).toMatchObject({ refillMode: 'reset', display: 'percent' });
+  });
+  test('rejects unsupported refill modes', () => {
+    expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
   });
 });

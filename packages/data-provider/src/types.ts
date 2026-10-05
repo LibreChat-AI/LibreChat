@@ -21,10 +21,10 @@ import type {
   CodeEnvironmentUserSettings,
   TAgentsEndpoint,
 } from './config';
+import type { BalanceRefillMode, RefillIntervalUnit } from './balance';
 import type { StatefulCodeEnvironment } from './stateful-code';
 import type { CodeApprovalMode } from './code/approval';
 import type { EToolResources } from './types/tools';
-import type { RefillIntervalUnit } from './balance';
 import type { SettingDefinition } from './generate';
 import type { TMinimalFeedback } from './feedback';
 import type { ContentTypes } from './types/runs';
@@ -1257,6 +1257,7 @@ export type TBalanceResponse = {
   refillIntervalUnit?: RefillIntervalUnit;
   lastRefill?: Date | string;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
 };
 
 /* -------------------------------------------------------------------------- */

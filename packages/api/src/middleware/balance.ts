@@ -98,6 +98,11 @@ export function buildBalanceUpdateFields(
     updateFields.refillIntervalUnit = config.refillIntervalUnit;
   }
 
+  const refillMode = config.refillMode ?? 'add';
+  if ((userRecord?.refillMode ?? 'add') !== refillMode) {
+    updateFields.refillMode = refillMode;
+  }
+
   if (userRecord?.refillAmount !== config.refillAmount) {
     updateFields.refillAmount = config.refillAmount;
   }

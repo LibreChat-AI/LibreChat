@@ -1,4 +1,4 @@
-import type { RefillIntervalUnit } from 'librechat-data-provider';
+import type { BalanceRefillMode, RefillIntervalUnit } from 'librechat-data-provider';
 
 export interface BalanceUpdateFields {
   user?: string;
@@ -7,5 +7,6 @@ export interface BalanceUpdateFields {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
   lastRefill?: Date;
 }

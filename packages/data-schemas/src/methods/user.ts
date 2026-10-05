@@ -1,9 +1,9 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import {
-  AUTH_USER_DOC_CACHE_TTL_MS,
-  CacheKeys,
-  type RefillIntervalUnit,
-  type StatefulCodeEnvironment,
+import { AUTH_USER_DOC_CACHE_TTL_MS, CacheKeys } from 'librechat-data-provider';
+import type {
+  BalanceRefillMode,
+  RefillIntervalUnit,
+  StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
@@ -298,6 +298,7 @@ export function createUserMethods(
           refillIntervalValue: number;
           refillIntervalUnit: RefillIntervalUnit;
           refillAmount: number;
+          refillMode?: BalanceRefillMode;
         };
       } = {
         $inc: { tokenCredits: balanceConfig.startBalance },
@@ -314,6 +315,7 @@ export function createUserMethods(
           refillIntervalValue: balanceConfig.refillIntervalValue,
           refillIntervalUnit: balanceConfig.refillIntervalUnit,
           refillAmount: balanceConfig.refillAmount,
+          refillMode: balanceConfig.refillMode ?? 'add',
         };
       }
 

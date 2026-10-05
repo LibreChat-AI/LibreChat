@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import { logger, balanceSchema } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IBalance, IBalanceUpdate } from '@librechat/data-schemas';
-import { createSetBalanceConfig } from './balance';
+import { buildBalanceUpdateFields, createSetBalanceConfig } from './balance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -729,5 +729,23 @@ describe('createSetBalanceConfig', () => {
         expect(balanceRecord?.lastRefill).toBeInstanceOf(Date);
       },
     );
+  });
+});
+
+describe('balance refill mode synchronization', () => {
+  const config = {
+    autoRefillEnabled: true,
+    refillAmount: 1000,
+    refillIntervalValue: 1,
+    refillIntervalUnit: 'weeks' as const,
+  };
+  test('persists reset mode for existing balances', () => {
+    expect(
+      buildBalanceUpdateFields({ ...config, refillMode: 'reset' }, null, 'user-1'),
+    ).toMatchObject({ refillMode: 'reset' });
+  });
+  test('restores additive mode when the reset option is removed', () => {
+    const record = { ...config, refillMode: 'reset', lastRefill: new Date() } as IBalance;
+    expect(buildBalanceUpdateFields(config, record, 'user-1')).toEqual({ refillMode: 'add' });
   });
 });

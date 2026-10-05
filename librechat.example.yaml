@@ -452,6 +452,7 @@ registration:
 #   refillIntervalValue: 30
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 

@@ -31,12 +31,23 @@ function useRefillText(summary: BalanceSummary, currency?: CurrencyConfig): stri
   /** Re-render once a minute so "in 5 minutes" counts down while the view stays open */
   useTimeTick();
 
-  const { display, refillAmount, nextRefill } = summary;
+  const { display, refillAmount, refillMode, nextRefill } = summary;
   if (refillAmount == null) {
     return localize('com_ui_balance_no_refill');
   }
   const when =
     nextRefill != null ? formatTimeUntil(nextRefill, Date.now(), i18n.resolvedLanguage) : null;
+  if (refillMode === 'reset') {
+    if (display === 'percent') {
+      return when != null
+        ? localize('com_ui_balance_reset_in', { 0: when })
+        : localize('com_ui_balance_reset_due');
+    }
+    const amount = formatBalanceAmount(refillAmount, display, currency);
+    return when != null
+      ? localize('com_ui_balance_reset_amount_in', { 0: amount, 1: when })
+      : localize('com_ui_balance_reset_amount_due', { 0: amount });
+  }
   if (display === 'percent') {
     return when != null
       ? localize('com_ui_balance_refill_in', { 0: when })
@@ -77,7 +88,7 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
   return (
     <>
       <span
-        className={cn('justify-self-end text-xs font-medium whitespace-nowrap', TONE_TEXT[tone])}
+        className={cn('justify-self-end whitespace-nowrap text-xs font-medium', TONE_TEXT[tone])}
         data-testid="balance-value"
       >
         {value}
@@ -95,7 +106,7 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
       </span>
       {status != null && (
         <span
-          className={cn('justify-self-end text-xs whitespace-nowrap', TONE_TEXT[tone])}
+          className={cn('justify-self-end whitespace-nowrap text-xs', TONE_TEXT[tone])}
           data-testid="balance-status"
         >
           {status}

@@ -1,4 +1,4 @@
-import type { RefillIntervalUnit } from 'librechat-data-provider';
+import type { BalanceRefillMode, RefillIntervalUnit } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 /** Whole credits held against a balance while the request that reserved them is in flight */
@@ -12,6 +12,7 @@ export interface IBalanceReservation {
 export interface IBalancePendingRefill {
   transactionId: Types.ObjectId;
   rawAmount: number;
+  context?: 'autoRefill' | 'balanceReset';
 }
 
 export interface IBalance extends Document {
@@ -23,6 +24,7 @@ export interface IBalance extends Document {
   refillIntervalUnit: RefillIntervalUnit;
   lastRefill: Date;
   refillAmount: number;
+  refillMode?: BalanceRefillMode;
   tenantId?: string;
   /** Reservation state is excluded from reads unless explicitly selected */
   reservations?: IBalanceReservation[];
@@ -39,6 +41,7 @@ export interface IBalanceUpdate {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
   lastRefill?: Date;
 }
 

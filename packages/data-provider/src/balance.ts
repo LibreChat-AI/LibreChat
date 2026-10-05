@@ -7,6 +7,10 @@ export const REFILL_INTERVAL_UNITS = [
   'months',
 ] as const;
 
+export const BALANCE_REFILL_MODES = ['add', 'reset'] as const;
+
+export type BalanceRefillMode = (typeof BALANCE_REFILL_MODES)[number];
+
 export type RefillIntervalUnit = (typeof REFILL_INTERVAL_UNITS)[number];
 
 /** How the UI presents a balance: raw credits, their currency value, or the share of the

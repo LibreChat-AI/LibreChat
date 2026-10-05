@@ -22,18 +22,19 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
+  BALANCE_REFILL_MODES,
+  MIN_BALANCE_RESERVATION_TTL_MS,
+  DEFAULT_BALANCE_RESERVATION_TTL_MS,
+} from './balance';
+import {
   EModelEndpoint,
   eModelEndpointSchema,
   isAgentsEndpoint,
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import {
-  REFILL_INTERVAL_UNITS,
-  BALANCE_DISPLAY_MODES,
-  MIN_BALANCE_RESERVATION_TTL_MS,
-  DEFAULT_BALANCE_RESERVATION_TTL_MS,
-} from './balance';
 import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
@@ -3390,6 +3391,8 @@ export const balanceSchema = z.object({
   refillIntervalValue: z.number().optional().default(30),
   refillIntervalUnit: z.enum(REFILL_INTERVAL_UNITS).optional().default('days'),
   refillAmount: z.number().optional().default(10000),
+  /** Add credits on exhaustion, or replace the allowance on the next read/request once due. */
+  refillMode: z.enum(BALANCE_REFILL_MODES).optional().default('add'),
   reservationTtlMs: z
     .number()
     .int()
