@@ -432,7 +432,7 @@ test('validates the real formatter width and rejects missing or mistyped cleanup
   }
 });
 
-test('the shared tooling gate fails on tests, types and formatting instead of reporting an empty pass', async () => {
+test('the shared tooling gate handles LF and CRLF and propagates test, type and formatting failures', async () => {
   const directory = await mkdtemp(join(ROOT, 'scripts/imports/.gate-'));
   const tooling = join(directory, 'scripts/imports');
   const config = {
@@ -470,7 +470,7 @@ test('the shared tooling gate fails on tests, types and formatting instead of re
     await copyFile(join(ROOT, 'scripts/i18n.mts'), join(directory, 'scripts/i18n.mts'));
     await writeFile(
       join(directory, '.prettierrc'),
-      JSON.stringify({ printWidth: 100, singleQuote: true }),
+      JSON.stringify({ printWidth: 100, singleQuote: true, endOfLine: 'auto' }),
     );
     await writeFile(
       join(tooling, 'tsconfig.json'),
@@ -479,11 +479,16 @@ test('the shared tooling gate fails on tests, types and formatting instead of re
     await writeFile(join(directory, 'scripts/sort-imports.mts'), 'export {};\n');
     await writeFile(join(tooling, 'compact.test.mts'), cleanTest);
     await writeFile(join(tooling, 'fixture.mts'), cleanType);
-    const green = run();
-    assert.equal(green.status, 0, green.stdout + green.stderr);
-    assert.match(green.stdout, /tests 1/);
-    assert.match(green.stdout, /All matched files use Prettier code style/);
-    assert.match(green.stdout, /Import tooling/);
+    const runner = join(directory, 'scripts/static-checks.mts');
+    const runnerSource = (await readFile(runner, 'utf8')).replace(/\r\n?/g, '\n');
+    for (const endOfLine of ['\n', '\r\n']) {
+      await writeFile(runner, runnerSource.replace(/\n/g, endOfLine));
+      const green = run();
+      assert.equal(green.status, 0, green.stdout + green.stderr);
+      assert.match(green.stdout, /tests 1/);
+      assert.match(green.stdout, /All matched files use Prettier code style/);
+      assert.match(green.stdout, /Import tooling/);
+    }
 
     await writeFile(
       join(tooling, 'compact.test.mts'),
