@@ -124,7 +124,7 @@ for (const definition of ['stock', 'clickhouse'] as const) {
         });
 
         expect((await computedStyles(header, ['backgroundColor'])).backgroundColor).toBe(
-          await probeStyle(page, 'bg-surface-primary-alt', 'background-color'),
+          await probeStyle(page, 'bg-surface-canvas', 'background-color'),
         );
         const heading = table.locator('th').first();
         const headingStyles = await computedStyles(heading, [

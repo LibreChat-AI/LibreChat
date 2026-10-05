@@ -26,7 +26,7 @@ const HoverToggle = ({
           'peer text-text-primary items-center gap-1.5 rounded-r-lg pr-2 pl-2',
           isPopoverActive || isActiveConvo ? 'flex' : 'hidden group-hover:flex',
           isActiveConvo
-            ? 'from-surface-secondary group-hover:from-surface-nav-hover from-85% to-transparent group-hover:bg-gradient-to-l'
+            ? 'from-surface-secondary group-hover:from-surface-nav-selected from-85% to-transparent group-hover:bg-gradient-to-l'
             : 'from-surface-secondary hover:from-surface-nav-hover z-50 from-0% to-transparent hover:bg-gradient-to-l',
           isPopoverActive && !isActiveConvo ? 'from-surface-secondary' : '',
           className,

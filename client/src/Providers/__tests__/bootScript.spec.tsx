@@ -182,6 +182,23 @@ describe('index.html deployment theme boot script', () => {
     expect(document.head.textContent).toContain('background-color: rgb(1, 2, 3)');
   });
 
+  it.each([
+    ['/d/prompts', 'rgb(1, 2, 3)'],
+    ['/d/prompts/new', 'rgb(1, 2, 3)'],
+    ['/d/anything', 'rgb(1, 2, 3)'],
+    ['/d/prompts/abc123', 'rgb(8, 10, 24)'],
+  ])('classifies the legacy dashboard path %s by where it lands', (path, expected) => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', path);
+    boot();
+    expect(document.head.textContent).toContain(`background-color: ${expected}`);
+  });
+
   it('accepts any whitespace between the cached surface channels', () => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);

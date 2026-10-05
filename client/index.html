@@ -110,7 +110,9 @@
               let surface;
               let canvas;
               /* Only the conversation paints the canvas, and the redirects that land on it; other routes keep the split surface. */
-              const chatRoute = path === '' || /^(?:c(?:\/|$)|prompts(?:\/new)?\/?$)/.test(path);
+              const chatRoute =
+                path === '' ||
+                /^(?:c(?:\/|$)|prompts(?:\/new)?\/?$|d\/(?!prompts\/(?!new\/?$)).*)/.test(path);
               boot.properties.forEach(function (entry) {
                 if (typeof entry[0] === 'string' && entry[0].indexOf('--') === 0) {
                   root.style.setProperty(entry[0], String(entry[1]));
