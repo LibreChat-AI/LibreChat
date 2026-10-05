@@ -81,9 +81,9 @@ function usesGeminiDocumentCapabilities(provider: Providers, model?: string): bo
 }
 
 /**
- * Textual types that OpenAI-compatible gateways can reject as a `file` part (Azure OpenAI
- * answers 400 "Invalid file data" for these), so they go as text unless the endpoint lists
- * them. `text/*`, JSON, YAML and TypeScript stay file parts.
+ * Textual types that OpenAI-compatible gateways reject as a `file` part on either API shape
+ * (Azure OpenAI answers 400 "Invalid file data" for these), so they go as text unless the
+ * endpoint lists them.
  */
 const textPartApplicationTypes = new Set([
   'application/sql',
@@ -94,14 +94,25 @@ const textPartApplicationTypes = new Set([
 /**
  * Whether a document goes as a text part because the endpoint's own `supportedMimeTypes`
  * does not list it. Gemini accepts `text/*` inline but rejects every textual
- * `application/*` type (JSON, YAML, XML, SQL, CoffeeScript). "Textual" is the same
+ * `application/*` type (JSON, YAML, XML, SQL, CoffeeScript). OpenAI chat completions
+ * accepts only PDF as `file.file_data` and answers 400 for `text/plain`, CSV, HTML and
+ * JSON, while Azure OpenAI accepts those; a text part is read by both. The responses API
+ * documents textual `input_file` types, so it keeps them. "Textual" is the same
  * classification that routes a file to the provider (`isNativelyReadableText`).
  */
-function sendsAsTextWithoutOptIn(provider: Providers, mimeType: string, model?: string): boolean {
+function sendsAsTextWithoutOptIn(
+  provider: Providers,
+  mimeType: string,
+  useResponsesApi: boolean | undefined,
+  model?: string,
+): boolean {
   if (usesGeminiDocumentCapabilities(provider, model)) {
     return !mimeType.startsWith('text/') && isNativelyReadableText(mimeType);
   }
-  return textPartApplicationTypes.has(mimeType);
+  if (textPartApplicationTypes.has(mimeType)) {
+    return true;
+  }
+  return !useResponsesApi && isNativelyReadableText(mimeType);
 }
 
 /** A textual file as a plain text part, which every provider and API shape accepts. */
@@ -149,7 +160,7 @@ function formatDocumentBlock(
 
   const resolvedFilename = filename ?? 'document';
 
-  if (!optedIn && sendsAsTextWithoutOptIn(provider, mimeType, model)) {
+  if (!optedIn && sendsAsTextWithoutOptIn(provider, mimeType, useResponsesApi, model)) {
     return formatTextDocumentBlock(resolvedFilename, content);
   }
 

@@ -949,7 +949,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       expect(result.files).toHaveLength(1);
     });
 
-    it('should keep textual documents as file parts for non-Claude OpenAI models', async () => {
+    it('should send textual documents as text parts for non-Claude OpenAI models on chat completions', async () => {
       const req = createMockRequest(30) as ServerRequest;
       const file = createMockDocFile(1, 'text/html', 'page.html');
       const mockContent = Buffer.from('<p>hi</p>').toString('base64');
@@ -966,10 +966,31 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
         mockStrategyFunctions,
       );
 
+      expect(result.documents).toEqual([{ type: 'text', text: 'File: "page.html"\n\n<p>hi</p>' }]);
+    });
+
+    it('should keep textual documents as input_file parts for non-Claude OpenAI models on the responses API', async () => {
+      const req = createMockRequest(30) as ServerRequest;
+      const file = createMockDocFile(1, 'text/html', 'page.html');
+      const mockContent = Buffer.from('<p>hi</p>').toString('base64');
+      mockedGetFileStream.mockResolvedValue({
+        file,
+        content: mockContent,
+        metadata: file,
+      });
+
+      const result = await encodeAndFormatDocuments(
+        req,
+        [file],
+        { provider: Providers.OPENAI, model: 'gpt-5.4', useResponsesApi: true },
+        mockStrategyFunctions,
+      );
+
       expect(result.documents).toEqual([
         {
-          type: 'file',
-          file: { filename: 'page.html', file_data: `data:text/html;base64,${mockContent}` },
+          type: 'input_file',
+          filename: 'page.html',
+          file_data: `data:text/html;base64,${mockContent}`,
         },
       ]);
     });
@@ -1147,8 +1168,8 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       });
     });
 
-    it('should format text/plain for standard OpenAI-like provider as file block', async () => {
-      const req = createMockRequest(15) as ServerRequest;
+    it('should keep text/plain as a file block for a standard OpenAI-like provider when the endpoint lists it', async () => {
+      const req = createOptInRequest(['^text/plain$']) as ServerRequest;
       const file = createMockDocFile(1, 'text/plain', 'readme.txt');
 
       const mockContent = Buffer.from('readme content').toString('base64');
@@ -1273,8 +1294,60 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
         ]);
       });
 
-      it('keeps application/json as a file part for OpenAI under the inherited list', async () => {
-        const req = createMockRequest(30) as ServerRequest;
+      it.each([
+        ['text/plain', 'fixture.txt', 'plain text'],
+        ['text/csv', 'fixture.csv', 'a,b\n1,2'],
+        ['text/html', 'fixture.html', '<p>hi</p>'],
+        ['application/json', 'fixture.json', '{"a":1}'],
+      ])(
+        'sends %s to OpenAI chat completions as a text part under the inherited list',
+        async (mimeType, filename, text) => {
+          const req = createMockRequest(30) as ServerRequest;
+          const file = createMockDocFile(1, mimeType, filename);
+          const content = Buffer.from(text).toString('base64');
+          mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+          const result = await encodeAndFormatDocuments(
+            req,
+            [file],
+            { provider: Providers.OPENAI, model: 'gpt-5.1' },
+            mockStrategyFunctions,
+          );
+
+          expect(result.documents).toEqual([
+            { type: 'text', text: `File: "${filename}"\n\n${text}` },
+          ]);
+          expect(result.files).toHaveLength(1);
+        },
+      );
+
+      it.each([
+        ['text/plain', 'fixture.txt'],
+        ['text/csv', 'fixture.csv'],
+        ['application/json', 'fixture.json'],
+      ])(
+        'keeps %s as an input_file on the OpenAI responses API under the inherited list',
+        async (mimeType, filename) => {
+          const req = createMockRequest(30) as ServerRequest;
+          const file = createMockDocFile(1, mimeType, filename);
+          const content = Buffer.from('x').toString('base64');
+          mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
+
+          const result = await encodeAndFormatDocuments(
+            req,
+            [file],
+            { provider: Providers.OPENAI, useResponsesApi: true },
+            mockStrategyFunctions,
+          );
+
+          expect(result.documents).toEqual([
+            { type: 'input_file', filename, file_data: `data:${mimeType};base64,${content}` },
+          ]);
+        },
+      );
+
+      it('keeps application/json as a file part for OpenAI when the endpoint lists it', async () => {
+        const req = createOptInRequest(['^application/json$']) as ServerRequest;
         const file = createMockDocFile(1, 'application/json', 'data.json');
         const content = Buffer.from('{"a":1}').toString('base64');
         mockedGetFileStream.mockResolvedValue({ file, content, metadata: file });
@@ -1329,7 +1402,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
       });
 
       it.each(['application/yaml', 'application/typescript'])(
-        'keeps %s as a file part for OpenAI under the inherited list',
+        'sends %s to OpenAI chat completions as a text part under the inherited list',
         async (mimeType) => {
           const req = createMockRequest(30) as ServerRequest;
           const file = createMockDocFile(1, mimeType, 'file');
@@ -1343,7 +1416,7 @@ describe('encodeAndFormatDocuments - fileConfig integration', () => {
             mockStrategyFunctions,
           );
 
-          expect(result.documents).toMatchObject([{ type: 'file' }]);
+          expect(result.documents).toEqual([{ type: 'text', text: 'File: "file"\n\na: 1' }]);
         },
       );
 
