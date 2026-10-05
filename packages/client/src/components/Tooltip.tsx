@@ -22,6 +22,8 @@ interface TooltipAnchorProps extends Ariakit.TooltipAnchorProps {
   description: string;
   enableHTML?: boolean;
   portalElement?: Ariakit.TooltipProps['portalElement'];
+  /** Overrides the popup's z-index, for anchors inside a host layer above the default. */
+  zIndex?: number;
   side?: 'top' | 'bottom' | 'left' | 'right';
 }
 
@@ -34,11 +36,13 @@ const TooltipPopup = memo(function TooltipPopup({
   description,
   enableHTML,
   portalElement,
+  zIndex,
 }: {
   store: Ariakit.TooltipStore;
   description: string;
   enableHTML: boolean;
   portalElement?: Ariakit.TooltipProps['portalElement'];
+  zIndex?: number;
 }) {
   const mounted = Ariakit.useStoreState(store, (state) => state.mounted);
   const placement = Ariakit.useStoreState(store, (state) => state.placement);
@@ -47,6 +51,7 @@ const TooltipPopup = memo(function TooltipPopup({
    * the stylesheet default so tooltips never outrank freshly opened dialogs. */
   const dialogDepth = useDialogDepth();
   const popoverZIndex = usePopoverZIndex();
+  const resolvedZIndex = zIndex ?? (dialogDepth > 0 ? popoverZIndex : undefined);
 
   const sanitizer = useMemo(() => {
     const instance = DOMPurify();
@@ -102,7 +107,7 @@ const TooltipPopup = memo(function TooltipPopup({
           className="tooltip"
           render={
             <motion.div
-              style={dialogDepth > 0 ? { zIndex: popoverZIndex } : undefined}
+              style={resolvedZIndex != null ? { zIndex: resolvedZIndex } : undefined}
               initial={{ opacity: 0, x, y }}
               animate={{ opacity: 1, x: 0, y: 0 }}
               exit={{ opacity: 0, x, y }}
@@ -136,6 +141,7 @@ export const TooltipAnchor: ForwardRefExoticComponent<
     role,
     enableHTML = false,
     portalElement,
+    zIndex,
     onKeyDown,
     tabIndex,
     ...props
@@ -188,6 +194,7 @@ export const TooltipAnchor: ForwardRefExoticComponent<
         description={description}
         enableHTML={enableHTML}
         portalElement={portalElement}
+        zIndex={zIndex}
       />
     </Ariakit.TooltipProvider>
   );
