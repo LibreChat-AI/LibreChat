@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import '@testing-library/jest-dom';
 import { render, waitFor } from '@testing-library/react';
 import type { ThemeMode, IThemeRGB } from '../types';
@@ -306,15 +308,19 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     ).toEqual([]);
   });
 
-  it('keeps the list marker and the quote bar at the 3:1 floor on the page', () => {
+  it('keeps the list marker and the quote bar at the 3:1 floor on the page and the user bubble', () => {
     expect(
       below(
         theme,
         WCAG_NON_TEXT,
         ['rgb-prose-bullet', 'rgb-prose-quote-bar'],
-        ['rgb-surface-chat', 'rgb-surface-primary', 'rgb-presentation'],
+        ['rgb-surface-chat', 'rgb-surface-primary', 'rgb-presentation', 'rgb-surface-user-message'],
       ),
     ).toEqual([]);
+  });
+
+  it('keeps the inline code chip off the user message bubble it can sit on', () => {
+    expect(theme['rgb-surface-code-inline']).not.toEqual(theme['rgb-surface-user-message']);
   });
 
   it('keeps primary text at WCAG AA on the inline code chip', () => {
@@ -441,6 +447,15 @@ describe('clickhouse theme definition', () => {
       menuPanelRadius: appearance.menuRadius,
       inlineCodeWeight: '500',
     });
+  });
+
+  it('bundles the Inconsolata face the inline code weight selects', () => {
+    const { appearance } = resolveTheme(clickHouseTheme, 'light');
+    const fonts = fs.readFileSync(path.resolve(__dirname, '../fonts.css'), 'utf8');
+    const faces = fonts.match(/font-family: Inconsolata;[^}]*font-weight: (\d+);/g) ?? [];
+    expect(faces.map((face) => face.match(/font-weight: (\d+)/)?.[1])).toContain(
+      appearance.inlineCodeWeight,
+    );
   });
 
   it('sizes theme controls and the shared spacing from Click UI', () => {
