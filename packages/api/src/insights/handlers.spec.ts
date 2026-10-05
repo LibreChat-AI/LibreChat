@@ -27,7 +27,7 @@ const emptyInsights: TInsightsResponse = {
 
 const insightsEnabled = jest.fn(() => true);
 const insightsDisabled = jest.fn(() => false);
-const getAccessibleAgents = jest.fn().mockResolvedValue(agents);
+const getAccess = jest.fn().mockResolvedValue({ agents, media: false });
 
 const createResponse = () => {
   const status = jest.fn();
@@ -50,21 +50,41 @@ const createDashboardHandler = (getInsights = jest.fn().mockResolvedValue(emptyI
   getInsights,
   handler: createInsightsHandler({
     isInsightsEnabled: insightsEnabled,
-    getAccessibleAgents,
+    getAccess,
     getInsights,
   }),
 });
 
 describe('Insights handlers', () => {
+  it('accepts tenant Insights readers without agents and scopes media to the authenticated tenant', async () => {
+    const getInsights = jest.fn().mockResolvedValue(emptyInsights);
+    const handler = createInsightsHandler({
+      isInsightsEnabled: insightsEnabled,
+      getAccess: async () => ({ agents: [], media: true }),
+      getInsights,
+    });
+    const { response, json } = createResponse();
+    await handler(createRequest({ tenantId: 'tenant-b', includeMedia: 'false' }), response);
+    expect(getInsights).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: 'tenant-a', agentIds: [], includeMedia: true }),
+    );
+    expect(json).toHaveBeenCalledWith(emptyInsights);
+  });
+
+  it('does not accept client-authored media access for an agent-specific reader', async () => {
+    const { handler, getInsights } = createDashboardHandler();
+    await handler(createRequest({ includeMedia: 'true' }), createResponse().response);
+    expect(getInsights.mock.calls[0][0]).not.toHaveProperty('includeMedia');
+  });
   beforeEach(() => {
     jest.clearAllMocks();
-    getAccessibleAgents.mockResolvedValue(agents);
+    getAccess.mockResolvedValue({ agents, media: false });
   });
 
   it('returns access when at least one agent is accessible', async () => {
     const handler = createInsightsAccessHandler({
       isInsightsEnabled: insightsEnabled,
-      getAccessibleAgents,
+      getAccess,
     });
     const { response, json } = createResponse();
 
@@ -74,10 +94,10 @@ describe('Insights handlers', () => {
   });
 
   it('returns 403 from the access endpoint when no agent is accessible', async () => {
-    getAccessibleAgents.mockResolvedValueOnce([]);
+    getAccess.mockResolvedValueOnce({ agents: [], media: false });
     const handler = createInsightsAccessHandler({
       isInsightsEnabled: insightsEnabled,
-      getAccessibleAgents,
+      getAccess,
     });
     const { response, status } = createResponse();
 
@@ -89,7 +109,7 @@ describe('Insights handlers', () => {
   it('returns 404 from the access endpoint when Insights is disabled', async () => {
     const handler = createInsightsAccessHandler({
       isInsightsEnabled: insightsDisabled,
-      getAccessibleAgents,
+      getAccess,
     });
     const { response, status, json } = createResponse();
 
@@ -97,14 +117,14 @@ describe('Insights handlers', () => {
 
     expect(status).toHaveBeenCalledWith(404);
     expect(json).toHaveBeenCalledWith({ message: 'Not found' });
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getAccess).not.toHaveBeenCalled();
   });
 
   it('returns 404 without resolving access when Insights is disabled', async () => {
     const getInsights = jest.fn();
     const handler = createInsightsHandler({
       isInsightsEnabled: insightsDisabled,
-      getAccessibleAgents,
+      getAccess,
       getInsights,
     });
     const { response, status } = createResponse();
@@ -112,7 +132,7 @@ describe('Insights handlers', () => {
     await handler(createRequest(), response);
 
     expect(status).toHaveBeenCalledWith(404);
-    expect(getAccessibleAgents).not.toHaveBeenCalled();
+    expect(getAccess).not.toHaveBeenCalled();
     expect(getInsights).not.toHaveBeenCalled();
   });
 

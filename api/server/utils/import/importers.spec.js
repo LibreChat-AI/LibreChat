@@ -875,6 +875,59 @@ describe('importChatGptConvo', () => {
 });
 
 describe('importLibreChatConvo', () => {
+  it.each([false, true])(
+    'detaches owner-bound native content from portable imports (recursive=%s)',
+    async (recursive) => {
+      const message = {
+        messageId: 'native-import',
+        parentMessageId: Constants.NO_PARENT,
+        isCreatedByUser: false,
+        content: [
+          {
+            type: ContentTypes.TEXT,
+            text: 'Visible imported caption',
+            native_media: { continuationRef: 'foreign-reference' },
+          },
+          {
+            type: ContentTypes.IMAGE_FILE,
+            native_media: { continuationRef: 'foreign-image-reference' },
+            image_file: {
+              file_id: 'foreign-file',
+              filepath: '/api/media/foreign-file',
+              filename: 'image.png',
+              width: 10,
+              height: 20,
+            },
+          },
+        ],
+      };
+      const data = {
+        conversationId: 'foreign-conversation',
+        title: 'Imported',
+        recursive,
+        ...(recursive ? { messagesTree: [message] } : { messages: [message] }),
+      };
+      const builder = new ImportBatchBuilder('different-owner');
+      await getImporter(data)(data, 'different-owner', () => builder);
+      expect(builder.messages[0].content).toEqual([
+        { type: ContentTypes.TEXT, text: 'Visible imported caption' },
+        {
+          type: ContentTypes.IMAGE_FILE,
+          image_file: {
+            file_id: '',
+            filepath: '',
+            filename: 'image.png',
+            width: 10,
+            height: 20,
+            unavailable: 'not_transferred',
+          },
+        },
+      ]);
+      expect(JSON.stringify(builder.messages)).not.toMatch(
+        /foreign-reference|foreign-file|foreign-image-reference/,
+      );
+    },
+  );
   const jsonDataNonRecursiveBranches = JSON.parse(
     fs.readFileSync(path.join(__dirname, '__data__', 'librechat-opts-nonr-branches.json'), 'utf8'),
   );

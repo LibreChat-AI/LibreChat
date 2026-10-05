@@ -137,6 +137,7 @@ describe('forkConversation', () => {
         expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
       ]),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 
@@ -157,6 +158,7 @@ describe('forkConversation', () => {
         expectedMessagesTexts.map((text) => expect.objectContaining({ text })),
       ),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 
@@ -176,6 +178,7 @@ describe('forkConversation', () => {
         expectedMessagesTexts.map((text) => expect.objectContaining({ text })),
       ),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 
@@ -319,6 +322,7 @@ describe('forkConversation', () => {
         expectedMessagesTexts.map((text) => expect.objectContaining({ text })),
       ),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 
@@ -339,6 +343,7 @@ describe('forkConversation', () => {
         expectedMessagesTexts.map((text) => expect.objectContaining({ text })),
       ),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 
@@ -505,6 +510,7 @@ describe('duplicateConversation', () => {
         expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
       ]),
       true,
+      { unavailableMedia: 'placeholder' },
     );
   });
 

@@ -63,6 +63,27 @@ function fakeReq(overrides: TestRequestOverrides = {}): ServerRequest {
 
 describe('createEndpointsConfigService', () => {
   describe('getEndpointsConfig', () => {
+    it('declares the saved-key encoding for builtin and custom endpoints', async () => {
+      const deps = createMockDeps({
+        loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+          openAI: { userProvide: true },
+          google: { userProvide: true },
+          azureOpenAI: { userProvide: true },
+          bedrock: { userProvide: true },
+        }),
+        loadCustomEndpointsConfig: jest.fn().mockReturnValue({
+          customGoogle: { type: EModelEndpoint.custom, userProvide: true },
+        }),
+      });
+      const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+      expect(result).toMatchObject({
+        openAI: { keyEncoding: 'apiKey' },
+        google: { keyEncoding: 'google' },
+        azureOpenAI: { keyEncoding: 'azure' },
+        bedrock: { keyEncoding: 'bedrock' },
+        customGoogle: { keyEncoding: 'apiKey' },
+      });
+    });
     it('merges default and custom endpoints', async () => {
       const deps = createMockDeps({
         loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({

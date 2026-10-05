@@ -182,7 +182,10 @@ function getReservationTtlMs(config?: BalanceConfig): number {
   return effective;
 }
 
-function buildInitialBalance(user: string, config?: BalanceConfig): IBalanceUpdate | undefined {
+export function buildInitialBalance(
+  user: string,
+  config?: BalanceConfig,
+): IBalanceUpdate | undefined {
   if (config?.startBalance == null) {
     return undefined;
   }
@@ -200,6 +203,37 @@ function buildInitialBalance(user: string, config?: BalanceConfig): IBalanceUpda
     fields.lastRefill = new Date();
   }
   return fields;
+}
+
+export type BalanceCreditReservationDeps = Pick<
+  CheckBalanceDeps,
+  'reserveBalance' | 'renewBalanceReservation' | 'releaseBalanceReservation' | 'balanceConfig'
+>;
+
+/** Reserves an already-priced amount with the same initialization, renewal and release as chat. */
+export async function reserveBalanceCredits(
+  { user, amount }: { user: string; amount: number },
+  deps: BalanceCreditReservationDeps,
+): Promise<{ reservation?: BalanceReservation; balance: BalanceReservationResult | null }> {
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error('A finite nonnegative credit amount is required.');
+  }
+  const reservationId = randomUUID();
+  const ttlMs = getReservationTtlMs(deps.balanceConfig);
+  const expiresAt = new Date(Date.now() + ttlMs);
+  const balance = await deps.reserveBalance({
+    user,
+    reservationId,
+    amount,
+    expiresAt,
+    initialBalance: buildInitialBalance(user, deps.balanceConfig),
+  });
+  return {
+    balance,
+    reservation: balance?.reserved
+      ? holdReservation({ user, reservationId, amount, ttlMs, expiresAt }, deps)
+      : undefined,
+  };
 }
 
 /**
@@ -221,8 +255,6 @@ export async function checkBalance(
     endpointTokenConfig,
   });
   const tokenCost = amount * multiplier;
-  const reservationId = randomUUID();
-  const ttlMs = getReservationTtlMs(deps.balanceConfig);
 
   logger.debug('[Balance.check] Reserving token cost', {
     user,
@@ -236,18 +268,12 @@ export async function checkBalance(
     endpointTokenConfig: !!endpointTokenConfig,
   });
 
-  const expiresAt = new Date(Date.now() + ttlMs);
-  const result = await deps.reserveBalance({
-    user,
-    reservationId,
-    amount: tokenCost,
-    expiresAt,
-    initialBalance: buildInitialBalance(user, deps.balanceConfig),
-  });
+  const { balance: result, reservation } = await reserveBalanceCredits(
+    { user, amount: tokenCost },
+    deps,
+  );
 
-  if (result?.reserved) {
-    return holdReservation({ user, reservationId, amount: tokenCost, ttlMs, expiresAt }, deps);
-  }
+  if (reservation) return reservation;
 
   if (!result) {
     logger.debug('[Balance.check] No balance record found for user', { user });

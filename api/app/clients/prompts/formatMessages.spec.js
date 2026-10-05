@@ -1,7 +1,17 @@
 const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
-const { Constants } = require('librechat-data-provider');
-const { HumanMessage, AIMessage, SystemMessage } = require('@librechat/agents/langchain/messages');
-const { formatMessage, formatLangChainMessages, formatFromLangChain } = require('./formatMessages');
+const { Constants, ContentTypes } = require('librechat-data-provider');
+const {
+  HumanMessage,
+  AIMessage,
+  SystemMessage,
+  ToolMessage,
+} = require('@librechat/agents/langchain/messages');
+const {
+  formatMessage,
+  formatAgentMessages,
+  formatLangChainMessages,
+  formatFromLangChain,
+} = require('./formatMessages');
 
 describe('formatMessage', () => {
   it('formats user message', () => {
@@ -330,5 +340,89 @@ describe('formatLangChainMessages', () => {
 
       expect(formatFromLangChain(message)).toEqual(expected);
     });
+  });
+});
+
+describe('formatAgentMessages assistant replay folding', () => {
+  const text = (value, extra = {}) => ({
+    type: ContentTypes.TEXT,
+    [ContentTypes.TEXT]: value,
+    ...extra,
+  });
+  const image = (fileId, extra = {}) => ({
+    type: 'image_file',
+    image_file: { file_id: fileId, filepath: `/images/${fileId}.png` },
+    ...extra,
+  });
+  const toolCall = (id) => ({
+    type: ContentTypes.TOOL_CALL,
+    tool_call: { id, name: 'verify', args: '{}', output: 'ok' },
+  });
+
+  it('folds text around a plain image part into a string AIMessage that keeps its tool calls', () => {
+    const [message, tool] = formatAgentMessages([
+      {
+        role: 'assistant',
+        content: [
+          text('Here is the chart.'),
+          image('chart'),
+          text('Let me verify.', { tool_call_ids: ['call-1'] }),
+          toolCall('call-1'),
+        ],
+      },
+    ]);
+    expect(message).toBeInstanceOf(AIMessage);
+    expect(message.content).toBe('Here is the chart.\n\nLet me verify.');
+    expect(message.tool_calls).toMatchObject([{ id: 'call-1', name: 'verify', args: {} }]);
+    expect(tool).toBeInstanceOf(ToolMessage);
+  });
+
+  it('folds a reasoning turn to the joined text and drops the reasoning part', () => {
+    const [message] = formatAgentMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: ContentTypes.THINK, [ContentTypes.THINK]: 'Weighing options.' },
+          text('First.'),
+          image('sketch'),
+          text('Second.'),
+        ],
+      },
+    ]);
+    expect(message.content).toBe('First.\nSecond.');
+  });
+
+  it('keeps native media parts as an ordered array through the tool-call flush', () => {
+    const [message, tool] = formatAgentMessages([
+      {
+        role: 'assistant',
+        content: [
+          text('Drawing.'),
+          image('native', { native_media: { continuationRef: 'native:job-1:0' } }),
+          text('Checking.', { tool_call_ids: ['call-2'] }),
+          toolCall('call-2'),
+        ],
+      },
+    ]);
+    expect(Array.isArray(message.content)).toBe(true);
+    expect(message.content.map((part) => part.type)).toEqual(['text', 'image_file', 'text']);
+    expect(message.content[1].native_media).toEqual({ continuationRef: 'native:job-1:0' });
+    expect(message.tool_calls).toMatchObject([{ id: 'call-2' }]);
+    expect(tool).toBeInstanceOf(ToolMessage);
+  });
+
+  it('keeps native media parts in order when a reasoning part would otherwise fold the turn', () => {
+    const [message] = formatAgentMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: ContentTypes.THINK, [ContentTypes.THINK]: 'Composing.' },
+          text('Before.'),
+          image('native', { native_media: { continuationRef: 'native:job-2:0' } }),
+          text('After.'),
+        ],
+      },
+    ]);
+    expect(message.content.map((part) => part.type)).toEqual(['text', 'image_file', 'text']);
   });
 });

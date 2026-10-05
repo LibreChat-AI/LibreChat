@@ -6,4 +6,7 @@ export * from './avatar';
 export * from './metadata';
 export * from './url';
 export * from './path';
+export * from './read';
+export * from './write';
+export * from './deletion';
 export * from './local';

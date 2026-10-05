@@ -7,6 +7,7 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('../../../../packages/api/src/files/public.ts'),
   createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   stripPrivateMessageFields: jest.requireActual(
     '../../../../packages/api/src/protection/private/view',

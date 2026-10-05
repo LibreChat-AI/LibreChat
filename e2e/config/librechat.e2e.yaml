@@ -5,6 +5,10 @@ version: 1.3.11
 cache: true
 
 interface:
+  presets: true
+  media:
+    use: true
+    create: true
   # Isolated test fleet contains only ownership-aware replicas.
   runningChatRename: true
   # Exercises the cost row in the context usage gauge (off by default).
@@ -26,6 +30,9 @@ interface:
   schedules:
     use: true
     minIntervalMinutes: 1
+
+# Filled with the shared local image provider config.
+# __E2E_MEDIA_CONFIG__
 
 # Enables the memory feature so the MEMORIES.USE permission is granted and the
 # ephemeral memory badge (inline set_memory/delete_memory tools) is available.
@@ -119,6 +126,8 @@ fileConfig:
           'text/markdown': 'provider'
 
 endpoints:
+  # The runtime config substitutes E2E_MEDIA_PORT for this local provider origin.
+  allowedAddresses: ['127.0.0.1:8768']
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
@@ -301,6 +310,12 @@ modelSpecs:
     - 'Mock Provider F'
     - 'agents'
   list:
+    - name: 'e2e-native-gemini'
+      label: 'E2E Native Gemini'
+      preset:
+        endpoint: 'google'
+        model: 'gemini-3-pro-image-preview'
+
     - name: 'e2e-mock-provider-a'
       label: 'Mock Provider A'
       preset:

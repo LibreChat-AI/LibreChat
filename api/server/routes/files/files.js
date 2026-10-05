@@ -9,7 +9,7 @@ const {
   refreshS3FileUrls,
   handleFilesUsageRequest,
   buildDeleteFilesResponse,
-  deleteAgentResourceFiles,
+  handleAgentResourceFileDeletion,
   shouldUseUploadSse,
   startUploadSseStream,
   sendUploadPolicyError,
@@ -23,6 +23,7 @@ const {
   checkToolResourceUploadPermission,
   resolveAssistantToolPermissions,
   resolveDownloadPath,
+  toPublicFiles,
 } = require('@librechat/api');
 const {
   isUUID,
@@ -86,7 +87,7 @@ router.get('/', async (req, res) => {
         logger,
       },
     });
-    res.status(200).send(responseFiles);
+    res.status(200).send(toPublicFiles(responseFiles));
   } catch (error) {
     logger.error('[/files] Error getting files:', error);
     res.status(400).json({ message: 'Error in request', error: error.message });
@@ -144,7 +145,7 @@ router.get('/agent/:agent_id', async (req, res) => {
       text: 0,
     });
 
-    res.status(200).json(files);
+    res.status(200).json(toPublicFiles(files));
   } catch (error) {
     logger.error('[/files/agent/:agent_id] Error fetching agent files:', error);
     res.status(500).json({ error: 'Failed to fetch agent files' });
@@ -245,37 +246,24 @@ router.delete('/', async (req, res) => {
         });
       }
 
-      const agentDeletion = await deleteAgentResourceFiles(
+      return handleAgentResourceFileDeletion(
+        res,
         {
           agentId: req.body.agent_id,
           agentObjectId: agent._id.toString(),
           toolResource: req.body.tool_resource,
           requestedFileIds: fileIds,
           attachedFileIds: agent.tool_resources?.[req.body.tool_resource]?.file_ids ?? [],
-          files: dbFiles.map((file) => ({
-            file_id: file.file_id,
-            owner: file.user?.toString() ?? null,
-            file,
-          })),
+          files: dbFiles,
           userId: req.user.id.toString(),
         },
         {
+          getFileOwner: (file) => file.user?.toString() ?? null,
           getSharedResourceFileIds: db.getSharedResourceFileIds,
           removeAgentResourceFiles: db.removeAgentResourceFiles,
           deleteFiles: (agentFiles) => processDeleteRequest({ req, files: agentFiles }),
         },
       );
-
-      if (agentDeletion.outcome == null) {
-        res.status(200).json({ message: 'File associations removed successfully from agent' });
-        return;
-      }
-
-      logger.debug(
-        `[/files] Agent files deleted successfully: ${agentDeletion.destroyedFileIds.join(', ')}`,
-      );
-      sendDeleteResult(agentDeletion.outcome, 'Files deleted successfully');
-      return;
     }
 
     const ownedFiles = [];

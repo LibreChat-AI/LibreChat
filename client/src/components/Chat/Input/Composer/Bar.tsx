@@ -207,6 +207,8 @@ interface BarProps {
   actionSlot: React.ReactNode;
   /** Owned by `ChatForm`, which also paints the trace over the textarea. */
   dictation: Dictation;
+  /** Opens chat media creation; omitted where the composer cannot host it. */
+  onCreateMedia?: () => void;
 }
 
 /**
@@ -238,6 +240,7 @@ function Bar({
   approvalSlot,
   actionSlot,
   dictation,
+  onCreateMedia,
 }: BarProps) {
   const localize = useLocalize();
   const context = useBadgeRowContext();
@@ -421,6 +424,7 @@ function Bar({
             setFilesLoading={setFilesLoading}
             canAttach={canAttach}
             anchorRef={anchorRef}
+            onCreateMedia={onCreateMedia}
           />
         </span>
         {/* A box rather than `contents` so it has something to move: the split

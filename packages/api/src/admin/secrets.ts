@@ -789,7 +789,14 @@ export function preserveConfigSecrets<T>(next: T, existing?: unknown, basePath =
  * These are yaml-only (admin writes are rejected), which is what makes masking
  * safe: a masked read can never be round-tripped back over the real values.
  */
-const CONFIG_SECRET_MAP_FIELDS: readonly string[] = ['langfuse.headers'];
+const CONFIG_SECRET_MAP_FIELDS: readonly string[] = [
+  'langfuse.headers',
+  'media.integrations.*.endpointRef.headers',
+];
+const CONFIG_YAML_SECRET_FIELDS: readonly string[] = [
+  'media.integrations.*.endpointRef.apiKey',
+  'media.integrations.*.endpointRef.keyFile',
+];
 const MASKED_MAP_VALUE = '***';
 
 /**
@@ -803,8 +810,9 @@ const MASKED_MAP_VALUE = '***';
  * "Custom config file loaded" log, which would otherwise copy every literal
  * gateway credential into application logs.
  *
- * Only handles map-valued secrets; scalar secrets keep whatever handling the
- * caller already applies.
+ * Includes yaml-only media credential fields, whose literal values may also
+ * contain complete service-account credentials. Admin-writable scalar secrets
+ * keep the caller's registry-based handling.
  */
 export function redactConfigSecretMaps<T>(root: T): T {
   const clone = JSON.parse(JSON.stringify(root)) as T;
@@ -816,25 +824,44 @@ export function redactConfigSecretMaps<T>(root: T): T {
   return clone;
 }
 
+/** Visits yaml-only fields, including each entry of registered arrays. */
+function visitConfigField(
+  root: unknown,
+  segments: string[],
+  visit: (parent: Record<string, unknown>, key: string) => void,
+): void {
+  const [key, ...remaining] = segments;
+  if (key === '*') {
+    if (Array.isArray(root)) for (const item of root) visitConfigField(item, remaining, visit);
+    return;
+  }
+  const record = getPlainRecord(root);
+  if (!record) return;
+  if (remaining.length === 0) {
+    visit(record, key);
+    return;
+  }
+  visitConfigField(record[key], remaining, visit);
+}
+
 function redactSecretMapFields(rootRecord: Record<string, unknown>): void {
   for (const path of CONFIG_SECRET_MAP_FIELDS) {
-    const segments = path.split('.');
-    const parent = walkToParent(rootRecord, segments);
-    const key = segments[segments.length - 1];
-    const value = parent?.[key];
-    const map = getPlainRecord(value);
-    if (parent == null) {
-      continue;
-    }
-    if (map == null) {
-      /** A non-object here is malformed for this path; drop it rather than
-       *  risk serializing a raw string credential. */
-      if (value !== undefined) {
+    visitConfigField(rootRecord, path.split('.'), (parent, key) => {
+      const map = getPlainRecord(parent[key]);
+      if (!map) {
         delete parent[key];
+        return;
       }
-      continue;
-    }
-    parent[key] = Object.fromEntries(Object.keys(map).map((name) => [name, MASKED_MAP_VALUE]));
+      parent[key] = Object.fromEntries(Object.keys(map).map((name) => [name, MASKED_MAP_VALUE]));
+    });
+  }
+  for (const path of CONFIG_YAML_SECRET_FIELDS) {
+    visitConfigField(rootRecord, path.split('.'), (parent, key) => {
+      const value = parent[key];
+      if (value === undefined) return;
+      if (typeof value === 'string' && (isUserProvided(value) || isEnvPlaceholder(value))) return;
+      parent[key] = MASKED_MAP_VALUE;
+    });
   }
 }
 

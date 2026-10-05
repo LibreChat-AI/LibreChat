@@ -1,8 +1,8 @@
-import { createElement } from 'react';
+import { createElement, useEffect } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
@@ -317,6 +317,121 @@ describe('shouldPreserveMessagesOnNotFound', () => {
 });
 
 describe('useGetMessagesByConvoId', () => {
+  it.each(['messages', 'metadata'] as const)(
+    'shares one request with a later cache subscriber when %s settles first',
+    async (first) => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+      const request = deferred<TMessage[]>();
+      const load = jest.mocked(dataService.getMessagesByConvoId).mockReturnValue(request.promise);
+      let ownerRenders = 0;
+      function Transcript() {
+        const query = useGetMessagesByConvoId('convo-id', {
+          enabled: false,
+          refetchOnMount: false,
+        });
+        return createElement('p', { 'data-testid': 'transcript' }, query.data?.[0]?.text);
+      }
+      function Owner({ metadataReady }: { metadataReady: boolean }) {
+        ownerRenders++;
+        useGetMessagesByConvoId('convo-id', {
+          refetchOnMount: true,
+          notifyOnChangeProps: ['isLoading', 'isFetching'],
+        });
+        return metadataReady ? createElement(Transcript) : null;
+      }
+      const view = render(createElement(Owner, { metadataReady: false }), {
+        wrapper: createWrapper(queryClient, '/c/convo-id'),
+      });
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('transcript')).not.toBeInTheDocument();
+      if (first === 'metadata') {
+        view.rerender(createElement(Owner, { metadataReady: true }));
+      }
+      await act(async () => {
+        request.resolve([message({ text: 'Loaded history' })]);
+        await request.promise;
+      });
+      if (first === 'messages') {
+        expect(screen.queryByTestId('transcript')).not.toBeInTheDocument();
+        view.rerender(createElement(Owner, { metadataReady: true }));
+      }
+      await waitFor(() =>
+        expect(screen.getByTestId('transcript')).toHaveTextContent('Loaded history'),
+      );
+      expect(load).toHaveBeenCalledTimes(1);
+
+      const rendersBeforeUpdate = ownerRenders;
+      act(() => {
+        queryClient.setQueryData(
+          [QueryKeys.messages, 'convo-id'],
+          [message({ text: 'Streamed update' })],
+        );
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('transcript')).toHaveTextContent('Streamed update'),
+      );
+      expect(ownerRenders).toBe(rendersBeforeUpdate);
+
+      load.mockResolvedValue([message({ text: 'Refreshed history' })]);
+      await act(async () => {
+        await queryClient.invalidateQueries([QueryKeys.messages, 'convo-id']);
+      });
+      await waitFor(() =>
+        expect(screen.getByTestId('transcript')).toHaveTextContent('Refreshed history'),
+      );
+      expect(load).toHaveBeenCalledTimes(2);
+      view.unmount();
+      queryClient.clear();
+    },
+  );
+
+  it('never releases a cached active job before the fetch owner settles warm history', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(
+      [QueryKeys.messages, 'convo-id'],
+      [message({ text: 'Cached history' })],
+    );
+    queryClient.setQueryData(['streamStatus', 'convo-id'], { active: true });
+    const request = deferred<TMessage[]>();
+    const load = jest.mocked(dataService.getMessagesByConvoId).mockReturnValue(request.promise);
+    const resumeReady: boolean[] = [];
+    function Subscriber({ messagesReady }: { messagesReady: boolean }) {
+      const query = useGetMessagesByConvoId('convo-id', {
+        enabled: false,
+        refetchOnMount: false,
+      });
+      useEffect(() => {
+        const status = queryClient.getQueryData<{ active: boolean }>(['streamStatus', 'convo-id']);
+        if (status?.active) {
+          resumeReady.push(messagesReady && !query.isLoading && !query.isFetching);
+        }
+      });
+      return null;
+    }
+    function Owner() {
+      const query = useGetMessagesByConvoId('convo-id', {
+        refetchOnMount: true,
+        notifyOnChangeProps: ['isLoading', 'isFetching'],
+      });
+      return createElement(Subscriber, { messagesReady: !query.isLoading && !query.isFetching });
+    }
+    const view = render(createElement(Owner), {
+      wrapper: createWrapper(queryClient, '/c/convo-id'),
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(resumeReady.length).toBeGreaterThan(0);
+    expect(resumeReady).not.toContain(true);
+    await act(async () => {
+      request.resolve([message({ text: 'Fresh history' })]);
+      await request.promise;
+    });
+    await waitFor(() => expect(resumeReady[resumeReady.length - 1]).toBe(true));
+    view.unmount();
+    queryClient.clear();
+  });
+
   it('observes optimistic new-chat messages without requesting them from the API', async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

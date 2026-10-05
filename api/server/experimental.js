@@ -35,6 +35,9 @@ const {
   performStartupChecks,
   handleJsonParseError,
   initializeFileStorage,
+  createMetrics,
+  isLeader,
+  startMediaWorker,
   loadToolApprovalHooks,
   maybeInjectQueryDevtoolsBootstrap,
   injectConfiguredFooterBootstrap,
@@ -84,6 +87,7 @@ const createSpaFallback = require('./utils/fallback');
 const { getAppConfig } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const optionalJwtAuth = require('./middleware/optionalJwtAuth');
+const mediaApplication = require('./services/Media');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
 
@@ -401,7 +405,11 @@ if (cluster.isMaster) {
   };
   // Tear down stream resources before shared caches and telemetry exporters shut down.
   registerShutdownTask('generation job manager', destroyGenerationJobManager, { priority: 100 });
-  const expiredFileSweep = createClusteredFileSweep(cacheConfig.USE_REDIS, startExpiredFileSweep);
+  const expiredFileSweep = createClusteredFileSweep(
+    cacheConfig.USE_REDIS,
+    startExpiredFileSweep,
+    isLeader,
+  );
   const SCHEDULE_ENGINE_OPTIONAL_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'DELETE']);
 
   const rejectScheduleWritesUntilReady = (req, res, next) => {
@@ -436,6 +444,11 @@ if (cluster.isMaster) {
     }
   });
   const startServer = async () => {
+    const { metricsMiddleware, metricsRouter, recordMediaEvent } = createMetrics({
+      collectMediaBacklogMetrics: () => runAsSystem(agentEventMethods.getMediaBacklogMetrics),
+    });
+    app.use(metricsMiddleware);
+    app.use('/metrics', metricsRouter);
     logger.info(`Worker ${process.pid} initializing...`);
 
     await waitForKeyvRedisClient();
@@ -514,6 +527,13 @@ if (cluster.isMaster) {
     await runAsSystem(async () => {
       await performStartupChecks(appConfig);
       await updateInterfacePerms({ appConfig, getRoleByName, updateAccessPermissions });
+    });
+    const mediaRuntime = mediaApplication.initialize({
+      app,
+      appConfig,
+      mediaMetrics: recordMediaEvent,
+      isLeader: expiredFileSweep.isLeader,
+      externalDeadlineAt: () => clusterShutdownDeadlineAt,
     });
 
     /* Route modules build their rate limiters as they load, so they load only after the
@@ -633,6 +653,7 @@ if (cluster.isMaster) {
     app.use('/api/admin', routes.adminAuth);
     app.use('/api/admin/skills', routes.adminSkills);
     app.use('/api/admin/code-environments', routes.adminCodeEnvironments);
+    app.use('/api/admin/media', routes.adminMedia);
     app.use('/api/code-environments', routes.codeEnvironments);
     app.use('/api/actions', routes.actions);
     app.use('/api/keys', routes.keys);
@@ -652,6 +673,7 @@ if (cluster.isMaster) {
     app.use('/api/config', preAuthTenantMiddleware, optionalJwtAuth, routes.config);
     app.use('/api/assistants', routes.assistants);
     app.use('/api/files', await routes.files.initialize());
+    mediaApplication.mount(app, mediaRuntime);
     app.use(
       '/images/',
       createValidateImageRequest({
@@ -700,6 +722,7 @@ if (cluster.isMaster) {
        * swallow init failures and leave the worker listening but only
        * partially initialized.
        */
+      void startMediaWorker(mediaRuntime.worker, logger);
       try {
         /** Initialize MCP servers and OAuth reconnection for this worker */
         await initializeMCPs();

@@ -19,6 +19,24 @@ const file = {
 };
 
 describe('getFileStream', () => {
+  it('uses the private media key for bytes while returning the public original in attachment metadata', async () => {
+    const media = {
+      ...file,
+      file_id: 'f17ecafe-1234-4123-8123-123456789012',
+      storageKey: 'private/original.mp4',
+      type: 'video/mp4',
+    };
+    const getDownloadStream = jest.fn(async () => Readable.from(['original-bytes']));
+    const processed = await getFileStream({} as ServerRequest, media, {}, () => ({
+      getDownloadStream,
+    }));
+    expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), media.storageKey);
+    expect(processed?.file).toBe(media);
+    expect(processed?.content).toBe(Buffer.from('original-bytes').toString('base64'));
+    expect(processed?.metadata.filepath).toBe(`/api/media/assets/${media.file_id}/content`);
+    expect(processed?.metadata).not.toHaveProperty('storageKey');
+  });
+
   it('maps a missing storage object to a user-actionable attachment error', async () => {
     const getDownloadStream = jest.fn().mockRejectedValue({
       name: 'NoSuchKey',

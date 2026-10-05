@@ -56,6 +56,23 @@ describe('sanitizeFileForTransmit', () => {
 });
 
 describe('sanitizeMessageForTransmit', () => {
+  it('removes private replay metadata without mutating the internal message', () => {
+    const message = {
+      messageId: 'native-message',
+      metadata: {
+        publicLabel: 'Generated image',
+        thoughtSignatures: { tool: 'private-tool-signature' },
+        nativeSignatures: { 0: { thoughtSignature: 'private-image-signature' } },
+      },
+    };
+
+    expect(sanitizeMessageForTransmit(message).metadata).toEqual({
+      publicLabel: 'Generated image',
+    });
+    expect(message.metadata.nativeSignatures[0].thoughtSignature).toBe('private-image-signature');
+    expect(message.metadata.thoughtSignatures.tool).toBe('private-tool-signature');
+  });
+
   it('should remove fileContext from message', () => {
     const message = {
       messageId: 'msg-123',

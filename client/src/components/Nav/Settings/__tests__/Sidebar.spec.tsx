@@ -10,6 +10,8 @@ const ctx: SettingsContextValue = {
   hasAnyPersonalizationFeature: false,
   hasMemoryOptOut: false,
   hasStatefulCodeSessions: false,
+  hasMediaStudio: false,
+  canReadMediaRecovery: false,
   hasRemoteAgents: false,
   hasUserProvidedEndpoints: false,
   hasMultiConvo: false,

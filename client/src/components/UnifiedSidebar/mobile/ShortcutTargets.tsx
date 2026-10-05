@@ -18,11 +18,11 @@ import { useActivePanel, resolveActivePanel } from '~/Providers';
  */
 function ShortcutTargets({
   links,
-  onLeaveInsights,
+  onLeaveRoute,
   routeActiveId,
 }: {
   links: NavLink[];
-  onLeaveInsights?: () => void;
+  onLeaveRoute?: () => void;
   routeActiveId?: string;
 }) {
   const { active, setActive } = useActivePanel();
@@ -46,7 +46,7 @@ function ShortcutTargets({
             }
             setActive(link.id);
             if (routeActiveId) {
-              onLeaveInsights?.();
+              onLeaveRoute?.();
             }
           }}
         />

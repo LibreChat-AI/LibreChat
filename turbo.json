@@ -1,6 +1,6 @@
 {
   "$schema": "https://v2-10-5.turborepo.dev/schema.json",
-  "globalDependencies": ["package-lock.json"],
+  "globalDependencies": ["package-lock.json", "patches/*.patch"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

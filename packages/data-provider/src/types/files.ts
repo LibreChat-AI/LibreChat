@@ -29,6 +29,7 @@ export enum FileContext {
   assistants = 'assistants',
   execute_code = 'execute_code',
   image_generation = 'image_generation',
+  video_generation = 'video_generation',
   assistants_output = 'assistants_output',
   message_attachment = 'message_attachment',
   run_artifact = 'run_artifact',
@@ -58,6 +59,7 @@ export type EndpointFileConfig = {
 };
 
 export type FileConfig = {
+  retentionSweepLimit?: number;
   endpoints: {
     [key: string]: EndpointFileConfig;
   };
@@ -99,6 +101,7 @@ export type FileConfig = {
 };
 
 export type FileConfigInput = {
+  retentionSweepLimit?: number;
   endpoints?: {
     [key: string]: EndpointFileConfig;
   };
@@ -148,6 +151,8 @@ export type RunFileProvenance = {
 };
 
 export type TFile = {
+  /** Public affordance only; server ownership and retention remain authoritative. */
+  deletionRestriction?: 'retained_media';
   _id?: string;
   __v?: number;
   user: string;

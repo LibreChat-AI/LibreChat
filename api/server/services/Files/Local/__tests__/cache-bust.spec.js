@@ -4,6 +4,9 @@
  * hand their raw filepath to it, so a reused code output resolves to the file that exists on disk.
  */
 jest.mock('@librechat/api', () => ({
+  createLocalStreamStorage: jest.fn(() => ({})),
+  unlinkLocalFile: jest.requireActual('../../../../../../packages/api/src/storage/deletion')
+    .unlinkLocalFile,
   deleteRagFile: jest.fn(),
   stripCacheBust: jest.fn((filepath) => filepath.split('?')[0]),
 }));

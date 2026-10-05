@@ -104,6 +104,8 @@ export enum IconContext {
 }
 
 export type NavLink = {
+  activity?: { count: string; label: string };
+  route?: string;
   title: TranslationKeys;
   label?: string;
   icon: LucideIcon | React.FC;
@@ -129,6 +131,11 @@ export enum Panel {
   model = 'model',
   version = 'version',
 }
+
+/** The subset of a stored file a chat surface needs to hand it to Media Studio as a reference. */
+export type TMediaFileRef = Partial<
+  Pick<t.TFile, 'file_id' | 'filename' | 'filepath' | 'bytes' | 'type' | 'width' | 'height'>
+>;
 
 export type FileSetter =
   | SetterOrUpdater<Map<string, ExtendedFile>>

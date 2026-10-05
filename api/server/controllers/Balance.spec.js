@@ -19,7 +19,7 @@ describe('balanceController', () => {
 
   it('returns no content without reading balance when balance config is disabled', async () => {
     const req = {
-      user: { id: 'user-1' },
+      user: { _id: 'user-1' },
     };
     const res = createResponse();
     res.locals.balanceConfigEnabled = false;
@@ -33,7 +33,7 @@ describe('balanceController', () => {
 
   it('uses balance data attached by middleware without a second read', async () => {
     const req = {
-      user: { id: 'user-1' },
+      user: { _id: 'user-1' },
     };
     const res = createResponse();
     res.locals.balanceConfigEnabled = true;
@@ -42,6 +42,10 @@ describe('balanceController', () => {
       user: 'user-1',
       tokenCredits: 100,
       autoRefillEnabled: false,
+      reservedCredits: 30,
+      availableCredits: 70,
+      mediaHeldCredits: 0,
+      mediaDebtCredits: 20,
     };
 
     await balanceController(req, res);
@@ -52,20 +56,24 @@ describe('balanceController', () => {
       user: 'user-1',
       tokenCredits: 100,
       autoRefillEnabled: false,
+      reservedCredits: 30,
+      availableCredits: 70,
+      mediaHeldCredits: 0,
+      mediaDebtCredits: 20,
     });
   });
 
   it('returns not found when balance is enabled and no record exists', async () => {
     findBalanceByUser.mockResolvedValue(null);
     const req = {
-      user: { id: 'user-1' },
+      user: { _id: 'user-1' },
     };
     const res = createResponse();
     res.locals.balanceConfigEnabled = true;
 
     await balanceController(req, res);
 
-    expect(findBalanceByUser).toHaveBeenCalledWith('user-1');
+    expect(findBalanceByUser).toHaveBeenCalledWith('user-1', { includeReservedCredits: true });
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.json).toHaveBeenCalledWith({ error: 'Balance not found' });
   });

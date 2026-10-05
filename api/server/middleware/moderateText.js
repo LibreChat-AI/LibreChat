@@ -1,6 +1,7 @@
 const axios = require('axios');
 const {
   isEnabled,
+  createModerationCheck,
   getReferencedQuotes,
   mergeQuotedText,
   getBoundedAskUserAnswerValues,
@@ -9,6 +10,7 @@ const {
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
 const denyRequest = require('./denyRequest');
+const checkModeration = createModerationCheck({ http: axios, environment: process.env });
 
 async function moderateText(req, res, next) {
   if (!isEnabled(process.env.OPENAI_MODERATION)) {
@@ -84,23 +86,7 @@ async function moderateText(req, res, next) {
     if (inputs.length === 0) {
       return next();
     }
-    const input = inputs.length > 1 ? inputs : inputs[0];
-
-    const response = await axios.post(
-      process.env.OPENAI_MODERATION_REVERSE_PROXY || 'https://api.openai.com/v1/moderations',
-      {
-        input,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.OPENAI_MODERATION_API_KEY}`,
-        },
-      },
-    );
-
-    const results = response.data.results;
-    const flagged = results.some((result) => result.flagged);
+    const flagged = await checkModeration(inputs);
 
     if (flagged) {
       const type = ErrorTypes.MODERATION;

@@ -2780,6 +2780,7 @@ describe('BaseClient', () => {
       });
       TestClient.buildMessages.mockReturnValue({
         prompt: [],
+        promptTokens: 10,
         tokenCountMap: { res: 50 },
       });
     });

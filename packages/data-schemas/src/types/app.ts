@@ -17,6 +17,7 @@ import type {
   TConversationListConfig,
   SkillSyncConfig,
   FiltersConfig,
+  MediaConfig,
 } from 'librechat-data-provider';
 
 export type JsonSchemaType = {
@@ -68,6 +69,7 @@ export interface AppConfig {
   webSearch?: TCustomConfig['webSearch'];
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
+  media?: MediaConfig;
   /** Message filter configuration (PII and future filter types) */
   messageFilter?: TCustomConfig['messageFilter'];
   /** Langfuse tracing configuration */

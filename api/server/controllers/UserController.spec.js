@@ -22,6 +22,9 @@ const mockRestoreUserSchedules = jest.fn().mockResolvedValue(undefined);
 const mockGetWebSearchInstallEntries = jest.fn();
 const mockInvalidateCodeEnvironmentConfigCache = jest.fn().mockResolvedValue(undefined);
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn().mockResolvedValue(0);
+const mockPrepareMediaAccountDeletion = jest.fn(async ({ scope, token }) => ({ scope, token }));
+const mockCompleteMediaAccountDeletion = jest.fn().mockResolvedValue(undefined);
+const mockCancelMediaAccountDeletion = jest.fn().mockResolvedValue(undefined);
 const mockEmailChangeService = {
   requestEmailChange: jest.fn(),
   confirmEmailChange: jest.fn(),
@@ -109,6 +112,9 @@ jest.mock('@librechat/api', () => ({
   getNewS3URL: jest.fn(),
   getWebSearchInstallEntries: (...args) => mockGetWebSearchInstallEntries(...args),
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
+  prepareAccountDeletion: (...args) => mockPrepareMediaAccountDeletion(...args),
+  completeAccountDeletion: (...args) => mockCompleteMediaAccountDeletion(...args),
+  cancelAccountDeletion: (...args) => mockCancelMediaAccountDeletion(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetActiveJobIdsForUser(...args),
     getCleanupJob: (...args) => mockGetAgentJob(...args),
@@ -572,6 +578,45 @@ describe('deleteUserController', () => {
     mockQuiesceUserSchedules.mockResolvedValue(true);
   });
 
+  it('checks media liabilities before deleting any account data', async () => {
+    mockPrepareMediaAccountDeletion.mockRejectedValueOnce(new Error('Outstanding media work'));
+    const userId = new mongoose.Types.ObjectId();
+    await deleteUserController({ user: { id: String(userId), _id: userId } }, mockRes);
+    const db = require('~/models');
+    expect(mockRes.status).toHaveBeenCalledWith(500);
+    for (const name of [
+      'deleteConvos',
+      'deleteMessages',
+      'deleteAllUserSessions',
+      'deleteTransactions',
+      'deleteUserKey',
+      'deleteBalances',
+      'deleteUserById',
+    ]) {
+      expect(db[name]).not.toHaveBeenCalled();
+    }
+    expect(mockCompleteMediaAccountDeletion).not.toHaveBeenCalled();
+  });
+
+  it('returns the actionable media conflict without deleting account data', async () => {
+    const { MediaServiceError } = require('@librechat/api');
+    mockPrepareMediaAccountDeletion.mockRejectedValueOnce(
+      new MediaServiceError(
+        'not_ready',
+        409,
+        'Media work or accounting must finish before account deletion.',
+      ),
+    );
+    const userId = new mongoose.Types.ObjectId();
+    await deleteUserController({ user: { id: String(userId), _id: userId } }, mockRes);
+    expect(mockRes.status).toHaveBeenCalledWith(409);
+    expect(mockRes.json).toHaveBeenCalledWith({
+      code: 'not_ready',
+      message: 'Media work or accounting must finish before account deletion.',
+    });
+    expect(require('~/models').deleteConvos).not.toHaveBeenCalled();
+  });
+
   it('should return 200 on successful deletion', async () => {
     const userId = new mongoose.Types.ObjectId();
     const userIdStr = userId.toString();
@@ -582,6 +627,12 @@ describe('deleteUserController', () => {
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.send).toHaveBeenCalledWith({ message: 'User deleted' });
     expect(deletePasskeysByUser).toHaveBeenCalledWith(userIdStr);
+    expect(mockPrepareMediaAccountDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      require('~/models').deleteConvos.mock.invocationCallOrder[0],
+    );
+    expect(deleteUserById.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCompleteMediaAccountDeletion.mock.invocationCallOrder[0],
+    );
     expect(beginAgentTriggerUserDeletion).toHaveBeenCalledWith(userId.toString(), expect.any(Date));
     expect(mockPrepareAgentTriggerUserPurge).toHaveBeenCalledWith(
       userId.toString(),

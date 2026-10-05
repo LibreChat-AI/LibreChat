@@ -90,6 +90,15 @@ export function sanitizeMessageForTransmit<T extends Partial<TMessage>>(
 
   const sanitized = { ...message };
 
+  if (sanitized.metadata) {
+    const {
+      thoughtSignatures: _thought,
+      nativeSignatures: _native,
+      ...publicMetadata
+    } = sanitized.metadata;
+    sanitized.metadata = publicMetadata;
+  }
+
   // Remove message-level fields
   for (const field of MESSAGE_STRIP_FIELDS) {
     delete sanitized[field as keyof typeof sanitized];

@@ -2,7 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { extractEnvVariable } from 'librechat-data-provider';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import type { RequestBody } from '~/types';
+import type { RequestBody } from '~/types/http';
 import {
   OPENID_TOKEN_FIELDS,
   isOpenIDTokenValid,
@@ -31,7 +31,7 @@ export function isPluginSourced(config?: { source?: string } | null): boolean {
  * List of allowed user fields that can be used in MCP environment variables.
  * These are non-sensitive string/boolean fields from the IUser interface.
  */
-const ALLOWED_USER_FIELDS = [
+export const ALLOWED_USER_FIELDS = [
   'id',
   'name',
   'username',
@@ -54,6 +54,13 @@ const ALLOWED_USER_FIELDS = [
 
 type AllowedUserField = (typeof ALLOWED_USER_FIELDS)[number];
 type SafeUser = Pick<IUser, AllowedUserField>;
+export type SafeUserInput = Partial<SafeUser> & {
+  _id?: string | { toString(): string };
+  tenantId?: string;
+  idOnTheSource?: string | null;
+  federatedTokens?: IUser['federatedTokens'];
+  openidTokens?: IUser['openidTokens'];
+};
 
 /**
  * Encodes a string value to be safe for HTTP headers.
@@ -107,10 +114,7 @@ export function encodeHeaderValue(value: string): string {
  * @returns A new object containing only allowed fields plus federatedTokens if present
  */
 export function createSafeUser(
-  user:
-    | (Partial<SafeUser> & Pick<IUser, 'tenantId'> & { federatedTokens?: IUser['federatedTokens'] })
-    | null
-    | undefined,
+  user: SafeUserInput | null | undefined,
 ): Partial<SafeUser> & { federatedTokens?: IUser['federatedTokens'] } {
   if (!user) {
     return {};
@@ -133,8 +137,7 @@ export function createSafeUser(
   // Fall back to `_id` when the mongoose virtual `id` is absent (e.g. lean/plain
   // user objects), so `{{LIBRECHAT_USER_ID}}` placeholders still resolve.
   if (!safeUser.id && '_id' in user) {
-    const _id = (user as unknown as { _id: { toString?: () => string } | string })._id;
-    safeUser.id = typeof _id === 'string' ? _id : _id?.toString?.();
+    safeUser.id = typeof user._id === 'string' ? user._id : user._id?.toString();
   }
 
   if ('federatedTokens' in user) {
@@ -213,7 +216,7 @@ export function stripUnresolvedPlaceholders(value: string): string {
  */
 function processUserPlaceholders(
   value: string,
-  user?: Partial<IUser>,
+  user?: SafeUserInput,
   isHeader: boolean = false,
 ): string {
   if (!user || typeof value !== 'string') {
@@ -227,7 +230,7 @@ function processUserPlaceholders(
       continue;
     }
 
-    const fieldValue = user[field as keyof IUser];
+    const fieldValue = user[field];
 
     // Skip replacement if field doesn't exist in user object
     if (!(field in user)) {
@@ -303,11 +306,13 @@ function processSingleValue({
   body = undefined,
   isHeader = false,
   dbSourced = false,
+  environment,
   beforeCredentialResolution,
 }: {
   originalValue: string;
+  environment?: Record<string, string | undefined>;
   customUserVars?: Record<string, string>;
-  user?: Partial<IUser>;
+  user?: SafeUserInput;
   body?: RequestBody;
   isHeader?: boolean;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders */
@@ -329,7 +334,7 @@ function processSingleValue({
    * patterns would otherwise be expanded against process.env.
    */
   if (!dbSourced) {
-    value = extractEnvVariable(value);
+    value = extractEnvVariable(value, environment);
   }
 
   /** Runs for both dbSourced and non-dbSourced — it is the only resolution DB-stored servers get */
@@ -394,7 +399,7 @@ function processAdminValue(originalValue: string, dbSourced: boolean): string {
  */
 export function processMCPEnv(params: {
   options: Readonly<MCPOptions> & { dbId?: string; source?: string };
-  user?: Partial<IUser>;
+  user?: SafeUserInput;
   customUserVars?: Record<string, string>;
   body?: RequestBody;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders (for DB-stored servers) */
@@ -566,7 +571,7 @@ function processValue(
   value: unknown,
   options: {
     customUserVars?: Record<string, string>;
-    user?: IUser;
+    user?: SafeUserInput;
     body?: RequestBody;
   },
 ): unknown {
@@ -607,7 +612,7 @@ function processValue(
  */
 export function resolveNestedObject<T = unknown>(options?: {
   obj: T | undefined;
-  user?: Partial<IUser> | { id: string };
+  user?: SafeUserInput;
   body?: RequestBody;
   customUserVars?: Record<string, string>;
 }): T {
@@ -619,7 +624,7 @@ export function resolveNestedObject<T = unknown>(options?: {
 
   return processValue(obj, {
     customUserVars,
-    user: user as IUser,
+    user,
     body,
   }) as T;
 }
@@ -641,12 +646,20 @@ export function resolveNestedObject<T = unknown>(options?: {
  */
 export function resolveHeaders(options?: {
   headers: Record<string, string> | undefined;
-  user?: Partial<IUser> | { id: string };
+  user?: SafeUserInput;
   body?: RequestBody;
   customUserVars?: Record<string, string>;
   stripUnresolved?: boolean;
+  environment?: Record<string, string | undefined>;
 }): Record<string, string> {
-  const { headers, user, body, customUserVars, stripUnresolved = false } = options ?? {};
+  const {
+    headers,
+    user,
+    body,
+    customUserVars,
+    stripUnresolved = false,
+    environment,
+  } = options ?? {};
   const inputHeaders = headers ?? {};
 
   const resolvedHeaders: Record<string, string> = { ...inputHeaders };
@@ -655,8 +668,9 @@ export function resolveHeaders(options?: {
     Object.keys(inputHeaders).forEach((key) => {
       const processed = processSingleValue({
         originalValue: inputHeaders[key],
+        environment,
         customUserVars,
-        user: user as IUser,
+        user,
         body,
         isHeader: true, // Important: Enable header encoding
       });

@@ -28,6 +28,58 @@ export interface TxDeps {
 
 export const defaultRate = 6;
 
+/** Exact image-model rates in credits/token (USD per TOKEN_CREDITS_PER_USD tokens).
+ * https://developers.openai.com/api/docs/pricing — standard image generation, 2026-09-19.
+ * Keep separate modalities: a text prompt and an image prompt do not have the same price.
+ */
+export const imageTokenValues: Record<
+  string,
+  {
+    prompt: number;
+    imagePrompt: number;
+    completion: number;
+    cacheRead: number;
+    imageCacheRead: number;
+  }
+> = {
+  'gpt-image-1': {
+    prompt: 5,
+    imagePrompt: 10,
+    completion: 40,
+    cacheRead: 1.25,
+    imageCacheRead: 2.5,
+  },
+  'gpt-image-1-mini': {
+    prompt: 2,
+    imagePrompt: 2.5,
+    completion: 8,
+    cacheRead: 0.2,
+    imageCacheRead: 0.25,
+  },
+  'gpt-image-1.5': {
+    prompt: 5,
+    imagePrompt: 8,
+    completion: 32,
+    cacheRead: 1.25,
+    imageCacheRead: 2,
+  },
+  'gpt-image-2': { prompt: 5, imagePrompt: 8, completion: 30, cacheRead: 1.25, imageCacheRead: 2 },
+  'gpt-image-2.5-sunburst': {
+    prompt: 5,
+    imagePrompt: 8,
+    completion: 30,
+    cacheRead: 1.25,
+    imageCacheRead: 2,
+  },
+  'gpt-image-2.5-flare': {
+    prompt: 5,
+    imagePrompt: 8,
+    completion: 30,
+    cacheRead: 1.25,
+    imageCacheRead: 2,
+  },
+};
+
 /** AWS Bedrock pricing (source: https://aws.amazon.com/bedrock/pricing/) */
 const bedrockValues: Record<string, { prompt: number; completion: number }> = {
   llama2: { prompt: 0.75, completion: 1.0 },
@@ -502,6 +554,7 @@ export function createTxMethods(
   _mongoose: typeof import('mongoose'),
   txDeps: TxDeps,
 ): {
+  imageTokenValues: typeof imageTokenValues;
   tokenValues: Record<
     string,
     {
@@ -747,6 +800,7 @@ export function createTxMethods(
 
   return {
     tokenValues,
+    imageTokenValues,
     premiumTokenValues,
     getValueKey,
     getMultiplier,

@@ -1,6 +1,18 @@
 import { extractBaseURL, deriveBaseURL } from './url';
 
 describe('extractBaseURL', () => {
+  test.each(['https://api.example/v1beta/models', 'https://api.example/v10/models'])(
+    'does not truncate a different API version: %s',
+    (url) => expect(extractBaseURL(url)).toBe(url),
+  );
+  test('keeps Azure v1 and does not discard query or fragment validation inputs', () => {
+    expect(extractBaseURL('https://resource.openai.azure.com/openai/v1/images/generations')).toBe(
+      'https://resource.openai.azure.com/openai/v1',
+    );
+    expect(extractBaseURL('https://proxy.example/v1/chat/completions?secret=x#fragment')).toBe(
+      'https://proxy.example/v1?secret=x#fragment',
+    );
+  });
   test('should extract base URL up to /v1 for standard endpoints', () => {
     const url = 'https://localhost:8080/v1/chat/completions';
     expect(extractBaseURL(url)).toBe('https://localhost:8080/v1');

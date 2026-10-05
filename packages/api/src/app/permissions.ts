@@ -49,6 +49,8 @@ function hasExplicitConfig(
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
       return interfaceConfig?.sharedLinks !== undefined;
+    case PermissionTypes.MEDIA:
+      return interfaceConfig?.media !== undefined;
     case PermissionTypes.SCHEDULES: {
       // `schedules` is dual-purpose. The BOOLEAN form is the RUNTIME kill switch read
       // by getLimits, NOT a permission config: treating it as explicit would write
@@ -596,6 +598,23 @@ export async function updateInterfacePermissions({
                 getConfigCreate(loadedInterface.schedules),
                 defaultPerms[PermissionTypes.SCHEDULES]?.[Permissions.CREATE],
                 schedulesDefaultCreate ?? true,
+              ),
+            }
+          : {}),
+      },
+      [PermissionTypes.MEDIA]: {
+        [Permissions.USE]: getPermissionValue(
+          getConfigUse(loadedInterface.media),
+          defaultPerms[PermissionTypes.MEDIA]?.[Permissions.USE],
+          undefined,
+        ),
+        ...((typeof interfaceConfig?.media === 'object' && 'create' in interfaceConfig.media) ||
+        !existingPermissions?.[PermissionTypes.MEDIA]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                getConfigCreate(loadedInterface.media),
+                defaultPerms[PermissionTypes.MEDIA]?.[Permissions.CREATE],
+                undefined,
               ),
             }
           : {}),

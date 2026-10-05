@@ -20,6 +20,29 @@ const ASCII_FILENAME_SAFE_PATTERN = /^[a-zA-Z0-9._-]$/;
 const UNSAFE_UNICODE_FILENAME_PATTERN = /[^\p{L}\p{M}\p{N}\p{Emoji}\u200d._-]/gu;
 export const FILENAME_SEGMENT_MAX_BYTES = 255;
 
+/** Removes the storage UUID prefix from a download's displayed filename. */
+export function cleanFileName(fileName: string): string {
+  return fileName?.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__/i, '');
+}
+
+/** Supplies both an ASCII fallback and RFC 8187 encoding for Unicode filenames. */
+export function getContentDisposition(
+  fileName: string,
+  disposition: 'attachment' | 'inline' = 'attachment',
+): string {
+  const cleanedFilename = cleanFileName(fileName) || 'download';
+  const asciiFallback =
+    cleanedFilename
+      .normalize('NFKD')
+      .replace(/[^\x20-\x7e]/g, '_')
+      .replace(/["\\\r\n]/g, '_') || 'download';
+  const encodedFilename = encodeURIComponent(cleanedFilename).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`;
+}
+
 function sanitizeFilenameSegment(segment: string): string {
   const asciiSanitized = Array.from(segment.normalize('NFC'), (char) => {
     if (char.charCodeAt(0) > 0x7f) {

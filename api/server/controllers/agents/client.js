@@ -16,13 +16,15 @@ const {
   resolveRequestTenantId,
   countTokens,
   getBalanceConfig,
-  omitTitleOptions,
+  resolveTitleModelConfig,
   getProviderConfig,
   formatMemoryContext,
   createCachedTokenCounter,
   applyContextToAgent,
   isMemoryAgentEnabled,
   recordCollectedUsage,
+  buildNativeMediaFactory,
+  getNativeResponseMetadata,
   resolveRunUsageContext,
   getScheduleMCPExecution,
   createScheduledMCPPolicyRecorder,
@@ -208,7 +210,6 @@ const {
   Run,
   Callback,
   Providers,
-  TitleMethod,
   formatMessage,
   formatAgentMessages,
   createMetadataAggregator,
@@ -3696,7 +3697,7 @@ class AgentClient extends BaseClient {
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
-    const metadata = {};
+    const metadata = getNativeResponseMetadata(this);
     const signatures = this.collectedThoughtSignatures;
     if (signatures && Object.keys(signatures).length > 0) {
       metadata.thoughtSignatures = signatures;
@@ -5031,7 +5032,20 @@ class AgentClient extends BaseClient {
         const activityHandlers =
           activityPhase?.handlers(offsetHandlers) ??
           (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
+        const subagentUsageEmitter = this.buildSubagentUsageEmitter(appConfig);
+        const detachedUsageRecorder = this.buildDetachedSubagentUsageRecorder(
+          balanceConfig,
+          transactionsConfig,
+        );
         const createRunPromise = createRun({
+          nativeMediaFactory: await buildNativeMediaFactory(
+            this,
+            {
+              onUsage: subagentUsageEmitter,
+              recordDetachedUsage: detachedUsageRecorder,
+            },
+            GenerationJobManager,
+          ),
           scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
           recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
             getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5114,8 +5128,8 @@ class AgentClient extends BaseClient {
            *  `subagent` tag keeps it out of the live context meter). */
           subagentUsageSink: createSubagentUsageSink(
             this.collectedUsage,
-            this.buildSubagentUsageEmitter(appConfig),
-            this.buildDetachedSubagentUsageRecorder(balanceConfig, transactionsConfig),
+            subagentUsageEmitter,
+            detachedUsageRecorder,
           ),
           subagentTasks: this.options.subagentTasks,
           runFiles: this.options.runFiles,
@@ -5840,7 +5854,20 @@ class AgentClient extends BaseClient {
       const activityHandlers =
         activityPhase?.handlers(offsetHandlers) ??
         (activityLabel ? createAssistantPhaseStampingHandlers(offsetHandlers) : offsetHandlers);
+      const subagentUsageEmitter = this.buildSubagentUsageEmitter(appConfig);
+      const detachedUsageRecorder = this.buildDetachedSubagentUsageRecorder(
+        balanceConfig,
+        transactionsConfig,
+      );
       run = await createRun({
+        nativeMediaFactory: await buildNativeMediaFactory(
+          this,
+          {
+            onUsage: subagentUsageEmitter,
+            recordDetachedUsage: detachedUsageRecorder,
+          },
+          GenerationJobManager,
+        ),
         scheduledMCPExecution: getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
         recordScheduledMCPDenial: createScheduledMCPPolicyRecorder(
           getScheduleMCPExecution(getMCPRequestContext(this.options.req)),
@@ -5912,8 +5939,8 @@ class AgentClient extends BaseClient {
         tokenCounter,
         subagentUsageSink: createSubagentUsageSink(
           this.collectedUsage,
-          this.buildSubagentUsageEmitter(appConfig),
-          this.buildDetachedSubagentUsageRecorder(balanceConfig, transactionsConfig),
+          subagentUsageEmitter,
+          detachedUsageRecorder,
         ),
         subagentTasks: this.options.subagentTasks,
         runFiles: this.options.runFiles,
@@ -6205,62 +6232,14 @@ class AgentClient extends BaseClient {
       },
     });
 
-    let provider = options.provider ?? titleProviderConfig.overrideProvider ?? agent.provider;
-    if (
-      endpoint === EModelEndpoint.azureOpenAI &&
-      options.llmConfig?.azureOpenAIApiInstanceName == null
-    ) {
-      provider = Providers.OPENAI;
-    } else if (
-      endpoint === EModelEndpoint.azureOpenAI &&
-      options.llmConfig?.azureOpenAIApiInstanceName != null &&
-      provider !== Providers.AZURE
-    ) {
-      provider = Providers.AZURE;
-    }
-
-    /** @type {import('@librechat/agents').ClientOptions} */
-    clientOptions = { ...options.llmConfig };
-    if (options.configOptions) {
-      clientOptions.configuration = options.configOptions;
-    }
-
-    if (clientOptions.maxTokens != null) {
-      delete clientOptions.maxTokens;
-    }
-    if (clientOptions?.modelKwargs?.max_completion_tokens != null) {
-      delete clientOptions.modelKwargs.max_completion_tokens;
-    }
-    if (clientOptions?.modelKwargs?.max_output_tokens != null) {
-      delete clientOptions.modelKwargs.max_output_tokens;
-    }
-
-    /** `omitTitleOptions` drops the Anthropic `clientOptions` carrier (thinking,
-     *  streaming, etc.), which would also drop its `defaultHeaders` — preserve the
-     *  original `clientOptions` object so gateway/reverse-proxy metadata still
-     *  reaches title requests (the proxy may require it for auth/routing). Restore
-     *  the SAME object reference, not a copy: the Vertex `createClient` closure from
-     *  `getLLMConfig` closes over this object, so `resolveConfigHeaders` must mutate
-     *  the very object the client is built from. */
-    const anthropicClientOptions = clientOptions?.clientOptions;
-
-    clientOptions = Object.assign(
-      Object.fromEntries(
-        Object.entries(clientOptions).filter(([key]) => !omitTitleOptions.has(key)),
-      ),
-    );
-
-    if (anthropicClientOptions?.defaultHeaders != null && clientOptions.clientOptions == null) {
-      clientOptions.clientOptions = anthropicClientOptions;
-    }
-
-    if (
-      provider === Providers.GOOGLE &&
-      (endpointConfig?.titleMethod === TitleMethod.FUNCTIONS ||
-        endpointConfig?.titleMethod === TitleMethod.STRUCTURED)
-    ) {
-      clientOptions.json = true;
-    }
+    const titleConfig = resolveTitleModelConfig({
+      endpoint,
+      options,
+      fallbackProvider: titleProviderConfig.overrideProvider ?? agent.provider,
+      titleMethod: endpointConfig?.titleMethod,
+    });
+    const provider = titleConfig.provider;
+    clientOptions = titleConfig.clientOptions;
 
     /** Resolve request-based headers across provider-specific header locations:
      *  OpenAI `configuration.defaultHeaders`, Anthropic `clientOptions.defaultHeaders`

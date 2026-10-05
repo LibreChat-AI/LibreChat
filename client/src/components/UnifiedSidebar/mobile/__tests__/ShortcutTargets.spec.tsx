@@ -11,18 +11,18 @@ const links = [
 
 const renderTargets = ({
   targetLinks = links,
-  onLeaveInsights,
+  onLeaveRoute,
   routeActiveId,
 }: {
   targetLinks?: NavLink[];
-  onLeaveInsights?: () => void;
+  onLeaveRoute?: () => void;
   routeActiveId?: string;
 } = {}) =>
   render(
     <ActivePanelProvider>
       <ShortcutTargets
         links={targetLinks}
-        onLeaveInsights={onLeaveInsights}
+        onLeaveRoute={onLeaveRoute}
         routeActiveId={routeActiveId}
       />
     </ActivePanelProvider>,
@@ -79,13 +79,41 @@ describe('ShortcutTargets', () => {
   });
 
   it('leaves a route when a panel target is selected', () => {
-    const onLeaveInsights = jest.fn();
+    const onLeaveRoute = jest.fn();
 
-    renderTargets({ onLeaveInsights, routeActiveId: 'insights' });
+    renderTargets({ onLeaveRoute, routeActiveId: 'insights' });
     fireEvent.click(screen.getByTestId('nav-panel-prompts'));
 
-    expect(onLeaveInsights).toHaveBeenCalledTimes(1);
+    expect(onLeaveRoute).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem('side:active-panel')).toBe('prompts');
+  });
+
+  it('keeps navigation out of an unavailable Studio route usable', () => {
+    const onLeaveRoute = jest.fn();
+    const onClick = jest.fn();
+    renderTargets({
+      routeActiveId: 'media-studio',
+      onLeaveRoute,
+      targetLinks: [
+        ...links,
+        {
+          id: 'media-studio',
+          title: 'com_media_studio',
+          icon: BarChart3,
+          disabled: true,
+          onClick,
+        },
+      ],
+    });
+
+    const studio = screen.getByTestId('nav-panel-media-studio');
+    expect(studio).toBeDisabled();
+    fireEvent.click(studio);
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('nav-panel-conversations'));
+    expect(onLeaveRoute).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem('side:active-panel')).toBe('conversations');
   });
 
   it('offers no target for a panel this endpoint does not have', () => {

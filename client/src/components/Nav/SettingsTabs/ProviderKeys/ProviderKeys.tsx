@@ -9,10 +9,42 @@ import {
   OGDialogTrigger,
   OGDialogContent,
 } from '@librechat/client';
+import type { TEndpointsConfig } from 'librechat-data-provider';
+import type { ProviderKeyEntry } from './utils';
+import useProviderKeys, { useMediaProviderKeyConfig } from './useProviderKeys';
 import { useGetEndpointsQuery } from '~/data-provider';
-import useProviderKeys from './useProviderKeys';
+import { getProviderKeyEntries } from './utils';
 import ProviderKeyRow from './ProviderKeyRow';
 import { useLocalize } from '~/hooks';
+
+function ProviderKeyRows({
+  entries,
+  endpointsConfig,
+}: {
+  entries: ProviderKeyEntry[];
+  endpointsConfig?: TEndpointsConfig;
+}) {
+  const localize = useLocalize();
+  return (
+    <div className="divide-border-light divide-y">
+      {entries.map((entry) => (
+        <ProviderKeyRow
+          key={entry.keyName}
+          endpoint={entry.endpoint}
+          endpointsConfig={endpointsConfig ?? {}}
+          label={entry.label}
+          keyConfiguration={entry.keyConfiguration}
+          conflict={entry.conflict}
+        />
+      ))}
+      {entries.length === 0 && (
+        <p className="text-text-secondary py-4 text-sm">
+          {localize('com_ui_provider_api_keys_empty')}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export default function ProviderKeys() {
   const localize = useLocalize();
@@ -20,6 +52,7 @@ export default function ProviderKeys() {
   const contentRef = useRef<HTMLDivElement>(null);
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const endpoints = useProviderKeys();
+  const mediaConfig = useMediaProviderKeyConfig();
 
   const handleOpenAutoFocus = (event: Event) => {
     event.preventDefault();
@@ -51,16 +84,15 @@ export default function ProviderKeys() {
               <InfoHoverCard text={localize('com_ui_provider_api_keys_description')} />
             </div>
           </OGDialogHeader>
-          {endpointsConfig && (
-            <div className="divide-border-light divide-y">
-              {endpoints.map((endpoint) => (
-                <ProviderKeyRow
-                  key={endpoint}
-                  endpoint={endpoint}
-                  endpointsConfig={endpointsConfig}
-                />
-              ))}
-            </div>
+          {open && (
+            <ProviderKeyRows
+              entries={getProviderKeyEntries({
+                chatEndpoints: endpoints,
+                endpointsConfig,
+                mediaIntegrations: mediaConfig?.integrations,
+              })}
+              endpointsConfig={endpointsConfig}
+            />
           )}
         </OGDialogContent>
       </OGDialog>

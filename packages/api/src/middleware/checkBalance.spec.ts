@@ -10,7 +10,12 @@ import type { BalanceConfig, IBalance } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { BalanceReservation, CheckBalanceDeps } from './checkBalance';
 import type { ServerRequest } from '~/types/http';
-import { checkBalance, createBalanceReservations, withBalanceReservations } from './checkBalance';
+import {
+  checkBalance,
+  createBalanceReservations,
+  withBalanceReservations,
+  reserveBalanceCredits,
+} from './checkBalance';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -44,6 +49,39 @@ describe('checkBalance', () => {
 
   const reserveRequest = (deps: CheckBalanceDeps) =>
     (deps.reserveBalance as jest.Mock).mock.calls[0][0];
+
+  it('shares reservation lifecycle with an already-priced background call without HTTP dependencies', async () => {
+    const deps = createMockDeps();
+    const admitted = await reserveBalanceCredits({ user: 'user-1', amount: 75 }, deps);
+    expect(admitted.balance).toEqual({ reserved: true, balance: 1000 });
+    expect(reserveRequest(deps).amount).toBe(75);
+    await admitted.reservation?.release();
+    expect(deps.releaseBalanceReservation).toHaveBeenCalledTimes(1);
+    expect(deps.logViolation).not.toHaveBeenCalled();
+  });
+
+  it('returns an unfunded background admission without creating a reservation handle', async () => {
+    const deps = createMockDeps({
+      reserveBalance: jest.fn().mockResolvedValue({ reserved: false, balance: 10 }),
+    });
+    await expect(reserveBalanceCredits({ user: 'user-1', amount: 75 }, deps)).resolves.toEqual({
+      balance: { reserved: false, balance: 10 },
+      reservation: undefined,
+    });
+    expect(deps.releaseBalanceReservation).not.toHaveBeenCalled();
+    expect(deps.logViolation).not.toHaveBeenCalled();
+  });
+
+  it.each([NaN, Infinity, -1])(
+    'rejects invalid priced credit input %s before touching storage',
+    async (amount) => {
+      const deps = createMockDeps();
+      await expect(reserveBalanceCredits({ user: 'user-1', amount }, deps)).rejects.toThrow(
+        'credit amount',
+      );
+      expect(deps.reserveBalance).not.toHaveBeenCalled();
+    },
+  );
 
   it('reserves the token cost and releases that reservation exactly once', async () => {
     const deps = createMockDeps({ getMultiplier: jest.fn().mockReturnValue(2) });

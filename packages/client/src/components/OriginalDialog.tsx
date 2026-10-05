@@ -68,7 +68,7 @@ const escapeBelongsToPopup = (ownerDocument: Document): boolean => {
     return true;
   }
   const popovers = ownerDocument.querySelectorAll(
-    '[role="menu"], [role="listbox"], [role="combobox"]',
+    '[role="menu"], [role="listbox"], [role="combobox"]:not([aria-expanded="false"])',
   );
   for (const popover of popovers) {
     if (popover.contains(activeElement)) {

@@ -26,6 +26,8 @@ export const SystemCapabilities = {
   ASSIGN_CONFIGS: 'assign:configs',
   READ_USAGE: 'read:usage',
   READ_INSIGHTS: 'read:insights',
+  READ_MEDIA: 'read:media',
+  MANAGE_MEDIA: 'manage:media',
   READ_AGENTS: 'read:agents',
   MANAGE_AGENTS: 'manage:agents',
   MANAGE_MCP_SERVERS: 'manage:mcpservers',
@@ -88,6 +90,7 @@ export type CapabilityCategory = {
 export const CapabilityImplications: Partial<Record<BaseSystemCapability, BaseSystemCapability[]>> =
   {
     [SystemCapabilities.MANAGE_USERS]: [SystemCapabilities.READ_USERS],
+    [SystemCapabilities.MANAGE_MEDIA]: [SystemCapabilities.READ_MEDIA],
     [SystemCapabilities.MANAGE_GROUPS]: [SystemCapabilities.READ_GROUPS],
     [SystemCapabilities.MANAGE_ROLES]: [SystemCapabilities.READ_ROLES],
     [SystemCapabilities.MANAGE_CONFIGS]: [SystemCapabilities.READ_CONFIGS],
@@ -258,6 +261,8 @@ export const CAPABILITY_CATEGORIES: CapabilityCategory[] = [
       SystemCapabilities.MANAGE_CODE_ENVIRONMENTS,
       SystemCapabilities.MANAGE_SHARED_LINKS,
       SystemCapabilities.READ_SHARED_LINKS,
+      SystemCapabilities.READ_MEDIA,
+      SystemCapabilities.MANAGE_MEDIA,
     ],
   },
   {

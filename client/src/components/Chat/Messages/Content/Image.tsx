@@ -1,8 +1,12 @@
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useMemo, useEffect, lazy, Suspense } from 'react';
 import { Skeleton } from '@librechat/client';
 import { apiBaseUrl } from 'librechat-data-provider';
+import type { TMediaFileRef } from '~/common';
+import { useStudioAvailable } from '~/components/Chat/Studio/context';
 import { cn, toAbsoluteFilePath } from '~/utils';
 import DialogImage from './DialogImage';
+
+const OpenInStudio = lazy(() => import('~/components/Chat/Media/Open'));
 
 /** Max display height for chat images (Tailwind JIT class) */
 export const IMAGE_MAX_H = 'max-h-[45vh]' as const;
@@ -26,6 +30,7 @@ function computeHeightStyle(w: number, h: number): React.CSSProperties {
 
 const Image = ({
   imagePath,
+  file,
   altText,
   className,
   alignRight = false,
@@ -34,6 +39,7 @@ const Image = ({
   height,
 }: {
   imagePath: string;
+  file?: TMediaFileRef;
   altText: string;
   className?: string;
   alignRight?: boolean;
@@ -49,6 +55,7 @@ const Image = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const studio = useStudioAvailable();
 
   /** Root-relative server paths (`/images/...` static, `/api/...` downloads and
    *  share routes) are resolved against the API base so they load under a
@@ -124,6 +131,14 @@ const Image = ({
         />
       </button>
       <DialogImage
+        actions={
+          studio &&
+          file?.file_id && (
+            <Suspense fallback={null}>
+              <OpenInStudio file={file} />
+            </Suspense>
+          )
+        }
         isOpen={isOpen}
         onOpenChange={setIsOpen}
         src={absoluteImageUrl}

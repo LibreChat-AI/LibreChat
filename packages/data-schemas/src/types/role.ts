@@ -81,6 +81,10 @@ export interface IRole extends Document {
       [Permissions.USE]?: boolean;
       [Permissions.CREATE]?: boolean;
     };
+    [PermissionTypes.MEDIA]?: {
+      [Permissions.USE]?: boolean;
+      [Permissions.CREATE]?: boolean;
+    };
   };
   tenantId?: string;
 }

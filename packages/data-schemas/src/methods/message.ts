@@ -1,19 +1,34 @@
+import { randomUUID } from 'node:crypto';
 import {
   backgroundResultMetadata,
   HITL_MESSAGE_FILTER_FIELDS,
   isForcedTemporaryRetention,
   RetentionMode,
+  detachEditedNativeContent,
+  detachEditedNativeMetadata,
+  parseNativeMessageReference,
+  getNativeContinuationRefs,
+  resolveMediaConfig,
 } from 'librechat-data-provider';
 import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
+import type {
+  MediaConsumerConfig,
+  MediaFileConsumerMethods,
+  MediaFileConsumerWrite,
+} from '~/types/mediaConsumers';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { AppConfig, IConversation, IMessage } from '~/types';
+import type { MessageFileFields } from '~/utils/messageFiles';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
+import { collectMessageFileIds, removeMessageFileIds } from '~/utils/messageFiles';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
+import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { tenantStorage } from '~/config/tenantContext';
+import { MediaPersistenceError } from './media';
+import { isMediaFileId } from '~/types/media';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -272,6 +287,39 @@ function getSteerUserSubmittedPaths(content: unknown): string[] {
   return paths;
 }
 
+/** Atomically detach private replay metadata in the same write as an edited part. */
+function withNativeSignatureEdits(
+  update: UpdateQuery<IMessage>,
+  content: unknown,
+  paths: readonly string[],
+): UpdateQuery<IMessage> {
+  if (!Array.isArray(content) || !paths.length) return update;
+  const edited = detachEditedNativeContent(content, paths);
+  const indexes = content.flatMap((part, index) =>
+    part !== edited[index]
+      ? getNativeContinuationRefs([part]).flatMap((ref) => {
+          const parsed = parseNativeMessageReference(ref);
+          return parsed ? [parsed.index] : [];
+        })
+      : [],
+  );
+  if (!indexes.length) return update;
+  const operators = Object.keys(update).some((key) => key.startsWith('$'));
+  const set = { ...(operators ? update.$set : update) };
+  if (set.metadata && typeof set.metadata === 'object') {
+    set.metadata = detachEditedNativeMetadata(set.metadata, content, paths);
+    return operators ? { ...update, $set: set } : set;
+  }
+  return {
+    ...(operators ? update : {}),
+    $set: set,
+    $unset: {
+      ...(operators ? update.$unset : {}),
+      ...Object.fromEntries(indexes.map((index) => [`metadata.nativeSignatures.${index}`, 1])),
+    },
+  };
+}
+
 /** Mongoose omits undefined $set values. Strip identity/version inputs before any sizing callback. */
 function sanitizeMessageUpdate(update: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
@@ -332,6 +380,7 @@ async function findOneAndMergeMessageProvenance(
     unsetContextMeta?: boolean;
     unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+    nativeContent?: unknown;
     prepareAppUpdate?: (
       current: Record<string, unknown> | null,
       update: Record<string, unknown>,
@@ -399,22 +448,26 @@ async function findOneAndMergeMessageProvenance(
     try {
       const message = await Message.findOneAndUpdate(
         filter,
-        {
-          $set: admittedUpdate,
-          $inc: { __v: 1 },
-          ...(current == null &&
-            options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
-          ...((options.unsetContextMeta || options.unsetPrivateText) && {
-            $unset: {
-              ...(options.unsetContextMeta && { contextMeta: 1 }),
-              ...(options.unsetPrivateText && {
-                privateText: 1,
-                privacyRevision: 1,
-                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
-              }),
-            },
-          }),
-        },
+        withNativeSignatureEdits(
+          {
+            $set: admittedUpdate,
+            $inc: { __v: 1 },
+            ...(current == null &&
+              options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
+            ...((options.unsetContextMeta || options.unsetPrivateText) && {
+              $unset: {
+                ...(options.unsetContextMeta && { contextMeta: 1 }),
+                ...(options.unsetPrivateText && {
+                  privateText: 1,
+                  privacyRevision: 1,
+                  ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
+                }),
+              },
+            }),
+          },
+          options.nativeContent,
+          userSubmittedPaths,
+        ),
         { upsert: options.upsert && current == null, new: true, timestamps: options.timestamps },
       );
       if (message != null) {
@@ -514,6 +567,7 @@ const SERVER_AUTHORED_SAMPLED_RESPONSE = {
 export const CLIENT_MESSAGE_SELECT: string = [
   '-_id',
   '-__v',
+  '-mediaConsumerToken',
   '-user',
   '-clientId',
   '-invocationId',
@@ -527,6 +581,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-langfuseDestinationIds',
   '-langfuseRunId',
   '-metadata.thoughtSignatures',
+  '-metadata.nativeSignatures',
   '-content.tool_call.backgroundTask.resultClaim',
   '-content.tool_call.backgroundTask.completionWakeup',
   '-attachments.web_search.knowledgeGraph',
@@ -818,7 +873,10 @@ export interface MessageMethods {
   bulkSaveMessages(
     messages: Array<Partial<IMessage>>,
     overrideTimestamp?: boolean,
-    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
+    options?: {
+      privateTextTokens?: ReadonlyMap<string, readonly string[]>;
+      unavailableMedia?: 'placeholder';
+    },
   ): Promise<unknown>;
   recordMessage(params: {
     user: string;
@@ -918,7 +976,7 @@ export interface MessageMethods {
   deleteMessagesSince(
     userId: string,
     params: { messageId: string; conversationId: string },
-  ): Promise<DeleteResult>;
+  ): Promise<DeleteResult | undefined>;
   getMessages(
     filter: FilterQuery<IMessage>,
     select?: string,
@@ -1014,7 +1072,12 @@ type SteplessToolCallFallback = {
   hasResultClaim: boolean;
 };
 
-export interface MessageDependencies {
+export type MessageMediaDeps = {
+  mediaFiles?: MediaFileConsumerMethods;
+  getMediaConsumerConfig?: () => Promise<MediaConsumerConfig>;
+};
+
+export interface MessageDependencies extends MessageMediaDeps {
   /** Read from deployment config, never from a message/request or a principal override. */
   getMCPAppMessageBudget?: () => Promise<number | undefined>;
 }
@@ -1023,6 +1086,100 @@ export function createMessageMethods(
   mongoose: typeof import('mongoose'),
   deps: MessageDependencies = {},
 ): MessageMethods {
+  async function withMediaFileWrite<T>(
+    identity: { user: string; conversationId?: string; tenantId?: string | null },
+    fields: MessageFileFields,
+    write: (token?: string) => Promise<T>,
+    onUnavailable?: (fileIds: string[]) => void,
+  ): Promise<T> {
+    const fileIds = collectMessageFileIds(fields).filter(isMediaFileId);
+    if (!deps.mediaFiles || !fileIds.length) return write();
+    if (!identity.conversationId)
+      throw new Error('Media attachments require a conversation identity');
+    const config = deps.getMediaConsumerConfig
+      ? await deps.getMediaConsumerConfig()
+      : resolveMediaConfig().limits;
+    const claim: MediaFileConsumerWrite = {
+      scope: {
+        ownerId: identity.user,
+        tenantId:
+          identity.tenantId === undefined
+            ? (tenantStorage.getStore()?.tenantId ?? null)
+            : identity.tenantId,
+      },
+      conversationId: identity.conversationId,
+      fileIds,
+      token: randomUUID(),
+      config,
+    };
+    const unavailable = (error: unknown) =>
+      error instanceof MediaPersistenceError &&
+      ['retired', 'capacity', 'not_found'].includes(error.code);
+    if (onUnavailable) {
+      claim.fileIds = [];
+      try {
+        for (const fileId of fileIds) {
+          try {
+            await deps.mediaFiles.acquireMediaFileConsumers({ ...claim, fileIds: [fileId] });
+            claim.fileIds.push(fileId);
+          } catch (error) {
+            if (!unavailable(error)) throw error;
+            onUnavailable([fileId]);
+          }
+        }
+      } catch (error) {
+        await deps.mediaFiles.releaseMediaFileConsumerClaims(claim);
+        throw error;
+      }
+    } else await deps.mediaFiles.acquireMediaFileConsumers(claim);
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const published = {
+      user: claim.scope.ownerId,
+      tenantId: claim.scope.tenantId,
+      conversationId: claim.conversationId,
+      mediaConsumerToken: claim.token,
+    };
+    const compensate = async (ids: string[]) => {
+      const rows = Message.find(published)
+        .select({ files: 1, attachments: 1, content: 1 })
+        .lean()
+        .cursor();
+      for await (const row of rows) {
+        await Message.updateOne(
+          { ...published, _id: row._id },
+          { $set: removeMessageFileIds(row, new Set(ids)) },
+        );
+      }
+    };
+    try {
+      const result = await write(claim.token);
+      if (onUnavailable) {
+        const missing: string[] = [];
+        for (const fileId of claim.fileIds) {
+          try {
+            await deps.mediaFiles.confirmMediaFileConsumers({ ...claim, fileIds: [fileId] });
+          } catch (error) {
+            if (!unavailable(error)) throw error;
+            missing.push(fileId);
+          }
+        }
+        if (missing.length) {
+          await compensate(missing);
+          onUnavailable(missing);
+        }
+      } else await deps.mediaFiles.confirmMediaFileConsumers(claim);
+      await Message.updateMany(published, { $unset: { mediaConsumerToken: 1 } });
+      return result;
+    } catch (error) {
+      // A token fences compensation against later writers of the same message.
+      await compensate(claim.fileIds);
+      await Message.updateMany(published, { $unset: { mediaConsumerToken: 1 } });
+      throw error;
+    } finally {
+      await deps.mediaFiles.releaseMediaFileConsumerClaims(claim);
+    }
+  }
+
   /** The API constructs method adapters before it necessarily registers every model. */
   function privateMessagePaths(): string {
     const Message = mongoose.models.Message as Model<IMessage>;
@@ -1085,6 +1242,7 @@ export function createMessageMethods(
       unsetPrivateText?: boolean;
       timestamps?: boolean;
       onWrite?: (inserted: boolean, id: unknown) => void;
+      nativeContent?: unknown;
     },
   ): Promise<IMessage | null> {
     const Message = mongoose.models.Message as Model<IMessage>;
@@ -1169,6 +1327,7 @@ export function createMessageMethods(
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      delete update.mediaConsumerToken;
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;
@@ -1266,6 +1425,9 @@ export function createMessageMethods(
       const userSubmittedMessageFieldPaths = normalizeUserSubmittedMessageFieldPaths(
         params.userSubmittedMessageFieldPaths,
       );
+      if (update.content != null) {
+        update.content = detachEditedNativeContent(update.content, userSubmittedPaths);
+      }
       delete update.userSubmittedPaths;
       delete update.userSubmittedMessageFieldPaths;
       delete update.__v;
@@ -1276,33 +1438,55 @@ export function createMessageMethods(
           throw new Error('A private message cannot use the ordinary insert-only writer.');
         }
         const now = new Date();
-        const existingOrInserted = await Message.findOneAndUpdate(
-          { messageId: params.messageId, user: userId },
-          {
-            $setOnInsert: {
-              ...update,
-              ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
-              ...(userSubmittedMessageFieldPaths.length > 0 && { userSubmittedMessageFieldPaths }),
-              ...retentionOnInsert,
-              createdAt: now,
-              updatedAt: now,
-            },
-          },
-          { upsert: true, new: true, timestamps: false },
+        const existingOrInserted = await withMediaFileWrite(
+          { user: userId, conversationId, tenantId: params.tenantId },
+          params,
+          async (token) =>
+            Message.findOneAndUpdate(
+              { messageId: params.messageId, user: userId },
+              {
+                $setOnInsert: {
+                  ...update,
+                  ...(token ? { mediaConsumerToken: token } : {}),
+                  ...(userSubmittedPaths.length > 0 && { userSubmittedPaths }),
+                  ...(userSubmittedMessageFieldPaths.length > 0 && {
+                    userSubmittedMessageFieldPaths,
+                  }),
+                  ...retentionOnInsert,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+              { upsert: true, new: true, timestamps: false },
+            ),
         );
-        return existingOrInserted?.toObject();
+        const inserted = existingOrInserted?.toObject();
+        delete inserted?.mediaConsumerToken;
+        return inserted;
       }
-      const message = await writeMessage(
-        { messageId: params.messageId, user: userId },
-        { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
-        {
-          upsert: true,
-          stampModelOutputOnInsert,
-          unsetContextMeta,
-          retentionOnInsert,
-          unsetPrivateText:
-            metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
-        },
+      const message = await withMediaFileWrite(
+        { user: userId, conversationId, tenantId: params.tenantId },
+        params,
+        async (token) =>
+          writeMessage(
+            { messageId: params.messageId, user: userId },
+            {
+              ...update,
+              ...(token ? { mediaConsumerToken: token } : {}),
+              userSubmittedPaths,
+              userSubmittedMessageFieldPaths,
+            },
+            {
+              upsert: true,
+              stampModelOutputOnInsert,
+              unsetContextMeta,
+              retentionOnInsert,
+              unsetPrivateText:
+                metadata?.privateText == null &&
+                Object.prototype.hasOwnProperty.call(update, 'text'),
+              nativeContent: params.content,
+            },
+          ),
       );
 
       if (message == null) {
@@ -1344,7 +1528,9 @@ export function createMessageMethods(
         message.isTemporary = false;
       }
 
-      return message.toObject();
+      const saved = message.toObject();
+      delete saved.mediaConsumerToken;
+      return saved;
     } catch (err: unknown) {
       logger.error('Error saving message:', err);
       logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
@@ -1361,7 +1547,9 @@ export function createMessageMethods(
           });
 
           if (existingMessage) {
-            return existingMessage.toObject();
+            const existing = existingMessage.toObject();
+            delete existing.mediaConsumerToken;
+            return existing;
           }
 
           return undefined;
@@ -1383,148 +1571,217 @@ export function createMessageMethods(
   async function bulkSaveMessages(
     messages: Array<Record<string, unknown>>,
     overrideTimestamp = false,
-    provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
+    options?: {
+      privateTextTokens?: ReadonlyMap<string, readonly string[]>;
+      unavailableMedia?: 'placeholder';
+    },
   ) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      const bulkOps = messages.map((message) => {
-        const normalizedMessage = sanitizeMessageUpdate(message);
-        delete normalizedMessage.privateText;
-        delete normalizedMessage.privacyRevision;
-        delete normalizedMessage.privateTextTokens;
-        const tokens = provenance?.privateTextTokens.get(String(message.messageId));
-        const text = message.text;
-        if (
-          tokens?.length &&
-          tokens.length <= 4096 &&
-          message.isCreatedByUser === true &&
-          typeof text === 'string'
-        ) {
-          normalizedMessage.privateTextTokens = tokens.filter(
-            (token) =>
-              /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
-              text.includes(token),
+      const mediaTokens = new Map<Record<string, unknown>, string>();
+      const groups = new Map<
+        string,
+        {
+          identity: { user: string; conversationId: string; tenantId?: string };
+          messages: Array<Record<string, unknown>>;
+        }
+      >();
+      for (const message of messages) {
+        if (!collectMessageFileIds(message).some(isMediaFileId)) continue;
+        if (typeof message.user !== 'string' || typeof message.conversationId !== 'string') {
+          throw new Error('Media attachments require an authenticated conversation owner');
+        }
+        const identity = {
+          user: message.user,
+          conversationId: message.conversationId,
+          tenantId: typeof message.tenantId === 'string' ? message.tenantId : undefined,
+        };
+        const key = JSON.stringify(identity);
+        const group = groups.get(key) ?? { identity, messages: [] };
+        group.messages.push(message);
+        groups.set(key, group);
+      }
+      const pending = [...groups.values()];
+      const write = async () => {
+        const bulkOps = messages.map((message) => {
+          const normalizedMessage = sanitizeMessageUpdate(message);
+          delete normalizedMessage.privateText;
+          delete normalizedMessage.privacyRevision;
+          delete normalizedMessage.privateTextTokens;
+          delete normalizedMessage.mediaConsumerToken;
+          const mediaToken = mediaTokens.get(message);
+          if (mediaToken) normalizedMessage.mediaConsumerToken = mediaToken;
+          const tokens = options?.privateTextTokens?.get(String(message.messageId));
+          const text = message.text;
+          if (
+            tokens?.length &&
+            tokens.length <= 4096 &&
+            message.isCreatedByUser === true &&
+            typeof text === 'string'
+          ) {
+            normalizedMessage.privateTextTokens = tokens.filter(
+              (token) =>
+                /^\[(?:EMAIL|PHONE|NAME|CREDENTIAL|CUSTOM)_\d+_[a-f0-9]{32}\]$/.test(token) &&
+                text.includes(token),
+            );
+          }
+          const submittedProvenance = capNormalizedProvenance(
+            normalizeUserSubmittedPaths(message.userSubmittedPaths),
+            normalizeUserSubmittedMessageFieldPaths(message.userSubmittedMessageFieldPaths),
           );
+          if (normalizedMessage.content != null) {
+            normalizedMessage.content = detachEditedNativeContent(
+              normalizedMessage.content,
+              submittedProvenance.userSubmittedPaths,
+            );
+          }
+          if (submittedProvenance.userSubmittedPaths.length > 0) {
+            normalizedMessage.userSubmittedPaths = submittedProvenance.userSubmittedPaths;
+          } else {
+            delete normalizedMessage.userSubmittedPaths;
+          }
+          if (submittedProvenance.userSubmittedMessageFieldPaths.length > 0) {
+            normalizedMessage.userSubmittedMessageFieldPaths =
+              submittedProvenance.userSubmittedMessageFieldPaths;
+          } else {
+            delete normalizedMessage.userSubmittedMessageFieldPaths;
+          }
+          if (submittedProvenance.promoteWholeMessage) {
+            normalizedMessage.isUserSubmitted = true;
+          }
+          return {
+            set: normalizedMessage,
+            nativeContent: message.content,
+            updateOne: {
+              filter: {
+                messageId: message.messageId,
+                ...(message.user != null ? { user: message.user } : {}),
+              },
+              update: withNativeSignatureEdits(
+                {
+                  $set: normalizedMessage,
+                  $inc: { __v: 1 },
+                  $unset: {
+                    privateText: 1,
+                    privacyRevision: 1,
+                    ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),
+                  },
+                },
+                message.content,
+                submittedProvenance.userSubmittedPaths,
+              ),
+              timestamps: !overrideTimestamp,
+              upsert: true,
+            },
+          };
+        });
+        // Keep no-App imports batched. The atomic predicate makes a race with App attachment
+        // creation collide on the unique key, at which point only that row uses guarded admission.
+        const guarded: typeof bulkOps = [];
+        const ordinary = bulkOps.filter((op) => {
+          if (hasBoundAppSnapshots(op.set.attachments)) {
+            guarded.push(op);
+            return false;
+          }
+          return true;
+        });
+        let result:
+          | {
+              matchedCount: number;
+              modifiedCount: number;
+              upsertedCount: number;
+              upsertedIds: Record<number, unknown>;
+            }
+          | undefined;
+        const repaired = {
+          matchedCount: 0,
+          modifiedCount: 0,
+          upsertedCount: 0,
+          upsertedIds: {} as Record<number, unknown>,
+        };
+        if (ordinary.length) {
+          try {
+            result = await tenantSafeBulkWrite(
+              Message,
+              ordinary.map((op) => ({
+                updateOne: {
+                  ...op.updateOne,
+                  filter: { ...op.updateOne.filter, ...NO_BOUND_APPS },
+                },
+              })),
+              { ordered: false },
+            );
+          } catch (error) {
+            const failure = error as {
+              writeErrors?: Array<{ code: number; index: number }>;
+              result?: typeof result;
+            };
+            if (
+              !failure.writeErrors?.length ||
+              failure.writeErrors.some((item) => item.code !== 11000)
+            )
+              throw error;
+            result = failure.result;
+            for (const { index } of failure.writeErrors) guarded.push(ordinary[index]);
+          }
         }
-        const submittedProvenance = capNormalizedProvenance(
-          normalizeUserSubmittedPaths(message.userSubmittedPaths),
-          normalizeUserSubmittedMessageFieldPaths(message.userSubmittedMessageFieldPaths),
-        );
-        if (submittedProvenance.userSubmittedPaths.length > 0) {
-          normalizedMessage.userSubmittedPaths = submittedProvenance.userSubmittedPaths;
-        } else {
-          delete normalizedMessage.userSubmittedPaths;
+        // Ordinary imports stay batched; exceptional App rows are admitted one at a time.
+        for (const op of guarded) {
+          await writeMessage(op.updateOne.filter, op.set, {
+            upsert: true,
+            unsetPrivateText: true,
+            timestamps: !overrideTimestamp,
+            nativeContent: op.nativeContent,
+            onWrite: (inserted, id) => {
+              if (inserted) {
+                repaired.upsertedCount++;
+                repaired.upsertedIds[bulkOps.indexOf(op)] = id;
+              } else {
+                repaired.matchedCount++;
+                repaired.modifiedCount++;
+              }
+            },
+          });
         }
-        if (submittedProvenance.userSubmittedMessageFieldPaths.length > 0) {
-          normalizedMessage.userSubmittedMessageFieldPaths =
-            submittedProvenance.userSubmittedMessageFieldPaths;
-        } else {
-          delete normalizedMessage.userSubmittedMessageFieldPaths;
-        }
-        if (submittedProvenance.promoteWholeMessage) {
-          normalizedMessage.isUserSubmitted = true;
+        if (!guarded.length) return result;
+        const upsertedIds: Record<number, unknown> = { ...repaired.upsertedIds };
+        for (const [index, id] of Object.entries(result?.upsertedIds ?? {})) {
+          upsertedIds[bulkOps.indexOf(ordinary[Number(index)])] = id;
         }
         return {
-          updateOne: {
-            filter: {
-              messageId: message.messageId,
-              ...(message.user != null ? { user: message.user } : {}),
-            },
-            update: {
-              $set: normalizedMessage,
-              $inc: { __v: 1 },
-              $unset: {
-                privateText: 1,
-                privacyRevision: 1,
-                ...(normalizedMessage.privateTextTokens == null && { privateTextTokens: 1 }),
-              },
-            },
-            timestamps: !overrideTimestamp,
-            upsert: true,
-          },
+          insertedCount: 0,
+          deletedCount: 0,
+          insertedIds: {},
+          upsertedIds,
+          matchedCount: (result?.matchedCount ?? 0) + repaired.matchedCount,
+          modifiedCount: (result?.modifiedCount ?? 0) + repaired.modifiedCount,
+          upsertedCount: (result?.upsertedCount ?? 0) + repaired.upsertedCount,
         };
-      });
-      // Keep no-App imports batched. The atomic predicate makes a race with App attachment
-      // creation collide on the unique key, at which point only that row uses guarded admission.
-      const guarded: typeof bulkOps = [];
-      const ordinary = bulkOps.filter((op) => {
-        if (hasBoundAppSnapshots(op.updateOne.update.$set.attachments)) {
-          guarded.push(op);
-          return false;
-        }
-        return true;
-      });
-      let result:
-        | {
-            matchedCount: number;
-            modifiedCount: number;
-            upsertedCount: number;
-            upsertedIds: Record<number, unknown>;
-          }
-        | undefined;
-      const repaired = {
-        matchedCount: 0,
-        modifiedCount: 0,
-        upsertedCount: 0,
-        upsertedIds: {} as Record<number, unknown>,
       };
-      if (ordinary.length) {
-        try {
-          result = await tenantSafeBulkWrite(
-            Message,
-            ordinary.map((op) => ({
-              updateOne: {
-                ...op.updateOne,
-                filter: { ...op.updateOne.filter, ...NO_BOUND_APPS },
-              },
-            })),
-            { ordered: false },
-          );
-        } catch (error) {
-          const failure = error as {
-            writeErrors?: Array<{ code: number; index: number }>;
-            result?: typeof result;
-          };
-          if (
-            !failure.writeErrors?.length ||
-            failure.writeErrors.some((item) => item.code !== 11000)
-          )
-            throw error;
-          result = failure.result;
-          for (const { index } of failure.writeErrors) guarded.push(ordinary[index]);
-        }
-      }
-      // Ordinary imports stay batched; exceptional App rows are admitted one at a time.
-      for (const op of guarded) {
-        await writeMessage(op.updateOne.filter, op.updateOne.update.$set, {
-          upsert: true,
-          unsetPrivateText: true,
-          timestamps: !overrideTimestamp,
-          onWrite: (inserted, id) => {
-            if (inserted) {
-              repaired.upsertedCount++;
-              repaired.upsertedIds[bulkOps.indexOf(op)] = id;
-            } else {
-              repaired.matchedCount++;
-              repaired.modifiedCount++;
-            }
+      /** Every media group holds its consumer claims until the single batched write settles. */
+      const persist = async (index: number): Promise<Awaited<ReturnType<typeof write>>> => {
+        const group = pending[index];
+        if (!group) return write();
+        return withMediaFileWrite(
+          group.identity,
+          {
+            files: group.messages.flatMap((message) =>
+              collectMessageFileIds(message).map((file_id) => ({ file_id })),
+            ),
           },
-        });
-      }
-      if (!guarded.length) return result;
-      const upsertedIds: Record<number, unknown> = { ...repaired.upsertedIds };
-      for (const [index, id] of Object.entries(result?.upsertedIds ?? {})) {
-        upsertedIds[bulkOps.indexOf(ordinary[Number(index)])] = id;
-      }
-      return {
-        insertedCount: 0,
-        deletedCount: 0,
-        insertedIds: {},
-        upsertedIds,
-        matchedCount: (result?.matchedCount ?? 0) + repaired.matchedCount,
-        modifiedCount: (result?.modifiedCount ?? 0) + repaired.modifiedCount,
-        upsertedCount: (result?.upsertedCount ?? 0) + repaired.upsertedCount,
+          async (token) => {
+            if (token) for (const message of group.messages) mediaTokens.set(message, token);
+            return persist(index + 1);
+          },
+          options?.unavailableMedia === 'placeholder'
+            ? (ids) => {
+                for (const message of group.messages)
+                  Object.assign(message, removeMessageFileIds(message, new Set(ids)));
+              }
+            : undefined,
+        );
       };
+      return await persist(0);
     } catch (err) {
       logger.error('Error saving messages in bulk:', err);
       throw err;
@@ -1562,7 +1819,7 @@ export function createMessageMethods(
       delete safeRest.privateText;
       delete safeRest.privacyRevision;
       delete safeRest.privateTextTokens;
-      const message = {
+      const message: Record<string, unknown> = {
         user,
         endpoint,
         messageId,
@@ -1577,12 +1834,35 @@ export function createMessageMethods(
         }),
         ...(provenance.promoteWholeMessage && { isUserSubmitted: true }),
       };
-      return await writeMessage({ user, messageId }, message, {
-        upsert: true,
-        unsetPrivateText: Object.prototype.hasOwnProperty.call(safeRest, 'text'),
-        stampModelOutputOnInsert:
-          rest.isCreatedByUser === false && rest.isUserSubmitted === undefined,
-      });
+      delete message.mediaConsumerToken;
+      if (safeRest.content != null) {
+        message.content = detachEditedNativeContent(
+          safeRest.content,
+          provenance.userSubmittedPaths,
+        );
+      }
+      const recorded = await withMediaFileWrite(
+        {
+          user,
+          conversationId,
+          tenantId: typeof rest.tenantId === 'string' ? rest.tenantId : undefined,
+        },
+        message,
+        async (token) =>
+          writeMessage(
+            { user, messageId },
+            token ? { ...message, mediaConsumerToken: token } : message,
+            {
+              upsert: true,
+              unsetPrivateText: Object.prototype.hasOwnProperty.call(safeRest, 'text'),
+              stampModelOutputOnInsert:
+                rest.isCreatedByUser === false && rest.isUserSubmitted === undefined,
+              nativeContent: rest.content,
+            },
+          ),
+      );
+      recorded?.set('mediaConsumerToken', undefined);
+      return recorded;
     } catch (err) {
       logger.error('Error recording message:', err);
       throw err;
@@ -1961,20 +2241,29 @@ export function createMessageMethods(
             await prepareAppUpdate({ attachments: merged, content: nextContent }, current)
           ).attachments as unknown[];
         }
-        const result = await Message.findOneAndUpdate(
-          {
-            ...messageFilter,
-            _id: current._id,
-            ...(hasApps
-              ? { __v: current.__v ?? null }
-              : { attachments: current.attachments == null ? null : current.attachments }),
-          },
-          {
-            ...settleUpdate,
-            $set: { ...settlePatch, attachments: admitted },
-          },
-          settleOptions,
-        ).lean<{ unfinished?: boolean } | null>();
+        const result = await withMediaFileWrite(
+          { user: userId, conversationId },
+          { attachments: admitted },
+          async (token) =>
+            Message.findOneAndUpdate(
+              {
+                ...messageFilter,
+                _id: current._id,
+                ...(hasApps
+                  ? { __v: current.__v ?? null }
+                  : { attachments: current.attachments == null ? null : current.attachments }),
+              },
+              {
+                ...settleUpdate,
+                $set: {
+                  ...settlePatch,
+                  attachments: admitted,
+                  ...(token ? { mediaConsumerToken: token } : {}),
+                },
+              },
+              settleOptions,
+            ).lean<{ unfinished?: boolean } | null>(),
+        );
         if (result != null) {
           return { matched: true, unfinished: result.unfinished === true };
         }
@@ -2610,9 +2899,16 @@ export function createMessageMethods(
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;
+      if (update.content != null) {
+        update.content = detachEditedNativeContent(
+          update.content,
+          normalizeUserSubmittedPaths(update.userSubmittedPaths),
+        );
+      }
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
         unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
+        nativeContent: message.content,
       });
 
       if (!updatedMessage) {
@@ -3032,8 +3328,9 @@ export function createMessageMethods(
       const message = await Message.findOne({ messageId, user: userId }).lean<IMessage>();
 
       if (message) {
-        const query = Message.find({ conversationId, user: userId });
-        return await query.deleteMany({
+        return await deleteMessages({
+          conversationId,
+          user: userId,
           createdAt: { $gt: message.createdAt },
         });
       }
@@ -4223,7 +4520,31 @@ export function createMessageMethods(
   async function deleteMessages(filter: FilterQuery<IMessage>) {
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
-      return await Message.deleteMany(filter);
+      const tenantId = tenantStorage.getStore()?.tenantId;
+      const explicitTenant = typeof filter.tenantId === 'string' || filter.tenantId === null;
+      const ownerTenant = explicitTenant ? filter.tenantId : (tenantId ?? null);
+      const result = await Message.deleteMany(filter);
+      if (
+        deps.mediaFiles &&
+        typeof filter.user === 'string' &&
+        typeof filter.conversationId === 'string' &&
+        ownerTenant !== SYSTEM_TENANT_ID
+      ) {
+        // The periodic consumer sweep retries this; the messages are already gone.
+        await deps.mediaFiles
+          .reconcileMediaFileConsumers({
+            scope: {
+              ownerId: filter.user,
+              tenantId: ownerTenant,
+            },
+            conversationId: filter.conversationId,
+            limit: resolveMediaConfig().limits.maxPageSize,
+          })
+          .catch((error: unknown) =>
+            logger.warn('[deleteMessages] Media consumer reconciliation deferred:', error),
+          );
+      }
+      return result;
     } catch (err) {
       logger.error('Error deleting messages:', err);
       throw err;

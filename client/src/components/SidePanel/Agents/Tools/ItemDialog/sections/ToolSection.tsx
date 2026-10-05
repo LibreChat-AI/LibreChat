@@ -20,7 +20,11 @@ interface Props {
  *  (`EXCLUDED_BACKGROUND_TOOL_NAMES`): artifact-first tools whose files can't
  *  attach to an already-saved turn never get the switch. */
 const isBackgroundEligibleTool = (toolId: string): boolean =>
-  !imageGenTools.has(toolId) && toolId !== 'image_gen_oai' && toolId !== 'image_edit_oai';
+  !imageGenTools.has(toolId) &&
+  toolId !== 'image_gen_oai' &&
+  toolId !== 'image_edit_oai' &&
+  toolId !== 'media_generate' &&
+  toolId !== 'media_status';
 
 export default function ToolSection({ item }: Props) {
   const localize = useLocalize();
@@ -70,24 +74,24 @@ export default function ToolSection({ item }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {item.description ? (
-        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">
+        <p className="text-text-secondary max-h-40 overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap">
           {item.description}
         </p>
       ) : (
-        <p className="text-sm italic text-text-tertiary">
+        <p className="text-text-tertiary text-sm italic">
           {localize('com_ui_tools_no_description')}
         </p>
       )}
       {showConfigured && (
-        <div className="flex items-center justify-between rounded-xl border border-border-light bg-surface-secondary px-3 py-2.5">
-          <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
-            <CheckCircle2 className="size-4 text-status-success" aria-hidden="true" />
+        <div className="border-border-light bg-surface-secondary flex items-center justify-between rounded-xl border px-3 py-2.5">
+          <span className="text-text-primary flex items-center gap-2 text-sm font-medium">
+            <CheckCircle2 className="text-status-success size-4" aria-hidden="true" />
             {localize('com_ui_tools_info_configured')}
           </span>
           <Button
             variant="ghost"
             onClick={() => setEditing(true)}
-            className="h-auto rounded-md px-2 py-1 text-xs font-medium text-text-secondary"
+            className="text-text-secondary h-auto rounded-md px-2 py-1 text-xs font-medium"
           >
             {localize('com_ui_edit')}
           </Button>

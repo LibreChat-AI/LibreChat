@@ -33,6 +33,7 @@ jest.mock('@librechat/api', () => ({
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
+  collectMediaToolAttachments: jest.requireActual('@librechat/api').collectMediaToolAttachments,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
   createToolTimingAdapter: jest.requireActual('@librechat/api').createToolTimingAdapter,
   stampCommandExecutor: jest.requireActual('@librechat/api').stampCommandExecutor,
@@ -1795,3 +1796,52 @@ describe('isStreamWritable', () => {
     expect(isStreamWritable({ headersSent: true, writableEnded: false }, null)).toBe(true);
   });
 });
+
+it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+  '%s attaches already-persisted media Files without another save',
+  async (factoryName) => {
+    jest.clearAllMocks();
+    const artifactPromises = [];
+    const file = {
+      file_id: 'owned-media',
+      filename: 'image.png',
+      filepath: '/api/media/assets/owned-media/content',
+      bytes: 3,
+      type: 'image/png',
+    };
+    const callback = require('../callbacks')[factoryName]({
+      req: { user: { id: 'owner' } },
+      res: { headersSent: false, writableEnded: false },
+      artifactPromises,
+    });
+    await callback(
+      {
+        output: {
+          name: 'media_generate',
+          tool_call_id: 'call',
+          artifact: {
+            media: {
+              jobId: 'job',
+              threadId: 'thread',
+              operation: 'image.generate',
+              phase: 'succeeded',
+            },
+            files: [file],
+          },
+        },
+      },
+      { run_id: 'message', thread_id: 'chat', executingAgentId: 'child', stepId: 'step' },
+    );
+    expect(await Promise.all(artifactPromises)).toEqual([
+      expect.objectContaining({
+        file_id: 'owned-media',
+        messageId: 'message',
+        conversationId: 'chat',
+        toolCallId: 'call',
+        agentId: 'child',
+        stepId: 'step',
+      }),
+    ]);
+    expect(require('~/server/services/Files/process').saveBase64Image).not.toHaveBeenCalled();
+  },
+);

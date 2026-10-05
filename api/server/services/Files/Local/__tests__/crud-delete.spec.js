@@ -1,5 +1,8 @@
 /** Exactly what `deleteLocalFile` reaches for, so the double does not depend on a built package. */
 jest.mock('@librechat/api', () => ({
+  createLocalStreamStorage: jest.fn(() => ({})),
+  unlinkLocalFile: jest.requireActual('../../../../../../packages/api/src/storage/deletion')
+    .unlinkLocalFile,
   deleteRagFile: jest.fn().mockResolvedValue(undefined),
   stripCacheBust: (filepath) => String(filepath).split('?')[0],
 }));

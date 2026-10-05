@@ -1171,6 +1171,157 @@ describe('Share Methods', () => {
       expect(share?.fileSnapshots?.[0].llmDeliveryPath).toBe('text');
     });
 
+    test.each([true, false])(
+      'projects native image files through the share inclusion policy (%s)',
+      async (includeFiles) => {
+        const userId = new mongoose.Types.ObjectId().toString();
+        const conversationId = `conv_${nanoid()}`;
+        const shareId = `share_${nanoid()}`;
+        await File.create({
+          user: userId,
+          file_id: 'native-image',
+          filename: 'native.png',
+          filepath: '/private/native.png',
+          storageKey: 'private/native.png',
+          source: 'local',
+          type: 'image/png',
+          bytes: 512,
+        });
+        const message = await Message.create({
+          user: userId,
+          conversationId,
+          messageId: `msg_${nanoid()}`,
+          isCreatedByUser: false,
+          content: [
+            { type: 'text', text: 'caption', native_media: { continuationRef: 'private-caption' } },
+            {
+              type: 'image_file',
+              native_media: { continuationRef: 'private-image' },
+              image_file: {
+                file_id: 'native-image',
+                filename: 'native.png',
+                filepath: '/api/media/native-image',
+                conversationId,
+                user: userId,
+                storageKey: 'private/native.png',
+                renditions: {
+                  thumbnail: {
+                    filepath: '/api/media/assets/private-native/content?rendition=thumbnail',
+                  },
+                },
+              },
+            },
+          ],
+        });
+        await SharedLink.create({
+          user: userId,
+          conversationId,
+          shareId,
+          messages: [message._id],
+          snapshotFiles: includeFiles,
+        });
+        const shared = await shareMethods.getSharedMessages(shareId);
+        const content = shared?.messages[0]?.content;
+        expect(content?.[0]).toEqual({ type: 'text', text: 'caption' });
+        expect(JSON.stringify(content)).not.toMatch(
+          /native_media|private-caption|private-image|storageKey|renditions|private-native/,
+        );
+        if (includeFiles) {
+          expect(content?.[1]).toEqual({
+            type: 'image_file',
+            image_file: {
+              file_id: 'native-image',
+              filename: 'native.png',
+              filepath: `/api/share/${shareId}/files/native-image`,
+              conversationId: shared?.conversationId,
+              llmDeliveryPath: 'provider',
+            },
+          });
+          expect(
+            (await SharedLink.findOne({ shareId }).lean())?.fileSnapshots?.map(
+              (file) => file.file_id,
+            ),
+          ).toContain('native-image');
+        } else {
+          expect(content).toHaveLength(1);
+        }
+      },
+    );
+
+    test('drops Media Studio bookkeeping from shared files, attachments and image parts', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      const shareId = `share_${nanoid()}`;
+      await File.create({
+        user: userId,
+        file_id: 'studio-image',
+        filename: 'studio.png',
+        filepath: '/images/studio.png',
+        source: 'local',
+        type: 'image/png',
+        bytes: 1024,
+      });
+      const studioFile = {
+        file_id: 'studio-image',
+        filename: 'studio.png',
+        filepath: '/images/studio.png',
+        type: 'image/png',
+        bytes: 1024,
+        width: 640,
+        height: 480,
+        conversationId,
+        user: userId,
+        source: 'local',
+        mediaOutputKey: 'secret-output-key',
+        mediaRendition: 'original',
+        mediaContentDigest: 'secret-digest',
+        mediaRenditions: { thumbnail: { filepath: '/images/secret-thumbnail.webp' } },
+        mediaRenditionLocations: [
+          { kind: 'thumbnail', storageKey: 'secret/thumbnail.webp', source: 'local' },
+        ],
+        mediaLifecycle: 'live',
+        mediaEpoch: 1,
+        mediaRetainers: ['thread:secret-thread'],
+        mediaConsumerClaims: [
+          { token: 'secret-claim-token', conversationId: 'secret-convo', expiresAt: new Date() },
+        ],
+        mediaConsumerRevision: 2,
+        mediaDeletionToken: 'secret-deletion-token',
+        mediaUseUntil: new Date(),
+        mediaHardExpiresAt: new Date(),
+      };
+      const message = await Message.create({
+        user: userId,
+        conversationId,
+        messageId: `msg_${nanoid()}`,
+        isCreatedByUser: false,
+        files: [studioFile],
+        attachments: [{ ...studioFile, toolCallId: 'call_media' }],
+        content: [{ type: 'image_file', image_file: studioFile }],
+      });
+      await SharedLink.create({
+        user: userId,
+        conversationId,
+        shareId,
+        messages: [message._id],
+      });
+
+      const shared = (await shareMethods.getSharedMessages(shareId))?.messages[0];
+      const render = {
+        file_id: 'studio-image',
+        filename: 'studio.png',
+        type: 'image/png',
+        width: 640,
+        height: 480,
+        filepath: `/api/share/${shareId}/files/studio-image`,
+      };
+
+      expect(JSON.stringify(shared)).not.toMatch(/"media[A-Z]|secret-/);
+      expect(shared?.files?.[0]).toMatchObject(render);
+      expect(shared?.attachments?.[0]).toMatchObject({ ...render, toolCallId: 'call_media' });
+      expect(shared?.content?.[0]).toMatchObject({ type: 'image_file', image_file: render });
+    });
+
     test('leaves safe non-steer content untouched (same array reference)', () => {
       const plainContent = [
         { type: 'text', text: 'no steers here' },

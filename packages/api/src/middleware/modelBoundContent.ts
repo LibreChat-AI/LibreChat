@@ -17,6 +17,7 @@ import type {
   AssistantContentInput,
   FileContentInput,
   MemoryContentInput,
+  ModelParameterContentInput,
   SkillContentInput,
   StoredMessageContentInput,
 } from '../protection/adapters/submissions';
@@ -42,6 +43,16 @@ import {
   reserveContentMaterialization,
 } from '../protection/adapters/nested';
 import {
+  extractAgentContent,
+  extractAssistantActionContent,
+  extractAssistantContent,
+  extractFileContent,
+  extractMemoryContent,
+  extractModelParameterContent,
+  extractSkillContent,
+  extractStoredMessageContent,
+} from '../protection/adapters/submissions';
+import {
   allowHydratedFileReferences,
   assertHydratedFileInspectable,
   hasActiveFilePolicy,
@@ -50,15 +61,6 @@ import {
   omitResolvedCanonicalFileLocators,
   UninspectableFileError,
 } from '../protection/files';
-import {
-  extractAgentContent,
-  extractAssistantActionContent,
-  extractAssistantContent,
-  extractFileContent,
-  extractMemoryContent,
-  extractSkillContent,
-  extractStoredMessageContent,
-} from '../protection/adapters/submissions';
 import {
   MAX_USER_SUBMITTED_PATHS,
   getCapturedUserSubmittedPathMetadata,
@@ -739,6 +741,7 @@ export interface ModelBoundContentInput {
   /** Persisted chat history: user rows plus structured tool fragments are re-inspected. */
   readonly storedMessages?: readonly StoredModelBoundMessage[];
   readonly agents?: readonly (AgentContentInput | null | undefined)[];
+  readonly modelParameters?: ModelParameterContentInput;
   readonly assistants?: readonly (AssistantContentInput | null | undefined)[];
   readonly actions?: readonly (AssistantActionContentInput | null | undefined)[];
   readonly skills?: readonly (SkillContentInput | null | undefined)[];
@@ -3868,6 +3871,9 @@ function inspectModelBoundContent(
     ) {
       appendStoredTraversalError(traversalError);
     }
+  }
+  if (input.modelParameters) {
+    appendExtractedContent(() => extractModelParameterContent(input.modelParameters));
   }
   for (const agent of input.agents ?? []) {
     const agentFilesById = new Map<string, ModelBoundCanonicalFile>();

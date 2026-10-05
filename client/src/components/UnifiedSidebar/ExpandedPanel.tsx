@@ -1,7 +1,6 @@
 import { memo, useCallback, Suspense } from 'react';
 import { SquarePen } from 'lucide-react';
-import { useLocation } from 'react-router-dom';
-import { Skeleton, Sidebar, Button, TooltipAnchor } from '@librechat/client';
+import { Skeleton, Sidebar, Button, Chip, TooltipAnchor } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcuts';
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
@@ -61,7 +60,7 @@ const NavIconButton = memo(function NavIconButton({
   onExpand,
   onCollapse,
   onNavigate,
-  onLeaveInsights,
+  onLeaveRoute,
 }: {
   link: NavLink;
   isActive: boolean;
@@ -70,13 +69,18 @@ const NavIconButton = memo(function NavIconButton({
   onExpand?: () => void;
   onCollapse?: () => void;
   onNavigate?: () => void;
-  onLeaveInsights?: () => void;
+  onLeaveRoute?: () => void;
 }) {
   const localize = useLocalize();
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       if (link.onClick) {
+        if (link.Component && isActive) {
+          if (expanded) onCollapse?.();
+          else onExpand?.();
+          return;
+        }
         link.onClick(e);
         onNavigate?.();
         return;
@@ -91,31 +95,40 @@ const NavIconButton = memo(function NavIconButton({
       if (!expanded) {
         onExpand?.();
       } else {
-        onLeaveInsights?.();
+        onLeaveRoute?.();
       }
     },
-    [link, isActive, setActive, expanded, onExpand, onCollapse, onNavigate, onLeaveInsights],
+    [link, isActive, setActive, expanded, onExpand, onCollapse, onNavigate, onLeaveRoute],
   );
 
   return (
     <TooltipAnchor
-      description={localize(link.title)}
+      description={
+        link.activity ? `${localize(link.title)}: ${link.activity.label}` : localize(link.title)
+      }
       side="right"
       render={
         <Button
           size="icon"
           variant="ghost"
-          aria-label={localize(link.title)}
+          aria-label={
+            link.activity ? `${localize(link.title)}: ${link.activity.label}` : localize(link.title)
+          }
           aria-pressed={isActive}
           disabled={link.disabled}
           data-testid={`nav-panel-${link.id}`}
           className={cn(
-            'h-9 w-9 rounded-lg',
+            'relative h-9 w-9 rounded-lg',
             isActive ? 'bg-surface-active-alt text-text-primary' : 'text-text-secondary',
           )}
           onClick={handleClick}
         >
           <link.icon className="h-5 w-5" aria-hidden="true" />
+          {link.activity && (
+            <Chip size="xs" tone="info" className="absolute -top-1 -right-1" aria-hidden="true">
+              {link.activity.count}
+            </Chip>
+          )}
         </Button>
       }
     />
@@ -124,26 +137,31 @@ const NavIconButton = memo(function NavIconButton({
 
 function ExpandedPanel({
   links,
+  routeActiveId,
   expanded = true,
   onCollapse,
   onExpand,
   onNavigate,
-  onLeaveInsights,
+  onLeaveRoute,
   switchToHistory,
 }: {
   links: NavLink[];
+  routeActiveId?: string;
   expanded?: boolean;
   onCollapse?: () => void;
   onExpand?: () => void;
   onNavigate?: () => void;
-  onLeaveInsights?: () => void;
+  onLeaveRoute?: () => void;
   switchToHistory: boolean;
 }) {
   const localize = useLocalize();
-  const location = useLocation();
   const { active, setActive } = useActivePanel();
   const effectiveActive = resolveActivePanel(active, links);
-  const isInsightsRoute = location.pathname.startsWith('/insights');
+  const isRoutePanel = routeActiveId !== undefined;
+  const expandOtherPanel = useCallback(() => {
+    if (routeActiveId) onLeaveRoute?.();
+    onExpand?.();
+  }, [routeActiveId, onLeaveRoute, onExpand]);
 
   const toggleLabel = expanded ? 'com_nav_close_sidebar' : 'com_nav_open_sidebar';
   const toggleClick = expanded ? onCollapse : onExpand;
@@ -180,16 +198,14 @@ function ExpandedPanel({
             key={link.id}
             link={link}
             isActive={
-              link.id === 'insights'
-                ? isInsightsRoute
-                : !isInsightsRoute && link.id === effectiveActive
+              link.id === routeActiveId ? true : !isRoutePanel && link.id === effectiveActive
             }
             expanded={expanded ?? true}
             setActive={setActive}
-            onExpand={onExpand}
+            onExpand={link.id === routeActiveId ? onExpand : expandOtherPanel}
             onCollapse={onCollapse}
             onNavigate={onNavigate}
-            onLeaveInsights={isInsightsRoute ? onLeaveInsights : undefined}
+            onLeaveRoute={isRoutePanel ? onLeaveRoute : undefined}
           />
         ))}
       </div>

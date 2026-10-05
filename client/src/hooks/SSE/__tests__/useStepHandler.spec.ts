@@ -1425,6 +1425,75 @@ describe('useStepHandler', () => {
       );
     });
 
+    it('streams an owned image between text parts before a terminal snapshot', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const imagePart = Object.freeze({
+        type: ContentTypes.IMAGE_FILE,
+        image_file: Object.freeze({
+          file_id: 'owned-image',
+          filepath: '/images/owner/generated.png',
+          filename: 'generated.png',
+          width: 320,
+          height: 240,
+          type: 'image/png',
+        }),
+        native_media: Object.freeze({ continuationRef: 'response-msg-1:1' }),
+      });
+      act(() => {
+        for (const [index, content] of [
+          [
+            {
+              type: ContentTypes.TEXT,
+              text: 'Before image',
+              native_media: { continuationRef: 'response-msg-1:0' },
+              thoughtSignature: 'private-signature-must-not-stream',
+            },
+          ],
+          [{ type: ContentTypes.IMAGE_FILE }],
+          [{ type: ContentTypes.TEXT, text: 'After image' }],
+        ].entries()) {
+          const step = createRunStep({ id: `ordered-${index}`, index });
+          result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: step }, submission);
+          result.current.stepHandler(
+            { event: StepEvents.ON_MESSAGE_DELTA, data: { id: step.id, delta: { content } } },
+            submission,
+          );
+        }
+      });
+      const pending = mockSetMessages.mock.calls.at(-1)?.[0].at(-1) as TMessage;
+      expect(pending.content?.[1]).not.toHaveProperty('image_file');
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_MESSAGE_DELTA,
+            data: createMessageDelta('ordered-0', ' continued'),
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_MESSAGE_DELTA,
+            data: { id: 'ordered-1', delta: { content: [imagePart] } },
+          },
+          submission,
+        );
+      });
+      const streamed = mockSetMessages.mock.calls.at(-1)?.[0].at(-1) as TMessage;
+      expect(streamed.content).toEqual([
+        {
+          type: ContentTypes.TEXT,
+          text: 'Before image continued',
+          native_media: { continuationRef: 'response-msg-1:0' },
+        },
+        imagePart,
+        { type: ContentTypes.TEXT, text: 'After image' },
+      ]);
+      expect(streamed.content?.[1]).not.toBe(imagePart);
+      expect(pending.content?.[1]).not.toHaveProperty('image_file');
+    });
+
     it('coalesces multiple deltas into a single flush per animation frame', () => {
       const rafQueue: FrameRequestCallback[] = [];
       (window.requestAnimationFrame as jest.Mock).mockImplementation((cb: FrameRequestCallback) => {

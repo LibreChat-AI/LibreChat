@@ -44,6 +44,7 @@ import RetrievalCall from './RetrievalCall';
 import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
 import CodeAnalyze from './CodeAnalyze';
+import { useLocalize } from '~/hooks';
 import Container from './Container';
 import WebSearch from './WebSearch';
 import ToolCall from './ToolCall';
@@ -77,6 +78,7 @@ const Part = memo(function Part({
   hideAttachments,
   onToolExpand,
 }: PartProps) {
+  const localize = useLocalize();
   const { partIndex } = useMessageContext();
   if (!part) {
     return null;
@@ -600,9 +602,20 @@ const Part = memo(function Part({
     }
   } else if (part.type === ContentTypes.IMAGE_FILE) {
     const imageFile = part[ContentTypes.IMAGE_FILE];
+    if (!imageFile) {
+      return null;
+    }
+    if (imageFile.unavailable === 'not_transferred') {
+      return (
+        <p className="text-text-secondary text-sm" role="note">
+          {localize('com_ui_image_not_transferred')}
+        </p>
+      );
+    }
     const cached = imageFile.file_id ? getCachedPreview(imageFile.file_id) : undefined;
     return (
       <Image
+        file={imageFile}
         imagePath={cached ?? imageFile.filepath}
         altText={imageFile.filename ?? 'Uploaded Image'}
         alignRight={isCreatedByUser}

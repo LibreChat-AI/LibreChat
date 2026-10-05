@@ -2,6 +2,7 @@ import { WebSearchToolDefinition, CalculatorToolDefinition } from '@librechat/ag
 import type { ExtendedJsonSchema } from './schema';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
+import { mediaToolkit } from '~/tools/toolkits/media';
 import { oaiToolkit } from '~/tools/toolkits/oai';
 
 export type { ExtendedJsonSchema } from './schema';
@@ -408,6 +409,8 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
     toolType: 'builtin',
     responseFormat: oaiToolkit.image_gen_oai.responseFormat,
   },
+  media_generate: { ...mediaToolkit.media_generate, toolType: 'builtin' },
+  media_status: { ...mediaToolkit.media_status, toolType: 'builtin' },
   image_edit_oai: {
     name: oaiToolkit.image_edit_oai.name,
     description: oaiToolkit.image_edit_oai.description,

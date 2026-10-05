@@ -963,3 +963,46 @@ describe('Custom endpoint config secrets', () => {
     expect(resolveCustomEndpointSecrets(passthrough)).toBe(passthrough);
   });
 });
+
+describe('yaml-only media secrets', () => {
+  it('masks direct credentials and header values without making media admin-writable', () => {
+    const config = {
+      media: {
+        integrations: [
+          {
+            id: 'literal',
+            endpointRef: {
+              kind: 'direct',
+              apiKey: 'secret-api-key',
+              headers: { Authorization: 'secret-header' },
+            },
+          },
+          {
+            id: 'reference',
+            endpointRef: {
+              kind: 'direct',
+              apiKey: '${MEDIA_KEY}',
+              headers: { 'X-Token': '${MEDIA_HEADER}' },
+            },
+          },
+          { id: 'user', endpointRef: { kind: 'direct', apiKey: 'user_provided' } },
+          { id: 'vertex', endpointRef: { kind: 'vertex', keyFile: '{"private_key":"secret"}' } },
+        ],
+      },
+    };
+    const result = redactConfigSecrets(config);
+    expect(result.media.integrations[0].endpointRef).toEqual({
+      kind: 'direct',
+      apiKey: '***',
+      headers: { Authorization: '***' },
+    });
+    expect(result.media.integrations[1].endpointRef).toEqual({
+      kind: 'direct',
+      apiKey: '${MEDIA_KEY}',
+      headers: { 'X-Token': '***' },
+    });
+    expect(result.media.integrations[2].endpointRef.apiKey).toBe('user_provided');
+    expect(result.media.integrations[3].endpointRef.keyFile).toBe('***');
+    expect(getConfigSecretSections()).not.toContain('media');
+  });
+});

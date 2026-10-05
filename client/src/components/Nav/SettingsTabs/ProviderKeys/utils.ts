@@ -1,5 +1,80 @@
-import { EModelEndpoint, isAgentsEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
-import type { TConfig, TSpecsConfig, TEndpointsConfig } from 'librechat-data-provider';
+import {
+  alternateName,
+  EModelEndpoint,
+  isAgentsEndpoint,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
+import type {
+  TConfig,
+  TSpecsConfig,
+  TEndpointsConfig,
+  MediaStartupConfig,
+  MediaUserKey,
+} from 'librechat-data-provider';
+import { mergeMediaUserKeys } from '~/components/Media/credentials';
+
+export type ProviderKeyEntry = {
+  endpoint: string;
+  keyName: string;
+  label: string;
+  conflict: boolean;
+  keyConfiguration?: MediaUserKey & { label: string };
+};
+
+/** Merge by saved credential identity, preserving chat forms and detecting incompatible envelopes. */
+export function getProviderKeyEntries({
+  chatEndpoints,
+  endpointsConfig,
+  mediaIntegrations,
+}: {
+  chatEndpoints: string[];
+  endpointsConfig?: TEndpointsConfig | null;
+  mediaIntegrations?: MediaStartupConfig['integrations'];
+}): ProviderKeyEntry[] {
+  const entries = new Map<string, ProviderKeyEntry>();
+  for (const endpoint of chatEndpoints) {
+    const config = endpointsConfig?.[endpoint];
+    const keyName = config?.azure ? EModelEndpoint.azureOpenAI : endpoint;
+    if (!entries.has(keyName))
+      entries.set(keyName, {
+        endpoint,
+        keyName,
+        label: alternateName[endpoint] || endpoint,
+        conflict: false,
+      });
+  }
+  for (const [keyName, media] of mergeMediaUserKeys(mediaIntegrations)) {
+    const previous = entries.get(keyName);
+    if (!previous) {
+      entries.set(keyName, {
+        endpoint: keyName,
+        keyName,
+        label: media.label,
+        conflict: media.conflict,
+        keyConfiguration: media,
+      });
+      continue;
+    }
+    const config = endpointsConfig?.[previous.endpoint];
+    const conflict = media.conflict || config?.keyEncoding !== media.encoding;
+    const userProvideURL = media.userProvideURL || !!config?.userProvideURL;
+    entries.set(keyName, {
+      ...previous,
+      conflict,
+      ...(userProvideURL
+        ? {
+            keyConfiguration: {
+              keyName,
+              encoding: media.encoding,
+              userProvideURL,
+              label: previous.label,
+            },
+          }
+        : {}),
+    });
+  }
+  return [...entries.values()];
+}
 
 /**
  * Whether an endpoint config requires a user-provided credential — an API key or

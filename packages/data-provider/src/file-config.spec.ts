@@ -4,6 +4,7 @@ import type { FileConfig } from './types/files';
 import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
+  fileRetentionSweepLimitSchema,
   resolveEffectiveUseResponsesApi,
   prefersResponsesApiByModel,
   isAnthropicTextDocumentType,
@@ -26,6 +27,14 @@ import {
 } from './file-config';
 import { resolveDefaultLLMDeliveryPath } from './resolve-llm-delivery-path';
 import { EModelEndpoint } from './schemas';
+
+it('defaults and bounds the shared file retention batch independently of optional file settings', () => {
+  expect(fileRetentionSweepLimitSchema.parse(undefined)).toBe(100);
+  expect(fileConfigSchema.parse({ retentionSweepLimit: 250 }).retentionSweepLimit).toBe(250);
+  expect(mergeFileConfig({ retentionSweepLimit: 250 }).retentionSweepLimit).toBe(250);
+  expect(fileConfigSchema.safeParse({ retentionSweepLimit: 0 }).success).toBe(false);
+  expect(fileConfigSchema.safeParse({ retentionSweepLimit: 10001 }).success).toBe(false);
+});
 
 describe('inferMimeType', () => {
   it('should normalize text/x-python-script to text/x-python', () => {

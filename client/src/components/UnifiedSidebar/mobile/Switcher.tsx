@@ -1,7 +1,7 @@
 import { memo, useId, useMemo, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
-import { DropdownPopup, buttonVariants } from '@librechat/client';
+import { Chip, DropdownPopup, buttonVariants } from '@librechat/client';
 import type { NavLink } from '~/common';
 import type * as t from '~/common';
 import { useActivePanel, resolveActivePanel } from '~/Providers';
@@ -15,12 +15,12 @@ import { cn } from '~/utils';
  */
 function Switcher({
   links,
-  onLeaveInsights,
+  onLeaveRoute,
   onNavigate,
   routeActiveId,
 }: {
   links: NavLink[];
-  onLeaveInsights?: () => void;
+  onLeaveRoute?: () => void;
   onNavigate?: () => void;
   routeActiveId?: string;
 }) {
@@ -36,7 +36,9 @@ function Switcher({
     () =>
       links.map((link) => ({
         id: `nav-panel-${link.id}`,
-        label: localize(link.title),
+        label: link.activity
+          ? `${localize(link.title)}: ${link.activity.label}`
+          : localize(link.title),
         ariaChecked: link.id === activeId,
         className: link.id === activeId ? 'bg-surface-active-alt' : undefined,
         icon: <link.icon className="text-text-primary size-5" aria-hidden="true" />,
@@ -48,11 +50,11 @@ function Switcher({
           }
           setActive(link.id);
           if (routeActiveId) {
-            onLeaveInsights?.();
+            onLeaveRoute?.();
           }
         },
       })),
-    [links, activeId, localize, onLeaveInsights, onNavigate, routeActiveId, setActive],
+    [links, activeId, localize, onLeaveRoute, onNavigate, routeActiveId, setActive],
   );
 
   if (!activeLink) {
@@ -98,6 +100,11 @@ function Switcher({
           <span className="flex-1 truncate text-left text-sm font-medium">
             {localize(activeLink.title)}
           </span>
+          {activeLink.activity && (
+            <Chip size="xs" tone="info" aria-label={activeLink.activity.label}>
+              {activeLink.activity.count}
+            </Chip>
+          )}
           <ChevronDown className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         </Ariakit.MenuButton>
       }

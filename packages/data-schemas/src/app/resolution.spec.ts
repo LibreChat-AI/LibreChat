@@ -1,4 +1,8 @@
-import { INTERFACE_PERMISSION_FIELDS, PermissionTypes } from 'librechat-data-provider';
+import {
+  INTERFACE_PERMISSION_FIELDS,
+  PermissionTypes,
+  resolveMediaConfig,
+} from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfig, IConfig } from '~/types';
 import {
@@ -35,6 +39,55 @@ const baseConfig = {
 } as unknown as AppConfig;
 
 describe('mergeConfigOverrides', () => {
+  it.each(['interface', 'interfaceConfig'])(
+    'preserves all permission seeds across a whole-section tombstone: %s',
+    (path) => {
+      const base: AppConfig = {
+        ...baseConfig,
+        interfaceConfig: {
+          prompts: { use: true, create: false },
+          agents: { use: false, create: false },
+          media: { use: true, create: false },
+          runCode: false,
+          mcpServers: { use: true, create: false, placeholder: 'base placeholder' },
+        },
+      };
+      const merged = mergeConfigOverrides(base, [fakeConfig({}, 10, [path])]);
+      expect(merged.interfaceConfig).toMatchObject(base.interfaceConfig!);
+      const customized = mergeConfigOverrides(base, [
+        fakeConfig({ interface: { mcpServers: { placeholder: 'custom placeholder' } } }, 10),
+      ]);
+      expect(customized.interfaceConfig?.mcpServers).toMatchObject({
+        use: true,
+        create: false,
+        placeholder: 'custom placeholder',
+      });
+    },
+  );
+  it.each(['interface.media', 'interface.media.use', 'interface', 'interfaceConfig'])(
+    'protects media policy and permission seed tombstone %s',
+    (path) => {
+      const base: AppConfig = {
+        ...baseConfig,
+        media: resolveMediaConfig({ enabled: false }),
+        interfaceConfig: { media: { use: false, create: false } },
+      };
+      const merged = mergeConfigOverrides(base, [
+        fakeConfig(
+          {
+            media: { enabled: true, execution: { maxActiveTotal: 999 } },
+            interface: { media: { use: true, create: true } },
+          },
+          10,
+          ['media', path],
+          BASE_CONFIG_PRINCIPAL_ID,
+        ),
+      ]);
+      expect(merged.media).toEqual(base.media);
+      expect(merged.interfaceConfig?.media).toEqual(base.interfaceConfig?.media);
+    },
+  );
+
   it('returns base config when configs array is empty', () => {
     expect(mergeConfigOverrides(baseConfig, [])).toBe(baseConfig);
   });

@@ -27,6 +27,9 @@ import {
   takeRetainedFileDeletions,
 } from '~/utils';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
+import { clearMediaSessionStorage } from '~/components/Media/state';
+import { mediaChatHandoff } from '~/components/Media/handoff';
+import { registerSessionCleanup } from '~/store/session';
 
 const mockNavigate = jest.fn();
 jest.mock('react-router-dom', () => ({
@@ -506,6 +509,36 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     expect(jotaiStore.get(chatFilterTagsAtom)).toEqual([]);
     expect(jotaiStore.get(chatSortAtom)).toEqual({ field: 'title', direction: 'asc' });
     jotaiStore.set(resetChatFilterSessionAtom);
+  });
+
+  it('runs registered session cleanups, including media state, at the logout boundary', () => {
+    const cleanup = jest.fn();
+    const forget = registerSessionCleanup(cleanup);
+    const jotaiStore = getDefaultStore();
+    sessionStorage.setItem('librechat:media:owner:pending', '[]');
+    jotaiStore.set(mediaChatHandoff, {
+      scope: 'owner',
+      conversationId: 'chat',
+      asset: {
+        file_id: 'image',
+        filename: 'image.png',
+        filepath: '/images/owner/image.png',
+        type: 'image/png',
+        bytes: 1,
+      },
+    });
+
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('librechat:media:owner:pending')).toBeNull();
+    expect(jotaiStore.get(mediaChatHandoff)).toBeNull();
+    forget();
+    clearMediaSessionStorage();
   });
 
   it('does not call window.location.replace when redirect is absent', async () => {

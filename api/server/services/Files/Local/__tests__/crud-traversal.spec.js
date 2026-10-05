@@ -1,5 +1,6 @@
 jest.mock('@librechat/api', () => ({
   deleteRagFile: jest.fn(),
+  createLocalStreamStorage: jest.fn(() => ({})),
   saveLocalBuffer: jest.requireActual('@librechat/api').saveLocalBuffer,
 }));
 jest.mock('@librechat/data-schemas', () => ({

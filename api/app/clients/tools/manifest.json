@@ -173,5 +173,14 @@
         "optional": true
       }
     ]
+  },
+  {
+    "name": "Media generation",
+    "pluginKey": "media_generate",
+    "description": "Generate images and submit durable video jobs with configured media providers. Videos continue after the chat run; use media_status to check progress.",
+    "icon": "assets/image_gen_oai.png",
+    "agentsOnly": true,
+    "toolkit": true,
+    "authConfig": []
   }
 ]

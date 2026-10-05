@@ -73,7 +73,7 @@ jest.mock('~/config', () => ({
 
 const { processDeleteRequest } = require('~/server/services/Files/process');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { createCodeExecutionRouteKey } = require('@librechat/api');
+const { createCodeExecutionRouteKey, refreshS3FileUrls } = require('@librechat/api');
 
 // Import the router after mocks
 const router = require('./files');
@@ -91,6 +91,56 @@ describe('File Routes - Delete with Agent Access', () => {
   let methods;
   let requestConfig;
   let modelsToCleanup = [];
+
+  it.each([FileSources.local, FileSources.s3])(
+    'lists %s media originals with public URLs after storage refresh without changing stored paths',
+    async (source) => {
+      requestConfig.fileStrategy = source;
+      const mediaId = `f17ecafe-${uuidv4().slice(9)}`;
+      const originalPath =
+        source === FileSources.local
+          ? `/images/t/tenant/${otherUserId}/original.png`
+          : 'https://private.example/original.png?signature=private-secret';
+      await File.create({
+        user: otherUserId,
+        file_id: mediaId,
+        filename: 'original.png',
+        type: 'image/png',
+        bytes: 4096,
+        source,
+        filepath: originalPath,
+        storageKey: 'private-original-key',
+        storageRegion: 'private-region',
+        mediaOutputKey: 'private-job',
+        mediaLifecycle: 'live',
+        mediaEpoch: 1,
+        mediaRetainers: [],
+        mediaContentDigest: 'private-digest',
+        mediaRenditions: { thumbnail: { filepath: 'private-thumbnail.png', bytes: 32 } },
+      });
+      if (source === FileSources.s3) {
+        refreshS3FileUrls.mockImplementationOnce(async (files) => {
+          const row = files.find((file) => file.file_id === mediaId);
+          expect(row.filepath).toBe(originalPath);
+          row.filepath = 'https://private.example/refreshed.png?signature=new-secret';
+          return files;
+        });
+      }
+      const response = await request(app).get('/files').expect(200);
+      const media = response.body.find((file) => file.file_id === mediaId);
+      expect(media).toMatchObject({
+        filepath: `/api/media/assets/${mediaId}/content`,
+        filename: 'original.png',
+        source,
+        bytes: 4096,
+      });
+      expect(JSON.stringify(media)).not.toContain('private-');
+      expect(media).not.toHaveProperty('mediaRenditions');
+      expect((await File.findOne({ file_id: mediaId, user: otherUserId }).lean()).filepath).toBe(
+        originalPath,
+      );
+    },
+  );
 
   beforeAll(async () => {
     mongoServer = await MongoMemoryServer.create();

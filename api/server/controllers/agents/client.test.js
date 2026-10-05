@@ -2651,6 +2651,7 @@ describe('AgentClient - startup telemetry', () => {
     let releaseCheckpoint;
     let checkpointStarted;
     const runCreation = deferred();
+    const runStarted = deferred();
     const checkpointStartedPromise = new Promise((resolve) => {
       checkpointStarted = resolve;
     });
@@ -2669,7 +2670,10 @@ describe('AgentClient - startup telemetry', () => {
       recordGenerationEvent: jest.fn(),
       end: jest.fn(),
     };
-    mockCreateRun.mockReturnValue(runCreation.promise);
+    mockCreateRun.mockImplementation(() => {
+      runStarted.resolve();
+      return runCreation.promise;
+    });
     mockIsHITLEnabled.mockReturnValue(true);
     mockDeleteAgentCheckpoint.mockImplementation(() => {
       checkpointStarted();
@@ -2710,6 +2714,7 @@ describe('AgentClient - startup telemetry', () => {
 
     const completionPromise = client.chatCompletion({ payload: [] });
     await checkpointStartedPromise;
+    await runStarted.promise;
 
     expect(mockCreateRun).toHaveBeenCalledTimes(1);
     expect(mockCreateRun.mock.calls[0][0]).toEqual(

@@ -4,7 +4,13 @@ import { useParams } from 'react-router-dom';
 import exportFromJSON from 'export-from-json';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { buildTree, Constants, dataService, QueryKeys } from 'librechat-data-provider';
+import {
+  buildTree,
+  Constants,
+  QueryKeys,
+  dataService,
+  detachNativeIdentity,
+} from 'librechat-data-provider';
 import type { TConversation, TMessage, TPreset } from 'librechat-data-provider';
 import {
   ScreenshotLimitError,
@@ -66,7 +72,12 @@ export default function useExportConversation({
       throw new Error('Conversation is unavailable for export');
     }
     const messages = await dataService.getMessagesByConvoId(conversationId);
-    const dataTree = buildTree({ messages });
+    const dataTree = buildTree({
+      messages: messages.map((message) => ({
+        ...message,
+        content: message.content?.map((part) => detachNativeIdentity(part)),
+      })),
+    });
     return dataTree?.length === 0 ? null : (dataTree ?? null);
   }, [conversation?.conversationId]);
 

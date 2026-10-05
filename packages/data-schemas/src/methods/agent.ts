@@ -15,6 +15,7 @@ import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { runAsSystem } from '~/config/tenantContext';
 import { filterExistingSkillIds } from './skill';
 import logger from '~/config/winston';
 
@@ -1840,7 +1841,9 @@ export function createAgentMethods(
       })),
     };
 
-    const agents = await Agent.find(searchParameter, { _id: 1, tool_resources: 1 }).lean();
+    const agents = await runAsSystem(async () =>
+      Agent.find(searchParameter, { _id: 1, tool_resources: 1 }).lean(),
+    );
     const shared = new Set<string>();
     for (const agent of agents) {
       const isExcludedAgent =

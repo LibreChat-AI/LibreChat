@@ -8,7 +8,7 @@ export interface SpendTxData {
   model?: string;
   context?: string;
   endpointTokenConfig?: Record<string, Record<string, number>> | null;
-  balance?: { enabled?: boolean };
+  balance?: { enabled?: boolean } | null;
   transactions?: { enabled?: boolean };
   valueKey?: string;
 }

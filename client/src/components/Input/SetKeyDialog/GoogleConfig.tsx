@@ -18,17 +18,31 @@ const validateCredentials = (credentials: Record<string, unknown>) => {
   return result.success;
 };
 
-const GoogleConfig = ({ userKey, setUserKey }: Pick<TConfigProps, 'userKey' | 'setUserKey'>) => {
+const GoogleConfig = ({
+  userKey,
+  setUserKey,
+  userProvideURL,
+}: Pick<TConfigProps, 'userKey' | 'setUserKey'> & { userProvideURL?: boolean | null }) => {
   const localize = useLocalize();
   const { getMultiKey, setMultiKey } = useMultipleKeys(setUserKey);
 
   return (
     <>
+      {userProvideURL && (
+        <InputWithLabel
+          id="baseURL"
+          value={getMultiKey('baseURL', userKey) ?? ''}
+          onChange={(event: { target: { value: string } }) =>
+            setMultiKey('baseURL', event.target.value, userKey)
+          }
+          label={localize('com_endpoint_config_api_url_label', { name: 'Google' })}
+        />
+      )}
       <div className="flex flex-row">
         <Label htmlFor={AuthKeys.GOOGLE_SERVICE_KEY} className="text-left text-sm font-medium">
           {localize('com_endpoint_config_google_service_key')}
         </Label>
-        <Label className="mx-1 text-right text-sm text-text-secondary">
+        <Label className="text-text-secondary mx-1 text-right text-sm">
           {localize('com_endpoint_config_google_cloud_platform')}
         </Label>
         <br />

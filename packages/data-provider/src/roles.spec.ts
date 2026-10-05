@@ -14,6 +14,7 @@ const RESOURCE_MANAGEMENT_FIELDS: Permissions[] = [
  * Add new types here if they gate shared/multi-user resources.
  */
 const RESOURCE_PERMISSION_TYPES: PermissionTypes[] = [
+  PermissionTypes.MEDIA,
   PermissionTypes.MCP_SERVERS,
   PermissionTypes.REMOTE_AGENTS,
 ];
@@ -108,6 +109,17 @@ describe('roleDefaults', () => {
 
   describe('ADMIN role', () => {
     const adminPerms = roleDefaults[SystemRoles.ADMIN].permissions;
+
+    it('grants ADMIN media use and creation while USER stays opted out', () => {
+      expect(adminPerms[PermissionTypes.MEDIA]).toEqual({
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      });
+      expect(roleDefaults[SystemRoles.USER].permissions[PermissionTypes.MEDIA]).toEqual({
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      });
+    });
 
     it('should have explicit values for every field in every permission type', () => {
       const schemaShape = permissionsSchema.shape;

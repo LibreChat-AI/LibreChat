@@ -6,6 +6,7 @@
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), debug: jest.fn(), error: jest.fn(), info: jest.fn() },
   SystemCapabilities: {},
+  isMediaFileId: jest.requireActual('@librechat/data-schemas').isMediaFileId,
 }));
 
 const mockHandleFileListRequest = jest.fn();
@@ -15,6 +16,7 @@ jest.mock('@librechat/api', () => ({
   refreshS3FileUrls: (...args) => mockRefreshS3FileUrls(...args),
   resolveUploadErrorMessage: jest.fn(),
   verifyAgentUploadPermission: jest.fn(),
+  toPublicFiles: jest.requireActual('../../../../packages/api/src/files/public.ts').toPublicFiles,
 }));
 
 jest.mock('~/models', () => ({

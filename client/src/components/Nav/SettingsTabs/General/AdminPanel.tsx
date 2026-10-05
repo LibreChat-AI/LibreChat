@@ -7,7 +7,6 @@ export default function AdminPanel() {
   const localize = useLocalize();
   const { data: startupConfig } = useGetStartupConfig();
   const adminPanelURL = startupConfig?.adminPanelURL ?? '';
-
   if (!adminPanelURL) {
     return null;
   }

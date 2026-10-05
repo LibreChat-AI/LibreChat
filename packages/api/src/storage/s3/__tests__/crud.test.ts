@@ -32,11 +32,12 @@ jest.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: jest.fn().mockResolvedValue('https://bucket.s3.amazonaws.com/test-key?signed=true'),
 }));
 
-jest.mock('~/files', () => ({
+jest.mock('~/files/rag', () => ({
   deleteRagFile: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
+  isMediaFileId: jest.requireActual('@librechat/data-schemas').isMediaFileId,
   logger: {
     debug: jest.fn(),
     info: jest.fn(),
@@ -46,7 +47,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { deleteRagFile } from '~/files';
+import { deleteRagFile } from '~/files/rag';
 import { logger } from '@librechat/data-schemas';
 
 describe('S3 CRUD', () => {
@@ -78,6 +79,34 @@ describe('S3 CRUD', () => {
     s3Mock.on(GetObjectCommand).resolves({ Body: sdkStream });
 
     jest.clearAllMocks();
+  });
+
+  it('plans and streams the explicit filename with identical owner/tenant/region isolation', async () => {
+    const { planS3File, saveStreamToS3 } = await import('../crud');
+    const bytes = Buffer.from('original bytes');
+    (fs.createReadStream as jest.Mock).mockReturnValueOnce(Readable.from([bytes]));
+    const params = {
+      userId: 'owner',
+      tenantId: 'tenant',
+      fileName: 'chosen.png',
+      basePath: 'images',
+      storageRegion: 'us-east-1',
+      includeRegionInPath: true,
+      useInlinePath: true,
+    };
+    const planned = await planS3File(params);
+    const uploaded = await saveStreamToS3({
+      ...params,
+      path: '/temporary/different-name.dat',
+      contentType: 'image/png',
+    });
+    expect(planned.storageKey).toBe('i/r/us-east-1/t/tenant/images/owner/chosen.png');
+    expect(uploaded).toMatchObject({ storageKey: planned.storageKey, bytes: bytes.length });
+    expect(s3Mock.commandCalls(PutObjectCommand)[0].args[0].input).toMatchObject({
+      Key: planned.storageKey,
+      Body: bytes,
+      ContentType: 'image/png',
+    });
   });
 
   describe('getS3Key', () => {
@@ -1107,6 +1136,36 @@ describe('S3 CRUD', () => {
   });
 
   describe('getS3FileStream', () => {
+    it('sends byte ranges to S3 and accepts only the matching partial response', async () => {
+      const bytes = Buffer.alloc(32, 7);
+      const stream = sdkStreamMixin(Readable.from(bytes));
+      s3Mock
+        .on(GetObjectCommand)
+        .resolves({ Body: stream, ContentRange: 'bytes 8388576-8388607/8388608' });
+      const { getS3FileStream } = await import('../crud');
+      const result = await getS3FileStream({} as ServerRequest, 'images/user123/video.mp4', {
+        range: { start: 8388576, end: 8388607 },
+      });
+      const chunks: Buffer[] = [];
+      for await (const chunk of result) chunks.push(Buffer.from(chunk));
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+      expect(s3Mock.commandCalls(GetObjectCommand)[0].args[0].input.Range).toBe(
+        'bytes=8388576-8388607',
+      );
+    });
+
+    it('closes an S3 full-object response when a byte range was requested', async () => {
+      const body = Readable.from(Buffer.alloc(64));
+      const stream = sdkStreamMixin(body);
+      s3Mock.on(GetObjectCommand).resolves({ Body: stream });
+      const { getS3FileStream } = await import('../crud');
+      await expect(
+        getS3FileStream({} as ServerRequest, 'images/user123/video.mp4', {
+          range: { start: 32, end: 63 },
+        }),
+      ).rejects.toThrow('requested byte range');
+      expect(body.destroyed).toBe(true);
+    });
     it('returns a readable stream for a file', async () => {
       const { getS3FileStream } = await import('../crud');
       const result = await getS3FileStream(
@@ -1136,6 +1195,7 @@ describe('S3 CRUD', () => {
       const { resolveDownloadPath } = await import('~/storage/path');
       const file = {
         filepath: 'not a url: presigned link expired and was overwritten',
+        source: 's3',
         storageKey: 'uploads/user123/Ársreikningur 2025.pdf',
       };
 
@@ -1360,7 +1420,7 @@ describe('S3 CRUD', () => {
       ]);
     });
 
-    it('skips non-S3 files', async () => {
+    it('skips non-S3 files and media originals whose public URLs are stable', async () => {
       const { refreshS3FileUrls } = await import('../crud');
 
       const files = [
@@ -1368,6 +1428,12 @@ describe('S3 CRUD', () => {
           file_id: 'file1',
           source: 'local',
           filepath: '/local/path/file.jpg',
+        },
+        {
+          file_id: 'f17ecafe-1234-4000-a000-000000000001',
+          source: FileSources.s3,
+          filepath:
+            'https://bucket.s3.amazonaws.com/images/owner/media.jpg?X-Amz-Signature=expired&X-Amz-Date=20200101T000000Z&X-Amz-Expires=1',
         },
       ];
 
@@ -1377,6 +1443,7 @@ describe('S3 CRUD', () => {
 
       expect(result).toEqual(files);
       expect(mockBatchUpdate).not.toHaveBeenCalled();
+      expect(getSignedUrl).not.toHaveBeenCalled();
     });
 
     it('handles empty or invalid input', async () => {

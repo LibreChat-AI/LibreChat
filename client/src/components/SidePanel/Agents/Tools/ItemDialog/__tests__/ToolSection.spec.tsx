@@ -56,5 +56,11 @@ describe('ToolSection background switch', () => {
 
     renderSection(toolItem('image_gen_oai'));
     expect(screen.queryByTestId('tool-background')).toBeNull();
+
+    renderSection(toolItem('media_status'));
+    expect(screen.queryByTestId('tool-background')).toBeNull();
+
+    renderSection(toolItem('media_generate'));
+    expect(screen.queryByTestId('tool-background')).toBeNull();
   });
 });

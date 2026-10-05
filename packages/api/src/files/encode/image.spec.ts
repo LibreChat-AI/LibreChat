@@ -41,9 +41,14 @@ describe('encodeAndFormatImages', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it.each([FileSources.s3, FileSources.cloudfront, FileSources.azure_blob, FileSources.firebase])(
-    'reads %s by canonical key without entering the legacy payload path',
-    async (source) => {
+  it.each([
+    [FileSources.s3, file.storageKey],
+    [FileSources.cloudfront, file.storageKey],
+    [FileSources.azure_blob, file.filepath],
+    [FileSources.firebase, file.filepath],
+  ] as const)(
+    'reads %s with its storage strategy location without entering the legacy payload path',
+    async (source, downloadPath) => {
       const result = await encodeAndFormatImages(makeReq(), [{ ...file, source }], {}, deps);
 
       expect(result.image_urls).toEqual([
@@ -53,7 +58,7 @@ describe('encodeAndFormatImages', () => {
         expect.objectContaining({ file_id: file.file_id, height: 10, width: 10, embedded: false }),
       ]);
       expect(result.files[0]).not.toHaveProperty('storageKey');
-      expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), file.storageKey);
+      expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), downloadPath);
       expect(memoryGuard.runGuardedEncode).toHaveBeenCalledWith(file.bytes, expect.any(Function));
       expect(prepareImagePayload).not.toHaveBeenCalled();
       expect(httpClient.get).not.toHaveBeenCalled();
@@ -63,6 +68,23 @@ describe('encodeAndFormatImages', () => {
   it('uses the legacy filepath when no canonical key was stored', async () => {
     await encodeAndFormatImages(makeReq(), [{ ...file, storageKey: undefined }], {}, deps);
     expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), file.filepath);
+  });
+
+  it('reads a media original for the provider and saves its authenticated original URL for chat', async () => {
+    const media = { ...file, file_id: 'f17ecafe-1234-4123-8123-123456789012' };
+    const result = await encodeAndFormatImages(makeReq(), [media], {}, deps);
+    expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), media.storageKey);
+    expect(result.image_urls).toEqual([
+      { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } },
+    ]);
+    expect(result.files[0]).toMatchObject({
+      file_id: media.file_id,
+      filepath: `/api/media/assets/${media.file_id}/content`,
+      width: media.width,
+      height: media.height,
+    });
+    expect(JSON.stringify(result.files[0])).not.toContain('signature=secret');
+    expect(media.filepath).toBe(file.filepath);
   });
 
   it('returns an empty result without acquiring a strategy for absent files', async () => {
@@ -140,6 +162,36 @@ describe('encodeAndFormatImages', () => {
       expect(prepareImagePayload).toHaveBeenCalled();
       expect(getDownloadStream).not.toHaveBeenCalled();
       expect(memoryGuard.runGuardedEncode).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([FileSources.local, undefined])(
+    'reads a media original from %s without the legacy metadata update',
+    async (source) => {
+      const original = {
+        ...file,
+        source,
+        file_id: 'f17ecafe-1234-4567-89ab-123456789abc',
+        filepath: '/images/user/original.png',
+        storageKey: 'images/user/original.png',
+      };
+      // Immutable media files reject the expiry mutation performed by the legacy strategy.
+      prepareImagePayload.mockResolvedValue([null, content]);
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [original],
+        { endpoint: 'azureOpenAI' },
+        deps,
+        VisionModes.agents,
+      );
+      expect(result.image_urls).toEqual([
+        { type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } },
+      ]);
+      expect(result.files[0]).toMatchObject({ file_id: original.file_id, width: 10, height: 10 });
+      expect(result.files[0]).not.toHaveProperty('storageKey');
+      expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), original.filepath);
+      expect(memoryGuard.runGuardedEncode).toHaveBeenCalledWith(file.bytes, expect.any(Function));
+      expect(prepareImagePayload).not.toHaveBeenCalled();
     },
   );
 

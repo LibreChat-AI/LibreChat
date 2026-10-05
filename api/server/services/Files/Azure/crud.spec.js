@@ -4,7 +4,6 @@ const mockGetAzureContainerClient = jest.fn(async () => ({
   url: 'https://account.blob.core.windows.net/files',
   getBlockBlobClient: mockGetBlockBlobClient,
 }));
-const mockGetSafeErrorMetadata = jest.fn(() => ({ type: 'Error', status: 403 }));
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn() },
@@ -12,8 +11,14 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   deleteRagFile: jest.fn(),
+  createAzureFileStream: jest.requireActual('../../../../../packages/api/src/storage/read.ts')
+    .createAzureFileStream,
+  createAzureStreamStorage: jest.fn(() => ({
+    planFile: jest.fn(),
+    saveStream: jest.fn(),
+    streamFile: jest.fn(),
+  })),
   assertRemoteFileURL: jest.fn((url) => url),
-  getSafeErrorMetadata: (...args) => mockGetSafeErrorMetadata(...args),
   getAzureContainerClient: (...args) => mockGetAzureContainerClient(...args),
   getRemoteFileFetchMaxBytes: jest.fn(() => 1024),
   getRemoteFileFetchTimeoutMs: jest.fn(() => 1000),
@@ -58,7 +63,7 @@ describe('getAzureFileStream', () => {
     expect(mockGetBlockBlobClient).toHaveBeenCalledWith('uploads/user/report one.pdf');
   });
 
-  it('logs bounded metadata without the signed blob URL', async () => {
+  it('propagates download failures without logging signed blob URLs', async () => {
     const signedUrl =
       'https://account.blob.core.windows.net/files/uploads/user/report.pdf?sig=secret';
     const failure = Object.assign(new Error(`Request failed for ${signedUrl}`), {
@@ -68,11 +73,6 @@ describe('getAzureFileStream', () => {
 
     await expect(getAzureFileStream({}, signedUrl)).rejects.toBe(failure);
 
-    expect(mockGetSafeErrorMetadata).toHaveBeenCalledWith(failure);
-    expect(logger.error).toHaveBeenCalledWith('[getAzureFileStream] Error getting blob stream:', {
-      type: 'Error',
-      status: 403,
-    });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain(signedUrl);
   });
 });

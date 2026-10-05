@@ -26,11 +26,15 @@ export function extractBaseURL(url: string): string | null | undefined {
     return null;
   }
 
-  if (!url.includes('/v1')) {
+  const v1Index = url.search(/\/v1(?=\/|[?#]|$)/);
+  if (v1Index < 0) {
     return url;
   }
 
-  const v1Index = url.indexOf('/v1');
+  const suffixStart = url.search(/[?#]/);
+  const trailing = suffixStart < 0 ? '' : url.slice(suffixStart);
+  const address = suffixStart < 0 ? url : url.slice(0, suffixStart);
+  url = address;
   let baseUrl = url.substring(0, v1Index + 3);
 
   const openai = 'openai';
@@ -56,7 +60,7 @@ export function extractBaseURL(url: string): string | null | undefined {
   const suffixUsed = suffixes.find((suffix) => url.includes(`/${suffix}`));
 
   if (suffixUsed === 'azure-openai') {
-    return url.split(/\/(chat|completion)/)[0];
+    return url.split(/\/(chat|completion)/)[0] + trailing;
   }
 
   const openaiIndex = url.indexOf(`/${openai}`, v1Index + 3);
@@ -74,7 +78,7 @@ export function extractBaseURL(url: string): string | null | undefined {
     baseUrl = url.substring(0, suffixIndex + (suffixUsed?.length ?? 0) + 1);
   }
 
-  return baseUrl;
+  return baseUrl + trailing;
 }
 
 /**

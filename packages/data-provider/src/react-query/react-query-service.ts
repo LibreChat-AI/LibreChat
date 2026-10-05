@@ -125,6 +125,7 @@ export const useUpdateUserKeysMutation = (): UseMutationResult<
       queryClient.invalidateQueries([QueryKeys.models]);
       /** token-config is derived from the same per-user model fetch */
       queryClient.invalidateQueries([QueryKeys.tokenConfig]);
+      queryClient.invalidateQueries([QueryKeys.mediaCatalog]);
     },
   });
 };
@@ -156,6 +157,7 @@ export const useRevokeUserKeyMutation = (name: string): UseMutationResult<unknow
         queryClient.invalidateQueries([QueryKeys.actions]);
         queryClient.invalidateQueries([QueryKeys.tools]);
       }
+      queryClient.invalidateQueries([QueryKeys.mediaCatalog]);
     },
   });
 };
@@ -183,6 +185,7 @@ export const useRevokeAllUserKeysMutation = (): UseMutationResult<unknown> => {
       queryClient.invalidateQueries([QueryKeys.actions]);
       queryClient.invalidateQueries([QueryKeys.tools]);
       queryClient.invalidateQueries([QueryKeys.models]);
+      queryClient.invalidateQueries([QueryKeys.mediaCatalog]);
     },
   });
 };

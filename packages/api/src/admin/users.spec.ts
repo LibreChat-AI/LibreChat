@@ -51,6 +51,13 @@ function createReqRes(
 
 function createDeps(overrides: Partial<AdminUsersDeps> = {}): AdminUsersDeps {
   return {
+    media: {
+      hasMediaActivation: jest.fn().mockResolvedValue(true),
+      prepareMediaAccountDeletion: jest.fn().mockResolvedValue(true),
+      cancelMediaAccountDeletion: jest.fn().mockResolvedValue(undefined),
+      completeMediaAccountDeletion: jest.fn().mockResolvedValue(undefined),
+      hasMediaAccountingObligations: jest.fn().mockResolvedValue(false),
+    },
     findUsers: jest.fn().mockResolvedValue([]),
     countUsers: jest.fn().mockResolvedValue(0),
     beginAgentTriggerUserDeletion: jest.fn().mockResolvedValue('acquired'),
@@ -337,6 +344,73 @@ describe('createAdminUsersHandlers', () => {
   });
 
   describe('deleteUser', () => {
+    it.each(['work', 'accounting'] as const)(
+      'blocks the admin cascade for unresolved media %s and releases both admission fences',
+      async (failure) => {
+        const deps = createDeps();
+        if (failure === 'work')
+          (deps.media.prepareMediaAccountDeletion as jest.Mock).mockResolvedValue(false);
+        else (deps.media.hasMediaAccountingObligations as jest.Mock).mockResolvedValue(true);
+        const { req, res, status, json } = createReqRes({ params: { id: validUserId } });
+        await createAdminUsersHandlers(deps).deleteUser(req, res);
+        expect(status).toHaveBeenCalledWith(409);
+        expect(json).toHaveBeenCalledWith(expect.objectContaining({ code: 'not_ready' }));
+        expect(deps.deleteUserById).not.toHaveBeenCalled();
+        expect(deps.drainAgentTriggerDeliveriesForUser).not.toHaveBeenCalled();
+        expect(deps.media.cancelMediaAccountDeletion).toHaveBeenCalledWith({
+          scope: { ownerId: validUserId, tenantId: null },
+          token: expect.any(String),
+        });
+        expect(deps.cancelAgentTriggerUserDeletion).toHaveBeenCalled();
+        expect(deps.cancelAgentTriggerUserPurge).toHaveBeenCalled();
+        expect(deps.media.completeMediaAccountDeletion).not.toHaveBeenCalled();
+      },
+    );
+
+    it('uses the target tenant and completes media deletion only after committing the user deletion', async () => {
+      const deps = createDeps({
+        findUsers: jest.fn().mockResolvedValue([mockUser({ tenantId: 'target-tenant' })]),
+      });
+      const { req, res, status } = createReqRes({ params: { id: validUserId } });
+      await createAdminUsersHandlers(deps).deleteUser(req, res);
+      expect(status).toHaveBeenCalledWith(200);
+      const session = (deps.media.prepareMediaAccountDeletion as jest.Mock).mock.calls[0][0];
+      expect(session.scope).toEqual({ ownerId: validUserId, tenantId: 'target-tenant' });
+      expect(deps.media.completeMediaAccountDeletion).toHaveBeenCalledWith(session);
+      expect(
+        (deps.media.prepareMediaAccountDeletion as jest.Mock).mock.invocationCallOrder[0],
+      ).toBeLessThan((deps.deleteUserById as jest.Mock).mock.invocationCallOrder[0]);
+      expect((deps.deleteUserById as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+        (deps.media.completeMediaAccountDeletion as jest.Mock).mock.invocationCallOrder[0],
+      );
+      expect(deps.media.cancelMediaAccountDeletion).not.toHaveBeenCalled();
+    });
+
+    it('finishes the committed deletion and leaves failed media cleanup to reconciliation', async () => {
+      const deps = createDeps();
+      (deps.media.completeMediaAccountDeletion as jest.Mock).mockRejectedValue(
+        new Error('Storage unavailable'),
+      );
+      const { req, res, status } = createReqRes({ params: { id: validUserId } });
+      await createAdminUsersHandlers(deps).deleteUser(req, res);
+      expect(status).toHaveBeenCalledWith(200);
+      expect(deps.deleteUserById).toHaveBeenCalled();
+      expect(deps.purgeAgentTriggerDeliveriesForUser).toHaveBeenCalledWith(validUserId);
+      expect(deps.media.cancelMediaAccountDeletion).not.toHaveBeenCalled();
+      expect(deps.cancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
+      expect(deps.media.completeMediaAccountDeletion).toHaveBeenCalledTimes(1);
+    });
+
+    it('deletes a user without touching media when media was never activated', async () => {
+      const deps = createDeps();
+      (deps.media.hasMediaActivation as jest.Mock).mockResolvedValue(false);
+      const { req, res, status } = createReqRes({ params: { id: validUserId } });
+      await createAdminUsersHandlers(deps).deleteUser(req, res);
+      expect(status).toHaveBeenCalledWith(200);
+      expect(deps.media.prepareMediaAccountDeletion).not.toHaveBeenCalled();
+      expect(deps.media.completeMediaAccountDeletion).not.toHaveBeenCalled();
+    });
+
     it('deletes user and returns 200', async () => {
       const result: UserDeleteResult = {
         deletedCount: 1,

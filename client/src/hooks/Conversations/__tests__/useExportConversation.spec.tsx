@@ -3,8 +3,8 @@ import download from 'downloadjs';
 import exportFromJSON from 'export-from-json';
 import { act, renderHook } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { Constants, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import useExportConversation from '../useExportConversation';
@@ -184,3 +184,32 @@ it.each([
     expect.objectContaining({ message: 'com_nav_export_screenshot_private_text' }),
   );
 });
+
+it.each(['json', 'csv', 'markdown', 'text'])(
+  'detaches native identity from the %s export while keeping the image itself',
+  async (type) => {
+    const image = {
+      type: ContentTypes.IMAGE_FILE,
+      native_media: { continuationRef: 'private-continuation' },
+      thoughtSignature: 'private-signature',
+      image_file: { file_id: 'image', filepath: '/images/owned.png' },
+    };
+    mockGetMessages.mockResolvedValueOnce([
+      { ...canonical, privacyRevision: undefined, content: [image] },
+    ]);
+    const { result } = setup(type);
+    await act(async () => {
+      await result.current.exportConversation();
+    });
+    const saved = (download as jest.Mock).mock.calls[0]?.[0] as Blob | undefined;
+    const payload =
+      type === 'json'
+        ? await readBlob(saved as Blob)
+        : JSON.stringify(jest.mocked(exportFromJSON).mock.calls[0][0]);
+    expect(payload).not.toContain('private-continuation');
+    expect(payload).not.toContain('private-signature');
+    if (type === 'json') {
+      expect(payload).toContain('/images/owned.png');
+    }
+  },
+);

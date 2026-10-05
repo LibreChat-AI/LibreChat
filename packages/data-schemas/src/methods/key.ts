@@ -3,15 +3,28 @@ import { ErrorTypes } from 'librechat-data-provider';
 import { encrypt, decrypt } from '~/crypto';
 import logger from '~/config/winston';
 
+export interface UserKeySnapshot {
+  id: string;
+  value: string;
+  expiresAt: string | null;
+}
+
+export interface UserKeyUpdate {
+  userId: string;
+  name: string;
+  value: string;
+  expiresAt?: Date | string | null;
+}
+
 /** Factory function that takes mongoose instance and returns the key methods */
 export function createKeyMethods(mongoose: typeof import('mongoose')): {
   getUserKey: (params: { userId: string; name: string }) => Promise<string>;
-  updateUserKey: (params: {
+  updateUserKey: (params: UserKeyUpdate) => Promise<unknown>;
+  getUserKeySnapshot: (params: {
     userId: string;
     name: string;
-    value: string;
-    expiresAt?: Date | null;
-  }) => Promise<unknown>;
+    tenantId?: string | null;
+  }) => Promise<UserKeySnapshot | null>;
   deleteUserKey: (params: { userId: string; name?: string; all?: boolean }) => Promise<unknown>;
   getUserKeyValues: (params: { userId: string; name: string }) => Promise<Record<string, string>>;
   getUserKeyExpiry: (params: {
@@ -110,32 +123,36 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
    * @description This function either updates an existing user key or inserts a new one into the database,
    *              after encrypting the provided value. It sets the provided expiry date for the key (or unsets for no expiry).
    */
-  async function updateUserKey(params: {
+  async function updateUserKey(params: UserKeyUpdate): Promise<unknown> {
+    const { userId, name, value, expiresAt } = params;
+    const encrypted = await encrypt(value);
+    return mongoose.models.Key.findOneAndUpdate(
+      { userId, name },
+      {
+        $set: { value: encrypted, ...(expiresAt ? { expiresAt: new Date(expiresAt) } : {}) },
+        ...(!expiresAt ? { $unset: { expiresAt: '' } } : {}),
+      },
+      { upsert: true, new: true },
+    ).lean();
+  }
+
+  async function getUserKeySnapshot(params: {
     userId: string;
     name: string;
-    value: string;
-    expiresAt?: Date | null;
-  }): Promise<unknown> {
-    const { userId, name, value, expiresAt = null } = params;
-    const Key = mongoose.models.Key;
-    const encryptedValue = await encrypt(value);
-    const updateObject: { userId: string; name: string; value: string; expiresAt?: Date } = {
-      userId,
-      name,
-      value: encryptedValue,
-    };
-    const updateQuery: { $set: typeof updateObject; $unset?: { expiresAt: string } } = {
-      $set: updateObject,
-    };
-    if (expiresAt) {
-      updateObject.expiresAt = new Date(expiresAt);
-    } else {
-      updateQuery.$unset = { expiresAt: '' };
-    }
-    return await Key.findOneAndUpdate({ userId, name }, updateQuery, {
-      upsert: true,
-      new: true,
-    }).lean();
+    tenantId?: string | null;
+  }): Promise<UserKeySnapshot | null> {
+    const key = await mongoose.models.Key.findOne(params).select('_id value expiresAt').lean<{
+      _id: { toString(): string };
+      value: string;
+      expiresAt?: Date;
+    }>();
+    return key
+      ? {
+          id: key._id.toString(),
+          value: key.value,
+          expiresAt: key.expiresAt?.toISOString() ?? null,
+        }
+      : null;
   }
 
   /**
@@ -168,6 +185,7 @@ export function createKeyMethods(mongoose: typeof import('mongoose')): {
     deleteUserKey,
     getUserKeyValues,
     getUserKeyExpiry,
+    getUserKeySnapshot,
   };
 }
 

@@ -164,6 +164,19 @@ describe('banViolation', () => {
     expect(errorMessage.ban).toBeFalsy();
   });
 
+  it('stores the IP ban under the address the ban check reads, without the proxy port', async () => {
+    const proxied = Object.defineProperty({ ...req }, 'ip', {
+      get: () => '203.0.113.5:51234',
+      enumerable: true,
+    });
+    errorMessage.prev_count = 19;
+    errorMessage.violation_count = 20;
+    await banViolation(proxied, res, errorMessage);
+    const banLogs = getLogStores(ViolationTypes.BAN);
+    expect(await banLogs.get('203.0.113.5')).toMatchObject({ user_id: errorMessage.user_id });
+    expect(await banLogs.get('203.0.113.5:51234')).toBeUndefined();
+  });
+
   it('[EDGE CASE] should not ban if violation_count is lower', async () => {
     errorMessage.prev_count = 0;
     errorMessage.violation_count = -10;

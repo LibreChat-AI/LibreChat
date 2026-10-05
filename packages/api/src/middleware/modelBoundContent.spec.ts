@@ -2214,6 +2214,41 @@ describe('assertModelBoundContent', () => {
     ).toThrow('Submitted content contains a private value');
   });
 
+  it('inspects explicit model parameters without agent projection, including nested provider options', () => {
+    const content = {
+      options: {
+        negativePrompt: 'safe',
+        providerOptions: { background: { value: 'PRIVATE-DESIGN' } },
+      },
+    };
+    const policy = {
+      fields: ['request_fields'] as const,
+      starterPatterns: [],
+      customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+    };
+    expect(() =>
+      assertModelBoundContent({
+        filters: { modelParameters: { pii: { ...policy, fields: ['request_fields'] } } },
+        modelParameters: content,
+      }),
+    ).toThrow('private value');
+    expect(() => assertModelBoundContent({ modelParameters: content })).not.toThrow();
+    expect(() =>
+      assertModelBoundContent({
+        filters: {
+          modelParameters: { pii: { ...policy, fields: ['request_fields'], action: 'audit' } },
+        },
+        modelParameters: content,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelBoundContent({
+        filters: { modelParameters: { pii: { fields: ['request_fields'] } } },
+        modelParameters: { options: { nested: makeDeepModelParameter() } },
+      }),
+    ).toThrow('could not be completely inspected');
+  });
+
   it('fails closed for exhausted selected model request fields', () => {
     expect(() =>
       assertModelBoundContent({

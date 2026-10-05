@@ -60,6 +60,11 @@ jest.mock('@librechat/api', () => ({
   extractWebSearchEnvVars: jest.fn(),
   needsRefresh: jest.fn(),
   getNewS3URL: jest.fn(),
+  prepareAccountDeletion: jest.fn(async ({ scope, token }) => ({ scope, token })),
+  completeAccountDeletion: jest.fn().mockResolvedValue(undefined),
+  cancelAccountDeletion: jest.fn().mockResolvedValue(undefined),
+  sendAccountDeletionError: jest.requireActual('../../../../packages/api/src/user/deletion.ts')
+    .sendAccountDeletionError,
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {

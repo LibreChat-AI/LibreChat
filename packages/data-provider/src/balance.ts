@@ -9,6 +9,9 @@ export const REFILL_INTERVAL_UNITS = [
 
 export type RefillIntervalUnit = (typeof REFILL_INTERVAL_UNITS)[number];
 
+/** Existing balance currency: 1,000 token credits equal $0.001 USD. */
+export const TOKEN_CREDITS_PER_USD = 1_000_000;
+
 /** How long an unreleased in-flight balance reservation keeps counting against the balance. */
 export const DEFAULT_BALANCE_RESERVATION_TTL_MS = 30 * 60 * 1000;
 /** Shortest reservation TTL; a live reservation is renewed every half TTL. */

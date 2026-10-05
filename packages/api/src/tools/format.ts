@@ -1,5 +1,6 @@
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
+import { toolkitParent } from './toolkits/mapping';
 
 /**
  * Filters out duplicate plugins from the list of plugins.
@@ -65,6 +66,10 @@ export function getToolkitKey({
   let toolkitKey: string | undefined;
   if (!toolName) {
     return toolkitKey;
+  }
+  const parent = toolkitParent[toolName];
+  if (parent && toolkits.some((toolkit) => toolkit.pluginKey === parent)) {
+    return parent;
   }
   for (const toolkit of toolkits) {
     if (toolName.startsWith(EToolResources.image_edit)) {

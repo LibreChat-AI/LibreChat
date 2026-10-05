@@ -3,6 +3,7 @@ export * from './attachments';
 export * from './chain';
 export * from './callerCapabilities';
 export * from './client';
+export * from './title';
 export * from './config';
 export * from './checkpointer';
 export * from './checkpoints/deletion';

@@ -1,30 +1,11 @@
 import {
   MAX_MCP_ICON_PATH_LENGTH,
   SVG_SANITIZE_CONFIG,
-  restrictSvgReferences,
   finalizeSvgMarkup,
 } from 'librechat-data-provider';
-import type { DOMPurify } from 'dompurify';
-import type { JSDOM } from 'jsdom';
+import { getSvgRuntime } from '~/utils/svg';
 
 const SVG_DATA_URI = /^data:image\/svg\+xml/i;
-
-let purifier: DOMPurify | null = null;
-
-/** jsdom and dompurify load on first use so the api barrel stays cheap to require. */
-function getSvgPurifier(): DOMPurify {
-  if (purifier) {
-    return purifier;
-  }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const jsdom = require('jsdom') as { JSDOM: typeof JSDOM };
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const loaded = require('dompurify') as DOMPurify | { default: DOMPurify };
-  const create = typeof loaded === 'function' ? loaded : loaded.default;
-  purifier = create(new jsdom.JSDOM('').window);
-  purifier.addHook('afterSanitizeAttributes', restrictSvgReferences);
-  return purifier;
-}
 
 /** Decodes like the `data:` URL processor: percent-decode, then base64 if flagged. */
 function decodeSvgDataUri(iconPath: string): string | null {
@@ -60,7 +41,7 @@ export function sanitizeMcpIconPath(iconPath: string): string {
   if (svg == null || svg.length > MAX_MCP_ICON_PATH_LENGTH) {
     return '';
   }
-  const clean = finalizeSvgMarkup(getSvgPurifier().sanitize(svg, SVG_SANITIZE_CONFIG));
+  const clean = finalizeSvgMarkup(getSvgRuntime().purifier.sanitize(svg, SVG_SANITIZE_CONFIG));
   const encoded = `data:image/svg+xml;base64,${Buffer.from(clean, 'utf-8').toString('base64')}`;
   return encoded.length > MAX_MCP_ICON_PATH_LENGTH ? '' : encoded;
 }

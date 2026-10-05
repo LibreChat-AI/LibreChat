@@ -22,6 +22,7 @@ const contextMap: Record<any, TranslationKeys> = {
   [FileContext.unknown]: 'com_ui_unknown',
   [FileContext.assistants]: 'com_ui_assistants',
   [FileContext.image_generation]: 'com_ui_image_gen',
+  [FileContext.video_generation]: 'com_ui_video_gen',
   [FileContext.assistants_output]: 'com_ui_assistants_output',
   [FileContext.message_attachment]: 'com_ui_attachment',
   [FileContext.run_artifact]: 'com_ui_published_file',
@@ -56,6 +57,12 @@ export const columns: ColumnDef<TFile>[] = [
       const localize = useLocalize();
       return (
         <Checkbox
+          disabled={!row.getCanSelect()}
+          aria-describedby={
+            row.original.deletionRestriction === 'retained_media'
+              ? 'retained-media-description'
+              : undefined
+          }
           checked={row.getIsSelected()}
           onCheckedChange={(value) => row.toggleSelected(!!value)}
           aria-label={localize('com_ui_select_row')}

@@ -2,6 +2,7 @@ import { useState, memo, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { useSetRecoilState } from 'recoil';
 import * as Menu from '@ariakit/react/menu';
+import { useTranslation } from 'react-i18next';
 import { GearIcon, DropdownMenuSeparator, Avatar } from '@librechat/client';
 import {
   Archive,
@@ -18,6 +19,7 @@ import { ArchivedChatsModal } from '~/components/Nav/SettingsTabs/General/Archiv
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { getBalanceAmounts } from '~/utils/balance';
 import { settingsOpenAtom } from './Settings';
 import { openInNewTab } from '~/utils';
 import { useLocalize } from '~/hooks';
@@ -96,11 +98,13 @@ function HelpSubmenu({
 
 function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const localize = useLocalize();
+  const { i18n } = useTranslation();
   const { user, isAuthenticated, logout } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
   const balanceQuery = useGetUserBalance({
     enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
   });
+  const balance = getBalanceAmounts(balanceQuery.data ?? {});
   const setShowSettings = useSetAtom(settingsOpenAtom);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
   const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
@@ -149,8 +153,14 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
         {startupConfig?.balance?.enabled === true && balanceQuery.data != null && (
           <>
             <div className="text-text-secondary mr-2 ml-3 py-2 text-sm" role="note">
-              {localize('com_nav_balance')}:{' '}
-              {new Intl.NumberFormat().format(Math.round(balanceQuery.data.tokenCredits))}
+              {(['available', 'held', 'owed'] as const).map((kind) => (
+                <div key={kind} className="flex justify-between gap-3">
+                  <span>{localize(`com_nav_balance_${kind}`)}</span>
+                  <span className="tabular-nums">
+                    {new Intl.NumberFormat(i18n.language).format(balance[kind])}
+                  </span>
+                </div>
+              ))}
             </div>
             <DropdownMenuSeparator />
           </>

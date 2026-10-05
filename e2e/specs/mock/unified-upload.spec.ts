@@ -35,8 +35,18 @@ import {
  */
 
 test.describe('unified file upload', () => {
-  test('single attach button routes a csv to llmDeliveryPath "none"', async ({ page }) => {
+  test('direct upload routes a csv to llmDeliveryPath "none" when media chat is disabled', async ({
+    page,
+  }) => {
     test.setTimeout(120000);
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      const config = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...config, media: { ...config.media, chat: false } },
+      });
+    });
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 
     // Default model needs a real key; Mock Provider B is the unified-mode endpoint.
@@ -69,7 +79,7 @@ test.describe('unified file upload', () => {
     expect(persisted?.llmDeliveryPath).toBe('none');
   });
 
-  test('single attach button still delivers a provider-routed upload and shows it in chat', async ({
+  test('the source menu delivers a provider-routed upload and shows it in chat', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -118,7 +128,7 @@ test.describe('unified file upload', () => {
     ).toBeVisible();
   });
 
-  test('single attach button routes a json upload to llmDeliveryPath "text"', async ({ page }) => {
+  test('the source menu routes a json upload to llmDeliveryPath "text"', async ({ page }) => {
     test.setTimeout(120000);
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);

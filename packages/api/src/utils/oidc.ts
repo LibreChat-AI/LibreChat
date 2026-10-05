@@ -153,7 +153,22 @@ export class OpenIDReauthRequiredError extends Error {
 }
 
 export function extractOpenIDTokenInfo(
-  user: Partial<IUser> | null | undefined,
+  user:
+    | Partial<
+        Pick<
+          IUser,
+          | 'federatedTokens'
+          | 'openidTokens'
+          | 'provider'
+          | 'openidId'
+          | 'id'
+          | 'email'
+          | 'name'
+          | 'username'
+        >
+      >
+    | null
+    | undefined,
 ): OpenIDTokenInfo | null {
   if (!user) {
     return null;

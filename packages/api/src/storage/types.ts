@@ -1,6 +1,9 @@
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types/http';
 
+export type StorageByteRange = { start: number; end: number };
+export type StorageReadOptions = { range?: StorageByteRange; signal?: AbortSignal };
+
 export interface SaveBufferParams {
   userId: string;
   buffer: Buffer;
@@ -10,6 +13,22 @@ export interface SaveBufferParams {
   storageRegion?: string | null;
   includeRegionInPath?: boolean;
   useInlinePath?: boolean;
+}
+
+export interface SaveStreamParams extends Omit<SaveBufferParams, 'buffer'> {
+  path: string;
+  contentType?: string;
+}
+
+export interface StorageFileLocation {
+  filepath: string;
+  storageKey: string;
+  storageRegion?: string;
+}
+
+export interface FileStreamStorage {
+  planFile(params: GetURLParams): Promise<StorageFileLocation>;
+  saveStream(params: SaveStreamParams): Promise<UploadResult>;
 }
 
 export interface GetURLParams {

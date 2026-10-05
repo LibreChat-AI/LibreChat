@@ -263,6 +263,15 @@ describe('format.ts helper functions', () => {
   });
 
   describe('getToolkitKey', () => {
+    it('resolves a declared child only when its parent toolkit is registered', () => {
+      const media: TPlugin = {
+        name: 'Media',
+        pluginKey: 'media_generate',
+        description: 'Media generation and status',
+      };
+      expect(getToolkitKey({ toolkits: [media], toolName: 'media_status' })).toBe('media_generate');
+      expect(getToolkitKey({ toolkits: [], toolName: 'media_status' })).toBeUndefined();
+    });
     it('should return undefined when toolName is undefined', () => {
       const toolkits: TPlugin[] = [
         { name: 'Toolkit1', pluginKey: 'toolkit1', description: 'Test toolkit' },

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import userEvent from '@testing-library/user-event';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OGDialog, OGDialogContent, OGDialogTitle } from './OriginalDialog';
 import ControlCombobox from './ControlCombobox';
@@ -79,6 +80,149 @@ const openPopover = () => {
 };
 
 describe('ControlCombobox popover sizing', () => {
+  it.each(['click', 'keyboard'] as const)(
+    'opens a setup action by %s without selecting that value',
+    async (interaction) => {
+      const selected = jest.fn();
+      const configure = jest.fn();
+      render(
+        <ControlCombobox
+          selectedValue="a"
+          items={[...items, { value: 'setup', label: 'Native provider' }]}
+          setValue={selected}
+          ariaLabel="Providers"
+          searchPlaceholder="Search providers"
+          isCollapsed={false}
+          optionAction={(value) =>
+            value === 'setup'
+              ? {
+                  label: 'Configure native provider',
+                  icon: null,
+                  activateOnSelect: true,
+                  onClick: configure,
+                }
+              : undefined
+          }
+        />,
+      );
+      await act(async () => {
+        await userEvent.click(screen.getByRole('combobox', { name: 'Providers' }));
+      });
+      await act(async () => {
+        if (interaction === 'click')
+          await userEvent.click(screen.getByRole('option', { name: 'Native provider' }));
+        else {
+          await userEvent.type(screen.getByPlaceholderText('Search providers'), 'Native');
+          await userEvent.keyboard('{Enter}');
+        }
+      });
+      expect(configure).toHaveBeenCalledTimes(1);
+      expect(selected).not.toHaveBeenCalledWith('setup');
+      expect(screen.getByRole('combobox', { name: 'Providers' })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+      await act(async () => {
+        await userEvent.click(screen.getByRole('combobox', { name: 'Providers' }));
+      });
+      expect(screen.getByRole('option', { name: 'Option A' })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      expect(screen.getByRole('option', { name: 'Native provider' })).toHaveAttribute(
+        'aria-selected',
+        'false',
+      );
+    },
+  );
+  it('exposes a keyboard action beside a disabled option without selecting it', async () => {
+    const selected = jest.fn();
+    const configure = jest.fn();
+    render(
+      <ControlCombobox
+        selectedValue="a"
+        items={[
+          ...items,
+          {
+            label: 'Needs key',
+            value: 'missing',
+            disabled: true,
+            description: 'Configure credentials to use this provider.',
+          },
+        ]}
+        setValue={selected}
+        ariaLabel="Providers"
+        isCollapsed={false}
+        optionAction={(value) =>
+          value === 'missing'
+            ? {
+                label: 'Configure missing provider',
+                icon: <span aria-hidden="true">⚙</span>,
+                onClick: configure,
+              }
+            : undefined
+        }
+      />,
+    );
+    await act(async () => {
+      await userEvent.click(screen.getByRole('combobox', { name: 'Providers' }));
+    });
+    const action = await screen.findByRole('button', { name: 'Configure missing provider' });
+    expect(action.closest('[role="option"]')).toBeNull();
+    expect(action.closest('[role="listbox"]')).toBeNull();
+    expect(screen.getByRole('option', { name: 'Needs key' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('option', { name: 'Needs key' })).toHaveAccessibleDescription(
+      'Configure credentials to use this provider.',
+    );
+    await act(async () => {
+      action.focus();
+      await userEvent.keyboard('{Enter}');
+    });
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(selected).not.toHaveBeenCalledWith('missing');
+    const trigger = screen.getByRole('combobox', { name: 'Providers' });
+    await act(async () => {
+      trigger.focus();
+      await userEvent.keyboard('{ArrowDown}');
+    });
+    expect(await screen.findByRole('button', { name: 'Configure missing provider' })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole('combobox').find((element) => element.tagName === 'INPUT'),
+      ).toHaveFocus(),
+    );
+    await act(async () => {
+      await userEvent.keyboard('{Escape}');
+    });
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+  it('shows a restored unavailable entry without allowing selection', async () => {
+    const selected = jest.fn();
+    render(
+      <ControlCombobox
+        selectedValue="missing"
+        items={[...items, { label: 'Unavailable provider', value: 'missing', disabled: true }]}
+        setValue={selected}
+        ariaLabel="Providers"
+        searchPlaceholder="Search providers"
+        isCollapsed={false}
+      />,
+    );
+    await act(async () => {
+      await userEvent.click(screen.getByRole('combobox', { name: 'Providers' }));
+    });
+    const unavailable = await screen.findByRole('option', { name: 'Unavailable provider' });
+    expect(unavailable).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(unavailable);
+    expect(selected).not.toHaveBeenCalledWith('missing');
+    await act(async () => {
+      await userEvent.click(screen.getByRole('option', { name: 'Option B' }));
+    });
+    expect(selected).toHaveBeenCalledWith('b');
+  });
   it('uses the button width measured on mount when layout is stable', () => {
     renderCombobox(275);
     openPopover();
@@ -372,6 +516,57 @@ describe('ControlCombobox portal placement', () => {
     expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
   });
+
+  it.each(['select', 'dismiss'] as const)(
+    'closes only the nested dialog on Escape after using the combobox to %s',
+    async (action) => {
+      function Settings() {
+        const [value, setValue] = useState('a');
+        return (
+          <OGDialog defaultOpen>
+            <OGDialogContent aria-describedby={undefined}>
+              <OGDialogTitle>Outer dialog</OGDialogTitle>
+              <OGDialog defaultOpen>
+                <OGDialogContent aria-describedby={undefined}>
+                  <OGDialogTitle>Settings</OGDialogTitle>
+                  <ControlCombobox
+                    selectedValue={value}
+                    displayValue={items.find((item) => item.value === value)?.label}
+                    items={items}
+                    setValue={setValue}
+                    ariaLabel="Provider"
+                    isCollapsed={false}
+                    portal={false}
+                  />
+                </OGDialogContent>
+              </OGDialog>
+            </OGDialogContent>
+          </OGDialog>
+        );
+      }
+      render(<Settings />);
+      const user = userEvent.setup();
+      const provider = screen.getByRole('combobox', { name: 'Provider' });
+      await act(async () => user.click(provider));
+      await screen.findByRole('option', { name: 'Option B' });
+      if (action === 'select') {
+        await act(async () => user.click(screen.getByRole('option', { name: 'Option B' })));
+        expect(provider).toHaveTextContent('Option B');
+      } else {
+        await act(async () => user.keyboard('{Escape}'));
+      }
+      await waitFor(() => expect(provider).toHaveAttribute('aria-expanded', 'false'));
+      expect(screen.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+      act(() => provider.focus());
+
+      await act(async () => user.keyboard('{Escape}'));
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument(),
+      );
+      expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeVisible();
+    },
+  );
+
   it('portals into the dialog outside a clipping scroll region', () => {
     function Harness() {
       const [container, setContainer] = useState<HTMLDivElement | null>(null);

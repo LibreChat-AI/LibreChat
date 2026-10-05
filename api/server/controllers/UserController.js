@@ -20,6 +20,10 @@ const {
   deleteAllSharedLinksWithCleanup,
   revokeUserCodeEnvironmentWorkers,
   finalizeMCPAuthorizationMutation,
+  prepareAccountDeletion,
+  completeAccountDeletion,
+  cancelAccountDeletion,
+  sendAccountDeletionError,
 } = require('@librechat/api');
 const { Tools, Constants, FileSources, ResourceType } = require('librechat-data-provider');
 const { updateUserPluginAuth, deleteUserPluginAuth } = require('~/server/services/PluginService');
@@ -427,6 +431,7 @@ const deleteUserController = async (req, res) => {
   let triggerDeletionFence;
   let scheduleSuspensionToken;
   let userDeleted = false;
+  let mediaDeletion;
 
   try {
     const existingUser = await db.getUserById(
@@ -456,6 +461,11 @@ const deleteUserController = async (req, res) => {
     if (fenceState === 'missing') {
       triggerDeletionFence = undefined;
     }
+    mediaDeletion = await prepareAccountDeletion({
+      repository: db,
+      scope: { ownerId: user.id, tenantId: tenantId ?? null },
+      token: randomUUID(),
+    });
     if (triggerDeletionFence != null) {
       await prepareAgentTriggerUserPurge(user.id, triggerDeletionFence, tenantId);
     }
@@ -559,6 +569,7 @@ const deleteUserController = async (req, res) => {
       throw new Error('User disappeared before account deletion could commit');
     }
     userDeleted = true;
+    await completeAccountDeletion({ repository: db, session: mediaDeletion, log: logger.error });
     let codeEnvironmentCleanupSafe = true;
     try {
       await revokeUserCodeEnvironmentWorkers({
@@ -584,6 +595,12 @@ const deleteUserController = async (req, res) => {
     logger.info(`User deleted account. Email: ${user.email} ID: ${user.id}`);
     res.status(200).send({ message: 'User deleted' });
   } catch (err) {
+    await cancelAccountDeletion({
+      repository: db,
+      session: mediaDeletion,
+      userDeleted,
+      log: logger.error,
+    });
     // The account survives this failed attempt, so its schedules must too: restore the
     // exact rows this attempt suspended (re-enabled/re-armed from their snapshot). Fenced
     // to the token, so a schedule the owner deleted meanwhile is not resurrected. A
@@ -627,7 +644,7 @@ const deleteUserController = async (req, res) => {
       }
     }
     logger.error('[deleteUserController]', err);
-    return res.status(500).json({ message: 'Something went wrong.' });
+    return sendAccountDeletionError(res, err);
   }
 };
 

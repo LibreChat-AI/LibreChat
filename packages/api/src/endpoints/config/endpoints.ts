@@ -188,6 +188,15 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       };
     }
 
+    for (const [endpoint, config] of Object.entries(mergedConfig)) {
+      if (!config) continue;
+      const kind = config.type ?? endpoint;
+      if (kind === EModelEndpoint.google) config.keyEncoding = 'google';
+      else if (kind === EModelEndpoint.azureOpenAI || kind === EModelEndpoint.azureAssistants)
+        config.keyEncoding = 'azure';
+      else if (kind === EModelEndpoint.bedrock) config.keyEncoding = 'bedrock';
+      else config.keyEncoding = 'apiKey';
+    }
     return orderEndpointsConfig(mergedConfig as TEndpointsConfig);
   }
 

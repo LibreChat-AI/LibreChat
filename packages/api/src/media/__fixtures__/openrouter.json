@@ -1,0 +1,821 @@
+{
+  "capturedAt": "2026-09-17",
+  "sources": [
+    "https://openrouter.ai/api/v1/images/models",
+    "https://openrouter.ai/api/v1/videos/models",
+    "https://openrouter.ai/api/v1/models?output_modalities=video",
+    "https://openrouter.ai/api/v1/images/models/{author}/{model}/endpoints",
+    "https://openrouter.ai/api/v1/models/{author}/{model}/endpoints"
+  ],
+  "images": {
+    "data": [
+      {
+        "id": "meta/muse-image",
+        "name": "Meta: Muse Image"
+      },
+      {
+        "id": "recraft/recraft-v4-styles-pro",
+        "name": "Recraft: Recraft V4 Styles Pro"
+      },
+      {
+        "id": "recraft/recraft-v4-styles-vector",
+        "name": "Recraft: Recraft V4 Styles Vector"
+      },
+      {
+        "id": "recraft/recraft-v4-styles-pro-vector",
+        "name": "Recraft: Recraft V4 Styles Pro Vector"
+      },
+      {
+        "id": "recraft/recraft-v4-styles",
+        "name": "Recraft: Recraft V4 Styles"
+      },
+      {
+        "id": "recraft/recraft-v4.1-pro-vector",
+        "name": "Recraft: Recraft V4.1 Pro Vector"
+      },
+      {
+        "id": "recraft/recraft-v4.1-vector",
+        "name": "Recraft: Recraft V4.1 Vector"
+      },
+      {
+        "id": "recraft/recraft-v4-pro-vector",
+        "name": "Recraft: Recraft V4 Pro Vector"
+      },
+      {
+        "id": "recraft/recraft-v4-vector",
+        "name": "Recraft: Recraft V4 Vector"
+      },
+      {
+        "id": "black-forest-labs/flux.2-max",
+        "name": "Black Forest Labs: FLUX.2 Max"
+      },
+      {
+        "id": "black-forest-labs/flux.2-pro",
+        "name": "Black Forest Labs: FLUX.2 Pro"
+      },
+      {
+        "id": "google/gemini-2.5-flash-image",
+        "name": "Google: Nano Banana (Gemini 2.5 Flash Image)"
+      }
+    ]
+  },
+  "videos": {
+    "data": [
+      {
+        "id": "black-forest-labs/flux-video-edit",
+        "name": "Black Forest Labs: FLUX Video Edit",
+        "supported_durations": null,
+        "supported_resolutions": null,
+        "supported_aspect_ratios": null,
+        "supported_sizes": null,
+        "supported_frame_images": null,
+        "generate_audio": false,
+        "seed": false,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": ["safety_tolerance"]
+      },
+      {
+        "id": "heygen/avatar-iv",
+        "name": "HeyGen: Avatar IV",
+        "supported_durations": null,
+        "supported_resolutions": ["720p", "1080p"],
+        "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+        "supported_sizes": null,
+        "supported_frame_images": null,
+        "generate_audio": false,
+        "seed": false,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": [
+          "voice_id",
+          "voice_settings",
+          "motion_prompt",
+          "expressiveness",
+          "fit",
+          "remove_background",
+          "background",
+          "caption",
+          "title"
+        ]
+      },
+      {
+        "id": "black-forest-labs/flux-video-upscale",
+        "name": "Black Forest Labs: FLUX Video Upscale",
+        "supported_durations": null,
+        "supported_resolutions": null,
+        "supported_aspect_ratios": null,
+        "supported_sizes": null,
+        "supported_frame_images": null,
+        "generate_audio": false,
+        "seed": false,
+        "upscale_factor": {
+          "min": 1.5,
+          "max": 3
+        },
+        "creativity": [0, 1],
+        "allowed_passthrough_parameters": ["safety_tolerance"]
+      },
+      {
+        "id": "runway/aleph-2",
+        "name": "Runway: Aleph 2.0",
+        "supported_durations": null,
+        "supported_resolutions": null,
+        "supported_aspect_ratios": ["16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "21:9"],
+        "supported_sizes": null,
+        "supported_frame_images": null,
+        "generate_audio": false,
+        "seed": true,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": ["contentModeration", "keyframes"]
+      },
+      {
+        "id": "runway/gen-4.5",
+        "name": "Runway: Gen-4.5",
+        "supported_durations": [2, 3, 4, 5, 6, 7, 8, 9, 10],
+        "supported_resolutions": ["720p"],
+        "supported_aspect_ratios": ["16:9", "9:16"],
+        "supported_sizes": ["1280x720", "720x1280"],
+        "supported_frame_images": ["first_frame"],
+        "generate_audio": false,
+        "seed": true,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": ["contentModeration"]
+      },
+      {
+        "id": "kwaivgi/kling-v3.0-pro",
+        "name": "Kling: Video v3.0 Pro",
+        "supported_durations": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "supported_resolutions": ["720p"],
+        "supported_aspect_ratios": ["16:9", "9:16", "1:1"],
+        "supported_sizes": ["1280x720", "720x1280", "720x720"],
+        "supported_frame_images": ["first_frame", "last_frame"],
+        "generate_audio": true,
+        "seed": false,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": ["negative_prompt", "cfg_scale"]
+      },
+      {
+        "id": "bytedance/seedance-2.0",
+        "name": "ByteDance: Seedance 2.0",
+        "supported_durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "supported_resolutions": ["480p", "720p", "1080p", "4K"],
+        "supported_aspect_ratios": ["1:1", "3:4", "9:16", "4:3", "16:9", "21:9", "9:21"],
+        "supported_sizes": [
+          "480x480",
+          "480x640",
+          "480x854",
+          "640x480",
+          "854x480",
+          "1120x480",
+          "720x720",
+          "720x960",
+          "720x1280",
+          "720x1680",
+          "960x720",
+          "1280x720",
+          "1680x720",
+          "1080x1080",
+          "1080x1440",
+          "1080x1920",
+          "1440x1080",
+          "1920x1080",
+          "2520x1080",
+          "3840x2160",
+          "2160x3840",
+          "2160x2160",
+          "2880x2160",
+          "2160x2880",
+          "5040x2160"
+        ],
+        "supported_frame_images": ["first_frame", "last_frame"],
+        "generate_audio": true,
+        "seed": true,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": ["watermark", "req_key"]
+      },
+      {
+        "id": "google/veo-3.1",
+        "name": "Google: Veo 3.1",
+        "supported_durations": [4, 6, 8],
+        "supported_resolutions": ["720p", "1080p", "4K"],
+        "supported_aspect_ratios": ["16:9", "9:16"],
+        "supported_sizes": [
+          "1280x720",
+          "1080x1920",
+          "1920x1080",
+          "720x1280",
+          "3840x2160",
+          "2160x3840"
+        ],
+        "supported_frame_images": ["first_frame", "last_frame"],
+        "generate_audio": true,
+        "seed": true,
+        "upscale_factor": null,
+        "creativity": null,
+        "allowed_passthrough_parameters": [
+          "personGeneration",
+          "aspectRatio",
+          "negativePrompt",
+          "conditioningScale",
+          "enhancePrompt"
+        ]
+      }
+    ]
+  },
+  "generalVideos": {
+    "data": [
+      {
+        "id": "black-forest-labs/flux-video-edit",
+        "architecture": {
+          "input_modalities": ["text", "video"]
+        }
+      },
+      {
+        "id": "heygen/avatar-iv",
+        "architecture": {
+          "input_modalities": ["text", "image", "audio"]
+        }
+      },
+      {
+        "id": "black-forest-labs/flux-video-upscale",
+        "architecture": {
+          "input_modalities": ["text", "video"]
+        }
+      },
+      {
+        "id": "runway/aleph-2",
+        "architecture": {
+          "input_modalities": ["text", "image", "video"]
+        }
+      },
+      {
+        "id": "runway/gen-4.5",
+        "architecture": {
+          "input_modalities": ["text", "image"]
+        }
+      },
+      {
+        "id": "kwaivgi/kling-v3.0-pro",
+        "architecture": {
+          "input_modalities": ["text", "image"]
+        }
+      },
+      {
+        "id": "bytedance/seedance-2.0",
+        "architecture": {
+          "input_modalities": ["text", "image", "video", "audio"]
+        }
+      },
+      {
+        "id": "google/veo-3.1",
+        "architecture": {
+          "input_modalities": ["text", "image"]
+        }
+      }
+    ],
+    "total_count": 29,
+    "links": {
+      "next": null
+    }
+  },
+  "imageEndpoints": [
+    {
+      "id": "recraft/recraft-v4-styles-pro",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": [
+                "1:1",
+                "2:1",
+                "1:2",
+                "3:2",
+                "2:3",
+                "4:3",
+                "3:4",
+                "5:4",
+                "4:5",
+                "16:9",
+                "9:16",
+                "auto"
+              ]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 1,
+              "max": 10
+            }
+          },
+          "allowed_passthrough_parameters": ["style_id", "style_match", "controls", "random_seed"]
+        }
+      ]
+    },
+    {
+      "id": "meta/muse-image",
+      "endpoints": []
+    },
+    {
+      "id": "recraft/recraft-v4-styles-pro-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": [
+                "1:1",
+                "2:1",
+                "1:2",
+                "3:2",
+                "2:3",
+                "4:3",
+                "3:4",
+                "5:4",
+                "4:5",
+                "16:9",
+                "9:16",
+                "auto"
+              ]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 1,
+              "max": 10
+            }
+          },
+          "allowed_passthrough_parameters": ["style_id", "style_match", "controls", "random_seed"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4-styles",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": [
+                "1:1",
+                "2:1",
+                "1:2",
+                "3:2",
+                "2:3",
+                "4:3",
+                "3:4",
+                "5:4",
+                "4:5",
+                "16:9",
+                "9:16",
+                "auto"
+              ]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 1,
+              "max": 10
+            }
+          },
+          "allowed_passthrough_parameters": ["style_id", "style_match", "controls", "random_seed"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4-styles-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": [
+                "1:1",
+                "2:1",
+                "1:2",
+                "3:2",
+                "2:3",
+                "4:3",
+                "3:4",
+                "5:4",
+                "4:5",
+                "16:9",
+                "9:16",
+                "auto"
+              ]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 1,
+              "max": 10
+            }
+          },
+          "allowed_passthrough_parameters": ["style_id", "style_match", "controls", "random_seed"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4.1-pro-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "16:9", "9:16", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 1
+            }
+          },
+          "allowed_passthrough_parameters": ["style", "controls", "text_layout"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4.1-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "16:9", "9:16", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 1
+            }
+          },
+          "allowed_passthrough_parameters": ["style", "controls", "text_layout"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4-pro-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "16:9", "9:16", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 1
+            }
+          },
+          "allowed_passthrough_parameters": ["style", "controls", "text_layout"]
+        }
+      ]
+    },
+    {
+      "id": "recraft/recraft-v4-vector",
+      "endpoints": [
+        {
+          "provider_tag": "recraft",
+          "provider_name": "Recraft",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "16:9", "9:16", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["svg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 6
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 1
+            }
+          },
+          "allowed_passthrough_parameters": ["style", "controls", "text_layout"]
+        }
+      ]
+    },
+    {
+      "id": "black-forest-labs/flux.2-max",
+      "endpoints": [
+        {
+          "provider_tag": "black-forest-labs/us-3",
+          "provider_name": "Black Forest Labs",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["png", "jpeg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 8
+            },
+            "seed": {
+              "type": "boolean"
+            }
+          },
+          "allowed_passthrough_parameters": ["steps", "guidance", "safety_tolerance"]
+        }
+      ]
+    },
+    {
+      "id": "black-forest-labs/flux.2-pro",
+      "endpoints": [
+        {
+          "provider_tag": "black-forest-labs",
+          "provider_name": "Black Forest Labs",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9", "auto"]
+            },
+            "output_format": {
+              "type": "enum",
+              "values": ["png", "jpeg"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 8
+            },
+            "seed": {
+              "type": "boolean"
+            }
+          },
+          "allowed_passthrough_parameters": ["steps", "guidance", "safety_tolerance"]
+        }
+      ]
+    },
+    {
+      "id": "google/gemini-2.5-flash-image",
+      "endpoints": [
+        {
+          "provider_tag": "google-ai-studio/priority",
+          "provider_name": "Google AI Studio",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 3
+            }
+          },
+          "allowed_passthrough_parameters": ["cachedContent"]
+        },
+        {
+          "provider_tag": "google-ai-studio/flex",
+          "provider_name": "Google AI Studio",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 3
+            }
+          },
+          "allowed_passthrough_parameters": ["cachedContent"]
+        },
+        {
+          "provider_tag": "google-ai-studio",
+          "provider_name": "Google AI Studio",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 3
+            }
+          },
+          "allowed_passthrough_parameters": ["cachedContent"]
+        },
+        {
+          "provider_tag": "google-vertex/global",
+          "provider_name": "Google Vertex",
+          "supported_parameters": {
+            "aspect_ratio": {
+              "type": "enum",
+              "values": ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+            },
+            "n": {
+              "type": "range",
+              "min": 1,
+              "max": 1
+            },
+            "input_references": {
+              "type": "range",
+              "min": 0,
+              "max": 3
+            }
+          },
+          "allowed_passthrough_parameters": ["cachedContent"]
+        }
+      ]
+    }
+  ],
+  "videoEndpoints": [
+    {
+      "id": "black-forest-labs/flux-video-edit",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "black-forest-labs",
+            "provider_name": "Black Forest Labs"
+          }
+        ]
+      }
+    },
+    {
+      "id": "black-forest-labs/flux-video-upscale",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "black-forest-labs",
+            "provider_name": "Black Forest Labs"
+          }
+        ]
+      }
+    },
+    {
+      "id": "heygen/avatar-iv",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "heygen",
+            "provider_name": "HeyGen"
+          }
+        ]
+      }
+    },
+    {
+      "id": "runway/aleph-2",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "runway",
+            "provider_name": "Runway"
+          }
+        ]
+      }
+    },
+    {
+      "id": "runway/gen-4.5",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "runway",
+            "provider_name": "Runway"
+          }
+        ]
+      }
+    },
+    {
+      "id": "kwaivgi/kling-v3.0-pro",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "atlas-cloud",
+            "provider_name": "AtlasCloud"
+          }
+        ]
+      }
+    },
+    {
+      "id": "bytedance/seedance-2.0",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "seed",
+            "provider_name": "Seed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "google/veo-3.1",
+      "data": {
+        "endpoints": [
+          {
+            "tag": "google-vertex",
+            "provider_name": "Google"
+          }
+        ]
+      }
+    }
+  ]
+}

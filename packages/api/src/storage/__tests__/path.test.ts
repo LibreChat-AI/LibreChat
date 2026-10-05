@@ -6,6 +6,7 @@ describe('resolveDownloadPath', () => {
       resolveDownloadPath({
         filepath: 'https://bucket.s3.amazonaws.com/uploads/u1/f.pdf?X-Amz-Expires=900',
         storageKey: 'uploads/u1/f.pdf',
+        source: 's3',
       }),
     ).toBe('uploads/u1/f.pdf');
   });
@@ -27,6 +28,17 @@ describe('resolveDownloadPath', () => {
     const url = 'https://firebasestorage.googleapis.com/v0/b/x/o/f.pdf?alt=media&token=t';
     expect(resolveDownloadPath({ filepath: url })).toBe(url);
   });
+
+  it.each(['local', 'azure_blob', 'firebase'])(
+    'keeps the %s download path when media also stores an object key',
+    (source) => {
+      const filepath =
+        source === 'local' ? '/images/user/original.png' : 'https://storage.example/original.png';
+      expect(
+        resolveDownloadPath({ source, filepath, storageKey: 'images/user/original.png' }),
+      ).toBe(filepath);
+    },
+  );
 });
 
 describe('stripCacheBust', () => {

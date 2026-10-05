@@ -66,6 +66,14 @@ beforeEach(async () => {
 });
 
 describe('Insights methods', () => {
+  it.each([0, 4, 51, 5.5, Number.NaN])(
+    'rejects an invalid direct page size %s',
+    async (pageSize) => {
+      await expect(createInsightsMethods(mongoose).getInsights({ pageSize })).rejects.toThrow(
+        'Invalid Insights page size',
+      );
+    },
+  );
   it('counts active users from prompts and all messages for top users within the tenant', async () => {
     const now = new Date();
     const activeAt = new Date(now.getTime() - 24 * 60 * 60 * 1000);

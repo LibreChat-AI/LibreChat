@@ -27,6 +27,7 @@ jest.mock('~/server/services/Config', () => ({
   getAppConfig: jest.fn().mockResolvedValue({
     paths: {
       uploads: '/tmp',
+      imageOutput: '/tmp',
       dist: '/tmp/dist-csp',
       fonts: '/tmp/fonts-csp',
       assets: '/tmp/assets-csp',

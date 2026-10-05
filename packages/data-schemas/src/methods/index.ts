@@ -1,5 +1,11 @@
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
+import type { MediaConsumerConfig, MediaFileConsumerMethods } from '~/types/mediaConsumers';
+import type { MediaAccountingMethods } from '~/types/mediaAccounting';
 import type { ScheduleMCPConsentStorage } from './scheduleConsent';
+import type { MediaRecoveryMethods } from '~/types/mediaRecovery';
+import type { MediaPresetMethods } from '~/types/mediaPreset';
+import type { MediaNativeMethods } from '~/types/mediaNative';
+import type { MediaTitleMethods } from '~/types/mediaTitle';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { createScheduleMCPConsentStorage } from './scheduleConsent';
 export { createScheduleMCPConsentStorage } from './scheduleConsent';
@@ -14,10 +20,21 @@ import type {
   ProjectFilesOptions,
 } from './file';
 import type { RoleMethods, RoleDeps } from './role';
+import type { MediaMethods } from '~/types/media';
 import {
   createOpenIDRefreshFlightMethods,
   type OpenIDRefreshFlightMethods,
 } from './openidRefreshFlight';
+import { createMediaMethods, deriveMediaThreadTitle, MediaPersistenceError } from './media';
+import { createNativeMessageMethods, type NativeMessageMethods } from './nativeMessage';
+import { createMediaAccountingMethods, MediaAccountingError } from './media/accounting';
+import { createMediaFileConsumerMethods } from './media/consumers';
+import { createMediaRecoveryMethods } from './media/recovery';
+import { createMediaPresetMethods } from './media/preset';
+import { createMediaNativeMethods } from './media/native';
+export { createNativeMessageMethods } from './nativeMessage';
+export type { NativeMessageMethods, NativeMessagePart, NativeMessageFile } from './nativeMessage';
+import { createMediaTitleMethods } from './media/title';
 export {
   createMCPAuthorizationFenceRetryStorage,
   type MCPAuthorizationFenceRetryStorage,
@@ -120,6 +137,7 @@ import {
   type TxMethods,
   type TxDeps,
   tokenValues,
+  imageTokenValues,
   cacheTokenValues,
   premiumTokenValues,
   defaultRate,
@@ -222,7 +240,21 @@ export {
   createMCPAuthorityDatabaseSourceRevision,
   digestMCPAuthorityValue,
 };
-export { tokenValues, cacheTokenValues, premiumTokenValues, defaultRate, createTxMethods };
+export {
+  tokenValues,
+  imageTokenValues,
+  cacheTokenValues,
+  premiumTokenValues,
+  defaultRate,
+  createTxMethods,
+};
+export { createMediaMethods, deriveMediaThreadTitle, MediaPersistenceError };
+export { createMediaAccountingMethods, MediaAccountingError };
+export { createMediaPresetMethods };
+export { createMediaTitleMethods };
+export { createMediaNativeMethods };
+export { createMediaFileConsumerMethods };
+export { createMediaRecoveryMethods };
 export { permissionBitSupersets, PERM_BITS_WRITE_ATTEMPTS };
 export { CLIENT_MESSAGE_SELECT, SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT };
 export {
@@ -249,6 +281,14 @@ export {
 };
 
 export type AllMethods = ToolApprovalGrantStorage &
+  NativeMessageMethods &
+  MediaNativeMethods &
+  MediaFileConsumerMethods &
+  MediaRecoveryMethods &
+  MediaTitleMethods &
+  MediaAccountingMethods &
+  MediaPresetMethods &
+  MediaMethods &
   UserMethods &
   SessionMethods &
   TokenMethods &
@@ -299,6 +339,8 @@ export type AllMethods = ToolApprovalGrantStorage &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  /** Cached host configuration; consulted only by media-bearing message writes. */
+  getMediaConsumerConfig?: () => Promise<MediaConsumerConfig>;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
   /** Finds the first key in values whose key is a substring of model. From @librechat/api. */
@@ -344,7 +386,12 @@ export function createMethods(
     createStructuredTransaction: transactionMethods.createStructuredTransaction,
   });
 
+  const mediaMethods = createMediaMethods(mongoose);
+  const nativeMedia = createMediaNativeMethods(mongoose, mediaMethods);
+  const mediaFiles = createMediaFileConsumerMethods(mongoose);
   const messageMethods = createMessageMethods(mongoose, {
+    mediaFiles,
+    getMediaConsumerConfig: deps.getMediaConsumerConfig,
     getMCPAppMessageBudget: deps.getMCPAppMessageBudget,
   });
 
@@ -486,6 +533,17 @@ export function createMethods(
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
+    ...mediaMethods,
+    ...mediaFiles,
+    ...createMediaTitleMethods(mongoose),
+    ...nativeMedia,
+    ...createNativeMessageMethods(mongoose),
+    ...createMediaRecoveryMethods(mongoose),
+    ...createMediaAccountingMethods(mongoose, {
+      prepareBalance: transactionMethods.prepareBalance,
+      upsertCreditsTransaction: transactionMethods.upsertCreditsTransaction,
+    }),
+    ...createMediaPresetMethods(mongoose, mediaMethods),
     ...createUserMethods(mongoose, { getCache: deps.getCache }),
     ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
@@ -495,7 +553,7 @@ export function createMethods(
     ...createPasskeyMethods(mongoose),
     ...roleMethods,
     ...createKeyMethods(mongoose),
-    ...createFileMethods(mongoose),
+    ...createFileMethods(mongoose, { getMediaConsumerConfig: deps.getMediaConsumerConfig }),
     ...createMemoryMethods(mongoose),
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
@@ -639,3 +697,4 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+export type { UserKeySnapshot, UserKeyUpdate } from './key';

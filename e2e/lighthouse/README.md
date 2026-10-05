@@ -40,7 +40,7 @@ login page, spinner, or empty shell cannot pass.
 
 1. Read the failed audit's measured median and limit in the budget table the runner
    prints immediately before asserting.
-2. Open a `.lighthouse/lhr-*.report.html` report. The console also prints API request
+2. Open a `.lighthouse/load/lhr-*.report.html` (chat) or `.lighthouse/studio/lhr-*.report.html` (Studio) report. The console also prints API request
    start/end times. A late request start suggests a browser dependency; a long
    request suggests server work or serial database reads.
 3. Inspect the relevant path before changing the budget:
@@ -81,3 +81,8 @@ that `largest-contentful-paint` fails, rather than treating any process error as
 proof. Run the normal command again to restore baseline reports. Reports stay
 local or in GitHub job artifacts; session cookie values are redacted before upload.
 Same-repository pull requests also receive the last 80 log lines as a failure comment.
+
+The Studio scenario creates an image with the shared local media provider fixture, then audits
+three cold restores of that creation with the same budgets and Mongo delay. It asserts that the
+LCP element is the image preview. `E2E_MEDIA_PORT` moves the provider listener, generated config,
+and health checks together; both scenarios use the isolated single-server harness.

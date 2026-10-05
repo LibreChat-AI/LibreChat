@@ -44,6 +44,7 @@ import {
 import { resetChatFilterSessionAtom } from '~/components/Conversations/chatFilters';
 import { TAuthConfig, TUserContext, TAuthContext, TResError } from '~/common';
 import { resetFacetsAtom } from '~/components/Conversations/facets';
+import { runSessionCleanups } from '~/store/session';
 import useTimeout from './useTimeout';
 import store from '~/store';
 
@@ -57,13 +58,15 @@ if (import.meta.hot) {
  * deletions rather than being left to the next sign-in: a social sign-in returns through the
  * silent refresh and never passes the login mutation that clears them, and the browser tab keeps
  * its identity across an in-app account switch, so the account on the way out is the only place
- * that reliably sees the transition. Both are cleared together so neither can be added to an exit
- * path the other was wired into. */
+ * that reliably sees the transition. Everything is cleared together so nothing can be added to an
+ * exit path the rest was wired into; features that own account-scoped state register with
+ * `~/store/session` rather than being imported here. */
 const endSessionClientState = (): void => {
   getDefaultStore().set(resetChatFilterSessionAtom);
   getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
+  runSessionCleanups();
 };
 /**
  * Only recognized codes override the HTTP status used by the login error translation.

@@ -14,6 +14,7 @@ import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
+import MediaToolReceipt from '~/components/Chat/Media/Receipt';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { useToolCallIntent } from './Parts/intent';
@@ -469,6 +470,9 @@ export default function ToolCall({
           <AttachmentGroup attachments={attachments} />
           <MCPAppViews attachments={attachments} />
         </>
+      )}
+      {(name === 'media_generate' || name === 'media_status') && (
+        <MediaToolReceipt output={output} />
       )}
     </>
   );

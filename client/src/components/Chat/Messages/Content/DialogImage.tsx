@@ -24,6 +24,7 @@ export default function DialogImage({
   downloadImage,
   args,
   triggerRef,
+  actions,
   showDetails = true,
   title,
 }: {
@@ -38,6 +39,7 @@ export default function DialogImage({
     [key: string]: unknown;
   };
   triggerRef?: React.RefObject<HTMLButtonElement>;
+  actions?: React.ReactNode;
   /** Off for an uploaded file, which has no generation details to show. */
   showDetails?: boolean;
   /** Names the dialog and the image for assistive tech, e.g. the file name. */
@@ -301,6 +303,7 @@ export default function DialogImage({
           <div
             className={`absolute top-4 z-20 flex items-center gap-2 transition-[right] duration-300 ${detailsBeside ? 'right-[21rem]' : 'right-4'}`}
           >
+            {actions}
             {zoom > 1 && (
               <TooltipAnchor
                 description={localize('com_ui_reset_zoom')}

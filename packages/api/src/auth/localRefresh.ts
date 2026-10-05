@@ -11,6 +11,7 @@ import {
   isTwoFactorEnrollmentRequired,
   TOKEN_RETIREMENT_FIELDS,
 } from './twoFactor';
+import { resolveAppUserId } from '~/utils/identity';
 
 const EXPIRED_REFRESH_MESSAGE = 'Refresh token expired or not found for this user';
 
@@ -60,14 +61,16 @@ interface LocalRefreshDependencies {
 /**
  * Preserve the refresh response contract. The shared allowlist excludes `openidId`, which existing
  * OpenID refresh clients receive and the controller tests assert, so switching sanitizers here
- * would silently change the response shape.
+ * would silently change the response shape. `id` is always derived from the stored `_id`, so lean
+ * and hydrated users report the same identity the user endpoint does.
  */
 export function sanitizeUserForAuthResponse<T extends object>(
   user: T | null | undefined,
-): Partial<T> {
+): Partial<T> & { id: string | undefined } {
   const hydrated = user as (T & { toObject?: () => AuthResponseSource }) | null | undefined;
   const source = (typeof hydrated?.toObject === 'function' ? hydrated.toObject() : hydrated) ?? {};
   const {
+    id: _id,
     password: _password,
     __v: _version,
     totpSecret: _totpSecret,
@@ -79,7 +82,7 @@ export function sanitizeUserForAuthResponse<T extends object>(
     federatedTokens: _federatedTokens,
     ...safeUser
   } = source as AuthResponseSource;
-  return safeUser as Partial<T>;
+  return { ...(safeUser as Partial<T>), id: resolveAppUserId(source as AuthResponseSource) };
 }
 
 /** Handles only the local refresh branch after OpenID ownership has been resolved. */

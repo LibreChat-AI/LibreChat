@@ -1,6 +1,6 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { NavLink } from '~/common';
 
 jest.mock('~/hooks', () => ({
@@ -51,6 +51,48 @@ import Header from '../Header';
 const links = [] as NavLink[];
 
 describe('mobile drawer header', () => {
+  it('does not forward a click event as the host after-slide callback', () => {
+    const onClose = jest.fn();
+    render(
+      <Header
+        links={links}
+        expanded={true}
+        onClose={onClose}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      { wrapper: MemoryRouter },
+    );
+    fireEvent.click(screen.getByTestId('close-sidebar-button'));
+    expect(onClose).toHaveBeenCalledWith();
+  });
+
+  it('keeps close usable when the current Studio route is unavailable', () => {
+    const onClose = jest.fn();
+    const studio: NavLink = {
+      id: 'media-studio',
+      title: 'com_media_studio',
+      icon: () => null,
+      route: '/studio',
+      disabled: true,
+    };
+    render(
+      <Header
+        links={[studio]}
+        expanded={true}
+        routeActiveId={studio.id}
+        onClose={onClose}
+        onNewChat={jest.fn()}
+        switchToHistory={true}
+      />,
+      { wrapper: MemoryRouter },
+    );
+
+    expect(screen.getByTestId('close-sidebar-button')).toHaveFocus();
+    fireEvent.click(screen.getByTestId('close-sidebar-button'));
+    expect(onClose).toHaveBeenCalledWith();
+  });
+
   it('claims the close identity while the drawer is open', () => {
     render(
       <Header

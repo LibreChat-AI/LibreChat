@@ -18,6 +18,7 @@ type ButtonVariantOptions =
         | 'destructive'
         | 'secondary'
         | 'ghost'
+        | 'composer'
         | 'media'
         | 'row-action'
         | 'row-action-reveal'
@@ -82,6 +83,9 @@ const buttonVariantRecipe = cva(
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
         ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** A ghost control in a composer's action row, filled with the composer's own hover role. */
+        composer:
+          'hover:bg-surface-composer-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /**
          * A control drawn over the user's own media (a lightbox toolbar, an image preview's close):
          * ghost-shaped, with the media ink and a tint of it on hover, so it stays legible on the
@@ -135,7 +139,7 @@ const buttonVariantRecipe = cva(
          * lag rather than polish.
          */
         'header-action':
-          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary aria-pressed:bg-surface-active',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller

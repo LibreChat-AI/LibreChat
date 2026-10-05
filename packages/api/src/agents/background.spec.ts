@@ -114,6 +114,8 @@ describe('isBackgroundEligibleToolName', () => {
       'set_memory',
       'delete_memory',
       'ask_user_question',
+      'media_generate',
+      'media_status',
       'web_search',
       'file_search',
       'dalle',

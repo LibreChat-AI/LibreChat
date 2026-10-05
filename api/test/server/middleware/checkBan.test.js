@@ -30,6 +30,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createBanCheck: jest.requireActual('../../../../packages/api/src/middleware/ban').createBanCheck,
   isEnabled: (value) => {
     if (typeof value === 'boolean') {
       return value;
@@ -94,6 +95,15 @@ describe('checkBan middleware', () => {
   });
 
   describe('early exits', () => {
+    it('uses a normalized IP without writing to the Express request getter', async () => {
+      const req = createReq();
+      Object.defineProperty(req, 'ip', { get: () => '192.168.1.1:443' });
+      const next = jest.fn();
+      await checkBan(req, createRes(), next);
+      expect(next).toHaveBeenCalledWith();
+      expect(mockBanCacheGet).toHaveBeenCalledWith('192.168.1.1');
+      expect(req.ip).toBe('192.168.1.1:443');
+    });
     it('calls next() when BAN_VIOLATIONS is disabled', async () => {
       process.env.BAN_VIOLATIONS = 'false';
       const next = jest.fn();

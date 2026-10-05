@@ -1,8 +1,8 @@
 import fs from 'fs';
 import { Readable } from 'stream';
-import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { logger, isMediaFileId } from '@librechat/data-schemas';
 import {
   UploadPartCommand,
   PutObjectCommand,
@@ -30,7 +30,9 @@ import type {
   UploadResult,
   UrlBuilder,
   S3FileRef,
+  StorageReadOptions,
 } from '~/storage/types';
+import type { SaveStreamParams, StorageFileLocation } from '~/storage/types';
 import type { StoredFileRef } from '~/storage/path';
 import type { ServerRequest } from '~/types';
 import {
@@ -51,9 +53,10 @@ import {
   assertPathSegment,
   sanitizeContentDispositionFilename,
 } from '~/storage/validation';
+import { storageRangeHeader, assertStorageRange } from '../read';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { deleteRagFile } from '~/files/rag';
 import { initializeS3 } from '~/cdn/s3';
-import { deleteRagFile } from '~/files';
 import { s3Config } from './s3Config';
 
 const {
@@ -423,6 +426,31 @@ const takePendingBytes = (pending: PendingUploadBuffers, size: number): Buffer =
   return output;
 };
 
+/** Plans using the same owner/tenant/region key policy as the actual write. */
+export async function planS3File(
+  params: GetURLParams & { urlBuilder?: UrlBuilder },
+): Promise<StorageFileLocation> {
+  const { urlBuilder, ...options } = params;
+  const storageKey = getS3Key({ ...options, basePath: options.basePath ?? defaultBasePath });
+  return {
+    filepath: await (urlBuilder ?? getS3URL)(options),
+    ...getStorageMetadataForKey(storageKey),
+    storageKey,
+  };
+}
+
+export async function saveStreamToS3({
+  path: sourcePath,
+  ...params
+}: SaveStreamParams & { urlBuilder?: UrlBuilder }): Promise<UploadResult> {
+  const body = fs.createReadStream(sourcePath);
+  try {
+    return await saveReadableToS3({ ...params, body });
+  } finally {
+    body.destroy();
+  }
+}
+
 async function saveReadableToS3({
   userId,
   body,
@@ -433,8 +461,10 @@ async function saveReadableToS3({
   includeRegionInPath = false,
   useInlinePath,
   urlBuilder,
+  contentType,
 }: Omit<SaveBufferParams, 'buffer'> & {
   body: Readable;
+  contentType?: string;
   urlBuilder?: UrlBuilder;
 }): Promise<{ filepath: string; bytes: number; storageKey?: string; storageRegion?: string }> {
   const key = getS3Key({
@@ -463,7 +493,11 @@ async function saveReadableToS3({
         return uploadId;
       }
       const response = await s3.send(
-        new CreateMultipartUploadCommand({ Bucket: bucketName, Key: key }),
+        new CreateMultipartUploadCommand({
+          Bucket: bucketName,
+          Key: key,
+          ...(contentType ? { ContentType: contentType } : {}),
+        }),
       );
       if (!response.UploadId) {
         throw new Error('[saveReadableToS3] S3 did not return an upload ID');
@@ -501,7 +535,12 @@ async function saveReadableToS3({
     if (!uploadId) {
       const bodyBuffer =
         pending.bytes > 0 ? takePendingBytes(pending, pending.bytes) : Buffer.alloc(0);
-      const params: PutObjectCommandInput = { Bucket: bucketName, Key: key, Body: bodyBuffer };
+      const params: PutObjectCommandInput = {
+        Bucket: bucketName,
+        Key: key,
+        Body: bodyBuffer,
+        ...(contentType ? { ContentType: contentType } : {}),
+      };
       await s3.send(new PutObjectCommand(params));
     } else {
       if (pending.bytes > 0) {
@@ -852,11 +891,11 @@ export async function uploadFileToS3({
 export async function getS3FileStream(
   _req: ServerRequest,
   filePath: string,
-  { signal }: { signal?: AbortSignal } = {},
+  { signal, range }: StorageReadOptions = {},
 ): Promise<Readable> {
   try {
     const Key = extractKeyFromS3Url(filePath);
-    const params = { Bucket: bucketName, Key };
+    const params = { Bucket: bucketName, Key, Range: storageRangeHeader(range) };
 
     const s3 = initializeS3();
     if (!s3) {
@@ -867,7 +906,9 @@ export async function getS3FileStream(
     if (!data.Body) {
       throw new Error('[getS3FileStream] S3 response body is empty');
     }
-    return data.Body as Readable;
+    const stream = data.Body as Readable;
+    assertStorageRange(stream, range, data.ContentRange);
+    return stream;
   } catch (error) {
     logger.error('[getS3FileStream] Error retrieving S3 file stream', getSafeErrorMetadata(error));
     throw error;
@@ -968,7 +1009,7 @@ export async function refreshS3FileUrls(
     if (!file?.file_id) {
       continue;
     }
-    if (file.source !== FileSources.s3) {
+    if (file.source !== FileSources.s3 || isMediaFileId(file.file_id)) {
       continue;
     }
     if (!file.filepath) {

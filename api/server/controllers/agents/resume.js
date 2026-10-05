@@ -714,7 +714,7 @@ async function finalizeResumedTurn({
               : {}),
           })
         : null,
-      responseMessage: { ...responseMessage },
+      responseMessage: sanitizeMessageForTransmit(responseMessage),
       ...(pendingSteers.length > 0 && { pendingSteers }),
     };
 

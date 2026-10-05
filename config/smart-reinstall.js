@@ -5,8 +5,8 @@
  * Combines cached dependency installation with Turborepo-powered builds.
  *
  * Dependencies (npm ci):
- *   Hashes package-lock.json and stores a marker in node_modules.
- *   Skips npm ci entirely when the lockfile hasn't changed.
+ *   Hashes the package manifest, lockfile and postinstall patches.
+ *   Skips npm ci when those installation inputs have not changed.
  *
  * Package builds (Turborepo):
  *   Turbo hashes each package's source/config inputs (including the
@@ -21,10 +21,10 @@
  *   npm run smart-reinstall -- --verbose     # Turbo verbose output
  */
 
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { hashDependencies } = require('./dependencies.cjs');
 
 require('./helpers');
 
@@ -48,10 +48,6 @@ const NODE_MODULES_DIRS = [
   path.join(ROOT_DIR, 'api'),
 ];
 
-function hashFile(filePath) {
-  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex').slice(0, 16);
-}
-
 function exec(cmd, opts = {}) {
   execSync(cmd, { cwd: ROOT_DIR, stdio: 'inherit', ...opts });
 }
@@ -62,7 +58,7 @@ function checkDeps() {
     return { needsInstall: true, hash: 'missing' };
   }
 
-  const hash = hashFile(lockfile);
+  const hash = hashDependencies(ROOT_DIR);
 
   if (!fs.existsSync(path.join(ROOT_DIR, 'node_modules'))) {
     return { needsInstall: true, hash };
@@ -145,14 +141,13 @@ function cleanTurboCache() {
 
   if (flags.force) {
     console.orange('      Force mode — reinstalling all dependencies');
-    const lockfile = path.join(ROOT_DIR, 'package-lock.json');
-    const hash = fs.existsSync(lockfile) ? hashFile(lockfile) : 'none';
+    const hash = hashDependencies(ROOT_DIR);
     installDeps(hash);
     console.green('      Dependencies installed.');
   } else {
     const { needsInstall, hash } = checkDeps();
     if (needsInstall) {
-      console.orange('      package-lock.json changed or node_modules missing');
+      console.orange('      Dependency inputs changed or node_modules missing');
       installDeps(hash);
       console.green('      Dependencies installed.');
     } else {

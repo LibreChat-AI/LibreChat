@@ -65,6 +65,9 @@
     "frontend": "npm run build:data-provider && npm run build:data-schemas && npm run build:api && npm run build:client-package && cd client && npm run build",
     "frontend:ci": "npm run build:data-provider && npm run build:client-package && cd client && npm run build:ci",
     "frontend:dev": "cd client && npm run dev",
+    "test:agents-contract": "node --test config/native-media-contract.test.mjs",
+    "e2e:media": "npm run e2e:prepare && npm run e2e:media:run",
+    "e2e:media:run": "playwright test --config=e2e/playwright.config.mock.ts \"(studio|media-.*)\\.spec\\.ts$\"",
     "e2e:prepare": "npm run frontend",
     "test:client-build": "node --test e2e/client-build.test.mjs",
     "e2e": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts",
@@ -158,7 +161,8 @@
     "migrate:code-file-duplicates:batch": "node config/migrate-code-file-duplicates.js --batch-size=50",
     "lighthouse": "npm run e2e:prepare && npm run lighthouse:run",
     "lighthouse:run": "playwright test --config=e2e/playwright.config.lighthouse.ts",
-    "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run"
+    "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run",
+    "postinstall": "patch-package --error-on-fail"
   },
   "repository": {
     "type": "git",
@@ -278,5 +282,8 @@
       "admin/",
       "packages/"
     ]
+  },
+  "dependencies": {
+    "patch-package": "8.0.0"
   }
 }

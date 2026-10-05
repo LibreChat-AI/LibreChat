@@ -12,6 +12,8 @@ const settingsContext: SettingsContextValue = {
   hasAnyPersonalizationFeature: false,
   hasMemoryOptOut: false,
   hasStatefulCodeSessions: false,
+  hasMediaStudio: false,
+  canReadMediaRecovery: false,
   hasRemoteAgents: false,
   hasUserProvidedEndpoints: false,
   hasMultiConvo: false,
@@ -41,6 +43,22 @@ const contextForProvider = (provider: string | null | undefined): SettingsContex
 });
 
 describe('settings registry', () => {
+  it('exposes media recovery independently of the external admin URL and gates library controls', () => {
+    const recovery = registry.find((entry) => entry.id === 'mediaRecovery');
+    expect(
+      recovery?.show?.({ ...settingsContext, adminPanelURL: '', canReadMediaRecovery: true }),
+    ).toBe(true);
+    expect(
+      recovery?.show?.({
+        ...settingsContext,
+        adminPanelURL: 'https://admin.example',
+        canReadMediaRecovery: false,
+      }),
+    ).toBe(false);
+    const clear = registry.find((entry) => entry.id === 'clearCreations');
+    expect(clear?.show?.({ ...settingsContext, hasMediaStudio: true })).toBe(true);
+    expect(clear?.show?.(settingsContext)).toBe(false);
+  });
   it('has unique ids', () => {
     const ids = registry.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);

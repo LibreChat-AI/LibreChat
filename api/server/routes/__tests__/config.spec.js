@@ -16,6 +16,11 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
   hasConfigCapability: (...args) => mockHasConfigCapability(...args),
 }));
 
+const mockGetRoleByName = jest.fn();
+jest.mock('~/models', () => ({
+  getRoleByName: (...args) => mockGetRoleByName(...args),
+}));
+
 const mockGetTenantId = jest.fn(() => undefined);
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -1162,6 +1167,56 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.interface).toEqual({ buildInfo: false });
+    });
+  });
+
+  describe('media startup availability', () => {
+    const { resolveMediaConfig } = require('librechat-data-provider');
+    const mediaAppConfig = {
+      ...baseAppConfig,
+      media: { ...resolveMediaConfig(), enabled: true },
+    };
+
+    it('reports configured availability without rereading the role the client already owns', async () => {
+      mockGetAppConfig.mockResolvedValue(mediaAppConfig);
+      mockGetRoleByName.mockResolvedValue({
+        permissions: { MEDIA: { USE: true, CREATE: false } },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(mockGetRoleByName).not.toHaveBeenCalled();
+      expect(response.body.media).toMatchObject({
+        enabled: true,
+        studio: true,
+        chat: true,
+        canCreate: true,
+      });
+    });
+
+    it('reports media as unavailable when the feature is disabled', async () => {
+      mockGetAppConfig.mockResolvedValue({ ...mediaAppConfig, media: resolveMediaConfig() });
+      mockGetRoleByName.mockResolvedValue({ permissions: {} });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.media).toMatchObject({ enabled: false, canCreate: false });
+      expect(mockGetRoleByName).not.toHaveBeenCalled();
+    });
+
+    it('omits media for unauthenticated requests without reading a role', async () => {
+      mockGetAppConfig.mockResolvedValue(mediaAppConfig);
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).not.toHaveProperty('media');
+      expect(mockGetRoleByName).not.toHaveBeenCalled();
     });
   });
 });

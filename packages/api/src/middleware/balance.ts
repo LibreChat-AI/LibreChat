@@ -1,3 +1,4 @@
+import { omit } from 'lodash';
 import { logger } from '@librechat/data-schemas';
 import type {
   IBalanceUpdate,
@@ -8,6 +9,7 @@ import type {
   IUser,
 } from '@librechat/data-schemas';
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
+import type { TBalanceResponse } from 'librechat-data-provider';
 import type { BalanceUpdateFields } from '~/types';
 import { getBalanceConfig } from '~/app/config';
 
@@ -18,7 +20,10 @@ export interface BalanceMiddlewareOptions {
     tenantId?: string;
     refresh?: boolean;
   }) => Promise<AppConfig>;
-  findBalanceByUser: (userId: string) => Promise<IBalance | null>;
+  findBalanceByUser: (
+    userId: string,
+    options?: { includeReservedCredits?: boolean },
+  ) => Promise<IBalance | null>;
   upsertBalanceFields: (
     userId: string,
     fields: IBalanceUpdate,
@@ -147,7 +152,7 @@ export function createSetBalanceConfig({
       }
       const userId = typeof user._id === 'string' ? user._id : user._id.toString();
       await runBalanceUpdate(userId, async () => {
-        const userBalanceRecord = await findBalanceByUser(userId);
+        const userBalanceRecord = await findBalanceByUser(userId, { includeReservedCredits: true });
         const updateFields = buildBalanceUpdateFields(balanceConfig, userBalanceRecord, userId);
 
         if (Object.keys(updateFields).length === 0) {
@@ -163,7 +168,16 @@ export function createSetBalanceConfig({
           return;
         }
 
-        balanceLocals.balanceData = await upsertBalanceFields(userId, updateFields);
+        const updated = await upsertBalanceFields(userId, updateFields);
+        balanceLocals.balanceData = updated
+          ? ({
+              ...updated,
+              reservedCredits: userBalanceRecord.reservedCredits,
+              mediaDebtCredits: userBalanceRecord.mediaDebtCredits,
+              mediaHeldCredits: userBalanceRecord.mediaHeldCredits,
+              availableCredits: userBalanceRecord.availableCredits,
+            } as IBalance)
+          : updated;
       });
 
       next();
@@ -171,5 +185,46 @@ export function createSetBalanceConfig({
       logger.error('Error setting user balance:', error);
       next(error);
     }
+  };
+}
+
+/** Serves the loaded balance snapshot, including held credits and debt, without another read. */
+export function createBalanceController({
+  findBalanceByUser,
+}: {
+  findBalanceByUser: (
+    userId: string,
+    options: { includeReservedCredits: true },
+  ) => Promise<TBalanceResponse | null>;
+}) {
+  return async (req: ServerRequest, res: ServerResponse): Promise<void> => {
+    const balanceLocals = res.locals as BalanceLocals;
+    if (balanceLocals.balanceConfigEnabled === false) {
+      res.sendStatus(204);
+      return;
+    }
+    const balance =
+      balanceLocals.balanceData ??
+      (await findBalanceByUser(String((req.user as IUser)._id), { includeReservedCredits: true }));
+    if (!balance) {
+      res.status(404).json({ error: 'Balance not found' });
+      return;
+    }
+    const result = omit(
+      balance,
+      '_id',
+      ...(balance.autoRefillEnabled
+        ? []
+        : ['refillIntervalValue', 'refillIntervalUnit', 'lastRefill', 'refillAmount']),
+    );
+    res.status(200).json({
+      ...result,
+      reservedCredits: balance.reservedCredits ?? 0,
+      mediaDebtCredits: balance.mediaDebtCredits ?? 0,
+      mediaHeldCredits: balance.mediaHeldCredits ?? 0,
+      availableCredits:
+        balance.availableCredits ??
+        Math.max(0, balance.tokenCredits - (balance.reservedCredits ?? 0)),
+    });
   };
 }

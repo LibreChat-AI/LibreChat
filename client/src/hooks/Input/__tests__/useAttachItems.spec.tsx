@@ -42,6 +42,11 @@ jest.mock('~/data-provider', () => ({
   useGetStartupConfig: jest.fn(),
 }));
 
+let mockMediaAccess = { chat: true, canCreate: true };
+jest.mock('~/hooks/Media/useMediaAccess', () => ({
+  useMediaAccess: () => mockMediaAccess,
+}));
+
 const mockUseAgentToolPermissions = jest.requireMock('~/hooks').useAgentToolPermissions;
 const mockUseAgentCapabilities = jest.requireMock('~/hooks').useAgentCapabilities;
 const mockUseGetAgentsConfig = jest.requireMock('~/hooks').useGetAgentsConfig;
@@ -62,6 +67,7 @@ interface Options {
   fileSearchEnabled?: boolean;
   codeEnabled?: boolean;
   sharePointEnabled?: boolean;
+  onCreateMedia?: () => void;
 }
 
 /** Row ids, which are what the palette keys and folds on. */
@@ -79,6 +85,7 @@ function renderEntries(options: Options = {}): string[] {
     fileSearchEnabled = false,
     codeEnabled = false,
     sharePointEnabled = false,
+    onCreateMedia,
   } = options;
 
   mockUseAgentToolPermissions.mockReturnValue({ tools, provider });
@@ -97,6 +104,7 @@ function renderEntries(options: Options = {}): string[] {
         useResponsesApi,
         endpointFileConfig,
         isUnifiedMode,
+        onCreateMedia,
         conversationId: 'convo-1',
         conversation: { conversationId: 'convo-1' } as TConversation,
         files: new Map(),
@@ -133,6 +141,7 @@ function renderAttach(options: Options = {}) {
         useResponsesApi: options.useResponsesApi,
         endpointFileConfig: options.endpointFileConfig,
         isUnifiedMode: options.isUnifiedMode,
+        onCreateMedia: options.onCreateMedia,
         conversationId: 'convo-1',
         conversation: { conversationId: 'convo-1' } as TConversation,
         files: new Map(),
@@ -302,6 +311,49 @@ describe('useAttachItems', () => {
 
     it('adds nothing when it is disabled', () => {
       expect(renderEntries({ ...allCapabilities, sharePointEnabled: false })).toHaveLength(4);
+    });
+  });
+
+  describe('media creation', () => {
+    it.each([false, true])(
+      'offers creation as a resting destination after the sources (unified=%s)',
+      (isUnifiedMode) => {
+        const onCreateMedia = jest.fn();
+        const { result } = renderAttach({ isUnifiedMode, onCreateMedia });
+        const ids = result.current.entries.map((entry) => entry.id);
+        expect(ids[ids.length - 1]).toBe('media:create');
+        const create = result.current.entries.find((entry) => entry.id === 'media:create');
+        expect(create).toMatchObject({ label: 'com_media_create', primary: true });
+        act(() => create?.onSelect());
+        expect(onCreateMedia).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('stays after the SharePoint copies when both are offered', () => {
+      const ids = renderEntries({ sharePointEnabled: true, onCreateMedia: jest.fn() });
+      expect(ids).toEqual(['local:image', 'sharepoint:image', 'media:create']);
+    });
+
+    it.each([
+      ['chat media is switched off', { chat: false, canCreate: true }],
+      ['the user may not create media', { chat: true, canCreate: false }],
+    ])('is absent when %s', (_label, access) => {
+      mockMediaAccess = access;
+      try {
+        expect(renderEntries({ onCreateMedia: jest.fn() })).not.toContain('media:create');
+        expect(renderEntries({ isUnifiedMode: true, onCreateMedia: jest.fn() })).not.toContain(
+          'media:create',
+        );
+      } finally {
+        mockMediaAccess = { chat: true, canCreate: true };
+      }
+    });
+
+    it('is absent when the composer does not pass a creation handler', () => {
+      expect(renderEntries({ ...allCapabilities, isUnifiedMode: true })).not.toContain(
+        'media:create',
+      );
+      expect(renderEntries(allCapabilities)).not.toContain('media:create');
     });
   });
 

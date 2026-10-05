@@ -15,6 +15,7 @@ const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
 const { runFileDeliveryResponses } = require('./run-files-model');
 const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+const { mediaImageResponses } = require('./media-model');
 
 const runFileLifecycle = createRunFileLifecycleResponses({
   findLastToolMessage,
@@ -3322,6 +3323,15 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const mediaImage = mediaImageResponses({
+    text,
+    toolNames,
+    getMarkerValue,
+    findLastToolMessage,
+    getContentText,
+  });
+  if (mediaImage) return mediaImage;
+
   const lifecycle = runFileLifecycle.responsesForText(text);
   if (lifecycle) return lifecycle;
 
@@ -3618,6 +3628,13 @@ module.exports = function fakeModelHook(run, context) {
   }
 
   const text = getLatestUserText(context?.messages);
+  if (text.includes('E2E_NATIVE_MEDIA:') || text.includes('E2E_NATIVE_CONTINUATION:')) {
+    const options = graph.agentContexts?.get(graph.defaultAgentId)?.clientOptions;
+    if (options?.model !== 'gemini-3-pro-image-preview' || !options.nativeMedia) {
+      throw new Error('[e2e] Native fixture requires the configured Google native media port');
+    }
+    return;
+  }
   /** Recorded-session replay outranks marker routing: a conversation whose
    * prompt matches a fixture's next recorded invocation streams that recording
    * through the real pipeline instead of a scripted mock response. */

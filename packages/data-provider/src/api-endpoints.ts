@@ -1,3 +1,4 @@
+import type { MediaPageRequest, MediaThreadListRequest } from './media';
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
 import { ResourceType } from './accessPermissions';
@@ -20,6 +21,49 @@ if (BASE_URL && BASE_URL.endsWith('/')) {
 }
 
 export const apiBaseUrl = () => BASE_URL;
+
+const mediaRoot = () => `${BASE_URL}/api/media`;
+const mediaQuery = (params: MediaThreadListRequest = {}): string => {
+  const query = new URLSearchParams();
+  if (params.cursor) query.set('cursor', params.cursor);
+  if (params.limit !== undefined) query.set('limit', String(params.limit));
+  if (params.filter) query.set('filter', params.filter);
+  if (params.include) query.set('include', params.include);
+  if (params.search) query.set('search', params.search);
+  const suffix = query.toString();
+  return suffix ? `?${suffix}` : '';
+};
+export const mediaCatalog = () => `${mediaRoot()}/catalog`;
+export const mediaRecoveryJobs = (params: MediaPageRequest = {}) =>
+  `${BASE_URL}/api/admin/media/jobs${mediaQuery(params)}`;
+export const mediaRecoveryCapabilities = () => `${BASE_URL}/api/admin/media/capabilities`;
+export const mediaRecoveryJob = (ownerId: string, jobId: string) =>
+  `${mediaRecoveryJobs()}/${encodeURIComponent(ownerId)}/${encodeURIComponent(jobId)}/recovery`;
+export const mediaThreads = (params: MediaThreadListRequest = {}) =>
+  `${mediaRoot()}/threads${mediaQuery(params)}`;
+export const mediaThread = (threadId: string) =>
+  `${mediaRoot()}/threads/${encodeURIComponent(threadId)}`;
+export const mediaTurns = (threadId: string, params: MediaPageRequest = {}) =>
+  `${mediaThread(threadId)}/turns${mediaQuery(params)}`;
+export const mediaTurnJobs = (threadId: string, turnId: string, params: MediaPageRequest = {}) =>
+  `${mediaThread(threadId)}/turns/${encodeURIComponent(turnId)}/jobs${mediaQuery(params)}`;
+export const mediaJob = (jobId: string) => `${mediaRoot()}/jobs/${encodeURIComponent(jobId)}`;
+export const mediaJobDiagnostics = (jobId: string) => `${mediaJob(jobId)}/diagnostics`;
+export const mediaJobOutputs = (jobId: string, params: MediaPageRequest = {}) =>
+  `${mediaJob(jobId)}/outputs${mediaQuery(params)}`;
+export const mediaJobCancel = (jobId: string) => `${mediaJob(jobId)}/cancel`;
+export const mediaJobRetry = (jobId: string) => `${mediaJob(jobId)}/retry`;
+export const mediaSubmissions = () => `${mediaRoot()}/submissions`;
+export const mediaSubmission = (clientRequestId: string) =>
+  `${mediaSubmissions()}/${encodeURIComponent(clientRequestId)}`;
+export const mediaUploads = () => `${mediaRoot()}/uploads`;
+export const mediaURLUploads = () => `${mediaUploads()}/url`;
+export const mediaImports = () => `${mediaRoot()}/imports`;
+export const mediaImport = (clientRequestId: string) =>
+  `${mediaImports()}/${encodeURIComponent(clientRequestId)}`;
+export const mediaPresets = () => `${mediaRoot()}/presets`;
+export const mediaPreset = (presetId: string) =>
+  `${mediaPresets()}/${encodeURIComponent(presetId)}`;
 
 // Testing this buildQuery function
 const buildQuery = (params: Record<string, unknown>): string => {
@@ -104,9 +148,9 @@ const keysEndpoint = `${BASE_URL}/api/keys`;
 
 export const keys = () => keysEndpoint;
 
-export const userKeyQuery = (name: string) => `${keysEndpoint}?name=${name}`;
+export const userKeyQuery = (name: string) => `${keysEndpoint}?name=${encodeURIComponent(name)}`;
 
-export const revokeUserKey = (name: string) => `${keysEndpoint}/${name}`;
+export const revokeUserKey = (name: string) => `${keysEndpoint}/${encodeURIComponent(name)}`;
 
 export const revokeAllUserKeys = () => `${keysEndpoint}?all=true`;
 

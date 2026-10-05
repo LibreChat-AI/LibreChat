@@ -4,6 +4,7 @@ jest.mock('@librechat/api', () => ({
   createMessageBudgetReader: jest.fn(() => ({ initialize: jest.fn(), getBudget: jest.fn() })),
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
+  createMediaConsumerConfigProvider: jest.fn(() => jest.fn()),
 }));
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),

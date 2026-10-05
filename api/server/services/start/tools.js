@@ -10,6 +10,7 @@ const {
   isToolModuleFile,
   oaiToolkit,
   geminiToolkit,
+  mediaToolkit,
   createAskUserQuestionTool,
 } = require('@librechat/api');
 const { toolkits } = require('~/app/clients/tools/manifest');
@@ -91,6 +92,7 @@ function loadAndFormatTools({ directory, adminFilter = [], adminIncluded = [] })
     createAskUserQuestionTool(),
     ...Object.values(oaiToolkit),
     ...Object.values(geminiToolkit),
+    ...Object.values(mediaToolkit),
   ];
   for (const toolInstance of basicToolInstances) {
     const formattedTool = formatToOpenAIAssistantTool(toolInstance);

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { MongoClient, ObjectId } from 'mongodb';
+import type { TConversation } from 'librechat-data-provider';
 import type { Db } from 'mongodb';
 
 const DEFAULT_MONGO_URI = 'mongodb://127.0.0.1:27017/LibreChat-e2e';
@@ -47,9 +48,10 @@ export async function withMongo<T>(fn: (db: Db) => Promise<T>): Promise<T> {
   }
 }
 
-export interface SeedConvo {
+export interface SeedConvo extends Partial<Pick<TConversation, 'endpointType' | 'model'>> {
   conversationId: string;
   title: string;
+  endpoint?: string;
   /** Drives the sidebar date group ("Today", "Previous 7 days", ...). */
   updatedAt: Date;
 }
@@ -62,13 +64,11 @@ export async function seedConversations(userEmail: string, convos: SeedConvo[]):
   await withMongo(async (db) => {
     const userId = await resolveUserId(db, userEmail);
     const docs = convos.map((convo) => ({
-      conversationId: convo.conversationId,
-      title: convo.title,
+      ...convo,
       user: userId,
-      endpoint: 'openAI',
+      endpoint: convo.endpoint ?? 'openAI',
       isArchived: false,
       createdAt: convo.updatedAt,
-      updatedAt: convo.updatedAt,
       __v: 0,
     }));
     await db.collection('conversations').insertMany(docs);

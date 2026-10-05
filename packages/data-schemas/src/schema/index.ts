@@ -43,3 +43,15 @@ export { default as queuedTurnSchema } from './queuedTurn';
 export { default as queuedTurnSequenceSchema } from './queuedTurnSequence';
 export { default as scheduleSchema } from './schedule';
 export { default as scheduleRunSchema } from './scheduleRun';
+export {
+  mediaOwnerSchema,
+  mediaThreadSchema,
+  mediaTurnSchema,
+  mediaJobSchema,
+  mediaAssetWriteSchema,
+  mediaPermitSchema,
+  mediaActivationSchema,
+} from './media';
+export { default as mediaSettlementSchema } from './mediaSettlement';
+export { default as mediaNativePartSchema } from './mediaNativePart';
+export { default as mediaPresetSchema } from './mediaPreset';

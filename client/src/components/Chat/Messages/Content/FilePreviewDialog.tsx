@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import copy from 'copy-to-clipboard';
 import { Download } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
+import { useTranslation } from 'react-i18next';
 import {
   Button,
   OGDialog,
@@ -26,6 +27,7 @@ import {
 import { getDownloadFilename, logger, sortPagesByRelevance, triggerDownload } from '~/utils';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useFileMapContext, useShareContext } from '~/Providers';
+import { formatBytes as formatLocaleBytes } from '~/utils/files';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -109,6 +111,7 @@ export default function FilePreviewDialog({
   triggerRef,
 }: FilePreviewDialogProps) {
   const localize = useLocalize();
+  const { i18n } = useTranslation();
   const user = useRecoilValue(store.user);
   const { shareId } = useShareContext();
   const fileMap = useFileMapContext();
@@ -254,7 +257,7 @@ export default function FilePreviewDialog({
     metaParts.push(`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`);
   }
   if (fileSize != null && fileSize > 0) {
-    metaParts.push(formatBytes(fileSize));
+    metaParts.push(formatLocaleBytes(fileSize, i18n.language));
   }
   if (sortedPages && sortedPages.length > 0) {
     metaParts.push(localize('com_file_pages', { pages: sortedPages.join(', ') }));

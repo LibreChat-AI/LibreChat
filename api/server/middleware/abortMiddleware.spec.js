@@ -40,7 +40,7 @@ jest.mock('@librechat/api', () => ({
   },
   recordCollectedUsage: mockRecordCollectedUsage,
   getTransactionsConfig: (...args) => mockGetTransactionsConfig(...args),
-  sanitizeMessageForTransmit: jest.fn((msg) => msg),
+  sanitizeMessageForTransmit: jest.requireActual('@librechat/api').sanitizeMessageForTransmit,
   buildAbortedResponseMetadata: jest.fn().mockReturnValue(null),
 }));
 
@@ -320,6 +320,30 @@ describe('abortMiddleware - handleAbort billing', () => {
 
     const [, savedMessage] = db.saveMessage.mock.calls[0];
     expect(savedMessage.contextMeta).toBeNull();
+  });
+
+  it('persists private native continuation metadata without sending it to the browser', async () => {
+    const metadata = {
+      nativeSignatures: [{ index: 0, thoughtSignature: 'private-provider-signature' }],
+      tokenUsage: { inputTokens: 1 },
+    };
+    require('@librechat/api').buildAbortedResponseMetadata.mockReturnValueOnce(metadata);
+    GenerationJobManager.abortJob.mockResolvedValue({
+      success: true,
+      jobData: buildJobData(),
+      content: [],
+      text: 'partial',
+      collectedUsage: [],
+    });
+    const res = buildRes();
+
+    await handleAbort()(buildReq(), res);
+
+    const [, savedMessage] = db.saveMessage.mock.calls[0];
+    expect(savedMessage.metadata).toEqual(metadata);
+    const finalEvent = JSON.parse(res.send.mock.calls[0][0]);
+    expect(finalEvent.responseMessage.metadata).toEqual({ tokenUsage: { inputTokens: 1 } });
+    expect(JSON.stringify(finalEvent)).not.toContain('private-provider-signature');
   });
 
   it('does not bill a stopped response by token count either', async () => {

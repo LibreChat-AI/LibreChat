@@ -5,6 +5,7 @@ const {
   findMatchingPattern,
   isDeploymentSkillId,
   createMessageBudgetReader,
+  createMediaConsumerConfigProvider,
 } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -15,6 +16,7 @@ const methods = createMethods(mongoose, {
   findMatchingPattern,
   isExternalSkillId: isDeploymentSkillId,
   getCache: getLogStores,
+  getMediaConsumerConfig: createMediaConsumerConfigProvider(getLogStores),
   getMCPAppMessageBudget: messageBudget.getBudget,
 });
 

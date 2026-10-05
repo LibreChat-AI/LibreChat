@@ -5,6 +5,8 @@ export { createAdminGroupsHandlers } from './groups';
 export { createAdminRolesHandlers } from './roles';
 export { createAdminSkillsSyncAccess, createAdminSkillsSyncHandlers } from './skills';
 export { createAdminUsersHandlers } from './users';
+export { createAdminMediaHandlers, createAdminMediaRouter } from './media';
+export type { AdminMediaDeps } from './media';
 export { createAdminAuditLogHandlers } from './auditLog';
 export { createAdminCodeEnvironmentHandlers } from './code';
 export { buildAuditContext } from './context';

@@ -59,6 +59,7 @@ const UPDATE_METHODS = new Set([
  * they have their own detectors below.
  */
 const FORBIDDEN_TOKENS = [
+  '$$NOW',
   '$$REMOVE',
   '$$CURRENT',
   // stages

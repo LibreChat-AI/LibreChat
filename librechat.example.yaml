@@ -358,6 +358,13 @@ interface:
   #   share: true
   #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
   #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
+  # Media Studio permissions (role defaults: USER use/create false, ADMIN use/create true).
+  # The `media:` section at the top level enables the feature and configures providers.
+  # - use: Allow users to open Media Studio and see media generated in chat
+  # - create: Allow users to submit new image and video generations
+  # media:
+  #   use: true
+  #   create: true
   # mcpServers:
   #   # Poll only while MCP controls are visible, in milliseconds (0 disables polling).
   #   toolsRefreshInterval: 300000
@@ -448,6 +455,45 @@ registration:
 #  enabled: false
 # Note: If balance.enabled is true, transactions will always be enabled
 # regardless of this setting to ensure balance tracking works correctly
+
+# Media Studio: uncomment this section and grant access through interface.media above.
+# Keep only integrations for providers configured in your deployment. Credentials and
+# original files reuse the existing endpoint and file-storage settings.
+# Media settings belong in this file; database overrides cannot change them per role.
+#
+# Media uses the existing balance and transactions settings. With balance enabled,
+# every integration needs billing.maxCostUSD to reserve shared token credits before
+# dispatch. This is a reservation, not a provider-side spending cap. An optional
+# estimatedCostUSD covers completed results without reported or known pricing.
+# Native chat output keeps chat's accounting and is not charged again by Studio.
+# Omitted tuning options retain their defaults; see the Configuration Guide above.
+# media:
+#   enabled: true
+#   surfaces:
+#     studio: true
+#     chat: true   # Native Gemini images in chat
+#     tools: false # Enable media_generate and media_status for agents
+#   integrations:
+#     # Reuse the OpenAI chat endpoint's credentials.
+#     - id: openai-images
+#       api: openai.images
+#       endpointRef: { kind: builtin, endpoint: openAI }
+#       catalog: { kind: configured, models: ['gpt-image-1'] }
+#       operations: ['image.generate', 'image.edit']
+#       # Example for balance enforcement; adjust amounts to your request sizes.
+#       # billing: { maxCostUSD: 0.25, estimatedCostUSD: 0.04 }
+#     # Reuse Google's service account or application default credentials.
+#     - id: vertex-video
+#       api: google.vertex.videos
+#       endpointRef: { kind: vertex }
+#       catalog: { kind: configured, models: ['veo-3.1-fast-generate-001'] }
+#       operations: ['video.generate']
+#     # Reuse a configured custom endpoint, including saved personal keys and routing.
+#     - id: openrouter-images
+#       api: openrouter.images
+#       endpointRef: { kind: custom, name: OpenRouter }
+#       catalog: { kind: discovered, allowModels: ['black-forest-labs/flux.2-pro'] }
+#       operations: ['image.generate', 'image.edit']
 
 # Speech (STT/TTS) outbound requests to operator-provided target URLs are SSRF-guarded
 # at connect time: private, loopback, link-local, and cloud-metadata targets are blocked
@@ -1321,6 +1367,8 @@ endpoints:
 #     # Bound parallel storage deletes after a failed archive import (default: 8).
 #     # Set to 1 for serial cleanup on storage backends that require it.
 #     importCleanupConcurrency: 8
+#   # Maximum expired originals reclaimed per shared sweep pass (all owners and storage backends).
+#   retentionSweepLimit: 100
 #   # Store best-effort text for inferred tool-routed message attachments. On each turn,
 #   # deliver it only if no available tool can read the type. Off by default; also configurable
 #   # under endpoints.default or a provider/custom endpoint name. Explicit destinations stand.

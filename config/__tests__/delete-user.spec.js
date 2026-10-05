@@ -11,6 +11,12 @@ const mockModelFor = (name) => {
 };
 
 const mockMethods = {
+  prepareMediaAccountDeletion: jest.fn(),
+  completeMediaAccountDeletion: jest.fn(),
+  cancelMediaAccountDeletion: jest.fn(),
+  hasMediaAccountingObligations: jest.fn(),
+  deleteBalances: jest.fn(),
+  deleteFiles: jest.fn(),
   beginAgentTriggerUserDeletion: jest.fn(),
   recoverStaleAgentTriggerUserDeletion: jest.fn(),
   prepareAgentTriggerUserPurge: jest.fn(),
@@ -40,6 +46,17 @@ jest.mock('@librechat/data-schemas', () => ({
   runAsSystem: (operation) => operation(),
 }));
 jest.mock('@librechat/api', () => ({
+  prepareMediaAccountDeletion: async ({ repository, scope, token }) => {
+    const session = { scope, token };
+    if (!(await repository.prepareMediaAccountDeletion(session)))
+      throw new Error('Media work or accounting must finish before account deletion.');
+    return session;
+  },
+  completeMediaAccountDeletion: ({ repository, session }) =>
+    repository.completeMediaAccountDeletion(session),
+  cancelMediaAccountDeletion: async ({ repository, session, userDeleted }) => {
+    if (session && !userDeleted) await repository.cancelMediaAccountDeletion(session);
+  },
   waitForKeyvRedisClient: jest.fn(async () => undefined),
   createStreamServices: jest.fn(() => ({ isRedis: true })),
   GenerationJobManager: {
@@ -97,6 +114,12 @@ describe('Delete user CLI', () => {
       tenantId: 'tenant-1',
     });
     mockMethods.beginAgentTriggerUserDeletion.mockReset().mockResolvedValue('acquired');
+    mockMethods.prepareMediaAccountDeletion.mockReset().mockResolvedValue(true);
+    mockMethods.completeMediaAccountDeletion.mockReset().mockResolvedValue(undefined);
+    mockMethods.cancelMediaAccountDeletion.mockReset().mockResolvedValue(undefined);
+    mockMethods.hasMediaAccountingObligations.mockReset().mockResolvedValue(false);
+    mockMethods.deleteBalances.mockReset().mockResolvedValue({ deletedCount: 0 });
+    mockMethods.deleteFiles.mockReset().mockResolvedValue({ deletedCount: 0 });
     mockMethods.recoverStaleAgentTriggerUserDeletion.mockReset().mockResolvedValue('acquired');
     mockMethods.prepareAgentTriggerUserPurge.mockReset().mockResolvedValue(undefined);
     mockMethods.suspendUserSchedulesForDeletion.mockReset().mockResolvedValue(undefined);
@@ -150,6 +173,42 @@ describe('Delete user CLI', () => {
     expect(
       mockMethods.countActiveAgentTriggerDeliveriesByUser.mock.invocationCallOrder[0],
     ).toBeLessThan(mockGetCleanupBlockingJobIdsForUser.mock.invocationCallOrder[0]);
+  });
+
+  it('prepares media before account writes and completes only after User deletion', async () => {
+    expect(await runCli()).toBe(0);
+    expect(mockMethods.prepareMediaAccountDeletion).toHaveBeenCalledWith({
+      scope: { ownerId: USER_ID, tenantId: 'tenant-1' },
+      token: expect.any(String),
+    });
+    expect(mockMethods.prepareMediaAccountDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      mockModelFor('Action').deleteMany.mock.invocationCallOrder[0],
+    );
+    expect(mockMethods.deleteUserById.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMethods.completeMediaAccountDeletion.mock.invocationCallOrder[0],
+    );
+    expect(mockMethods.deleteBalances).toHaveBeenCalledWith({ user: USER_ID });
+    expect(mockMethods.deleteFiles).toHaveBeenCalledWith(null, USER_ID);
+    expect(mockMethods.cancelMediaAccountDeletion).not.toHaveBeenCalled();
+  });
+
+  it('releases media before the outer deletion fence when the account cascade fails', async () => {
+    mockModelFor('Action').deleteMany.mockRejectedValueOnce(new Error('cascade failed'));
+    expect(await runCli()).toBe(1);
+    expect(mockMethods.completeMediaAccountDeletion).not.toHaveBeenCalled();
+    expect(mockMethods.cancelMediaAccountDeletion).toHaveBeenCalledWith(
+      mockMethods.prepareMediaAccountDeletion.mock.calls[0][0],
+    );
+    expect(mockMethods.cancelMediaAccountDeletion.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMethods.cancelAgentTriggerUserDeletion.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('refuses offline deletion before deleting records when media work is unfinished', async () => {
+    mockMethods.prepareMediaAccountDeletion.mockResolvedValueOnce(false);
+    expect(await runCli()).toBe(1);
+    expect(mockModelFor('Action').deleteMany).not.toHaveBeenCalled();
+    expect(mockMethods.deleteUserById).not.toHaveBeenCalled();
   });
 
   it('aborts provider work before deleting account-owned records', async () => {

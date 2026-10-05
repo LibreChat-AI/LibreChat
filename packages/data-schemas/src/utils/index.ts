@@ -2,6 +2,7 @@ export * from './principal';
 export * from './string';
 export * from './tempChatRetention';
 export * from './retention';
+export { collectMessageFileIds, removeMessageFileIds } from './messageFiles';
 export { tenantSafeBulkWrite } from './tenantBulkWrite';
 export * from './transactions';
 export * from './objectId';

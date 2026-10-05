@@ -1,8 +1,8 @@
 import DragDropOverlay from '~/components/Chat/Input/Files/DragDropOverlay';
 import DragDropModal from '~/components/Chat/Input/Files/DragDropModal';
 import { DragDropProvider, UploadModalProvider } from '~/Providers';
+import FileDropArea from '~/components/Files/DropArea';
 import { useDragHelpers } from '~/hooks';
-import { cn } from '~/utils';
 
 interface DragDropWrapperProps {
   children: React.ReactNode;
@@ -14,12 +14,14 @@ function DragDropArea({ children, className }: DragDropWrapperProps) {
   const isActive = canDrop && isOver;
 
   return (
-    <div ref={drop} className={cn('relative flex h-full w-full', className)}>
+    <FileDropArea
+      dropRef={drop}
+      className={`flex h-full w-full ${className ?? ''}`}
+      overlay={<DragDropOverlay isActive={isActive} />}
+    >
       {children}
-      {/** Always render overlay to avoid mount/unmount overhead */}
-      <DragDropOverlay isActive={isActive} />
       <DragDropModal />
-    </div>
+    </FileDropArea>
   );
 }
 

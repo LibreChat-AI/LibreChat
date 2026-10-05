@@ -4,6 +4,7 @@ import { agentFadingContextDefinition } from './fading';
 
 const messageSchema: Schema<IMessage> = new Schema(
   {
+    mediaConsumerToken: String,
     messageId: {
       type: String,
       required: true,

@@ -64,12 +64,10 @@ const banViolation = async (req, res, errorMessage) => {
     return;
   }
 
-  req.ip = removePorts(req);
-  const banIp = getBanIp(req);
+  const ip = removePorts(req);
+  const banIp = getBanIp({ ip, _isAgentTrigger: req._isAgentTrigger });
   logger.info(
-    `[BAN] Banning user ${user_id} ${req.ip ? `@ ${req.ip} ` : ''}for ${
-      duration / 1000 / 60
-    } minutes`,
+    `[BAN] Banning user ${user_id} ${ip ? `@ ${ip} ` : ''}for ${duration / 1000 / 60} minutes`,
   );
 
   const expiresAt = Date.now() + duration;

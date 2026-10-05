@@ -176,6 +176,8 @@ interface PaletteProps {
   entries: PaletteEntry[];
   /** The composer box the popover anchors to, so it matches its width. */
   anchorRef: React.RefObject<HTMLElement>;
+  /** Offered beside the upload destinations when chat media creation is allowed. */
+  onCreateMedia?: () => void;
 }
 
 /**
@@ -212,6 +214,7 @@ function Palette({
   canAttach,
   entries,
   anchorRef,
+  onCreateMedia,
 }: PaletteProps) {
   const localize = useLocalize();
   /* Ariakit owns the open state rather than a controlled `open`/`setOpen` pair:
@@ -421,6 +424,7 @@ function Palette({
     setFiles,
     setFilesLoading,
     isUnifiedMode,
+    onCreateMedia,
   });
 
   /** One pass over each source: filter by query, split favourites out, then

@@ -5,6 +5,7 @@ jest.mock('axios', () => ({ post: jest.fn() }));
 jest.mock('winston-daily-rotate-file', () => jest.fn());
 jest.mock('@librechat/api', () => ({
   isEnabled: () => true,
+  createModerationCheck: () => jest.fn(async () => false),
   getReferencedQuotes: () => undefined,
   mergeQuotedText: jest.fn(),
   getBoundedAskUserAnswerValues: jest.fn(() => []),

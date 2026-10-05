@@ -8,8 +8,8 @@ import {
   EModelEndpoint,
   defaultModels,
 } from 'librechat-data-provider';
-import type { IUser } from '@librechat/data-schemas';
 import type { AxiosRequestConfig } from 'axios';
+import type { SafeUserInput } from '~/utils/env';
 import {
   processModelData,
   extractBaseURL,
@@ -52,7 +52,7 @@ export interface FetchModelsParams {
   /** Optional headers for the request */
   headers?: Record<string, string> | null;
   /** Optional user object for header resolution */
-  userObject?: Partial<IUser>;
+  userObject?: SafeUserInput;
   /** Skip MODEL_QUERIES cache (e.g., for user-provided keys) */
   skipCache?: boolean;
 }
@@ -85,7 +85,7 @@ async function fetchOllamaModels(
   options: {
     headers?: Record<string, string> | null;
     ssrfAgents?: SSRFSafeAgents;
-    user?: Partial<IUser>;
+    user?: SafeUserInput;
   } = {},
 ): Promise<string[]> {
   if (!baseURL) {
@@ -330,7 +330,7 @@ export interface GetOpenAIModelsOptions {
   /** Configured custom headers forwarded to the (gateway-fronted) provider */
   headers?: Record<string, string> | null;
   /** User object for resolving header placeholders */
-  userObject?: Partial<IUser>;
+  userObject?: SafeUserInput;
   /** A model list configured for the endpoint; when set, it is returned without discovery. */
   configuredModels?: string[];
 }
@@ -442,7 +442,7 @@ export async function fetchAnthropicModels(
     user?: string;
     skipCache?: boolean;
     headers?: Record<string, string> | null;
-    userObject?: Partial<IUser>;
+    userObject?: SafeUserInput;
   } = {},
   _models: string[] = [],
 ): Promise<string[]> {
@@ -490,7 +490,7 @@ export async function getAnthropicModels(
     user?: string;
     vertexModels?: string[];
     headers?: Record<string, string> | null;
-    userObject?: Partial<IUser>;
+    userObject?: SafeUserInput;
     /** A model list configured for the endpoint; when set, it is returned without discovery. */
     configuredModels?: string[];
   } = {},

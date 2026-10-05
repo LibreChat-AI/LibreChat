@@ -1,4 +1,8 @@
-const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
+const {
+  ATTACHMENT_ONLY_TEXT,
+  collapseAssistantReplayContent,
+  prepareAssistantToolReplayContent,
+} = require('@librechat/api');
 const { EModelEndpoint, ContentTypes } = require('librechat-data-provider');
 const {
   AIMessage,
@@ -220,13 +224,7 @@ const formatAgentMessages = (payload) => {
         For Anthropic models, the "tool_calls" field on a message is only respected if content is a string.
          */
         if (currentContent.length > 0) {
-          let content = currentContent.reduce((acc, curr) => {
-            if (curr.type === ContentTypes.TEXT) {
-              return `${acc}${curr[ContentTypes.TEXT]}\n`;
-            }
-            return acc;
-          }, '');
-          content = `${content}\n${part[ContentTypes.TEXT] ?? ''}`.trim();
+          const content = prepareAssistantToolReplayContent(currentContent, part);
           lastAIMessage = new AIMessage({ content });
           messages.push(lastAIMessage);
           currentContent = [];
@@ -235,7 +233,7 @@ const formatAgentMessages = (payload) => {
 
         // Create a new AIMessage with this text and prepare for tool calls
         lastAIMessage = new AIMessage({
-          content: part.text || '',
+          content: prepareAssistantToolReplayContent([], part),
         });
 
         messages.push(lastAIMessage);
@@ -293,9 +291,7 @@ const formatAgentMessages = (payload) => {
              *  folding to text here would drop them from replayed history. */
             messages.push(new AIMessage({ content: currentContent }));
           } else {
-            const content = currentContent
-              .reduce((acc, curr) => `${acc}${curr[ContentTypes.TEXT] ?? ''}\n`, '')
-              .trim();
+            const content = collapseAssistantReplayContent(currentContent);
             if (content.length > 0) {
               messages.push(new AIMessage({ content }));
             }
@@ -328,14 +324,7 @@ const formatAgentMessages = (payload) => {
     }
 
     if (hasReasoning) {
-      currentContent = currentContent
-        .reduce((acc, curr) => {
-          if (curr.type === ContentTypes.TEXT) {
-            return `${acc}${curr[ContentTypes.TEXT]}\n`;
-          }
-          return acc;
-        }, '')
-        .trim();
+      currentContent = collapseAssistantReplayContent(currentContent);
     }
 
     if (currentContent.length > 0) {

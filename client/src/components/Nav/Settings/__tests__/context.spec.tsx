@@ -12,6 +12,11 @@ jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ user: mockUser }),
   useHasAccess: () => false,
   useGetAgentsConfig: () => ({ agentsConfig: undefined }),
+  useMediaAccess: () => ({ studio: false }),
+}));
+
+jest.mock('~/hooks/Media/useMediaRecoveryAccess', () => ({
+  useMediaRecoveryAccess: () => ({ canRead: false }),
 }));
 
 jest.mock('~/hooks/usePersonalizationAccess', () => () => ({
@@ -23,7 +28,11 @@ jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: undefined }),
 }));
 
-jest.mock('../../SettingsTabs/ProviderKeys/useProviderKeys', () => () => []);
+jest.mock('../../SettingsTabs/ProviderKeys/useProviderKeys', () => ({
+  __esModule: true,
+  default: () => [],
+  useMediaProviderKeyConfig: () => undefined,
+}));
 
 const baseUser: Omit<TUser, 'provider'> = {
   id: 'user-1',

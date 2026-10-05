@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import { logger, isValidObjectIdString } from '@librechat/data-schemas';
 import type {
@@ -10,7 +11,14 @@ import type {
 } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
 import type { Response } from 'express';
+import type { MediaAccountDeletion, MediaAccountDeletionRepository } from '~/media/account';
 import type { ServerRequest } from '~/types/http';
+import {
+  prepareMediaAccountDeletion,
+  completeMediaAccountDeletion,
+  cancelMediaAccountDeletion,
+} from '~/media/account';
+import { MediaServiceError } from '~/media/errors';
 import { parsePagination } from './pagination';
 
 const MAX_SEARCH_LENGTH = 200;
@@ -18,6 +26,7 @@ const MAX_SEARCH_LENGTH = 200;
 const USER_LIST_FIELDS = '_id name username email avatar role provider createdAt updatedAt';
 
 export interface AdminUsersDeps {
+  media: MediaAccountDeletionRepository;
   findUsers: (
     searchCriteria: FilterQuery<IUser>,
     fieldsToSelect?: string | string[] | null,
@@ -167,6 +176,7 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
     let targetUserId: string | undefined;
     let triggerDeletionFence: Date | undefined;
     let userDeleted = false;
+    let mediaDeletion: MediaAccountDeletion | undefined;
 
     try {
       const { id } = req.params as { id: string };
@@ -200,17 +210,33 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         return res.status(404).json({ error: 'User not found' });
       }
       await prepareAgentTriggerUserPurge(id, triggerDeletionFence, targetUser?.tenantId);
+      mediaDeletion = await prepareMediaAccountDeletion({
+        repository: deps.media,
+        scope: { ownerId: id, tenantId: targetUser?.tenantId ?? null },
+        token: randomUUID(),
+      });
       await drainAgentTriggerDeliveriesForUser(id);
 
       const result = await deleteUserById(id);
 
       if (result.deletedCount === 0) {
+        await cancelMediaAccountDeletion({
+          repository: deps.media,
+          session: mediaDeletion,
+          userDeleted: false,
+          log: logger.error,
+        });
         await cancelAgentTriggerUserPurge(id, triggerDeletionFence);
         await cancelAgentTriggerUserDeletion(id, triggerDeletionFence);
         triggerDeletionFence = undefined;
         return res.status(404).json({ error: 'User not found' });
       }
       userDeleted = true;
+      await completeMediaAccountDeletion({
+        repository: deps.media,
+        session: mediaDeletion,
+        log: logger.error,
+      });
       let codeEnvironmentCleanupSafe = true;
       try {
         await revokeUserCodeEnvironmentWorkers?.(id);
@@ -248,6 +274,12 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
 
       return res.status(200).json({ message: result.message || 'User deleted successfully' });
     } catch (error) {
+      await cancelMediaAccountDeletion({
+        repository: deps.media,
+        session: mediaDeletion,
+        userDeleted,
+        log: logger.error,
+      });
       if (targetUserId != null && triggerDeletionFence != null && !userDeleted) {
         try {
           await cancelAgentTriggerUserPurge(targetUserId, triggerDeletionFence);
@@ -261,6 +293,9 @@ export function createAdminUsersHandlers(deps: AdminUsersDeps): {
         }
       }
       logger.error('[adminUsers] deleteUser error:', error);
+      if (error instanceof MediaServiceError) {
+        return res.status(error.status).json({ error: error.message, code: error.code });
+      }
       return res.status(500).json({ error: 'Failed to delete user' });
     }
   }

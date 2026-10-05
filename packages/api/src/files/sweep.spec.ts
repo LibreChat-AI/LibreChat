@@ -1,4 +1,4 @@
-import { EModelEndpoint, FileSources } from 'librechat-data-provider';
+import { EModelEndpoint, FileSources, mergeFileConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
   sweepExpiredFiles,
@@ -33,6 +33,38 @@ describe('expired file sweep helpers', () => {
     jest.useRealTimers();
     delete process.env.FILE_RETENTION_SWEEP_INTERVAL_MS;
     delete process.env.FILE_RETENTION_SWEEP_MAX_ATTEMPTS;
+  });
+
+  it('uses the configured bound and preserves the media owner, tenant and loaded config', async () => {
+    const file = {
+      file_id: 'expired-media',
+      source: FileSources.s3,
+      user: 'owner',
+      tenantId: 'tenant',
+    };
+    const getExpiredFiles = jest.fn().mockResolvedValue([file]);
+    const processDeleteRequest = jest
+      .fn()
+      .mockResolvedValue({ deletedFileIds: [file.file_id], failedFileIds: [] });
+    const appConfig = { fileConfig: mergeFileConfig({ retentionSweepLimit: 250 }) } as AppConfig;
+    await sweepExpiredFiles(
+      { appConfig },
+      {
+        getExpiredFiles,
+        processDeleteRequest,
+        incrementFileDeletionAttempts,
+        deferExpiredFile,
+        logger,
+      },
+    );
+    expect(getExpiredFiles).toHaveBeenCalledWith(250);
+    expect(processDeleteRequest).toHaveBeenCalledWith({
+      req: expect.objectContaining({
+        config: appConfig,
+        user: { id: 'owner', tenantId: 'tenant' },
+      }),
+      files: [file],
+    });
   });
 
   it('loads endpoint config and deletes expired OpenAI storage files', async () => {

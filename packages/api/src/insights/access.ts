@@ -41,17 +41,20 @@ const toChoice = (agent: AgentRecord): TInsightsAgent => ({
   name: agent.name?.trim() || agent.id,
 });
 
-export function createInsightsAgentAccessResolver(deps: InsightsAgentAccessDeps) {
-  return async (user: InsightsAccessUser): Promise<TInsightsAgent[]> => {
+export type InsightsAccess = { agents: TInsightsAgent[]; media: boolean };
+
+export function createInsightsAccessResolver(deps: InsightsAgentAccessDeps) {
+  return async (user: InsightsAccessUser): Promise<InsightsAccess> => {
     const tenantFilter = user.tenantId
       ? { tenantId: user.tenantId }
       : { tenantId: { $exists: false } };
     const agentsPromise = deps.getAgents(tenantFilter, '_id id name tenantId');
 
     if (user.role === SystemRoles.ADMIN) {
-      return (await agentsPromise)
+      const agents = (await agentsPromise)
         .map(toChoice)
         .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return { agents, media: true };
     }
 
     const principals = await deps.getUserPrincipals({
@@ -83,8 +86,9 @@ export function createInsightsAgentAccessResolver(deps: InsightsAgentAccessDeps)
       accessibleAgents = agents.filter((agent) => allowed.has(agent._id.toString()));
     }
 
-    return accessibleAgents
+    const choices = accessibleAgents
       .map(toChoice)
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    return { agents: choices, media: hasGlobalAccess };
   };
 }

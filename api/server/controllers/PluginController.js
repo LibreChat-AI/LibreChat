@@ -1,5 +1,11 @@
 const { logger } = require('@librechat/data-schemas');
-const { getToolkitKey, checkPluginAuth, filterUniquePlugins } = require('@librechat/api');
+const {
+  getToolkitKey,
+  checkPluginAuth,
+  filterUniquePlugins,
+  filterMediaToolPlugins,
+} = require('@librechat/api');
+const { getRoleByName } = require('~/models');
 const { getCachedTools, setCachedTools } = require('~/server/services/Config');
 const { availableTools, toolkits } = require('~/app/clients/tools');
 const { getAppConfig } = require('~/server/services/Config');
@@ -101,7 +107,9 @@ const getAvailableTools = async (req, res) => {
       toolsOutput.push(checkPluginAuth(plugin) ? { ...plugin, authenticated: true } : plugin);
     }
 
-    res.status(200).json(toolsOutput);
+    res
+      .status(200)
+      .json(await filterMediaToolPlugins(toolsOutput, { appConfig, request: req, getRoleByName }));
   } catch (error) {
     logger.error('[getAvailableTools]', error);
     res.status(500).json({ message: error.message });

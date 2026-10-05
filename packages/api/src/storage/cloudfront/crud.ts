@@ -13,6 +13,7 @@ import type {
   SaveURLResult,
   UploadResult,
 } from '~/storage/types';
+import type { SaveStreamParams, StorageFileLocation } from '~/storage/types';
 import type { ServerRequest } from '~/types';
 import {
   parseS3Key,
@@ -33,6 +34,7 @@ import {
 } from '~/storage/url';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
 import { sanitizeContentDispositionFilename } from '~/storage/validation';
+import { planS3File, saveStreamToS3 } from '~/storage/s3/crud';
 import { getCloudFrontConfig } from '~/cdn/cloudfront';
 import { s3Config } from '~/storage/s3/s3Config';
 
@@ -228,6 +230,30 @@ export async function saveURLToCloudFrontWithMetadata(
   });
 }
 
+export async function planCloudFrontFile(
+  params: GetURLParams & { sign?: boolean },
+): Promise<StorageFileLocation> {
+  const { sign = false, ...rest } = params;
+  const regionOptions = getRegionPathOptions(rest);
+  return planS3File({
+    ...rest,
+    ...regionOptions,
+    urlBuilder: (p) => getCloudFrontURL({ ...p, ...regionOptions, sign }),
+  });
+}
+
+export async function saveStreamToCloudFront(
+  params: SaveStreamParams & { sign?: boolean },
+): Promise<UploadResult> {
+  const { sign = false, ...rest } = params;
+  const regionOptions = getRegionPathOptions(rest);
+  return saveStreamToS3({
+    ...rest,
+    ...regionOptions,
+    urlBuilder: (p) => getCloudFrontURL({ ...p, ...regionOptions, sign }),
+  });
+}
+
 /** Upload file to S3 and return CloudFront URL. */
 export async function uploadFileToCloudFront(
   params: UploadFileParams & { sign?: boolean },
@@ -279,7 +305,7 @@ export async function deleteFileFromCloudFront(req: ServerRequest, file: TFile):
 export async function getCloudFrontFileStream(
   req: ServerRequest,
   filePath: string,
-  options?: { signal?: AbortSignal },
+  options?: Parameters<typeof getS3FileStream>[2],
 ): Promise<Readable> {
   const key = extractKeyFromS3Url(filePath);
   const storageRegion = parseS3Key(key)?.storageRegion;

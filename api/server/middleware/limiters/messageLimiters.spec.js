@@ -7,6 +7,8 @@ const mockRateLimit = jest.fn(() => mockLimiter);
 jest.mock('express-rate-limit', () => mockRateLimit);
 jest.mock('@librechat/api', () => ({
   limiterCache: jest.fn(() => ({})),
+  createMessageLimiters: jest.requireActual('../../../../packages/api/src/middleware/limiters.ts')
+    .createMessageLimiters,
   removePorts: jest.fn(),
   getRateLimitReset: jest.requireActual('../../../../packages/api/src/utils/limiter.ts')
     .getRateLimitReset,

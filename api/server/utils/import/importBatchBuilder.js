@@ -9,6 +9,7 @@ const {
   resolveImportTagCounts,
   getNativeCopyInspectionTokens,
   saveNativeCopyMessages,
+  prepareMediaConversationImport,
 } = require('@librechat/api');
 const {
   getTenantId,
@@ -24,6 +25,7 @@ const {
   deleteImportedConversations,
   deleteImportedMessages,
   getFiles,
+  getAvailableMediaFileIds,
 } = require('~/models');
 const { FALLBACK_MODEL_BY_ENDPOINT } = require('./defaults');
 
@@ -196,6 +198,11 @@ class ImportBatchBuilder {
       ...(tenantId == null ? {} : { tenantId }),
     });
 
+    await prepareMediaConversationImport({
+      scope: { ownerId: this.requestUserId, tenantId: tenantId ?? null },
+      messages: this.messages,
+      getAvailableMediaFileIds,
+    });
     await assertConversationContentAllowed(
       this.filters,
       {
@@ -203,7 +210,7 @@ class ImportBatchBuilder {
         messages: this.messages,
       },
       {
-        user: { id: this.requestUserId },
+        user: { id: this.requestUserId, tenantId: tenantId ?? null },
         getFiles,
         privateTextTokens: getNativeCopyInspectionTokens(this.messages),
         ...(this.legacyPii == null ? {} : { legacyPii: this.legacyPii }),
@@ -224,7 +231,10 @@ class ImportBatchBuilder {
     try {
       await executeConversationImportWrites({
         saveConversations: () => bulkSaveConvos(this.conversations),
-        saveMessages: () => saveNativeCopyMessages(bulkSaveMessages, this.messages),
+        saveMessages: () =>
+          saveNativeCopyMessages(bulkSaveMessages, this.messages, {
+            unavailableMedia: 'placeholder',
+          }),
         updateTagCounts: () => bulkIncrementTagCounts(this.requestUserId, tags),
         deleteMessages: () => deleteImportedMessages(cleanupScope),
         deleteConversations: () => deleteImportedConversations(cleanupScope),

@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { expect } from '@playwright/test';
 import type Result from 'lighthouse/types/lhr/lhr';
 import type { Cookie } from '@playwright/test';
+import { redactLighthouseError, isCompletedLighthouseCleanup } from './errors';
 
 const exec = promisify(execFile);
 
@@ -52,16 +53,21 @@ function medianOf(results: Result[], audit: string): number {
 export async function auditPage({
   url,
   cookies,
+  name = 'load',
   runs = DEFAULT_RUNS,
   budgets = DEFAULT_BUDGETS,
 }: {
   url: string;
   cookies: Cookie[];
+  name?: string;
   runs?: number;
   budgets?: MedianBudgets;
 }): Promise<Result[]> {
   const cookie = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
-  const directory = path.resolve(REPORTS_DIRECTORY);
+  const reportsRoot = path.resolve(REPORTS_DIRECTORY);
+  const directory = path.resolve(reportsRoot, name);
+  if (!directory.startsWith(reportsRoot + path.sep))
+    throw new Error('Report name must stay inside the Lighthouse reports directory');
   fs.rmSync(directory, { recursive: true, force: true });
   fs.mkdirSync(directory, { recursive: true });
 
@@ -83,6 +89,9 @@ export async function auditPage({
     for (let run = 1; run <= runs; run++) {
       const output = path.join(directory, `lhr-${run}`);
       for (let attempt = 1; ; attempt++) {
+        // A crashed attempt must never be accepted using an earlier attempt's report.
+        for (const suffix of ['json', 'html'])
+          fs.rmSync(`${output}.report.${suffix}`, { force: true });
         try {
           const { stdout } = await exec(process.execPath, [
             cli,
@@ -95,8 +104,28 @@ export async function auditPage({
           }
           break;
         } catch (error) {
+          const sanitized = redactLighthouseError(error, [
+            cookie,
+            ...cookies.map(({ value }) => value),
+          ]);
+          let completed = false;
+          try {
+            completed = isCompletedLighthouseCleanup(
+              sanitized,
+              JSON.parse(fs.readFileSync(`${output}.report.json`, 'utf8')),
+              fs.readFileSync(`${output}.report.html`, 'utf8'),
+              url,
+              Object.keys(budgets),
+            );
+          } catch {
+            // Missing, partial or malformed artifacts remain failed attempts.
+          }
+          if (completed) {
+            console.log(`Lighthouse run ${run}/${runs} completed; Chrome profile cleanup failed.`);
+            break;
+          }
           if (attempt >= RUN_ATTEMPTS) {
-            throw error;
+            throw sanitized;
           }
           /** Lighthouse crashes out of a run it could not trace — NO_NAVSTART is
            *  the usual one, and its own message is "run Lighthouse again". The
@@ -105,7 +134,7 @@ export async function auditPage({
            *  broken fails every attempt and still fails here. */
           console.log(
             `Lighthouse run ${run}/${runs} attempt ${attempt} did not complete, retrying: ${
-              error instanceof Error ? error.message.split('\n')[0] : String(error)
+              sanitized.message.split('\n')[0]
             }`,
           );
         }

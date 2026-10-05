@@ -365,6 +365,7 @@ describe('RedisJobStore', () => {
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      nativeSignatures: { '3': { thoughtSignature: 'private-native', mimeType: 'image/png' } },
       contextMeta: {
         calibrationRatio: 1.25,
         encoding: 'claude',
@@ -474,6 +475,7 @@ describe('RedisJobStore', () => {
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      nativeSignatures: { '3': { thoughtSignature: 'private-native', mimeType: 'image/png' } },
       contextMeta: {
         calibrationRatio: 1.25,
         encoding: 'claude',

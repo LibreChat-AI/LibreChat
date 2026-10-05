@@ -1,8 +1,10 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
+import { EModelEndpoint } from 'librechat-data-provider';
 import type { Page } from '@playwright/test';
 import { getE2EUser } from '../../../setup/user';
 import { deleteConversations, deleteMessagesByConversation, seedConversations } from '../db';
+import { MOCK_ENDPOINTS } from '../helpers';
 
 /**
  * The footer is an absolutely positioned bar in a zero-height wrapper, so the
@@ -33,7 +35,14 @@ test.describe('configured footer clearance', () => {
     test.setTimeout(60000);
     const conversationId = randomUUID();
     await seedConversations(getE2EUser().email, [
-      { conversationId, title: CONVERSATION_TITLE, updatedAt: new Date() },
+      {
+        conversationId,
+        title: CONVERSATION_TITLE,
+        updatedAt: new Date(),
+        endpoint: MOCK_ENDPOINTS[0].label,
+        endpointType: EModelEndpoint.custom,
+        model: MOCK_ENDPOINTS[0].model,
+      },
     ]);
 
     try {

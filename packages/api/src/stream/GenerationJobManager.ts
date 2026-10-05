@@ -95,6 +95,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
 import { sanitizeJobMetadata } from './metadata';
+import { sanitizeFinalEvent } from './internal/sanitizeFinalEvent';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -3094,6 +3095,7 @@ class GenerationJobManagerClass {
         activityPhaseSnapshot: jobData.activityPhaseSnapshot,
         compactionSemanticIndex: jobData.compactionSemanticIndex,
         contextMeta: jobData.contextMeta,
+        nativeSignatures: jobData.nativeSignatures,
         // Surface the owning replica's seal capability so the steer route can
         // honour it instead of probing its own (possibly older) SDK.
         preemptCapable: jobData.preemptCapable,
@@ -3182,8 +3184,10 @@ class GenerationJobManagerClass {
       try {
         /** Records written before projection shipped, or by an older replica,
          * are projected on read so replay never re-delivers or re-caches an
-         * oversized payload. */
-        finalEvent = projectTerminalEvent(JSON.parse(jobData.finalEvent) as t.ServerSentEvent);
+         * oversized payload or private native metadata. */
+        finalEvent = sanitizeFinalEvent(
+          projectTerminalEvent(JSON.parse(jobData.finalEvent) as t.ServerSentEvent),
+        );
       } catch {
         // Ignore parse errors
       }
@@ -4146,12 +4150,13 @@ class GenerationJobManagerClass {
       conversationId: claim.conversationId,
       status: claim.status,
     });
-    /** The caller's event still carries prompt-building inputs, so everything
-     * this method stores, publishes or caches uses the projected payload. The
-     * projection allocates a new object whenever it excludes anything, so
+    /** The caller's event still carries prompt-building inputs and private
+     * metadata, so everything this method stores, publishes or caches uses the
+     * projected, sanitized payload. These transformations can allocate a new object, so
      * `intendedEvent` — not the caller's reference — is what the success
      * bookkeeping below compares identity against. */
-    const intendedEvent = finalEvent == null ? null : projectTerminalEvent(finalEvent);
+    const intendedEvent =
+      finalEvent == null ? null : sanitizeFinalEvent(projectTerminalEvent(finalEvent));
     const desiredEvent = intendedEvent ?? reconcileEvent;
     let publicationEvent: t.ServerSentEvent | null = null;
     let durable = false;
@@ -4174,9 +4179,9 @@ class GenerationJobManagerClass {
         ) {
           /** Written by whichever side won the CAS, possibly a replica that
            * predates projection. Project on read so a legacy oversized record
-           * is not republished unchanged. */
-          publicationEvent = projectTerminalEvent(
-            JSON.parse(settledJob.finalEvent) as t.ServerSentEvent,
+           * or private native metadata is not republished unchanged. */
+          publicationEvent = sanitizeFinalEvent(
+            projectTerminalEvent(JSON.parse(settledJob.finalEvent) as t.ServerSentEvent),
           );
           durable = true;
         }
@@ -4884,8 +4889,14 @@ class GenerationJobManagerClass {
        * tier that produced its bytes, not the one seen before the claim. */
       try {
         const refreshed = await this.jobStore.getJob(streamId);
-        if (refreshed?.createdAt === jobData.createdAt && refreshed.contextMeta != null) {
-          jobData = { ...jobData, contextMeta: refreshed.contextMeta };
+        if (refreshed?.createdAt === jobData.createdAt) {
+          jobData = {
+            ...jobData,
+            ...(refreshed.contextMeta != null && { contextMeta: refreshed.contextMeta }),
+            ...(refreshed.nativeSignatures != null && {
+              nativeSignatures: refreshed.nativeSignatures,
+            }),
+          };
         }
       } catch (metadataError) {
         logger.warn(
@@ -5203,9 +5214,8 @@ class GenerationJobManagerClass {
        * projection gets excluded. Store-read paths are already projected; a live
        * Pub/Sub FINAL from an old generation owner during a rolling deploy is
        * not, and without this it would be cached on the runtime and forwarded to
-       * the browser with its prompt inputs intact. Idempotent, and returns the
-       * identical reference for an already-projected frame. */
-      const event = projectTerminalEvent(rawEvent);
+       * the browser with its prompt inputs or private native metadata intact. */
+      const event = sanitizeFinalEvent(projectTerminalEvent(rawEvent));
       if (!deliveryActivated) {
         terminalEventQueued = true;
         runtime.finalEvent = event;
@@ -5670,8 +5680,8 @@ class GenerationJobManagerClass {
           try {
             /** Same mixed-deployment concern as the cross-replica runtime: a
              * stored record may predate projection. */
-            finalEvent = projectTerminalEvent(
-              JSON.parse(terminalJob.finalEvent) as t.ServerSentEvent,
+            finalEvent = sanitizeFinalEvent(
+              projectTerminalEvent(JSON.parse(terminalJob.finalEvent) as t.ServerSentEvent),
             );
           } catch (err) {
             logger.warn(
@@ -9002,9 +9012,9 @@ class GenerationJobManagerClass {
     rawEvent: t.ServerSentEvent,
     expectedCreatedAt?: number,
   ): Promise<void> {
-    /** Exclude prompt-building inputs before this event reaches the runtime
-     * cache, the durable job hash or the transport. */
-    const event = projectTerminalEvent(rawEvent);
+    /** Exclude prompt-building inputs and private native metadata before this
+     * event reaches the runtime cache, the durable job hash or the transport. */
+    const event = sanitizeFinalEvent(projectTerminalEvent(rawEvent));
     const runtime = this.runtimeState.get(streamId);
     const generationId = expectedCreatedAt ?? runtime?.createdAt;
     const matchingRuntime =

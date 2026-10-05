@@ -71,8 +71,24 @@ jest.mock('../Parts/BackgroundTaskCall', () => ({
 
 jest.mock('../Image', () => ({
   __esModule: true,
-  default: ({ alignRight }: { alignRight?: boolean }) => (
-    <div data-testid="image" data-aligned-right={String(alignRight)} />
+  default: ({
+    imagePath,
+    altText,
+    file,
+    alignRight,
+  }: {
+    imagePath: string;
+    altText: string;
+    file?: { file_id?: string };
+    alignRight?: boolean;
+  }) => (
+    <img
+      data-testid="image"
+      src={imagePath}
+      alt={altText}
+      data-file-id={file?.file_id}
+      data-aligned-right={String(alignRight)}
+    />
   ),
 }));
 
@@ -117,6 +133,65 @@ describe('Part image alignment', () => {
 });
 
 describe('Part tool renderer selection', () => {
+  it.each([undefined, null])(
+    'renders a streamed image after its pending payload %s arrives',
+    (payload) => {
+      const props = { isSubmitting: true, showCursor: true, isCreatedByUser: false };
+      const pending = { type: ContentTypes.IMAGE_FILE } as TMessageContentParts;
+      Object.assign(pending, { image_file: payload });
+      const { rerender } = render(<Part {...props} part={pending} />);
+      expect(screen.queryByTestId('image')).not.toBeInTheDocument();
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+
+      const ready: TMessageContentParts = {
+        type: ContentTypes.IMAGE_FILE,
+        image_file: {
+          file_id: 'native-image',
+          filepath: '/images/owner/native.png',
+          filename: 'native.png',
+          width: 320,
+          height: 240,
+          bytes: 1024,
+          user: 'owner',
+          embedded: false,
+          object: 'file',
+          usage: 0,
+          type: 'image/png',
+        },
+      };
+      rerender(<Part {...props} part={ready} />);
+      expect(screen.getByRole('img', { name: 'native.png' })).toHaveAttribute(
+        'src',
+        '/images/owner/native.png',
+      );
+      expect(screen.getByTestId('image')).toHaveAttribute('data-file-id', 'native-image');
+      expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    },
+  );
+
+  it('explains unavailable imported images without fetching or offering the original file', () => {
+    renderPart({
+      type: ContentTypes.IMAGE_FILE,
+      image_file: {
+        file_id: '',
+        filepath: '',
+        filename: 'image.png',
+        width: 10,
+        height: 20,
+        bytes: 0,
+        user: '',
+        embedded: false,
+        object: 'file',
+        usage: 0,
+        type: 'image/png',
+        unavailable: 'not_transferred',
+      },
+    });
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'This image was not transferred with the conversation. Upload it to use it in a new message.',
+    );
+    expect(screen.queryByTestId('image')).not.toBeInTheDocument();
+  });
   it.each(['image_gen_oai', 'image_edit_oai', 'gemini_image_gen'])(
     'keeps a successful %s call on the image renderer',
     (name) => {

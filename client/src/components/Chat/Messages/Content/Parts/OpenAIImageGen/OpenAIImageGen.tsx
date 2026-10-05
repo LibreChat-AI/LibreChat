@@ -287,6 +287,7 @@ export default function OpenAIImageGen({
             )}
             {filepath && (
               <Image
+                file={attachment}
                 altText={filename}
                 imagePath={filepath}
                 width={Number(dimensions.width?.split('px')[0])}

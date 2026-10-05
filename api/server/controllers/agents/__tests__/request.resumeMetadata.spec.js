@@ -331,6 +331,7 @@ jest.mock('@librechat/api', () => ({
   filterPersistableAbortContent: (...args) => mockFilterPersistableAbortContent(...args),
   cleanupMCPRequestContextForReq: (...args) => mockCleanupMCPRequestContextForReq(...args),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
+  preserveNativeErrorResponse: jest.requireActual('@librechat/api').preserveNativeErrorResponse,
   sanitizeMessageForTransmit: jest.fn((message) => message),
   checkAndIncrementPendingRequest: (...args) => mockCheckAndIncrementPendingRequest(...args),
   getAgentStartupTelemetry: (...args) => mockGetAgentStartupTelemetry(...args),

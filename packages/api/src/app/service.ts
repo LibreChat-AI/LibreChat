@@ -20,7 +20,7 @@ import type { Types } from 'mongoose';
 import type { CustomConfigLoadMode } from './loader';
 import { checkAppConfigTheme } from './theme';
 
-const BASE_CONFIG_KEY = '_BASE_';
+export const BASE_CONFIG_KEY = '_BASE_';
 
 function hiddenCustomEndpoints(
   config: AppConfig,

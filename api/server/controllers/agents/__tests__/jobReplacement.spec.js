@@ -47,6 +47,7 @@ jest.mock('@librechat/api', () => ({
   checkAndIncrementPendingRequest: jest.fn().mockResolvedValue({ allowed: true }),
   decrementPendingRequest: (...args) => mockDecrementPendingRequest(...args),
   getViolationInfo: jest.fn(),
+  preserveNativeErrorResponse: jest.requireActual('@librechat/api').preserveNativeErrorResponse,
   sanitizeMessageForTransmit: jest.fn((msg) => msg),
   sanitizeFileForTransmit: jest.fn((file) => file),
   Constants: { NO_PARENT: '00000000-0000-0000-0000-000000000000' },

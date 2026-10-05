@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
-import { JSX } from 'react/jsx-runtime';
+import type { JSX } from 'react/jsx-runtime';
+import useMediaQuery from '~/hooks/useMediaQuery';
 import { cn } from '~/utils';
 
 /** Last fillStyle written during the current frame. Reset at the start of each frame so a
@@ -122,6 +123,11 @@ class Pixel {
     this.draw();
   }
 
+  still() {
+    this.size = this.maxSize;
+    this.draw();
+  }
+
   private shimmer() {
     if (this.size >= this.maxSize) {
       this.isReverse = true;
@@ -145,6 +151,7 @@ const getEffectiveSpeed = (value: number, reducedMotion: boolean) => {
 };
 
 const clamp = (n: number, min = 0, max = 1) => Math.min(Math.max(n, min), max);
+type PixelAnimation = 'appear' | 'appearWithProgress' | 'disappear';
 
 /** The default palette names theme channel variables, read off the card when the pixels are
  *  laid out, so the canvas draws the active theme instead of a fixed light palette. */
@@ -207,9 +214,9 @@ export default function PixelCard({
   const animationRef = useRef<number | undefined>(undefined);
   const timePrevRef = useRef(performance.now());
   const progressRef = useRef<number | undefined>(progress);
-  const reducedMotion = useRef(
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-  ).current;
+  const methodRef = useRef<PixelAnimation>();
+  const visibleRef = useRef(true);
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
 
   const cfg = VARIANTS[variant];
   const g = gap ?? cfg.gap;
@@ -232,7 +239,16 @@ export default function PixelCard({
   }, []);
 
   const animate = useCallback(
-    (method: keyof Pixel) => {
+    (method: PixelAnimation) => {
+      if (
+        reducedMotion ||
+        !visibleRef.current ||
+        document.hidden ||
+        !canvasRef.current?.isConnected
+      )
+        return;
+      const ctx = canvasRef.current.getContext('2d');
+      if (!ctx) return;
       animationRef.current = requestAnimationFrame(() => animate(method));
 
       const now = performance.now();
@@ -241,11 +257,6 @@ export default function PixelCard({
         return;
       }
       timePrevRef.current = now - (elapsed % (1000 / 60));
-
-      const ctx = canvasRef.current?.getContext('2d');
-      if (!ctx || !canvasRef.current) {
-        return;
-      }
 
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
@@ -266,7 +277,6 @@ export default function PixelCard({
         }
       } else {
         for (const p of pixels) {
-          // @ts-ignore dynamic dispatch
           p[method]();
           if (!p.isIdle) {
             idle = false;
@@ -279,15 +289,28 @@ export default function PixelCard({
         cancelAnimationFrame(animationRef.current!);
       }
     },
-    [updateCanvasOpacity],
+    [updateCanvasOpacity, reducedMotion],
   );
 
   const startAnim = useCallback(
-    (m: keyof Pixel) => {
+    (m: PixelAnimation) => {
+      methodRef.current = m;
       cancelAnimationFrame(animationRef.current!);
+      if (!visibleRef.current || document.hidden || !canvasRef.current?.isConnected) return;
+      if (reducedMotion) {
+        const canvas = canvasRef.current;
+        const context = canvas?.getContext('2d');
+        if (!canvas || !context) return;
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        lastFillStyle = '';
+        if (m !== 'disappear') for (const pixel of pixelsRef.current) pixel.still();
+        canvas.style.opacity =
+          progressRef.current !== undefined && progressRef.current >= 1 ? '0' : '1';
+        return;
+      }
       animationRef.current = requestAnimationFrame(() => animate(m));
     },
-    [animate],
+    [animate, reducedMotion],
   );
 
   const initPixels = useCallback(() => {
@@ -324,6 +347,8 @@ export default function PixelCard({
 
     if (progressRef.current !== undefined) {
       startAnim('appearWithProgress');
+    } else if (methodRef.current) {
+      startAnim(methodRef.current);
     }
   }, [g, palette, s, randomness, reducedMotion, startAnim]);
 
@@ -337,12 +362,16 @@ export default function PixelCard({
   useEffect(() => {
     if (progress === undefined) {
       cancelAnimationFrame(animationRef.current!);
+      methodRef.current = undefined;
     }
   }, [progress]);
 
   useEffect(() => {
+    let disposed = false;
     initPixels();
-    const obs = new ResizeObserver(initPixels);
+    const obs = new ResizeObserver(() => {
+      if (!disposed) initPixels();
+    });
     if (containerRef.current) {
       obs.observe(containerRef.current);
     }
@@ -369,11 +398,40 @@ export default function PixelCard({
       attributeFilter: ['class', 'style'],
     });
     return () => {
+      disposed = true;
       obs.disconnect();
       themeObs.disconnect();
       cancelAnimationFrame(animationRef.current!);
     };
   }, [initPixels, palette]);
+
+  useEffect(() => {
+    let disposed = false;
+    const synchronize = () => {
+      if (disposed) return;
+      if (!visibleRef.current || document.hidden) {
+        cancelAnimationFrame(animationRef.current!);
+      } else if (methodRef.current) {
+        startAnim(methodRef.current);
+      }
+    };
+    const observer =
+      typeof IntersectionObserver === 'undefined'
+        ? undefined
+        : new IntersectionObserver(([entry]) => {
+            if (disposed) return;
+            visibleRef.current = entry?.isIntersecting ?? false;
+            synchronize();
+          });
+    if (containerRef.current) observer?.observe(containerRef.current);
+    document.addEventListener('visibilitychange', synchronize);
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+      document.removeEventListener('visibilitychange', synchronize);
+      cancelAnimationFrame(animationRef.current!);
+    };
+  }, [startAnim]);
 
   const hoverIn = () => progressRef.current === undefined && startAnim('appear');
   const hoverOut = () => progressRef.current === undefined && startAnim('disappear');

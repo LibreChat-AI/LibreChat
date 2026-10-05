@@ -1,3 +1,6 @@
 # Force LF line endings for shell scripts and git hooks (required for cross-platform compatibility)
 .husky/* text eol=lf
 *.sh text eol=lf
+
+# Unified patch context must preserve dependency whitespace verbatim.
+patches/*.patch text eol=lf -whitespace

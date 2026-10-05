@@ -1,5 +1,7 @@
 import {
   INSIGHTS_MAX_RANGE_DAYS,
+  INSIGHTS_PAGE_SIZE_MIN,
+  INSIGHTS_PAGE_SIZE_MAX,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
 } from 'librechat-data-provider';
@@ -14,10 +16,13 @@ import type {
 } from 'librechat-data-provider';
 import type { Model, PipelineStage } from 'mongoose';
 import type { IConversation, IMessage, IUser } from '~/types';
+import { getMediaInsights } from './insights/media';
 
 export type InsightsOptions = TInsightsParams & {
   tenantId?: string;
   agents?: TInsightsAgent[];
+  /** Set only after tenant-wide READ_INSIGHTS authorization. Agent ACLs do not imply this. */
+  includeMedia?: boolean;
 };
 
 export type InsightsResult = TInsightsResponse;
@@ -290,7 +295,14 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     const Message = mongoose.models.Message as Model<IMessage>;
     const User = mongoose.models.User as Model<IUser>;
     const page = Math.max(1, Math.floor(options.page ?? 1));
-    const pageSize = Math.min(50, Math.max(5, Math.floor(options.pageSize ?? 10)));
+    const pageSize = options.pageSize ?? 10;
+    if (
+      !Number.isInteger(pageSize) ||
+      pageSize < INSIGHTS_PAGE_SIZE_MIN ||
+      pageSize > INSIGHTS_PAGE_SIZE_MAX
+    ) {
+      throw new Error('Invalid Insights page size');
+    }
     const agentIds = [...new Set(options.agentIds ?? [])].sort((a, b) => a.localeCompare(b));
     const { from, to } = resolveRange(options);
     const timeZone = validTimeZone(options.timeZone);
@@ -358,6 +370,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       : conversationPipeline;
 
     const [
+      media,
       conversationDays,
       latestRows,
       searchedConversationCount,
@@ -367,6 +380,15 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
       topMessageUsers,
       churnedUserRows,
     ] = await Promise.all([
+      options.includeMedia
+        ? getMediaInsights(mongoose, {
+            tenantId: options.tenantId,
+            from,
+            to,
+            page: options.mediaPage ?? 1,
+            pageSize,
+          })
+        : Promise.resolve(undefined),
       Conversation.aggregate<ConversationDay>([
         ...conversationPipeline,
         {
@@ -609,6 +631,7 @@ export function createInsightsMethods(mongoose: typeof import('mongoose')): Insi
     );
 
     return {
+      ...(media ? { media } : {}),
       agents: options.agents ?? [],
       summary: {
         totalUsers: userCount[0]?.total ?? 0,

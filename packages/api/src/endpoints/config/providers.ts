@@ -3,13 +3,13 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
+import { getCustomEndpointConfig, findCustomEndpointConfig } from '~/app/config';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
 import { initializeCustom } from '../custom/initialize';
 import { initializeGoogle } from '../google/initialize';
 import { initializeOpenAI } from '../openai/initialize';
-import { getCustomEndpointConfig } from '~/app/config';
 
 /**
  * Type for initialize functions
@@ -160,39 +160,8 @@ export function getProviderConfig({
   if (isKnownCustomProvider(overrideProvider) && !customEndpointConfig) {
     customEndpointConfig = getCustomEndpointConfig({ endpoint: provider, appConfig });
     if (!customEndpointConfig && appConfig) {
-      /**
-       * Case-insensitive fallback for known custom providers only.
-       *
-       * The agent main flow looks up custom endpoints case-sensitively
-       * (case-preserving keys are how `loadCustomEndpointsConfig` lets
-       * users have e.g. `"OpenRouter"` and `"openrouter-staging"` as
-       * distinct entries). After it succeeds, `agent.provider` is
-       * normalized to the lowercase `Providers` enum value
-       * (e.g. `"openrouter"`). Downstream resolvers (summarization,
-       * title) re-enter `getProviderConfig` with that lowercase value,
-       * and the case-sensitive direct lookup misses configs whose
-       * `name` is camel-cased — the most common shape.
-       *
-       * Only fall back when the direct lookup already failed, so users
-       * with case-sensitive endpoint identity are unaffected — their
-       * exact-case match wins first. When multiple case-insensitive
-       * matches exist (e.g. both `OpenRouter` and `OPENROUTER`, neither
-       * lowercase), refuse to silently pick array-first; the caller's
-       * intent is ambiguous and either entry could route requests with
-       * different baseURL/apiKey.
-       */
-      const customEndpoints = appConfig.endpoints?.[EModelEndpoint.custom] ?? [];
-      const target = provider.toLowerCase();
-      const matches = customEndpoints.filter(
-        (endpointConfig) => (endpointConfig.name ?? '').toLowerCase() === target,
-      );
-      if (matches.length > 1) {
-        const names = matches.map((m) => m.name ?? '').join(', ');
-        throw new Error(
-          `Provider ${provider} is ambiguous: multiple custom endpoints match case-insensitively (${names}). Rename one or use the exact-case provider value.`,
-        );
-      }
-      customEndpointConfig = matches[0] && resolveCustomEndpointSecrets(matches[0]);
+      const matched = findCustomEndpointConfig(appConfig.endpoints, provider, true);
+      customEndpointConfig = matched && resolveCustomEndpointSecrets(matched);
     }
     if (!customEndpointConfig) {
       throw new Error(`Provider ${provider} not supported`);

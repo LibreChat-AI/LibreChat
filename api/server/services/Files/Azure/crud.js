@@ -1,13 +1,14 @@
 const fs = require('fs');
-const path = require('path');
 const mime = require('mime');
+const path = require('path');
 const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
   assertRemoteFileURL,
-  getSafeErrorMetadata,
   getAzureContainerClient,
+  createAzureFileStream,
+  createAzureStreamStorage,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
@@ -141,64 +142,15 @@ async function deleteFileFromAzure(req, file) {
   }
 }
 
-/**
- * Streams a file from disk directly to Azure Blob Storage without loading
- * the entire file into memory.
- *
- * @param {Object} params
- * @param {string} params.userId - The user's id.
- * @param {string} params.filePath - The local file path to upload.
- * @param {string} params.fileName - The name of the file in Azure.
- * @param {string} [params.basePath='images'] - The base folder within the container.
- * @param {string} [params.containerName] - The Azure Blob container name.
- * @returns {Promise<string>} The URL of the uploaded blob.
- */
-async function streamFileToAzure({
-  userId,
-  filePath,
-  fileName,
-  basePath = defaultBasePath,
-  containerName,
-}) {
-  try {
-    const containerClient = await getAzureContainerClient(containerName);
-    const access = AZURE_STORAGE_PUBLIC_ACCESS?.toLowerCase() === 'true' ? 'blob' : undefined;
-
-    // Create the container if it doesn't exist
-    await containerClient.createIfNotExists({ access });
-
-    const blobPath = `${basePath}/${userId}/${fileName}`;
-    const blockBlobClient = containerClient.getBlockBlobClient(blobPath);
-
-    // Get file size for proper content length
-    const stats = await fs.promises.stat(filePath);
-
-    // Create read stream from the file
-    const fileStream = fs.createReadStream(filePath);
-
-    const blobContentType = mime.getType(fileName);
-    await blockBlobClient.uploadStream(
-      fileStream,
-      undefined, // Use default concurrency (5)
-      undefined, // Use default buffer size (8MB)
-      {
-        blobHTTPHeaders: {
-          blobContentType,
-        },
-        onProgress: (progress) => {
-          logger.debug(
-            `[streamFileToAzure] Upload progress: ${progress.loadedBytes} bytes of ${stats.size}`,
-          );
-        },
-      },
-    );
-
-    return blockBlobClient.url;
-  } catch (error) {
-    logger.error('[streamFileToAzure] Error streaming file:', error);
-    throw error;
-  }
-}
+const {
+  planFile: planAzureFile,
+  saveStream: saveStreamToAzure,
+  streamFile: streamFileToAzure,
+} = createAzureStreamStorage({
+  getContainerClient: getAzureContainerClient,
+  getContentType: mime.getType,
+  publicAccess: AZURE_STORAGE_PUBLIC_ACCESS,
+});
 
 /**
  * Uploads a file from the local file system to Azure Blob Storage.
@@ -243,57 +195,11 @@ async function uploadFileToAzure({
   }
 }
 
-/**
- * Retrieves a readable stream for a blob from Azure Blob Storage.
- *
- * @param {object} _req - The Express request object.
- * @param {string} fileURL - The URL of the blob.
- * @returns {Promise<ReadableStream>} A readable stream of the blob.
- */
-async function getAzureFileStream(_req, fileURL, { signal } = {}) {
-  try {
-    const url = new URL(fileURL);
-    const configuredClient = await getAzureContainerClient();
-    const configuredURL = configuredClient.url ? new URL(configuredClient.url) : undefined;
-    const configuredPrefix = configuredURL?.pathname.replace(/\/$/, '');
-    let containerClient = configuredClient;
-    let blobPath;
-
-    if (
-      configuredURL &&
-      configuredPrefix &&
-      url.origin === configuredURL.origin &&
-      url.pathname.startsWith(`${configuredPrefix}/`)
-    ) {
-      /* Azurite puts the account name before the container in the path. The configured
-       * container URL already includes both, so resolve the blob relative to it. */
-      blobPath = url.pathname.slice(configuredPrefix.length + 1);
-    } else {
-      const pathSegments = url.pathname.split('/').filter(Boolean);
-      const containerName = pathSegments.shift();
-      blobPath = pathSegments.join('/');
-      if (containerName) {
-        containerClient = await getAzureContainerClient(decodeURIComponent(containerName));
-      }
-    }
-    blobPath = blobPath?.split('/').map(decodeURIComponent).join('/');
-    if (!blobPath) {
-      throw new Error('Invalid Azure Blob URL');
-    }
-    const response = await containerClient.getBlockBlobClient(blobPath).download(0, undefined, {
-      abortSignal: signal,
-    });
-    if (!response.readableStreamBody) {
-      throw new Error('Azure Blob download returned no readable stream');
-    }
-    return response.readableStreamBody;
-  } catch (error) {
-    logger.error('[getAzureFileStream] Error getting blob stream:', getSafeErrorMetadata(error));
-    throw error;
-  }
-}
+const getAzureFileStream = createAzureFileStream({ getContainerClient: getAzureContainerClient });
 
 module.exports = {
+  planAzureFile,
+  saveStreamToAzure,
   saveBufferToAzure,
   saveURLToAzure,
   getAzureURL,

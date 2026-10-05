@@ -14,6 +14,7 @@ import type { ServerRequest } from '~/types';
 import { agentManagementListSchema, mapAgentManagementError } from '../agents/management';
 import { isContentFilterError } from '../middleware/contentFilter';
 import { checkAccessWithRequestCache } from '../middleware/access';
+import { admitRequestMiddleware } from '../middleware/admission';
 import { assertSkillFileContentAllowed } from './protection';
 import { getDeploymentSkillById } from './deployment';
 import { resolveSkillFilePathParam } from './path';
@@ -179,33 +180,6 @@ async function runHandler(
   return sent ? res : sendError(res, 'internal_error');
 }
 
-/** Wait for limiter admission or a terminal response; release listeners on every outcome. */
-async function admitFileWrite(req: Request, res: Response, limiters: RequestHandler[]) {
-  for (const limiter of limiters) {
-    const admitted = await new Promise<boolean>((resolve, reject) => {
-      const finish = () => settle(false);
-      const settle = (allowed: boolean, error?: unknown) => {
-        res.off('finish', finish);
-        res.off('close', finish);
-        if (error) reject(error);
-        else resolve(allowed);
-      };
-      if (res.writableEnded || res.destroyed) return settle(false);
-      res.once('finish', finish);
-      res.once('close', finish);
-      try {
-        Promise.resolve(limiter(req, res, (error) => settle(!error, error))).catch((error) =>
-          settle(false, error),
-        );
-      } catch (error) {
-        settle(false, error);
-      }
-    });
-    if (!admitted) return false;
-  }
-  return !res.writableEnded && !res.destroyed;
-}
-
 /** Machine API adapters reuse the browser Skills behavior after principal and resource checks. */
 export function createSkillManagementHandlers(
   deps: SkillManagementDeps,
@@ -361,7 +335,7 @@ export function createSkillManagementHandlers(
         if (!isContentFilterError(error)) throw error;
         return sendError(res, 'invalid_request');
       }
-      if (!(await admitFileWrite(req, res, deps.fileWriteLimiters ?? []))) return res;
+      if (!(await admitRequestMiddleware(req, res, deps.fileWriteLimiters ?? []))) return res;
       try {
         const result = await deps.saveFile({
           req: req as ServerRequest,

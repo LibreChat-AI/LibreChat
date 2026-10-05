@@ -54,15 +54,19 @@ export function getNativeCopyInspectionTokens(
   return tokens;
 }
 
+type BulkSaveOptions = NonNullable<Parameters<MessageMethods['bulkSaveMessages']>[2]>;
+
 /** No extra metadata or persistence work for ordinary imports. */
 export function saveNativeCopyMessages(
   save: MessageMethods['bulkSaveMessages'],
   messages: Parameters<MessageMethods['bulkSaveMessages']>[0],
+  options?: Omit<BulkSaveOptions, 'privateTextTokens'>,
 ): Promise<unknown> {
   const provenance = getNativeCopyProvenance(messages);
-  return provenance.privateTextTokens.size > 0
-    ? save(messages, true, provenance)
-    : save(messages, true);
+  if (provenance.privateTextTokens.size > 0) {
+    return save(messages, true, { ...options, ...provenance });
+  }
+  return options ? save(messages, true, options) : save(messages, true);
 }
 
 export function transferNativeCopyProvenance<T extends object>(source: object, target: T): T {

@@ -1,8 +1,10 @@
 import mongoose, { Schema } from 'mongoose';
 import { FileContext, FileSources } from 'librechat-data-provider';
 import type { RunFileProvenance } from 'librechat-data-provider';
+import type { Query } from 'mongoose';
 import type { IMongoFile } from '~/types';
 import { codeEnvRefMapSchema, codeEnvRefSchema } from './codeEnvRef';
+import { MEDIA_FILE_ID_PREFIX } from '~/types/media';
 
 const runFileProvenanceSchema = new Schema<RunFileProvenance>(
   {
@@ -62,6 +64,27 @@ const file: Schema<IMongoFile> = new Schema(
     storageRegion: {
       type: String,
     },
+    mediaOutputKey: { type: String, immutable: true },
+    mediaRendition: { type: String, immutable: true },
+    mediaContentDigest: { type: String, immutable: true },
+    mediaRenditions: { type: Schema.Types.Mixed, immutable: true },
+    mediaRenditionLocations: { type: [Schema.Types.Mixed], immutable: true, default: undefined },
+    mediaLifecycle: { type: String, enum: ['live', 'retiring', 'retired'] },
+    mediaEpoch: Number,
+    mediaRetainers: { type: [String], default: undefined },
+    mediaConsumerClaims: {
+      type: [
+        { token: String, conversationId: String, presetId: String, expiresAt: Date, _id: false },
+      ],
+      default: undefined,
+    },
+    mediaConsumerRevision: Number,
+    mediaConsumerReconcileAt: Date,
+    mediaUseUntil: Date,
+    mediaDeletionToken: String,
+    mediaUnlinkedBy: String,
+    mediaHardExpiresAt: { type: Date, immutable: true },
+    durationSeconds: Number,
     object: {
       type: String,
       required: true,
@@ -221,6 +244,31 @@ const file: Schema<IMongoFile> = new Schema(
 
 file.index({ expiredAt: 1 });
 file.index(
+  { tenantId: 1, user: 1, mediaOutputKey: 1, mediaRendition: 1 },
+  {
+    name: 'media_output_identity',
+    unique: true,
+    partialFilterExpression: { mediaOutputKey: { $exists: true } },
+  },
+);
+file.index(
+  { tenantId: 1, user: 1, file_id: 1 },
+  {
+    name: 'media_file_identity',
+    unique: true,
+    partialFilterExpression: { mediaOutputKey: { $exists: true } },
+  },
+);
+file.index(
+  { tenantId: 1, user: 1, mediaLifecycle: 1, file_id: 1 },
+  {
+    name: 'media_retirement_sweep',
+    partialFilterExpression: { mediaOutputKey: { $exists: true } },
+  },
+);
+file.index({ mediaLifecycle: 1, expiredAt: 1, deletionRetryAt: 1 });
+file.index({ mediaLifecycle: 1, mediaConsumerReconcileAt: 1, user: 1, tenantId: 1, file_id: 1 });
+file.index(
   { user: 1, tenantId: 1, context: 1, _id: -1 },
   { name: 'project_file_picker', partialFilterExpression: { embedded: true } },
 );
@@ -245,5 +293,110 @@ file.index(
     partialFilterExpression: { context: FileContext.run_artifact },
   },
 );
+
+/** Legacy mutable-file writers cannot replace an original's byte or storage identity.
+ * Media publication uses insert-only updates; lifecycle writes touch separate fields. */
+const mediaOriginalFields = new Set([
+  'bytes',
+  'filename',
+  'filepath',
+  'storageKey',
+  'storageRegion',
+  'source',
+  'type',
+  'user',
+  'tenantId',
+  'file_id',
+  'mediaOutputKey',
+  'mediaRendition',
+  'mediaContentDigest',
+  'mediaHardExpiresAt',
+  'expiresAt',
+  'width',
+  'height',
+  'durationSeconds',
+]);
+function guardMediaOriginal(this: Query<unknown, IMongoFile>): void {
+  const update = this.getUpdate();
+  if (!update) {
+    return;
+  }
+  if (Array.isArray(update)) {
+    const safe = update.every((stage) =>
+      Object.entries(stage).every(
+        ([operator, fields]) =>
+          ['$set', '$addFields', '$unset'].includes(operator) &&
+          fields &&
+          typeof fields === 'object' &&
+          Object.keys(fields).every((path) => !mediaOriginalFields.has(path.split('.')[0])),
+      ),
+    );
+    if (!safe) {
+      this.where({ mediaOutputKey: { $exists: false } });
+    }
+    return;
+  }
+  const requestedId: unknown = this.getFilter().file_id;
+  if (
+    this.getOptions().upsert &&
+    typeof requestedId === 'string' &&
+    requestedId.startsWith(MEDIA_FILE_ID_PREFIX)
+  ) {
+    throw new Error('Media file identities must be published through the immutable media protocol');
+  }
+  /** Removing the upload TTL is a lifecycle write; only attaching one can harm an original. */
+  const touched = Object.entries(update).flatMap(([key, value]) => {
+    if (key === '$setOnInsert') {
+      return [];
+    }
+    if (key === '$unset' && value && typeof value === 'object') {
+      return Object.keys(value).filter((path) => path !== 'expiresAt');
+    }
+    if (key.startsWith('$') && value && typeof value === 'object') {
+      return Object.keys(value);
+    }
+    return [key];
+  });
+  if (touched.some((path) => mediaOriginalFields.has(path.split('.')[0]))) {
+    this.where({ mediaOutputKey: { $exists: false } });
+  }
+}
+file.pre('findOneAndUpdate', guardMediaOriginal);
+file.pre('updateOne', guardMediaOriginal);
+file.pre('updateMany', guardMediaOriginal);
+file.pre('replaceOne', guardMediaOriginal);
+file.pre('findOneAndReplace', guardMediaOriginal);
+file.pre('save', function () {
+  if (this.file_id?.startsWith(MEDIA_FILE_ID_PREFIX) && !this.mediaOutputKey) {
+    throw new Error('Media file identities require immutable media provenance');
+  }
+  if (
+    !this.isNew &&
+    this.mediaOutputKey &&
+    [...mediaOriginalFields].some((path) => this.isModified(path))
+  ) {
+    throw new Error('Media originals have immutable content; publish a new file identity');
+  }
+});
+for (const hook of ['deleteOne', 'deleteMany', 'findOneAndDelete'] as const) {
+  file.pre(hook, function () {
+    if (this.getOptions().mediaRetirement === true) {
+      const filter = this.getFilter();
+      const exactOwner =
+        (typeof filter.user === 'string' && filter.user.length > 0) ||
+        filter.user instanceof mongoose.Types.ObjectId;
+      const exactTenant =
+        filter.tenantId === null ||
+        (typeof filter.tenantId === 'string' && filter.tenantId.length > 0);
+      if (filter.mediaLifecycle !== 'retired' || !exactOwner || !exactTenant) {
+        throw new Error(
+          'Media retirement deletion requires a retired, owner-and-tenant-scoped filter',
+        );
+      }
+      return;
+    }
+    this.where({ mediaOutputKey: { $exists: false } });
+  });
+}
 
 export default file;

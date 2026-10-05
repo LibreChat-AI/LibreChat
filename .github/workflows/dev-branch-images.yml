@@ -13,6 +13,7 @@ on:
       - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'patches/*.patch'
       - 'Dockerfile'
       - 'Dockerfile.multi'
       - '.dockerignore'

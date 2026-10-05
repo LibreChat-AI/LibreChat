@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ZodError } from 'zod';
 import type { TEndpointsConfig, TModelsConfig, TConfig } from './types';
+import type { MediaStartupConfig } from './media/responses';
 import {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -59,11 +60,15 @@ import {
 import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
+import { mediaConfigSchema } from './media/config';
 import { fileConfigSchema } from './file-config';
+import { fileStorageSchema } from './storage';
 import { isActionTool } from './types/tools';
 import { apiBaseUrl } from './api-endpoints';
 import { FileSources } from './types/files';
 import { MCPServersSchema } from './mcp';
+export { fileStorageSchema } from './storage';
+export type { FileStorage } from './storage';
 export {
   MAX_SUBAGENTS,
   MAX_SUBAGENTS_CEILING,
@@ -101,7 +106,8 @@ export function isTwoFactorPolicyProvider(provider: string | null | undefined): 
 /** How long a started social login may take to return to its callback before its `state` expires. */
 export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox'] as const;
+/** Filters enforce security; media owns credential-bearing integrations and process-wide worker/capacity policy. Use interface.media for per-role access. */
+export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox', 'media'] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -317,19 +323,6 @@ const allowedAddressEntrySchema = z
   );
 
 export const allowedAddressesSchema = z.array(allowedAddressEntrySchema).optional();
-
-/** Storage backend strategies only — use for config fields that set where files are stored. */
-const FILE_STORAGE_BACKENDS = [
-  FileSources.local,
-  FileSources.firebase,
-  FileSources.s3,
-  FileSources.azure_blob,
-  FileSources.cloudfront,
-] as const satisfies ReadonlyArray<FileSources>;
-
-export const fileStorageSchema = z.enum(FILE_STORAGE_BACKENDS);
-
-export type FileStorage = z.infer<typeof fileStorageSchema>;
 
 export const fileStrategiesSchema = z
   .object({
@@ -2004,6 +1997,9 @@ export const endpointSchema = baseEndpointSchema.merge(
           context: z.number(),
           cacheRead: z.number().optional(),
           cacheWrite: z.number().optional(),
+          /** Image input rates in USD per million tokens; prompt/cacheRead price text input. */
+          imagePrompt: z.number().nonnegative().optional(),
+          imageCacheRead: z.number().nonnegative().optional(),
         }),
       )
       .optional(),
@@ -2691,6 +2687,17 @@ export const interfaceSchema = z
         }),
       ])
       .optional(),
+    media: z
+      .union([
+        z.boolean(),
+        z
+          .object({
+            use: z.boolean().optional(),
+            create: z.boolean().optional(),
+          })
+          .strict(),
+      ])
+      .optional(),
     /**
      * What the reply-alert capabilities may do on this deployment. Each field gates a
      * capability rather than setting it: the preferences themselves stay per device, because
@@ -3060,6 +3067,7 @@ export function supportsConversationTitleOwnership(config?: {
 export type TStartupConfig = {
   conversationTitleOwnershipVersion?: typeof CONVERSATION_TITLE_OWNERSHIP_VERSION;
   appTitle: string;
+  media?: MediaStartupConfig;
   socialLogins?: string[];
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
@@ -3897,6 +3905,7 @@ export const configSchema = z.object({
     })
     .optional(),
   interface: interfaceSchema,
+  media: mediaConfigSchema.optional(),
   turnstile: turnstileSchema.optional(),
   /** Maximum rows an explicitly limited GET /files request may return. */
   fileListLimit: z.number().int().positive().default(100),
@@ -4458,6 +4467,7 @@ export enum CacheKeys {
    * Key for the model queries cache.
    */
   MODEL_QUERIES = 'MODEL_QUERIES',
+  MEDIA_CATALOG = 'MEDIA_CATALOG',
   /**
    * Key for the default startup config cache.
    */

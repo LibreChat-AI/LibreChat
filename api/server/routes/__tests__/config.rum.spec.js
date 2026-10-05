@@ -13,6 +13,10 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
   hasCapability: jest.fn(),
 }));
 
+jest.mock('~/models', () => ({
+  getRoleByName: jest.fn().mockResolvedValue(null),
+}));
+
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   getTenantId: jest.fn(() => undefined),

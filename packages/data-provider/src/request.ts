@@ -19,9 +19,10 @@ async function _getResponse<T = unknown>(
   return await axios.get<T>(url, { ...options });
 }
 
-async function _post(url: string, data?: any) {
+async function _post(url: string, data?: any, options?: AxiosRequestConfig) {
   const response = await axios.post(url, JSON.stringify(data), {
-    headers: { 'Content-Type': 'application/json' },
+    ...options,
+    headers: { ...options?.headers, 'Content-Type': 'application/json' },
   });
   return response.data;
 }

@@ -7,8 +7,11 @@ import {
   isTwoFactorPolicyProvider,
 } from 'librechat-data-provider';
 import type { SettingsContextValue } from './types';
-import useProviderKeys from '../SettingsTabs/ProviderKeys/useProviderKeys';
-import { useHasAccess, useAuthContext, useGetAgentsConfig } from '~/hooks';
+import useProviderKeys, {
+  useMediaProviderKeyConfig,
+} from '../SettingsTabs/ProviderKeys/useProviderKeys';
+import { useHasAccess, useAuthContext, useGetAgentsConfig, useMediaAccess } from '~/hooks';
+import { useMediaRecoveryAccess } from '~/hooks/Media/useMediaRecoveryAccess';
 import usePersonalizationAccess from '~/hooks/usePersonalizationAccess';
 import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
@@ -57,7 +60,11 @@ export function useSettingsContext(): SettingsContextValue {
   const hasMultiConvoBool = hasMultiConvo === true;
   const hasPromptsBool = hasPrompts === true;
   const engineTTS = useRecoilValue<string>(store.engineTTS);
-  const hasUserProvidedEndpoints = useProviderKeys().length > 0;
+  const chatProviderKeys = useProviderKeys();
+  const mediaProviderKeyConfig = useMediaProviderKeyConfig();
+  const { studio: hasMediaStudio } = useMediaAccess();
+  const { canRead: canReadMediaRecovery } = useMediaRecoveryAccess();
+  const hasUserProvidedEndpoints = chatProviderKeys.length > 0 || !!mediaProviderKeyConfig;
   const hasStatefulCodeSessions =
     agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) ?? false;
 
@@ -67,6 +74,8 @@ export function useSettingsContext(): SettingsContextValue {
       hasAnyPersonalizationFeature,
       hasMemoryOptOut,
       hasStatefulCodeSessions,
+      hasMediaStudio,
+      canReadMediaRecovery,
       hasRemoteAgents: hasRemoteAgentsBool,
       hasUserProvidedEndpoints,
       hasMultiConvo: hasMultiConvoBool,
@@ -91,6 +100,8 @@ export function useSettingsContext(): SettingsContextValue {
       hasAnyPersonalizationFeature,
       hasMemoryOptOut,
       hasStatefulCodeSessions,
+      hasMediaStudio,
+      canReadMediaRecovery,
       hasRemoteAgentsBool,
       hasUserProvidedEndpoints,
       hasMultiConvoBool,

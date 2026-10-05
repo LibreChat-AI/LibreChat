@@ -1,4 +1,5 @@
 const sharp = require('sharp');
+const { cleanFileName, getContentDisposition } = require('@librechat/api');
 
 /**
  * Determines the file type of a buffer
@@ -42,49 +43,6 @@ const getBufferMetadata = async (buffer) => {
     dimensions,
     extension,
   };
-};
-
-/**
- * Removes UUID prefix from filename for clean display
- * Pattern: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx__filename.ext
- * @param {string} fileName - The filename to clean
- * @returns {string} - The cleaned filename without UUID prefix
- */
-const cleanFileName = (fileName) => {
-  if (!fileName) {
-    return fileName;
-  }
-
-  // Remove UUID pattern: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx__
-  const cleaned = fileName.replace(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}__/i,
-    '',
-  );
-
-  return cleaned;
-};
-
-const encodeRFC5987ValueChars = (value) =>
-  encodeURIComponent(value).replace(
-    /['()*]/g,
-    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-
-const getAsciiFilenameFallback = (fileName) => {
-  const fallback = fileName
-    .normalize('NFKD')
-    .replace(/[^\x20-\x7e]/g, '_')
-    .replace(/["\\\r\n]/g, '_');
-
-  return fallback || 'download';
-};
-
-const getContentDisposition = (fileName, disposition = 'attachment') => {
-  const cleanedFilename = cleanFileName(fileName) || 'download';
-  const asciiFallback = getAsciiFilenameFallback(cleanedFilename);
-  const encodedFilename = encodeRFC5987ValueChars(cleanedFilename);
-
-  return `${disposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodedFilename}`;
 };
 
 module.exports = {

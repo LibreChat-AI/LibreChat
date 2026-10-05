@@ -20,6 +20,9 @@ const {
 const {
   sendEvent,
   computeUsageCostUSD,
+  collectModelUsage,
+  collectMediaToolAttachments,
+  withModelUsageType,
   GenerationJobManager,
   waitForGenerationSettled,
   writeAttachmentEvent,
@@ -155,20 +158,19 @@ class ModelEndHandler {
       if (!usage) {
         return;
       }
-      let taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
-      /** Hidden intermediate sequential-agent calls are billed but never shown.
-       *  Tag them non-primary on the COLLECTED usage too (not just the emit) so
-       *  recordCollectedUsage excludes their output from the parent's tokenCount
-       *  and the client folds them into cost/totals only — not the live gauge. */
-      if (
-        taggedUsage.usage_type == null &&
-        !checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node) &&
-        metadata?.hide_sequential_outputs === true
-      ) {
-        taggedUsage = { ...taggedUsage, usage_type: 'sequential' };
-      }
+      const taggedUsage = withModelUsageType(
+        contextualizeModelUsage(usage, metadata, agentContext),
+        {
+          hideSequentialOutputs: metadata?.hide_sequential_outputs,
+          isLastAgent: checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node),
+        },
+      );
 
-      this.collectedUsage.push(taggedUsage);
+      collectModelUsage(
+        this.collectedUsage,
+        taggedUsage,
+        data.output.additional_kwargs?.native_media_model_run_id,
+      );
 
       if (this.emitUsage) {
         /** Normalize Anthropic/Bedrock top-level and OpenAI GPT-5.6
@@ -981,6 +983,16 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
       return;
     }
 
+    artifactPromises.push(
+      ...collectMediaToolAttachments({
+        output,
+        metadata,
+        response: res,
+        streamId,
+        emit: (attachment) => writeAttachment(res, streamId, attachment, jobCreatedAt),
+      }),
+    );
+
     if (output.artifact[Tools.file_search]) {
       artifactPromises.push(
         (async () => {
@@ -1353,6 +1365,21 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
     if (!output.artifact) {
       return;
     }
+
+    artifactPromises.push(
+      ...collectMediaToolAttachments({
+        output,
+        metadata,
+        response: res,
+        emit: (attachment) =>
+          writeResponsesAttachment(
+            res,
+            tracker,
+            buildResponsesAttachment(attachment, output.tool_call_id),
+            metadata,
+          ),
+      }),
+    );
 
     if (output.artifact[Tools.file_search]) {
       artifactPromises.push(

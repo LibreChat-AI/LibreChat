@@ -8,6 +8,7 @@ import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuati
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
+  if (metadata.nativeSignatures) patch.nativeSignatures = metadata.nativeSignatures;
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }

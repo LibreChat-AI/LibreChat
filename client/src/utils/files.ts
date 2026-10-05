@@ -266,41 +266,61 @@ export const invalidateRecentFiles = (queryClient: QueryClient): void => {
  * Adds a file to the query cache
  */
 export function addFileToCache(queryClient: QueryClient, newfile: TFile) {
-  /* Ahead of the early returns below: the full list may not be cached at all
-     while the palette's recent list is, and that list still has to learn about
-     the new file. */
-  invalidateRecentFiles(queryClient);
-  const currentFiles = queryClient.getQueryData<TFile[]>([QueryKeys.files]);
-
-  if (!currentFiles) {
-    console.warn('No current files found in cache, skipped updating file query cache');
-    return;
-  }
-
-  const fileIndex = currentFiles.findIndex((file) => file.file_id === newfile.file_id);
-
-  if (fileIndex > -1) {
-    console.warn('File already exists in cache, skipped updating file query cache');
-    return;
-  }
-
-  queryClient.setQueryData<TFile[]>(
-    [QueryKeys.files],
-    [
-      {
-        ...newfile,
-      },
-      ...currentFiles,
-    ],
-  );
+  addFilesToCache(queryClient, [newfile]);
 }
 
-export function formatBytes(bytes: number, decimals = 2) {
+/**
+ * A file that arrives before the Files list has loaded is cached so it can render at once, but
+ * the seeded list is provisional (`updatedAt: 0`) so the next observer still loads every file.
+ */
+export function addFilesToCache(queryClient: QueryClient, files: TFile[]) {
+  if (!files.length) return;
+  /* The palette's recent list is cached apart from the full list, which may not be loaded
+     at all, and it still has to learn about the new files. */
+  invalidateRecentFiles(queryClient);
+  const loaded = !!queryClient.getQueryState([QueryKeys.files])?.dataUpdatedAt;
+  queryClient.setQueryData<TFile[]>(
+    [QueryKeys.files],
+    (previous = []) => {
+      const existing = new Map(previous.map((file) => [file.file_id, file]));
+      const added = new Map<string, TFile>();
+      for (const file of files) {
+        const target = existing.has(file.file_id) ? existing : added;
+        target.set(file.file_id, { ...target.get(file.file_id), ...file });
+      }
+      return [...added.values(), ...existing.values()];
+    },
+    loaded ? undefined : { updatedAt: 0 },
+  );
+  if (!loaded) {
+    queryClient.invalidateQueries({ queryKey: [QueryKeys.files], exact: true });
+  }
+}
+
+export function formatBytes(bytes: number, decimals?: number): number;
+export function formatBytes(bytes: number, locale: string): string;
+export function formatBytes(bytes: number, decimalsOrLocale: number | string = 2): number | string {
+  if (typeof decimalsOrLocale === 'string') {
+    let unit = 'byte';
+    let divisor = 1;
+    if (bytes >= 1000000) {
+      unit = 'megabyte';
+      divisor = 1000000;
+    } else if (bytes >= 1000) {
+      unit = 'kilobyte';
+      divisor = 1000;
+    }
+    return new Intl.NumberFormat(decimalsOrLocale, {
+      style: 'unit',
+      unit,
+      maximumFractionDigits: 1,
+    }).format(bytes / divisor);
+  }
   if (bytes === 0) {
     return 0;
   }
   const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
+  const dm = decimalsOrLocale < 0 ? 0 : decimalsOrLocale;
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm));
 }
@@ -319,7 +339,7 @@ export function formatFileSize(bytes: number): string {
 const { checkType } = defaultFileConfig;
 
 type FileSizeValidationParams = {
-  fileList: File[];
+  fileList: Pick<File, 'size'>[];
   files: Map<string, ExtendedFile>;
   setError: (error: string) => void;
   endpointFileConfig: EndpointFileConfig;

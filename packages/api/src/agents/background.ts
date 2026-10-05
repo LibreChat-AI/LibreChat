@@ -143,6 +143,8 @@ export const CHECK_BACKGROUND_TASK_NAME: string = Constants.CHECK_BACKGROUND_TAS
  * back into the run's shared code session on poll.
  */
 const EXCLUDED_BACKGROUND_TOOL_NAMES: ReadonlySet<string> = new Set<string>([
+  'media_generate',
+  'media_status',
   AgentConstants.READ_FILE,
   AgentConstants.SKILL_TOOL,
   AgentConstants.TOOL_SEARCH,

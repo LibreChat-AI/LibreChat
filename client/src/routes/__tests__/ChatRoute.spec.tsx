@@ -24,6 +24,7 @@ jest.mock('recoil', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
+    isSubmittingFamily: () => ({}),
     useCreateConversationAtom: () => ({
       conversation: mockConversation,
       hasSetConversation: mockHasSetConversation,
@@ -43,6 +44,7 @@ jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: () => ({ data: mockConfig }),
   useListAgentsQuery: () => ({}),
   useProjectQuery: () => ({}),
+  useGetMessagesByConvoId: () => ({ isLoading: false, isFetching: false }),
   useGetConvoIdQuery: (id: string, options: { enabled: boolean }) => {
     const { useQuery: query } = jest.requireActual('@tanstack/react-query');
     return query(['conversation', id], () => mockFetchConversation(id), {

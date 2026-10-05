@@ -59,6 +59,8 @@ export type ToolCallsStepDetails = {
 };
 
 export type ImageFile = TFile & {
+  /** Portable transcripts retain an explicit placeholder instead of an owner-bound image. */
+  unavailable?: 'not_transferred';
   /**
    * The [File](https://platform.openai.com/docs/api-reference/files) ID of the image
    * in the message content.

@@ -85,6 +85,7 @@ import SendButton from './SendButton';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
 import Bar from './Composer/Bar';
+import ChatMedia from '../Media';
 import Mention from './Mention';
 import store from '~/store';
 
@@ -193,6 +194,8 @@ const ChatForm = memo(function ChatForm({
   const composerBoxRef = useRef<HTMLDivElement>(null);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const openMedia = useCallback(() => setMediaOpen(true), []);
   const remScale = useRemScale();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -1037,8 +1040,20 @@ const ChatForm = memo(function ChatForm({
                   }
                   actionSlot={actionSlot}
                   hasAddedConversation={addedConvo != null}
+                  onCreateMedia={index === 0 && !isTemporary ? openMedia : undefined}
                 />
                 <ToolDialogs />
+                {index === 0 && (
+                  <ChatMedia
+                    open={mediaOpen}
+                    onOpenChange={setMediaOpen}
+                    conversation={conversation}
+                    files={files}
+                    setFiles={setFiles}
+                    disabled={disableInputs}
+                    temporary={isTemporary}
+                  />
+                )}
               </BadgeRowProvider>
               {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
             </div>

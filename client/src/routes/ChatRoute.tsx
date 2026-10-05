@@ -27,6 +27,7 @@ import {
   useGetConvoIdQuery,
   useGetStartupConfig,
   useGetEndpointsQuery,
+  useGetMessagesByConvoId,
   useListAgentsQuery,
   useProjectQuery,
 } from '~/data-provider';
@@ -61,6 +62,7 @@ export default function ChatRoute() {
     [],
   );
   const index = 0;
+  const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
   const [searchParams, setSearchParams] = useSearchParams();
   const { conversationId = '' } = useParams();
   const projectIdParam = searchParams.get('projectId');
@@ -143,6 +145,17 @@ export default function ChatRoute() {
       conversationId !== Constants.NEW_CONVO &&
       (!hasSetConversation.current || routeState.pending),
   });
+  // Start history alongside metadata. Only loading state reaches the route; streamed
+  // message updates stay in ChatView's cache subscription.
+  const messagesQuery = useGetMessagesByConvoId(
+    conversationId,
+    {
+      enabled: isAuthenticated && !!conversationId && conversationId !== Constants.SEARCH,
+      refetchOnMount: true,
+      notifyOnChangeProps: ['isLoading', 'isFetching'],
+    },
+    { isStreaming: isSubmitting },
+  );
   const endpointsQuery = useGetEndpointsQuery({ enabled: isAuthenticated });
   const assistantListMap = useAssistantListMap();
   /** The map comes from Root's shared context (one mapping pass app-wide); the
@@ -386,6 +399,7 @@ export default function ChatRoute() {
         <ChatView
           index={index}
           project={verifiedChatProjectId ? projectQuery.data : undefined}
+          messagesReady={!messagesQuery.isLoading && !messagesQuery.isFetching}
           routePending={routeState.pending}
         />
       </div>

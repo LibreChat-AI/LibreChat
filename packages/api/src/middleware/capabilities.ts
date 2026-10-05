@@ -62,7 +62,7 @@ export type HasCapabilityFn = (
 
 export type RequireCapabilityFn = (
   capability: SystemCapability,
-  options?: { platformOnly?: boolean },
+  options?: { platformOnly?: boolean; onDenied?: (req: ServerRequest) => Promise<void> },
 ) => (req: ServerRequest, res: Response, next: NextFunction) => Promise<void>;
 
 export type HasConfigCapabilityFn = (
@@ -274,7 +274,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
 
   function requireCapability(
     capability: SystemCapability,
-    { platformOnly = false }: { platformOnly?: boolean } = {},
+    { platformOnly = false, onDenied }: NonNullable<Parameters<RequireCapabilityFn>[1]> = {},
   ) {
     return async (req: ServerRequest, res: Response, next: NextFunction) => {
       try {
@@ -305,6 +305,7 @@ export function generateCapabilityCheck(deps: CapabilityDeps): {
           `missing-capability:${id}:${capability}`,
           `[requireCapability] Forbidden: user ${id} missing capability '${capability}'`,
         );
+        await onDenied?.(req);
         res.status(403).json({ message: 'Forbidden' });
       } catch (err) {
         logger.error(`[requireCapability] Error checking capability: ${capability}`, err);

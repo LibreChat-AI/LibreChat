@@ -43,6 +43,8 @@ export interface SettingsContextValue {
   hasAnyPersonalizationFeature: boolean;
   hasMemoryOptOut: boolean;
   hasStatefulCodeSessions: boolean;
+  hasMediaStudio: boolean;
+  canReadMediaRecovery: boolean;
   hasRemoteAgents: boolean;
   hasUserProvidedEndpoints: boolean;
   hasMultiConvo: boolean;

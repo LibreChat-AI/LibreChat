@@ -1,4 +1,5 @@
 import type { DeleteFilesResponse } from 'librechat-data-provider';
+import type { Response } from 'express';
 
 /** What a delete pass reports back about the records it was given. */
 export type FileDeletionOutcome = {
@@ -197,3 +198,29 @@ export const deleteAgentResourceFiles = async <TFile>(
     destroyedFileIds: outcome?.deletedFileIds ?? [],
   };
 };
+
+/** Owns response shaping and record normalization after the host authorizes an agent edit. */
+export async function handleAgentResourceFileDeletion<TFile extends { file_id: string }>(
+  res: Pick<Response, 'status'>,
+  input: Omit<Parameters<typeof deleteAgentResourceFiles<TFile>>[0], 'files'> & { files: TFile[] },
+  deps: AgentResourceDeletionDeps<TFile> & { getFileOwner(file: TFile): string | null },
+): Promise<Response> {
+  const result = await deleteAgentResourceFiles(
+    {
+      ...input,
+      files: input.files.map((file) => ({
+        file_id: file.file_id,
+        owner: deps.getFileOwner(file),
+        file,
+      })),
+    },
+    deps,
+  );
+  return res
+    .status(200)
+    .json(
+      result.outcome == null
+        ? { message: 'File associations removed successfully from agent' }
+        : buildDeleteFilesResponse(result.outcome, 'Files deleted successfully'),
+    );
+}

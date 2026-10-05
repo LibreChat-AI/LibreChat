@@ -60,7 +60,10 @@ export default function useBuildMessageTree() {
     }
 
     if (recursive && message) {
-      return { ...(message as TMessage), children: children as TMessage[] };
+      return {
+        ...(message as TMessage),
+        children: children as TMessage[],
+      };
     } else {
       let ret: TMessage[] = [];
       if (message) {

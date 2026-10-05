@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Button } from '@librechat/client';
 import { alternateName, getEndpointField } from 'librechat-data-provider';
-import type { TEndpointsConfig } from 'librechat-data-provider';
+import type { TEndpointsConfig, MediaUserKey } from 'librechat-data-provider';
 import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
 import { formatKeyExpiryLabel } from '~/components/Input/SetKeyDialog/utils';
 import { useUserKey, useLocalize, useClockFormat } from '~/hooks';
@@ -11,21 +11,36 @@ import { useProviderIcon } from '~/hooks/Endpoint';
 interface ProviderKeyRowProps {
   endpoint: string;
   endpointsConfig: TEndpointsConfig;
+  keyConfiguration?: MediaUserKey & { label: string };
+  label?: string;
+  conflict?: boolean;
 }
 
-export default function ProviderKeyRow({ endpoint, endpointsConfig }: ProviderKeyRowProps) {
+export default function ProviderKeyRow({
+  endpoint,
+  endpointsConfig,
+  keyConfiguration,
+  label: configuredLabel,
+  conflict = false,
+}: ProviderKeyRowProps) {
   const localize = useLocalize();
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { getExpiry, checkExpiry } = useUserKey(endpoint);
+  const { getExpiry, checkExpiry, isLoading, isError, refetch } = useUserKey(endpoint, {
+    keyName: keyConfiguration?.keyName,
+    enabled: !conflict,
+  });
 
   const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
   const { provider, imageURL } = useProviderIcon({ endpoint, endpointsConfig });
 
-  const label = useMemo(() => alternateName[endpoint] || endpoint, [endpoint]);
+  const label = configuredLabel ?? alternateName[endpoint] ?? endpoint;
   const expiry = getExpiry();
   const hasKey = !!expiry && checkExpiry();
   const hour12 = useClockFormat();
   const expiryLabel = useMemo(() => {
+    if (conflict) return localize('com_ui_provider_api_keys_conflict');
+    if (isLoading) return localize('com_ui_loading');
+    if (isError) return localize('com_ui_api_keys_load_error');
     if (!expiry) {
       return localize('com_ui_provider_api_keys_not_set');
     }
@@ -33,7 +48,10 @@ export default function ProviderKeyRow({ endpoint, endpointsConfig }: ProviderKe
       return localize('com_endpoint_config_key_never_expires');
     }
     return formatKeyExpiryLabel(localize, expiry, hour12);
-  }, [expiry, localize, hour12]);
+  }, [expiry, localize, hour12, conflict, isLoading, isError]);
+  let buttonLabel = localize('com_endpoint_config_key');
+  if (isError) buttonLabel = localize('com_ui_retry');
+  else if (hasKey) buttonLabel = localize('com_ui_update');
 
   return (
     <>
@@ -48,21 +66,32 @@ export default function ProviderKeyRow({ endpoint, endpointsConfig }: ProviderKe
             />
           </div>
           <div className="min-w-0">
-            <div className="truncate font-medium text-text-primary">{label}</div>
-            <div className="truncate text-xs text-text-secondary">{expiryLabel}</div>
+            <div className="text-text-primary truncate font-medium">{label}</div>
+            <div className="text-text-secondary text-xs" role={isError ? 'alert' : undefined}>
+              {expiryLabel}
+            </div>
           </div>
         </div>
-        <Button variant="outline" onClick={() => setDialogOpen(true)}>
-          {hasKey ? localize('com_ui_update') : localize('com_endpoint_config_key')}
+        <Button
+          variant="outline"
+          disabled={conflict || isLoading}
+          onClick={() => (isError ? void refetch() : setDialogOpen(true))}
+          aria-label={localize('com_ui_provider_key_action', { action: buttonLabel, name: label })}
+        >
+          {buttonLabel}
         </Button>
       </div>
-      {dialogOpen && (
+      {dialogOpen && !conflict && (
         <SetKeyDialog
           open={dialogOpen}
           onOpenChange={setDialogOpen}
           endpoint={endpoint}
+          keyConfiguration={keyConfiguration?.encoding === 'google' ? undefined : keyConfiguration}
           endpointType={endpointType}
-          userProvideURL={getEndpointField(endpointsConfig, endpoint, 'userProvideURL')}
+          userProvideURL={
+            keyConfiguration?.userProvideURL ??
+            getEndpointField(endpointsConfig, endpoint, 'userProvideURL')
+          }
           userProvideAccessKeyId={getEndpointField(
             endpointsConfig,
             endpoint,

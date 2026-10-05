@@ -2,6 +2,7 @@ import React, { useRef, useMemo, useState, useCallback } from 'react';
 import { SharePointIcon } from '@librechat/client';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import {
+  Images,
   FileSearch,
   ImageUpIcon,
   FileType2Icon,
@@ -29,6 +30,7 @@ import type { SharePointFile } from '~/data-provider/Files/sharepoint';
 import type { ExtendedFile, FileSetter } from '~/common';
 import { useSharePointFileHandlingNoChatContext } from '~/hooks/Files/useSharePointFileHandling';
 import { useAgentToolPermissions, useAgentCapabilities, useGetAgentsConfig } from '~/hooks';
+import { useMediaAccess } from '~/hooks/Media/useMediaAccess';
 import { useFileHandlingNoChatContext } from '~/hooks/Files';
 import { useGetStartupConfig } from '~/data-provider';
 import { getUploadToolAllowances } from '~/utils';
@@ -100,6 +102,8 @@ interface UseAttachItemsParams {
   files: Map<string, ExtendedFile>;
   setFiles: FileSetter;
   setFilesLoading: React.Dispatch<React.SetStateAction<boolean>>;
+  /** Opens chat media creation; offered only while the user may create media in chat. */
+  onCreateMedia?: () => void;
 }
 
 /**
@@ -123,6 +127,7 @@ export default function useAttachItems({
   files,
   setFiles,
   setFilesLoading,
+  onCreateMedia,
 }: UseAttachItemsParams): UseAttachItems {
   const localize = useLocalize();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -151,6 +156,8 @@ export default function useAttachItems({
   const { agentsConfig } = useGetAgentsConfig();
   const { data: startupConfig } = useGetStartupConfig();
   const sharePointEnabled = startupConfig?.sharePointFilePickerEnabled;
+  const mediaAccess = useMediaAccess();
+  const createMedia = mediaAccess.chat && mediaAccess.canCreate ? onCreateMedia : undefined;
 
   /** TODO: Ephemeral Agent Capabilities
    * Allow defining agent capabilities on a per-endpoint basis
@@ -353,12 +360,12 @@ export default function useAttachItems({
     };
 
     const local = build(handleUploadClick, 'local');
-    if (!sharePointEnabled) {
-      return local;
-    }
     /* SharePoint mirrors every local destination; the tool resource is set by
        the row itself, then the picker dialog takes over from the input. */
-    for (const item of build(() => setIsSharePointDialogOpen(true), 'sharepoint')) {
+    const sharePoint = sharePointEnabled
+      ? build(() => setIsSharePointDialogOpen(true), 'sharepoint')
+      : [];
+    for (const item of sharePoint) {
       local.push({
         ...item,
         /* Legacy mode folds SharePoint behind the local destination; unified
@@ -368,6 +375,15 @@ export default function useAttachItems({
           ? item.label
           : `${item.label} (${localize('com_files_upload_sharepoint')})`,
         icon: <SharePointIcon className="icon-md" aria-hidden="true" />,
+      });
+    }
+    if (createMedia) {
+      local.push({
+        id: 'media:create',
+        label: localize('com_media_create'),
+        primary: true,
+        icon: <Images className="icon-md" aria-hidden="true" />,
+        onSelect: createMedia,
       });
     }
     return local;
@@ -390,6 +406,7 @@ export default function useAttachItems({
     sharePointEnabled,
     codeAllowedByAgent,
     fileSearchAllowedByAgent,
+    createMedia,
   ]);
 
   const onFileChange = useCallback(

@@ -6,8 +6,9 @@ const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
   getFirebaseStorage,
+  createFirebaseFileStream,
+  createBufferStreamStorage,
   assertRemoteFileURL,
-  getSafeErrorMetadata,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
@@ -250,28 +251,18 @@ async function uploadFileToFirebase({ req, file, file_id }) {
  * @param {string} filepath - The filepath.
  * @returns {Promise<ReadableStream>} A readable stream of the file.
  */
-async function getFirebaseFileStream(_req, filepath, { signal } = {}) {
-  try {
-    const storage = getFirebaseStorage();
-    if (!storage) {
-      throw new Error('Firebase is not initialized');
-    }
+const getFirebaseFileStream = createFirebaseFileStream({
+  getStorage: getFirebaseStorage,
+  http: axios,
+});
 
-    const response = await axios({
-      method: 'get',
-      url: filepath,
-      responseType: 'stream',
-      signal,
-    });
-
-    return response.data;
-  } catch (error) {
-    logger.error('Error getting Firebase file stream:', getSafeErrorMetadata(error));
-    throw error;
-  }
-}
+const { planFile: planFirebaseFile, saveStream: saveStreamToFirebase } = createBufferStreamStorage({
+  saveBuffer: saveBufferToFirebase,
+});
 
 module.exports = {
+  planFirebaseFile,
+  saveStreamToFirebase,
   deleteFile,
   getFirebaseURL,
   saveURLToFirebase,

@@ -53,4 +53,6 @@ export {
 export type { CatalogId } from './useCatalogWarmup';
 export { default as useClockFormat } from './useClockFormat';
 export { default as useWeekStart } from './useWeekStart';
+export { useMediaAccess } from './Media/useMediaAccess';
+export { useMediaShellHost } from './Media/host';
 export { default as useScrollFade } from './useScrollFade';

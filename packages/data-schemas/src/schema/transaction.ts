@@ -18,6 +18,25 @@ export interface ITransaction extends Document {
   createdAt?: Date;
   updatedAt?: Date;
   tenantId?: string;
+  mediaSettlementId?: string;
+  mediaAccountPending?: boolean;
+  mediaJobId?: string;
+  debtCredits?: number;
+  /** Legacy receipt column; new writes use debtCredits. */
+  mediaDebtCredits?: number;
+  overrunDebtCredits?: number;
+  /** Legacy receipt column; new writes use overrunDebtCredits. */
+  mediaOverrunDebtCredits?: number;
+  holdShortfallCredits?: number;
+  /** Legacy receipt column; new writes use holdShortfallCredits. */
+  mediaHoldShortfallCredits?: number;
+  costUSD?: number;
+  /** Legacy receipt column; new writes use costUSD. */
+  mediaCostUSD?: number;
+  costSource?: 'provider' | 'tokens' | 'estimate';
+  mediaFingerprint?: string;
+  mediaAccountingMode?: 'balance' | 'transactions';
+  outputTokens?: number;
 }
 
 const transactionSchema: Schema<ITransaction> = new Schema(
@@ -55,6 +74,21 @@ const transactionSchema: Schema<ITransaction> = new Schema(
     writeTokens: { type: Number },
     readTokens: { type: Number },
     messageId: { type: String },
+    mediaSettlementId: String,
+    mediaAccountPending: { type: Boolean, select: false },
+    mediaJobId: String,
+    debtCredits: Number,
+    mediaDebtCredits: Number,
+    overrunDebtCredits: Number,
+    mediaOverrunDebtCredits: Number,
+    holdShortfallCredits: Number,
+    mediaHoldShortfallCredits: Number,
+    costUSD: Number,
+    mediaCostUSD: Number,
+    costSource: { type: String, enum: ['provider', 'tokens', 'estimate'] },
+    mediaFingerprint: String,
+    mediaAccountingMode: { type: String, enum: ['balance', 'transactions'] },
+    outputTokens: Number,
     tenantId: {
       type: String,
       index: true,
@@ -63,6 +97,16 @@ const transactionSchema: Schema<ITransaction> = new Schema(
   {
     timestamps: true,
   },
+);
+
+transactionSchema.index({ mediaJobId: 1 });
+transactionSchema.index(
+  { mediaAccountPending: 1, user: 1, tenantId: 1, _id: 1 },
+  { partialFilterExpression: { mediaAccountPending: true } },
+);
+transactionSchema.index(
+  { mediaSettlementId: 1 },
+  { unique: true, partialFilterExpression: { mediaSettlementId: { $type: 'string' } } },
 );
 
 export default transactionSchema;

@@ -10,6 +10,7 @@ on:
       - 'Dockerfile.multi'
       - 'package.json'
       - 'package-lock.json'
+      - 'patches/*.patch'
       - 'api/**'
       - 'client/**'
       - 'config/**'
@@ -73,6 +74,10 @@ jobs:
             note "_could not fetch changed files; running FULL_"; exit 0
           fi
           jq -s . files.ndjson > files.json
+          # A package patch changes dependency behavior beyond source-graph reachability.
+          if jq -e 'any(.[]; .path | startswith("patches/"))' files.json >/dev/null; then
+            note "_patched dependency changed; running FULL_"; exit 0
+          fi
           N=$(jq 'length' files.json)
           if [ "$N" -eq 0 ] || { [ -n "$CHANGED" ] && [ "$N" -ne "$CHANGED" ]; }; then
             note "_changed-file list incomplete ($N of ${CHANGED:-?}); running FULL_"; exit 0

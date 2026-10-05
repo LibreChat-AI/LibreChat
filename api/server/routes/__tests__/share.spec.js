@@ -78,7 +78,8 @@ const mockCreateShareContentPreflight = jest.fn((filters, options = {}) => {
 });
 
 jest.mock('@librechat/api', () => ({
-  resolveDownloadPath: (file) => file.storageKey || file.filepath,
+  resolveDownloadPath: jest.requireActual('../../../../packages/api/src/storage/path')
+    .resolveDownloadPath,
   assertModelBoundContent: (...args) => mockAssertModelBoundContent(...args),
   assertSharedFileMetadataAllowed: (...args) => mockAssertSharedFileMetadataAllowed(...args),
   createShareContentPreflight: (...args) => mockCreateShareContentPreflight(...args),
@@ -2040,7 +2041,7 @@ describe('share-scoped file routes', () => {
     expect(getDownloadStream).toHaveBeenCalled();
   });
 
-  it('strips a cache-busting query string before local streaming', async () => {
+  it('streams a local media original by its public path and strips the cache-busting query', async () => {
     const getDownloadStream = jest.fn(async () => Readable.from(['bytes']));
     mockGetStrategyFunctions.mockReturnValue({ getDownloadStream });
     getSharedLinkFile.mockResolvedValue({
@@ -2048,6 +2049,7 @@ describe('share-scoped file routes', () => {
         file_id: 'file-1',
         source: 'local',
         filepath: '/images/owner/pic.png?v=2',
+        storageKey: 'images/owner/pic.png',
         type: 'image/png',
         filename: 'pic.png',
         bytes: 100,

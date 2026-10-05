@@ -788,6 +788,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
     const result = await forkConversation({
       requestUserId: req.user.id,
       originalConvoId: conversationId,
+      appConfig: req.config,
       targetMessageId: messageId,
       latestMessageId,
       records: true,
@@ -824,6 +825,7 @@ router.post(
 
     try {
       const result = await duplicateConversation({
+        appConfig: req.config,
         userId: req.user.id,
         conversationId,
         title,

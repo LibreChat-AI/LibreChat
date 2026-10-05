@@ -35,7 +35,10 @@ export function extractVariableName(value: string): string | null {
 }
 
 /** Extracts the value of an environment variable from a string. */
-export function extractEnvVariable(value: string) {
+export function extractEnvVariable(
+  value: string,
+  environment: Record<string, string | undefined> = process.env,
+) {
   if (!value) {
     return value;
   }
@@ -48,7 +51,7 @@ export function extractEnvVariable(value: string) {
     if (isSensitiveEnvVar(varName)) {
       return trimmed;
     }
-    return process.env[varName] || trimmed;
+    return environment[varName] || trimmed;
   }
 
   const regex = /\${([^}]+)}/g;
@@ -69,7 +72,7 @@ export function extractEnvVariable(value: string) {
     if (isSensitiveEnvVar(varName)) {
       continue;
     }
-    const envValue = process.env[varName] || fullMatch;
+    const envValue = environment[varName] || fullMatch;
     result = result.substring(0, index) + envValue + result.substring(index + fullMatch.length);
   }
 
@@ -82,4 +85,21 @@ export function extractEnvVariable(value: string) {
  */
 export function normalizeEndpointName(name = ''): string {
   return name.toLowerCase() === 'ollama' ? 'ollama' : name;
+}
+
+/** Provider roots exclude credentials, query strings, and completion resource paths. */
+export function isValidProviderBaseURL(value: string): boolean {
+  try {
+    const root = new URL(value);
+    return (
+      ['http:', 'https:'].includes(root.protocol) &&
+      !root.username &&
+      !root.password &&
+      !root.search &&
+      !root.hash &&
+      !/\/(chat\/completions|responses)\/?$/.test(root.pathname)
+    );
+  } catch {
+    return false;
+  }
 }

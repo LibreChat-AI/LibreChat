@@ -9,6 +9,8 @@ import {
 import type { NextFunction, Request as ServerRequest, Response as ServerResponse } from 'express';
 import type { IRole, IUser } from '@librechat/data-schemas';
 
+export type AccessRole = { permissions?: IRole['permissions'] };
+
 export function skipAgentCheck(req?: ServerRequest): boolean {
   if (!req || !req?.body?.endpoint) {
     return false;
@@ -33,7 +35,10 @@ export interface CheckAccessParams {
   checkObject?: object;
   /** If skipCheck function is provided and returns true, skip permission checking */
   skipCheck?: (req?: ServerRequest) => boolean;
-  getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
+  getRoleByName: (
+    roleName: string,
+    fieldsToSelect?: string | string[],
+  ) => Promise<AccessRole | null>;
 }
 
 export type CheckAccessWithRequestCacheParams = Omit<
@@ -42,7 +47,7 @@ export type CheckAccessWithRequestCacheParams = Omit<
 >;
 
 type RequestPermissionCache = Map<string, Promise<boolean>>;
-type RequestRoleCache = Map<string, Promise<IRole | null>>;
+type RequestRoleCache = Map<string, Promise<AccessRole | null>>;
 
 const requestPermissionCacheKey = '__librechatRequestPermissionCache';
 const requestRoleCacheKey = '__librechatRequestRoleCache';
@@ -58,7 +63,7 @@ function getRequestRoleCache(req?: ServerRequest): RequestRoleCache | null {
 
   if (!reqWithCache[requestRoleCacheKey]) {
     Object.defineProperty(reqWithCache, requestRoleCacheKey, {
-      value: new Map<string, Promise<IRole | null>>(),
+      value: new Map<string, Promise<AccessRole | null>>(),
       enumerable: false,
     });
   }
@@ -66,7 +71,7 @@ function getRequestRoleCache(req?: ServerRequest): RequestRoleCache | null {
   return reqWithCache[requestRoleCacheKey] ?? null;
 }
 
-async function getRoleForAccess({
+export async function getRoleForAccess({
   req,
   roleName,
   getRoleByName,
@@ -74,7 +79,7 @@ async function getRoleForAccess({
   req?: ServerRequest;
   roleName: string;
   getRoleByName: CheckAccessParams['getRoleByName'];
-}): Promise<IRole | null> {
+}): Promise<AccessRole | null> {
   const cache = getRequestRoleCache(req);
   if (!cache) {
     return await getRoleByName(roleName);

@@ -426,6 +426,7 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
       }}
     >
       <Image
+        file={attachment}
         altText={attachment.filename || 'attachment image'}
         imagePath={filepath ?? ''}
         width={width}

@@ -1,7 +1,7 @@
 const cookie = require('cookie');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
-  createOptionalShareFileAuth,
+  createOptionalCookieAuth,
   clearCloudFrontCookies,
   isTwoFactorEnrollmentRequired,
   isTokenRetired,
@@ -9,14 +9,15 @@ const {
 } = require('@librechat/api');
 const { getUserById, findSession } = require('~/models');
 
-module.exports = createOptionalShareFileAuth({
-  parseCookie: cookie.parse,
-  getUserById,
+module.exports = createOptionalCookieAuth({
+  parseCookies: cookie.parse,
+  isOpenIdReuseEnabled: () => isEnabled(process.env.OPENID_REUSE_TOKENS),
+  getSecret: () => process.env.JWT_REFRESH_SECRET,
   findSession,
-  runAsSystem,
+  getUserById,
+  asSystem: runAsSystem,
   clearCloudFrontCookies,
   enrollmentRequired: isTwoFactorEnrollmentRequired,
   tokenRetired: isTokenRetired,
-  enabled: isEnabled,
-  warn: (...args) => logger.warn(...args),
+  log: logger.warn.bind(logger),
 });

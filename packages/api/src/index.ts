@@ -1,4 +1,5 @@
 export * from './app';
+export * from './media';
 export * from './acl/accessControlService';
 export * from './acl/insightsPermissions';
 export * from './acl/middleware';

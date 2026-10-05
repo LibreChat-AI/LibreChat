@@ -7,7 +7,7 @@ import { cn } from '~/utils';
 
 type ChipVariantProps = {
   tone?: 'surface' | 'neutral' | 'info' | 'success' | 'warning' | 'error' | null;
-  size?: 'sm' | 'md' | 'theme' | null;
+  size?: 'xs' | 'sm' | 'md' | 'theme' | null;
   shape?: 'round' | 'theme' | null;
 };
 
@@ -24,6 +24,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
         error: 'border-status-error-border bg-status-error-subtle text-status-error',
       },
       size: {
+        xs: 'min-h-4 min-w-4 justify-center px-1 text-[10px] leading-3',
         sm: 'min-h-6 px-2 py-0.5',
         md: 'min-h-8 px-2.5 py-1',
         theme: 'h-theme-control gap-theme-control-gap px-theme-control-x',

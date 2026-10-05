@@ -1,4 +1,4 @@
-import { FileSources } from 'librechat-data-provider';
+import { FileSources, resolveMediaConfig } from 'librechat-data-provider';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn() },
@@ -89,10 +89,28 @@ describe('initializeFileStorage', () => {
       ...baseAppConfig,
       fileStrategy: FileSources.s3,
       fileStrategies: { image: FileSources.s3 },
+      media: resolveMediaConfig({ assets: { source: FileSources.s3 } }),
     } as AppConfig;
     initializeFileStorage(appConfig);
     expect(initializeS3).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    [FileSources.s3, initializeS3],
+    [FileSources.firebase, initializeFirebase],
+    [FileSources.azure_blob, initializeAzureBlobService],
+    [FileSources.cloudfront, initializeCloudFront],
+  ] as const)(
+    'initializes a media-only %s override while the studio is disabled',
+    (source, init) => {
+      initializeFileStorage({
+        ...baseAppConfig,
+        media: resolveMediaConfig({ enabled: false, assets: { source } }),
+        cloudfront: makeCloudFrontConfig(),
+      });
+      expect(init).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('initializes multiple different strategies from fileStrategies', () => {
     const appConfig = {

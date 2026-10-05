@@ -1,253 +1,171 @@
-const mockVerify = jest.fn();
-const mockGetUserById = jest.fn();
-const mockFindSession = jest.fn();
-const mockRunAsSystem = jest.fn((fn) => fn());
-const mockIsTwoFactorEnrollmentRequired = jest.fn(() => false);
-const mockIsTokenRetired = jest.fn(() => false);
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const request = require('supertest');
+
 const mockClearCloudFrontCookies = jest.fn();
 
-jest.mock('jsonwebtoken', () => ({ verify: (...args) => mockVerify(...args) }));
 jest.mock('@librechat/api', () => ({
-  createOptionalShareFileAuth: jest.requireActual('@librechat/api').createOptionalShareFileAuth,
-  isEnabled: (v) => v === 'true' || v === true,
+  ...jest.requireActual('@librechat/api'),
   clearCloudFrontCookies: (...args) => mockClearCloudFrontCookies(...args),
-  isTwoFactorEnrollmentRequired: (...args) => mockIsTwoFactorEnrollmentRequired(...args),
-  isTokenRetired: (...args) => mockIsTokenRetired(...args),
 }));
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
-  logger: { warn: jest.fn(), error: jest.fn() },
-  runAsSystem: (...args) => mockRunAsSystem(...args),
+  runAsSystem: (work) => work(),
 }));
 jest.mock('~/models', () => ({
-  getUserById: (...args) => mockGetUserById(...args),
-  findSession: (...args) => mockFindSession(...args),
+  findSession: jest.fn(),
+  getUserById: jest.fn(),
 }));
 
+const db = require('~/models');
 const optionalShareFileAuth = require('./optionalShareFileAuth');
+const viewerId = '507f1f77bcf86cd799439011';
+const secret = 'share-cookie-wiring-test-secret';
 
-const run = async (req) => {
-  const next = jest.fn();
-  await optionalShareFileAuth(req, {}, next);
-  return next;
-};
+function createApp(user) {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.user = user;
+    next();
+  });
+  app.use(optionalShareFileAuth);
+  app.get('/file', (req, res) => res.json({ user: req.user ?? null }));
+  return app;
+}
 
-describe('optionalShareFileAuth', () => {
+describe('optional share-file cookie auth wiring', () => {
+  const originalSecret = process.env.JWT_REFRESH_SECRET;
+  const originalReuse = process.env.OPENID_REUSE_TOKENS;
+  const originalEnforce = process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+
   beforeEach(() => {
     jest.clearAllMocks();
-    mockIsTwoFactorEnrollmentRequired.mockReturnValue(false);
-    mockIsTokenRetired.mockReturnValue(false);
-    process.env.JWT_REFRESH_SECRET = 'test-secret';
+    process.env.JWT_REFRESH_SECRET = secret;
+    process.env.OPENID_REUSE_TOKENS = 'true';
+    delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
   });
 
-  it('short-circuits when a bearer user is already set (no cookie work)', async () => {
-    const req = { user: { id: 'u1' }, headers: { cookie: 'refreshToken=x' } };
-    const next = await run(req);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(mockVerify).not.toHaveBeenCalled();
-    expect(mockGetUserById).not.toHaveBeenCalled();
-    expect(mockFindSession).not.toHaveBeenCalled();
+  afterAll(() => {
+    if (originalSecret === undefined) delete process.env.JWT_REFRESH_SECRET;
+    else process.env.JWT_REFRESH_SECRET = originalSecret;
+    if (originalReuse === undefined) delete process.env.OPENID_REUSE_TOKENS;
+    else process.env.OPENID_REUSE_TOKENS = originalReuse;
+    if (originalEnforce === undefined) delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
+    else process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = originalEnforce;
   });
 
-  it('removes an existing viewer when required enrollment is incomplete', async () => {
-    mockIsTwoFactorEnrollmentRequired.mockReturnValue(true);
-    const req = {
-      user: { id: 'u1', provider: 'local', twoFactorEnabled: false },
-      authStrategy: 'jwt',
-      headers: { cookie: 'refreshToken=x' },
-    };
+  it('reuses a loaded bearer viewer', async () => {
+    const response = await request(createApp({ id: viewerId }))
+      .get('/file')
+      .set('Cookie', 'refreshToken=invalid')
+      .expect(200);
+    expect(response.body.user.id).toBe(viewerId);
+    expect(db.findSession).not.toHaveBeenCalled();
+    expect(db.getUserById).not.toHaveBeenCalled();
+  });
 
-    const next = await run(req);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
-    expect(req.authStrategy).toBeUndefined();
+  it('removes a loaded bearer viewer whose required enrollment is incomplete', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    const response = await request(
+      createApp({ id: viewerId, provider: 'local', twoFactorEnabled: false }),
+    )
+      .get('/file')
+      .set('Cookie', 'refreshToken=invalid')
+      .expect(200);
+    expect(response.body.user).toBeNull();
     expect(mockClearCloudFrontCookies).toHaveBeenCalledWith(expect.any(Object), {
-      userId: 'u1',
+      userId: viewerId,
       tenantId: undefined,
       storageRegion: undefined,
     });
-    expect(mockGetUserById).not.toHaveBeenCalled();
-    expect(mockFindSession).not.toHaveBeenCalled();
+    expect(db.findSession).not.toHaveBeenCalled();
+    expect(db.getUserById).not.toHaveBeenCalled();
   });
 
-  it('resolves the viewer from a valid refreshToken cookie with a live session', async () => {
-    mockVerify.mockReturnValue({ id: 'viewer-1' });
-    mockFindSession.mockResolvedValue({ _id: 'session-1' });
-    mockGetUserById.mockResolvedValue({ _id: 'viewer-1', role: 'USER' });
-    const req = { headers: { cookie: 'refreshToken=good.jwt' } };
-    const next = await run(req);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(mockVerify).toHaveBeenCalledWith('good.jwt', 'test-secret');
-    expect(mockFindSession).toHaveBeenCalledWith({ userId: 'viewer-1', refreshToken: 'good.jwt' });
-    expect(mockRunAsSystem).toHaveBeenCalledTimes(2);
-    expect(req.user).toMatchObject({ id: 'viewer-1', role: 'USER' });
+  it('loads a viewer through the shared authenticator from a live refresh cookie', async () => {
+    const token = jwt.sign({ id: viewerId }, secret, { expiresIn: '1m' });
+    db.findSession.mockResolvedValue({ user: viewerId });
+    db.getUserById.mockResolvedValue({ _id: viewerId, role: 'USER' });
+    const response = await request(createApp())
+      .get('/file')
+      .set('Cookie', `refreshToken=${token}`)
+      .expect(200);
+    expect(response.body.user.id).toBe(viewerId);
+    expect(db.findSession).toHaveBeenCalledWith({ userId: viewerId, refreshToken: token });
+    expect(mockClearCloudFrontCookies).not.toHaveBeenCalled();
   });
 
-  it('does not restore a cookie viewer when required enrollment is incomplete', async () => {
-    mockVerify.mockReturnValue({ id: 'viewer-required' });
-    mockFindSession.mockResolvedValue({ _id: 'session-required' });
-    mockGetUserById.mockResolvedValue({
-      _id: 'viewer-required',
+  it('does not restore a cookie viewer whose required enrollment is incomplete', async () => {
+    process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+    const token = jwt.sign({ id: viewerId }, secret, { expiresIn: '1m' });
+    db.findSession.mockResolvedValue({ user: viewerId });
+    db.getUserById.mockResolvedValue({
+      _id: viewerId,
       role: 'USER',
       provider: 'local',
       twoFactorEnabled: false,
+      tenantId: 'tenant-a',
     });
-    mockIsTwoFactorEnrollmentRequired.mockReturnValue(true);
-    const req = { headers: { cookie: 'refreshToken=good.jwt' } };
-
-    const next = await run(req);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
+    const response = await request(createApp())
+      .get('/file')
+      .set('Cookie', `refreshToken=${token}`)
+      .expect(200);
+    expect(response.body.user).toBeNull();
     expect(mockClearCloudFrontCookies).toHaveBeenCalledWith(expect.any(Object), {
-      userId: 'viewer-required',
-      tenantId: undefined,
-      storageRegion: undefined,
-    });
-    expect(mockGetUserById).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not restore a cookie viewer minted before two-factor enrollment', async () => {
-    mockVerify.mockReturnValue({ id: 'viewer-stale', iat: 1000 });
-    mockFindSession.mockResolvedValue({ _id: 'session-stale' });
-    mockGetUserById.mockResolvedValue({
-      _id: 'viewer-stale',
-      role: 'USER',
-      provider: 'local',
-      twoFactorEnabled: true,
-      twoFactorEnrolledAt: new Date(2000 * 1000),
-    });
-    mockIsTokenRetired.mockReturnValue(true);
-    const req = { headers: { cookie: 'refreshToken=stale.jwt' } };
-
-    const next = await run(req);
-
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
-    expect(mockClearCloudFrontCookies).toHaveBeenCalledWith(expect.any(Object), {
-      userId: 'viewer-stale',
-      tenantId: undefined,
+      userId: viewerId,
+      tenantId: 'tenant-a',
       storageRegion: undefined,
     });
   });
 
-  it('dates the cookie by its own mint stamps rather than discarding them', async () => {
-    const enrolledAt = new Date(2000 * 1000);
-    mockVerify.mockReturnValue({ id: 'viewer-dated', iat: 1234, issuedAtMs: 1234_500 });
-    mockFindSession.mockResolvedValue({ _id: 'session-dated' });
-    mockGetUserById.mockResolvedValue({
-      _id: 'viewer-dated',
+  it.each([
+    ['two-factor enrollment', 'twoFactorEnrolledAt'],
+    ['a password reset', 'credentialsChangedAt'],
+  ])('does not restore a cookie viewer minted before %s', async (_event, field) => {
+    const issuedAtMs = Date.now() - 60_000;
+    const token = jwt.sign({ id: viewerId, issuedAtMs }, secret, { expiresIn: '1m' });
+    db.findSession.mockResolvedValue({ user: viewerId });
+    db.getUserById.mockResolvedValue({
+      _id: viewerId,
       role: 'USER',
-      twoFactorEnrolledAt: enrolledAt,
+      [field]: new Date(issuedAtMs + 1_000),
     });
-    const req = { headers: { cookie: 'refreshToken=dated.jwt' } };
-
-    await run(req);
-
-    expect(mockIsTokenRetired).toHaveBeenCalledWith(
-      expect.objectContaining({ issuedAt: 1234, issuedAtMs: 1234_500 }),
-      expect.objectContaining({ twoFactorEnrolledAt: enrolledAt }),
-    );
+    const response = await request(createApp())
+      .get('/file')
+      .set('Cookie', `refreshToken=${token}`)
+      .expect(200);
+    expect(response.body.user).toBeNull();
+    expect(mockClearCloudFrontCookies).toHaveBeenCalledWith(expect.any(Object), {
+      userId: viewerId,
+      tenantId: undefined,
+      storageRegion: undefined,
+    });
   });
 
-  it('dates an OpenID cookie viewer by its own mint stamps too', async () => {
-    process.env.OPENID_REUSE_TOKENS = 'true';
-    const enrolledAt = new Date(2000 * 1000);
-    mockVerify.mockReturnValue({ id: 'viewer-openid', iat: 4321, issuedAtMs: 4321_500 });
-    mockGetUserById.mockResolvedValue({
-      _id: 'viewer-openid',
+  it('keeps a cookie viewer minted after enrollment', async () => {
+    const issuedAtMs = Date.now() - 60_000;
+    const token = jwt.sign({ id: viewerId, issuedAtMs }, secret, { expiresIn: '1m' });
+    db.findSession.mockResolvedValue({ user: viewerId });
+    db.getUserById.mockResolvedValue({
+      _id: viewerId,
       role: 'USER',
-      twoFactorEnrolledAt: enrolledAt,
+      twoFactorEnrolledAt: new Date(issuedAtMs - 1_000),
     });
-    const req = {
-      headers: {
-        cookie: 'refreshToken=live.jwt; token_provider=openid; openid_user_id=signed.jwt',
-      },
-      session: { openidTokens: { refreshToken: 'live.jwt' } },
-    };
-
-    await run(req);
-
-    expect(mockIsTokenRetired).toHaveBeenCalledWith(
-      expect.objectContaining({ issuedAt: 4321, issuedAtMs: 4321_500 }),
-      expect.objectContaining({ twoFactorEnrolledAt: enrolledAt }),
-    );
-    delete process.env.OPENID_REUSE_TOKENS;
+    const response = await request(createApp())
+      .get('/file')
+      .set('Cookie', `refreshToken=${token}`)
+      .expect(200);
+    expect(response.body.user.id).toBe(viewerId);
+    expect(mockClearCloudFrontCookies).not.toHaveBeenCalled();
   });
 
-  it('defaults the role to USER when the record has none', async () => {
-    mockVerify.mockReturnValue({ id: 'viewer-2' });
-    mockFindSession.mockResolvedValue({ _id: 'session-2' });
-    mockGetUserById.mockResolvedValue({ _id: 'viewer-2' });
-    const req = { headers: { cookie: 'refreshToken=good.jwt' } };
-    await run(req);
-    expect(req.user.role).toBe('USER');
-  });
-
-  it('leaves req.user unset when there is no cookie', async () => {
-    const req = { headers: {} };
-    const next = await run(req);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
-    expect(mockGetUserById).not.toHaveBeenCalled();
-  });
-
-  it('leaves req.user unset when the refresh token has no live session', async () => {
-    mockVerify.mockReturnValue({ id: 'viewer-3' });
-    mockFindSession.mockResolvedValue(null);
-    const req = { headers: { cookie: 'refreshToken=revoked.jwt' } };
-    const next = await run(req);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
-    expect(mockFindSession).toHaveBeenCalledWith({
-      userId: 'viewer-3',
-      refreshToken: 'revoked.jwt',
-    });
-    expect(mockRunAsSystem).toHaveBeenCalledTimes(1);
-    expect(mockGetUserById).not.toHaveBeenCalled();
-  });
-
-  it('leaves req.user unset when the token is invalid', async () => {
-    mockVerify.mockImplementation(() => {
-      throw new Error('bad token');
-    });
-    const req = { headers: { cookie: 'refreshToken=bad' } };
-    const next = await run(req);
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(req.user).toBeUndefined();
-    expect(mockGetUserById).not.toHaveBeenCalled();
-  });
-
-  it('uses the signed openid_user_id cookie only for active OpenID-reuse sessions', async () => {
-    process.env.OPENID_REUSE_TOKENS = 'true';
-    mockVerify.mockReturnValue({ id: 'oidc-1' });
-    mockGetUserById.mockResolvedValue({ _id: 'oidc-1', role: 'USER' });
-    const req = {
-      headers: {
-        cookie: 'token_provider=openid; refreshToken=stored-refresh; openid_user_id=signed.jwt',
-      },
-      session: { openidTokens: { refreshToken: 'stored-refresh' } },
-    };
-    await run(req);
-    expect(mockVerify).toHaveBeenCalledWith('signed.jwt', 'test-secret');
-    expect(mockFindSession).not.toHaveBeenCalled();
-    expect(req.user).toMatchObject({ id: 'oidc-1' });
-    delete process.env.OPENID_REUSE_TOKENS;
-  });
-
-  it('leaves req.user unset for OpenID-reuse cookies without an active matching session', async () => {
-    process.env.OPENID_REUSE_TOKENS = 'true';
-    mockVerify.mockReturnValue({ id: 'oidc-2' });
-    const req = {
-      headers: {
-        cookie: 'token_provider=openid; refreshToken=stale-refresh; openid_user_id=signed.jwt',
-      },
-      session: { openidTokens: { refreshToken: 'current-refresh' } },
-    };
-    await run(req);
-    expect(req.user).toBeUndefined();
-    expect(mockGetUserById).not.toHaveBeenCalled();
-    delete process.env.OPENID_REUSE_TOKENS;
+  it('leaves OpenID viewers anonymous without the signed identity cookie', async () => {
+    const response = await request(createApp())
+      .get('/file')
+      .set('Cookie', 'token_provider=openid; refreshToken=provider-token')
+      .expect(200);
+    expect(response.body.user).toBeNull();
+    expect(db.findSession).not.toHaveBeenCalled();
+    expect(db.getUserById).not.toHaveBeenCalled();
   });
 });

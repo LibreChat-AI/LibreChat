@@ -4,6 +4,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { Agents, UserSubmittedMessageFieldPath } from 'librechat-data-provider';
+import type { NativeSignatures } from 'librechat-data-provider';
 import type { EventEmitter } from 'events';
 import type {
   AgentEventDetachedTerminalEvidence,
@@ -103,6 +104,7 @@ export interface GenerationJobMetadata {
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
   contextMeta?: IAgentEventActorContextMeta;
+  nativeSignatures?: NativeSignatures;
   /** See `SerializableJobData.preemptCapable`. */
   preemptCapable?: boolean;
   /** See `SerializableJobData.steerQuotesCapable`. */

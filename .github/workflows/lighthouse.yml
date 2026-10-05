@@ -10,6 +10,7 @@ on:
       - 'e2e/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'patches/*.patch'
       - '.github/workflows/lighthouse.yml'
       - '!**.md'
   workflow_dispatch:

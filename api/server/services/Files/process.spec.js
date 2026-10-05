@@ -1,6 +1,14 @@
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'mock-uuid') }));
 
+// The storage adapters have their own package tests; keep this CJS suite on the real delete guard.
+jest.mock('../../../../packages/api/src/media/objects', () => ({
+  createLocalMediaObjectStore: jest.fn(() => ({ source: 'local' })),
+  createMediaStrategyObjectStores: jest.fn(() => []),
+  removeMediaObjectLocations: jest.fn(),
+}));
+
 jest.mock('@librechat/data-schemas', () => ({
+  isMediaFileId: jest.requireActual('@librechat/data-schemas').isMediaFileId,
   logger: { warn: jest.fn(), debug: jest.fn(), error: jest.fn(), info: jest.fn() },
   runAsSystem: jest.fn((fn) => fn()),
   createChatExpirationDate: jest.fn(() => new Date('2030-01-01T00:00:00.000Z')),
@@ -121,6 +129,8 @@ jest.mock('@librechat/api', () => {
     },
   );
   return {
+    deleteMediaAwareFile: jest.requireActual('../../../../packages/api/src/media/deletion')
+      .deleteMediaAwareFile,
     sanitizeFilename: jest.fn((n) => n),
     /** Grants both; these specs vary the capability set, not the role. */
     resolveToolRoleGrants: jest.fn(async () => ({ runCode: true, fileSearch: true })),
@@ -207,6 +217,9 @@ jest.mock('~/models', () => ({
   addAgentResourceFile: jest.fn().mockResolvedValue({}),
   removeAgentResourceFiles: jest.fn(),
   removeAgentResourceFilesFromAllAgents: jest.fn(),
+  isMediaFile: jest.fn(),
+  claimMediaAssetDeletion: jest.fn(),
+  completeMediaAssetDeletion: jest.fn(),
 }));
 
 jest.mock('~/server/utils/getFileStrategy', () => ({
@@ -2631,6 +2644,28 @@ describe('processDeleteRequest', () => {
     });
 
     expect(result).toEqual({ deletedFileIds: [], failedFileIds: ['knowledge-file'] });
+    expect(db.deleteFiles).not.toHaveBeenCalled();
+    expect(db.removeAgentResourceFiles).not.toHaveBeenCalled();
+    expect(db.removeAgentResourceFilesFromAllAgents).not.toHaveBeenCalled();
+  });
+
+  it('keeps a retained media original attached and never deletes its storage or metadata', async () => {
+    const deleteFile = jest.fn();
+    getStrategyFunctions.mockReturnValue({ deleteFile });
+    db.isMediaFile.mockResolvedValue(true);
+    db.claimMediaAssetDeletion.mockResolvedValue(null);
+    const fileId = 'f17ecafe-0000-4000-8000-000000000001';
+    const result = await processDeleteRequest({
+      req: {
+        body: { agent_id: 'agent_1', tool_resource: 'file_search' },
+        config: { paths: { imageOutput: '/images', uploads: '/uploads' } },
+        user: { id: 'user-123', tenantId: 'tenant-a' },
+      },
+      files: [{ file_id: fileId, filepath: '/images/original.png', source: FileSources.local }],
+    });
+
+    expect(result).toEqual({ deletedFileIds: [], failedFileIds: [fileId] });
+    expect(deleteFile).not.toHaveBeenCalled();
     expect(db.deleteFiles).not.toHaveBeenCalled();
     expect(db.removeAgentResourceFiles).not.toHaveBeenCalled();
     expect(db.removeAgentResourceFilesFromAllAgents).not.toHaveBeenCalled();

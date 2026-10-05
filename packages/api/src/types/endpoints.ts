@@ -1,8 +1,9 @@
 import type { ClientOptions, OpenAIClientOptions } from '@librechat/agents';
-import type { AppConfig, IUser } from '@librechat/data-schemas';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { TConfig } from 'librechat-data-provider';
 import type { RequestBody, ServerRequest } from './http';
 import type { EndpointTokenConfig } from './tokens';
+import type { SafeUserInput } from '~/utils/env';
 import type { AzureOptions } from './azure';
 
 export type TCustomEndpointsConfig = Partial<{ [key: string]: Omit<TConfig, 'order'> }>;
@@ -42,7 +43,7 @@ export interface EndpointDbMethods {
 /** Transport-free state consumed while resolving provider credentials and configuration. */
 export interface EndpointRuntimeContext {
   appConfig?: AppConfig;
-  user?: IUser;
+  user?: SafeUserInput;
   requestBody: RequestBody;
 }
 

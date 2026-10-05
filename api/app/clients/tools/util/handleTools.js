@@ -30,6 +30,7 @@ const {
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceSelections,
   resolveMCPClientCapabilityProfile,
+  loadMediaTools,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -226,6 +227,12 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    media_generate: () =>
+      loadMediaTools({
+        runtime: options.req.app.locals.mediaRuntime,
+        request: options.req,
+        signal,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });

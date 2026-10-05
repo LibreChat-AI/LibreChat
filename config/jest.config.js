@@ -12,7 +12,7 @@ const resolvedMapper = Object.fromEntries(
 
 module.exports = {
   ...apiConfig,
-  roots: ['<rootDir>'],
+  roots: ['<rootDir>/__tests__'],
   setupFiles: apiConfig.setupFiles.map((f) => path.resolve(apiDir, f)),
   moduleNameMapper: resolvedMapper,
 };

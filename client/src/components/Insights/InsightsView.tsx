@@ -23,6 +23,10 @@ import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
+import { PaginationFooter } from './Pagination';
+import { Panel, EmptyState } from './Panel';
+import { formatExactValue } from './format';
+import MediaInsights from './Media';
 import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
@@ -51,10 +55,6 @@ function formatValue(value: number, locale: string) {
     notation: 'compact',
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function formatExactValue(value: number, locale: string) {
-  return new Intl.NumberFormat(locale).format(value);
 }
 
 function formatDate(value: string, locale: string) {
@@ -101,29 +101,6 @@ function responseStatus(error: unknown) {
 function getShortcutDateRange(range: ShortcutRange) {
   const days = ranges.find((item) => item.value === range)?.days ?? 7;
   return getRollingDateRange(new Date(), days);
-}
-
-function Panel({ children, className }: { children: React.ReactNode; className?: string }) {
-  return (
-    <section
-      className={cn(
-        /** Click UI gives dashboard widgets their own surface and stroke, a step lighter
-         *  than the page in dark mode; in light they match the page surface and light rule. */
-        'border-chart-widget-stroke bg-chart-widget-surface min-w-0 rounded-lg border p-5',
-        className,
-      )}
-    >
-      {children}
-    </section>
-  );
-}
-
-function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="text-text-secondary flex min-h-40 items-center justify-center text-sm">
-      {message}
-    </div>
-  );
 }
 
 function LoadingState({ message }: { message: string }) {
@@ -519,27 +496,7 @@ function LatestConversations({
           }
         />
       )}
-      <div className="border-border-light text-text-secondary mt-3 flex items-center justify-between gap-3 border-t pt-3 text-sm">
-        <span>{localize('com_insights_page_of', { page, pages })}</span>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isFetching || page <= 1}
-            onClick={() => setPage((value) => Math.max(1, value - 1))}
-          >
-            {localize('com_ui_prev')}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isFetching || page >= pages}
-            onClick={() => setPage((value) => value + 1)}
-          >
-            {localize('com_ui_next')}
-          </Button>
-        </div>
-      </div>
+      <PaginationFooter page={page} pages={pages} isFetching={isFetching} onPage={setPage} />
     </Panel>
   );
 }
@@ -557,6 +514,7 @@ export default function InsightsView() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
+  const [mediaPage, setMediaPage] = useState(1);
   const [pendingAgentIds, setPendingAgentIds] = useState<string[] | null>(null);
   const dateRangeSelectionTimeout = useRef<number>();
   const isSmallScreen = useDrawerViewport();
@@ -568,6 +526,7 @@ export default function InsightsView() {
   const insightsParams = useMemo<TInsightsParams>(() => {
     const params: TInsightsParams = {
       page,
+      mediaPage,
       pageSize: 10,
       search,
       timeZone,
@@ -582,7 +541,7 @@ export default function InsightsView() {
       };
     }
     return { ...params, range };
-  }, [customDateRange, page, range, search, selectedAgentIds, timeZone]);
+  }, [customDateRange, page, mediaPage, range, search, selectedAgentIds, timeZone]);
   const displayDateRange = useMemo(
     () => customDateRange ?? getShortcutDateRange(range),
     [customDateRange, range],
@@ -688,6 +647,7 @@ export default function InsightsView() {
     dateRangeSelectionTimeout.current = window.setTimeout(() => {
       setCustomDateRange({ startDate: new Date(startDate), endDate: new Date(endDate) });
       setPage(1);
+      setMediaPage(1);
       dateRangeSelectionTimeout.current = undefined;
     }, dateRangeSelectionDelayMs);
   };
@@ -836,6 +796,7 @@ export default function InsightsView() {
                   setRange(item.value);
                   setCustomDateRange(undefined);
                   setPage(1);
+                  setMediaPage(1);
                 }}
               >
                 {localize(item.labelKey)}
@@ -887,6 +848,14 @@ export default function InsightsView() {
                   <KpiCard key={card.id} card={card} locale={locale} />
                 ))}
               </div>
+              {data.media && (
+                <MediaInsights
+                  data={data.media}
+                  locale={locale}
+                  isFetching={insights.isFetching}
+                  onPage={setMediaPage}
+                />
+              )}
               <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
                 <TopUsersTable rows={data.topUsers} localize={localize} locale={locale} />
                 <ChurnedUsersTable rows={data.churnedUsers} localize={localize} locale={locale} />

@@ -6,25 +6,29 @@ import { cn } from '~/utils';
 
 function Sidebar({
   links,
+  activeId,
+  routeActiveId,
   expanded,
   width,
   minWidth,
   maxWidth,
   onCollapse,
   onExpand,
-  onLeaveInsights,
+  onLeaveRoute,
   switchToHistory,
   onResizeStart,
   onResizeKeyboard,
 }: {
   links: NavLink[];
+  activeId?: string;
+  routeActiveId?: string;
   expanded: boolean;
   width: number;
   minWidth: number;
   maxWidth: number;
   onCollapse: () => void;
   onExpand: () => void;
-  onLeaveInsights: () => void;
+  onLeaveRoute: () => void;
   switchToHistory: boolean;
   onResizeStart: (e: React.MouseEvent) => void;
   onResizeKeyboard: (direction: 'shrink' | 'grow') => void;
@@ -34,10 +38,11 @@ function Sidebar({
       <div className="flex h-full w-full overflow-hidden">
         <ExpandedPanel
           links={links}
+          routeActiveId={routeActiveId}
           expanded={expanded}
           onCollapse={onCollapse}
           onExpand={onExpand}
-          onLeaveInsights={onLeaveInsights}
+          onLeaveRoute={onLeaveRoute}
           switchToHistory={switchToHistory}
         />
         <nav
@@ -51,8 +56,9 @@ function Sidebar({
           )}
           style={{ transition: expanded ? 'opacity 200ms ease 80ms' : 'opacity 150ms ease' }}
           aria-hidden={!expanded}
+          inert={!expanded ? '' : undefined}
         >
-          <SidePanelNav links={links} />
+          <SidePanelNav links={links} activeId={activeId} />
         </nav>
       </div>
       <div

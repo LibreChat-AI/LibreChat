@@ -95,12 +95,12 @@ const sendError = async (req, res, options, callback) => {
     return sendEvent(res, {
       final: true,
       requestMessage: sanitizeMessageForTransmit(query?.[0] ?? requestMessage),
-      responseMessage: errorMessage,
+      responseMessage: sanitizeMessageForTransmit(errorMessage),
       conversation: convo,
     });
   }
 
-  handleError(res, errorMessage);
+  handleError(res, sanitizeMessageForTransmit(errorMessage));
 };
 
 /**

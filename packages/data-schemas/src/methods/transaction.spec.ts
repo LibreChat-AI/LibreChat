@@ -4,6 +4,7 @@ import type { IBalance } from '..';
 import type { ITransaction } from '~/schema/transaction';
 import type { TxData } from './transaction';
 import { createTxMethods, tokenValues, premiumTokenValues, defaultRate } from './tx';
+import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { matchModelName, findMatchingPattern } from './test-helpers';
 import { createSpendTokensMethods } from './spendTokens';
 import { createTransactionMethods } from './transaction';
@@ -33,6 +34,11 @@ let releaseBalanceReservation: ReturnType<
 let findBalanceByUser: ReturnType<typeof createTransactionMethods>['findBalanceByUser'];
 let upsertBalanceFields: ReturnType<typeof createTransactionMethods>['upsertBalanceFields'];
 let updateBalance: ReturnType<typeof createTransactionMethods>['updateBalance'];
+let prepareBalance: ReturnType<typeof createTransactionMethods>['prepareBalance'];
+let deleteBalances: ReturnType<typeof createTransactionMethods>['deleteBalances'];
+let upsertCreditsTransaction: ReturnType<
+  typeof createTransactionMethods
+>['upsertCreditsTransaction'];
 let getMultiplier: ReturnType<typeof createTxMethods>['getMultiplier'];
 let getCacheMultiplier: ReturnType<typeof createTxMethods>['getCacheMultiplier'];
 
@@ -64,6 +70,9 @@ beforeAll(async () => {
   findBalanceByUser = transactionMethods.findBalanceByUser;
   upsertBalanceFields = transactionMethods.upsertBalanceFields;
   updateBalance = transactionMethods.updateBalance;
+  prepareBalance = transactionMethods.prepareBalance;
+  deleteBalances = transactionMethods.deleteBalances;
+  upsertCreditsTransaction = transactionMethods.upsertCreditsTransaction;
 
   const spendMethods = createSpendTokensMethods(mongoose, {
     createTransaction: transactionMethods.createTransaction,
@@ -1675,8 +1684,8 @@ describe('Balance Reservations', () => {
     test('records the ledger transaction of a refill whose first recording failed', async () => {
       const user = new mongoose.Types.ObjectId();
       await Balance.create({ user, ...refillable });
-      const save = jest
-        .spyOn(Transaction.prototype, 'save')
+      const writeReceipt = jest
+        .spyOn(Transaction.collection, 'findOneAndUpdate')
         .mockRejectedValue(new Error('ledger unavailable'));
 
       await expect(reserve(user.toString(), 150)).resolves.toEqual({
@@ -1688,7 +1697,7 @@ describe('Balance Reservations', () => {
       expect(applied?.pendingRefill?.rawAmount).toBe(1000);
       expect(await Transaction.countDocuments({ user, context: 'autoRefill' })).toBe(0);
 
-      save.mockRestore();
+      writeReceipt.mockRestore();
       await reserve(user.toString(), 150);
 
       const settled = await readState(user);
@@ -1723,5 +1732,224 @@ describe('Balance Reservations', () => {
       expect((await readState(user))?.pendingRefill).toBeUndefined();
       expect(await Transaction.countDocuments({ user, context: 'autoRefill' })).toBe(1);
     });
+  });
+});
+
+describe('shared balance and credits contracts', () => {
+  test.each([null, 'tenant-a'])(
+    'keeps a background auto-refill receipt in the loaded balance tenant %s',
+    async (tenantId) => {
+      const user = String(new mongoose.Types.ObjectId());
+      await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, async () => {
+        await Balance.create({
+          user,
+          tenantId,
+          tokenCredits: 0,
+          autoRefillEnabled: true,
+          refillAmount: 1000,
+          refillIntervalValue: 1,
+          refillIntervalUnit: 'days',
+          lastRefill: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
+        });
+        await expect(prepareBalance({ user, tenantId, amount: 100 })).resolves.toEqual({
+          reserved: true,
+          balance: 1000,
+        });
+        const receipts = await Transaction.find({ user, context: 'autoRefill' }).lean();
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0].tenantId ?? null).toBe(tenantId);
+        expect(receipts[0].tokenValue).toBe(1000);
+        expect(
+          (await Balance.findOne({ user, tenantId }).select('+pendingRefill').lean())
+            ?.pendingRefill,
+        ).toBeUndefined();
+      });
+    },
+  );
+
+  test('prepares the explicit default tenant without acquiring a reservation', async () => {
+    const user = new mongoose.Types.ObjectId();
+    await tenantStorage.run({ tenantId: SYSTEM_TENANT_ID }, async () => {
+      await Balance.create({ user, tenantId: 'another-tenant', tokenCredits: 900 });
+      await Balance.create({ user, tenantId: null, tokenCredits: 200 });
+    });
+    await expect(
+      prepareBalance({ user: String(user), tenantId: null, amount: 100 }),
+    ).resolves.toEqual({ reserved: true, balance: 200 });
+    const stored = await Balance.findOne({ user, tenantId: null })
+      .select('+reservations +reservedCredits +mediaHolds +mediaGeneration')
+      .lean();
+    expect(stored?.reservations).toBeUndefined();
+    expect(stored?.reservedCredits).toBeUndefined();
+    expect(stored?.mediaHolds).toBeUndefined();
+    expect(stored?.mediaGeneration).toBeUndefined();
+    await expect(
+      prepareBalance({ user: String(user), tenantId: null, amount: 300 }),
+    ).resolves.toEqual({ reserved: false, balance: 200 });
+  });
+
+  test('reports held credits separately from debt and excludes both at admission', async () => {
+    const user = new mongoose.Types.ObjectId();
+    await Balance.create({
+      user,
+      tokenCredits: 1000,
+      reservedCredits: 800,
+      mediaDebtCredits: 100,
+      reservations: [{ id: 'chat', amount: 300, expiresAt: new Date(Date.now() + 60_000) }],
+      mediaHolds: [
+        {
+          settlementId: 'settlement',
+          jobId: 'media',
+          amount: 500,
+          reviewAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const stored = await findBalanceByUser(String(user), { includeReservedCredits: true });
+    expect(stored).toEqual(
+      expect.objectContaining({
+        tokenCredits: 1000,
+        reservedCredits: 900,
+        mediaHeldCredits: 500,
+        mediaDebtCredits: 100,
+        availableCredits: 100,
+      }),
+    );
+    expect(stored).not.toHaveProperty('mediaHolds');
+    await expect(prepareBalance({ user: String(user), amount: 101 })).resolves.toEqual({
+      reserved: false,
+      balance: 100,
+    });
+    await expect(
+      reserveBalance({
+        user: String(user),
+        amount: 101,
+        reservationId: 'denied',
+        expiresAt: new Date(Date.now() + 60_000),
+      }),
+    ).resolves.toEqual({ reserved: false, balance: 100 });
+  });
+
+  test('preserves balances that still hold media credits during a bulk deletion', async () => {
+    const held = await Balance.create({
+      user: new mongoose.Types.ObjectId(),
+      tokenCredits: 100,
+      mediaHolds: [
+        {
+          settlementId: 'settlement',
+          jobId: 'media',
+          amount: 50,
+          reviewAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const ordinary = await Balance.create({
+      user: new mongoose.Types.ObjectId(),
+      tokenCredits: 100,
+    });
+    expect(await deleteBalances({ _id: { $in: [held._id, ordinary._id] } })).toEqual({
+      acknowledged: true,
+      deletedCount: 1,
+      deferredCount: 1,
+    });
+    expect(await Balance.exists({ _id: held._id })).toBeTruthy();
+    expect(await Balance.exists({ _id: ordinary._id })).toBeNull();
+    expect(await deleteBalances({ _id: ordinary._id })).toEqual({
+      acknowledged: true,
+      deletedCount: 0,
+      deferredCount: 0,
+    });
+  });
+
+  test('publishes a fixed credits receipt once and preserves the first financial effect', async () => {
+    const user = String(new mongoose.Types.ObjectId());
+    const transactionId = String(new mongoose.Types.ObjectId());
+    const receipt = {
+      transactionId,
+      user,
+      tenantId: null,
+      context: 'media',
+      rawAmount: -25,
+      tokenValue: -25,
+      mediaFingerprint: 'first',
+    };
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => upsertCreditsTransaction(receipt)),
+    );
+    expect(results).toEqual(Array.from({ length: 8 }, () => ({ fingerprint: 'first' })));
+    await expect(
+      upsertCreditsTransaction({ ...receipt, tokenValue: -99, mediaFingerprint: 'second' }),
+    ).resolves.toEqual({ fingerprint: 'first' });
+    expect(await Transaction.countDocuments({ _id: transactionId })).toBe(1);
+    expect(await Transaction.findById(transactionId).lean()).toEqual(
+      expect.objectContaining({
+        tokenType: 'credits',
+        rate: 1,
+        rawAmount: -25,
+        tokenValue: -25,
+      }),
+    );
+    expect(
+      (await Transaction.collection.findOne({ _id: new mongoose.Types.ObjectId(transactionId) }))
+        ?.tenantId,
+    ).toBeUndefined();
+    await expect(
+      upsertCreditsTransaction({ ...receipt, tenantId: 'another-tenant' }),
+    ).rejects.toMatchObject({ code: 11000 });
+  });
+
+  test('uses a unique settlement key while preserving chronological transaction IDs', async () => {
+    await Transaction.createIndexes();
+    const user = String(new mongoose.Types.ObjectId());
+    await mongoose.models.MediaOwner.create({
+      ownerId: user,
+      status: 'active',
+      workIds: [],
+      updatedAt: new Date(),
+    });
+    const earlier = await Transaction.create({ user, tokenType: 'credits', rawAmount: 1 });
+    const receipt = {
+      user,
+      tenantId: null,
+      mediaSettlementId: 'stable-settlement',
+      context: 'image_generation',
+      rawAmount: -25,
+      tokenValue: -25,
+      mediaFingerprint: 'first',
+    };
+    await Promise.all(Array.from({ length: 8 }, () => upsertCreditsTransaction(receipt)));
+    const later = await Transaction.create({ user, tokenType: 'credits', rawAmount: 2 });
+    const rows = await Transaction.find({ user }).sort({ _id: 1 }).lean();
+    expect(rows.map((row) => row._id.toString())).toEqual([
+      earlier._id.toString(),
+      rows[1]._id.toString(),
+      later._id.toString(),
+    ]);
+    expect(rows).toHaveLength(3);
+    expect(rows[1].mediaSettlementId).toBe(receipt.mediaSettlementId);
+    expect(rows[1]).not.toHaveProperty('tenantId');
+    expect(rows[1]._id.getTimestamp().getTime()).toBeGreaterThanOrEqual(Date.now() - 5000);
+    await expect(
+      upsertCreditsTransaction({ ...receipt, mediaFingerprint: 'changed' }),
+    ).resolves.toEqual({ fingerprint: 'first' });
+    await expect(
+      tenantStorage.run({ tenantId: 'another-tenant' }, () =>
+        upsertCreditsTransaction({ ...receipt, mediaSettlementId: 'wrong-scope' }),
+      ),
+    ).rejects.toThrow('tenant does not match');
+    expect(await Transaction.countDocuments({ mediaSettlementId: 'wrong-scope' })).toBe(0);
+
+    const legacyId = new mongoose.Types.ObjectId('1234567890abcdef12345678');
+    await Transaction.create({
+      ...receipt,
+      _id: legacyId,
+      mediaSettlementId: 'legacy-settlement',
+      tokenType: 'credits',
+    });
+    await upsertCreditsTransaction({ ...receipt, mediaSettlementId: 'legacy-settlement' });
+    expect(await Transaction.countDocuments({ mediaSettlementId: 'legacy-settlement' })).toBe(1);
+    expect(
+      (await Transaction.findOne({ mediaSettlementId: 'legacy-settlement' }).lean())?._id,
+    ).toEqual(legacyId);
   });
 });

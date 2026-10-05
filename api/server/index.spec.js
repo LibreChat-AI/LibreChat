@@ -16,6 +16,8 @@ jest.mock('~/server/services/Config', () => ({
       dist: '/tmp/dist',
       fonts: '/tmp/fonts',
       assets: '/tmp/assets',
+      imageOutput: '/tmp/images',
+      publicPath: '/tmp',
     },
     fileStrategy: 'local',
     imageOutputType: 'PNG',
@@ -122,6 +124,22 @@ describe('Telemetry wiring', () => {
 
 describe('Startup readiness wiring', () => {
   const source = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
+
+  it('constructs media after YAML startup projection and starts its worker after listening in both entries', () => {
+    const experimental = fs.readFileSync(path.join(__dirname, 'experimental.js'), 'utf8');
+    for (const contents of [source, experimental]) {
+      const checks = contents.indexOf('await performStartupChecks(appConfig);');
+      const media = contents.indexOf('const mediaRuntime = mediaApplication.initialize(');
+      const listen = contents.indexOf('const server = app.listen');
+      const start = contents.indexOf('void startMediaWorker(mediaRuntime.worker, logger);');
+      expect(checks).toBeGreaterThan(-1);
+      expect(media).toBeGreaterThan(checks);
+      expect(listen).toBeGreaterThan(media);
+      expect(start).toBeGreaterThan(listen);
+      expect(contents).toContain('mediaApplication.mount(app, mediaRuntime);');
+    }
+    expect(experimental).toContain('() => clusterShutdownDeadlineAt');
+  });
 
   it('starts code-environment lifecycle reconciliation only after Mongo connects', () => {
     const connectIndex = source.indexOf('await connectDb();');
@@ -281,7 +299,7 @@ describe('Server Configuration', () => {
     const fs = require('fs');
     const path = require('path');
 
-    const dirs = ['/tmp/dist', '/tmp/fonts', '/tmp/assets'];
+    const dirs = ['/tmp/dist', '/tmp/fonts', '/tmp/assets', '/tmp/images'];
     dirs.forEach((dir) => {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -320,6 +338,13 @@ describe('Server Configuration', () => {
     const response = await request(app).get('/health');
     expect(response.status).toBe(200);
     expect(response.text).toBe('OK');
+  });
+
+  it('mounts media behind authentication while the feature is inactive', async () => {
+    expect(app.locals.mediaRuntime).toBeDefined();
+    expect(app.locals.mediaRuntime.worker.available).toBe(false);
+    await request(app).get('/api/media/catalog').expect(401);
+    await request(app).get('/api/media/assets/missing/content').expect(403);
   });
 
   it('should set baseline security headers on health checks', async () => {

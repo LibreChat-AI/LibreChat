@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { AxiosError, AxiosHeaders } from 'axios';
 import { generateKeyPairSync } from 'node:crypto';
+import { FileSources } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 
@@ -187,7 +188,11 @@ describe('createProvisionService', () => {
 
       await service.provisionToCodeEnv({
         req,
-        file: makeFile({ filepath: 'https://old.example/file', storageKey: 'uploads/u1/data.csv' }),
+        file: makeFile({
+          source: FileSources.s3,
+          filepath: 'https://old.example/file',
+          storageKey: 'uploads/u1/data.csv',
+        }),
       });
 
       expect(getDownloadStream).toHaveBeenCalledWith(req, 'uploads/u1/data.csv', {

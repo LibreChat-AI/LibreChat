@@ -1,6 +1,7 @@
 import { atom } from 'jotai';
 import { atomWithStorage } from 'jotai/utils';
 import type { SyncStorage } from 'jotai/vanilla/utils/atomWithStorage';
+import type { ZodType, ZodTypeDef } from 'zod';
 
 /**
  * Create a simple atom with localStorage persistence
@@ -148,4 +149,57 @@ export function initializeFromStorage<T>(
 
     return defaultValue;
   }
+}
+
+/** Validates persisted data and keeps in-memory edits usable when browser storage fails. */
+export function createValidatedStorage<T>(
+  storage: () => Storage,
+  schema: ZodType<T, ZodTypeDef, unknown>,
+): SyncStorage<T> {
+  const memory = new Map<string, T>();
+  const cleared = new Set<string>();
+  return {
+    getItem(key, initialValue) {
+      if (cleared.has(key)) return initialValue;
+      if (memory.has(key)) return memory.get(key)!;
+      try {
+        const raw = storage().getItem(key);
+        const parsed = raw == null ? undefined : schema.safeParse(JSON.parse(raw));
+        return parsed?.success ? parsed.data : initialValue;
+      } catch {
+        return initialValue;
+      }
+    },
+    setItem(key, value) {
+      cleared.delete(key);
+      memory.set(key, value);
+      try {
+        storage().setItem(key, JSON.stringify(value));
+      } catch {
+        /* Storage is optional. */
+      }
+    },
+    removeItem(key) {
+      cleared.add(key);
+      memory.delete(key);
+      try {
+        storage().removeItem(key);
+      } catch {
+        /* Storage is optional. */
+      }
+    },
+  };
+}
+
+export function createSessionAtom<T>(
+  key: string,
+  initialValue: T,
+  schema: ZodType<T, ZodTypeDef, unknown>,
+) {
+  return atomWithStorage(
+    key,
+    initialValue,
+    createValidatedStorage(() => sessionStorage, schema),
+    { getOnInit: true },
+  );
 }

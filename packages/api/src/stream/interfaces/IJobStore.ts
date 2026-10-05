@@ -1,13 +1,14 @@
 import type {
-  IAgentEventActorContextMeta,
-  ICompactionSemanticIndexProjection,
-} from '@librechat/data-schemas';
-import type {
   Agents,
   TFile,
+  NativeSignatures,
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
+import type {
+  IAgentEventActorContextMeta,
+  ICompactionSemanticIndexProjection,
+} from '@librechat/data-schemas';
 import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
@@ -208,6 +209,8 @@ export interface SerializableJobData {
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
   contextMeta?: IAgentEventActorContextMeta;
+  /** Private transient replay snapshot for cross-replica stop persistence; never a public event. */
+  nativeSignatures?: NativeSignatures;
   /**
    * Whether the replica that OWNS this generation can seal mid-stream
    * (`PreemptBoundary` wiring). Recorded at createJob because the steer route
@@ -497,6 +500,7 @@ export type JobMetadataPatch = Partial<
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'
+    | 'nativeSignatures'
     | 'preemptCapable'
     | 'steerQuotesCapable'
     | 'steerQuotesExecutionId'
@@ -772,6 +776,8 @@ export interface ParkedSteerClaim {
  * ```
  */
 export interface UsageMetadata {
+  /** Provider-call identity, shared by normal and failure-only native usage handoffs. */
+  modelRunId?: string;
   /** Logical usage bucket for accounting/reporting. Defaults to model response usage. */
   usage_type?: 'message' | 'summarization' | 'subagent' | 'sequential';
   /** Total input tokens (prompt tokens) */

@@ -9,6 +9,7 @@ import {
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
 import type { StoredFileRef } from '~/storage/path';
 import { resolveDownloadPath } from '~/storage/path';
+import { toPublicFile } from '../public';
 
 export class AttachmentObjectNotFoundError extends Error {
   readonly code = 'ATTACHMENT_OBJECT_NOT_FOUND';
@@ -209,14 +210,14 @@ export async function getFileStream<T extends ProcessedFile['metadata'] & Stored
     return {
       file,
       content,
-      metadata: {
+      metadata: toPublicFile({
         file_id: file.file_id,
         temp_file_id: file.temp_file_id,
         filepath: file.filepath,
         source: file.source,
         filename: file.filename,
         type: file.type,
-      },
+      }),
     };
   } catch (error) {
     if (isStorageNotFoundError(error)) {

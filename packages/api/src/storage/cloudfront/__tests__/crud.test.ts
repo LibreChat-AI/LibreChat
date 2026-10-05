@@ -7,6 +7,8 @@ import type { ServerRequest } from '~/types';
 const mockGetCloudFrontConfig = jest.fn<CloudFrontFullConfig | null, []>();
 const mockGetS3Key = jest.fn();
 const mockSaveBufferToS3 = jest.fn();
+const mockPlanS3File = jest.fn();
+const mockSaveStreamToS3 = jest.fn();
 const mockSaveURLToS3WithMetadata = jest.fn();
 const mockUploadFileToS3 = jest.fn();
 const mockDeleteFileFromS3 = jest.fn();
@@ -27,6 +29,8 @@ jest.mock('~/storage/s3/crud', () => ({
   parseS3Key: mockParseS3Key,
   getS3Key: mockGetS3Key,
   saveBufferToS3: mockSaveBufferToS3,
+  planS3File: mockPlanS3File,
+  saveStreamToS3: mockSaveStreamToS3,
   saveURLToS3WithMetadata: mockSaveURLToS3WithMetadata,
   uploadFileToS3: mockUploadFileToS3,
   deleteFileFromS3: mockDeleteFileFromS3,
@@ -90,6 +94,39 @@ describe('CloudFront CRUD', () => {
       },
     );
     mockGetCloudFrontConfig.mockReturnValue(makeConfig());
+  });
+
+  it('plans and writes streams with the same CloudFront region and inline policy', async () => {
+    const { planCloudFrontFile, saveStreamToCloudFront } = await import(
+      '~/storage/cloudfront/crud'
+    );
+    mockGetCloudFrontConfig.mockReturnValue(makeConfig({ includeRegionInPath: true }));
+    const params = {
+      userId: 'owner',
+      tenantId: 'tenant',
+      fileName: 'chosen.png',
+      basePath: 'images',
+      useInlinePath: true,
+    };
+    await planCloudFrontFile(params);
+    await saveStreamToCloudFront({ ...params, path: '/temporary/different-name' });
+    expect(mockPlanS3File).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...params,
+        includeRegionInPath: true,
+        storageRegion: 'us-east-1',
+        urlBuilder: expect.any(Function),
+      }),
+    );
+    expect(mockSaveStreamToS3).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...params,
+        includeRegionInPath: true,
+        storageRegion: 'us-east-1',
+        path: '/temporary/different-name',
+        urlBuilder: expect.any(Function),
+      }),
+    );
   });
 
   describe('getCloudFrontURL', () => {

@@ -1,6 +1,7 @@
 import { EModelEndpoint } from 'librechat-data-provider';
 import { useFormContext, Controller } from 'react-hook-form';
 import InputWithLabel from './InputWithLabel';
+import { useLocalize } from '~/hooks';
 
 const CustomEndpoint = ({
   endpoint,
@@ -9,7 +10,11 @@ const CustomEndpoint = ({
   endpoint: EModelEndpoint | string;
   userProvideURL?: boolean | null;
 }) => {
-  const { control } = useFormContext();
+  const {
+    control,
+    formState: { errors },
+  } = useFormContext();
+  const localize = useLocalize();
   return (
     <form className="flex-wrap">
       <Controller
@@ -19,13 +24,18 @@ const CustomEndpoint = ({
           <InputWithLabel
             id="apiKey"
             {...field}
-            label={`${endpoint} API Key`}
+            label={localize('com_endpoint_config_api_key_label', { name: endpoint })}
             labelClassName="mb-1"
             inputClassName="mb-2"
             secret
           />
         )}
       />
+      {errors.apiKey?.message && (
+        <p role="alert" className="text-text-destructive text-sm">
+          {String(errors.apiKey.message)}
+        </p>
+      )}
       {userProvideURL && (
         <Controller
           name="baseURL"
@@ -34,11 +44,16 @@ const CustomEndpoint = ({
             <InputWithLabel
               id="baseURL"
               {...field}
-              label={`${endpoint} API URL`}
+              label={localize('com_endpoint_config_api_url_label', { name: endpoint })}
               labelClassName="mb-1"
             />
           )}
         />
+      )}
+      {errors.baseURL?.message && (
+        <p role="alert" className="text-text-destructive text-sm">
+          {String(errors.baseURL.message)}
+        </p>
       )}
     </form>
   );

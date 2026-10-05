@@ -72,6 +72,7 @@ export enum PermissionTypes {
    * Type for Scheduled Chats Permissions
    */
   SCHEDULES = 'SCHEDULES',
+  MEDIA = 'MEDIA',
 }
 
 /**
@@ -97,6 +98,7 @@ export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> =
   [PermissionTypes.SKILLS]: 'skills',
   [PermissionTypes.SHARED_LINKS]: 'sharedLinks',
   [PermissionTypes.SCHEDULES]: 'schedules',
+  [PermissionTypes.MEDIA]: 'media',
 };
 
 /** Set of interface config field names that correspond to role permissions. */
@@ -265,6 +267,12 @@ export const schedulesPermissionsSchema = z.object({
 });
 export type TSchedulesPermissions = z.infer<typeof schedulesPermissionsSchema>;
 
+export const mediaPermissionsSchema = z.object({
+  [Permissions.USE]: z.boolean().default(false),
+  [Permissions.CREATE]: z.boolean().default(false),
+});
+export type TMediaPermissions = z.infer<typeof mediaPermissionsSchema>;
+
 export const sharedLinksPermissionsSchema = z.object({
   [Permissions.CREATE]: z.boolean().default(true),
   [Permissions.SHARE]: z.boolean().default(true),
@@ -291,4 +299,5 @@ export const permissionsSchema = z.object({
   [PermissionTypes.SKILLS]: skillPermissionsSchema,
   [PermissionTypes.SHARED_LINKS]: sharedLinksPermissionsSchema,
   [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema,
+  [PermissionTypes.MEDIA]: mediaPermissionsSchema,
 });

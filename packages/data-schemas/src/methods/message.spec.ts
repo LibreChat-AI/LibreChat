@@ -78,6 +78,42 @@ function rejectUpdateArrays(beforeUpdate?: () => Promise<void>) {
   });
 }
 
+describe('native text mutation identity', () => {
+  test.each(['update', 'save', 'bulk', 'record'])(
+    '%s detaches only corrected text at the persistence boundary',
+    async (writer) => {
+      const conversationId = uuidv4();
+      const messageId = uuidv4();
+      const content = [
+        {
+          type: 'text',
+          text: 'corrected caption',
+          native_media: { continuationRef: 'original-caption' },
+        },
+        {
+          type: 'image_file',
+          image_file: { file_id: 'original-image' },
+          native_media: { continuationRef: 'original-image' },
+        },
+      ];
+      await Message.create({ user: 'native-editor', conversationId, messageId, content });
+      const mutation = {
+        messageId,
+        conversationId,
+        content,
+        userSubmittedPaths: ['/content/0/text'],
+      };
+      if (writer === 'update') await updateMessage('native-editor', mutation);
+      if (writer === 'save') await saveMessage({ userId: 'native-editor' }, mutation);
+      if (writer === 'bulk') await bulkSaveMessages([{ ...mutation, user: 'native-editor' }]);
+      if (writer === 'record') await recordMessage({ ...mutation, user: 'native-editor' });
+      const stored = await Message.findOne({ user: 'native-editor', messageId }).lean();
+      expect(stored?.content?.[0]).toEqual({ type: 'text', text: 'corrected caption' });
+      expect(stored?.content?.[1]).toEqual(content[1]);
+    },
+  );
+});
+
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
   const mongoUri = mongoServer.getUri();

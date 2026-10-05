@@ -852,7 +852,36 @@ export function mergeConfigOverrides(baseConfig: AppConfig, configs: IConfig[]):
     }
   }
 
-  return preserveRuntimeStops(baseConfig, merged);
+  return preserveRuntimeStops(baseConfig, preserveInterfacePermissions(baseConfig, merged));
+}
+
+/** Permission seeds are base-owned even when a legacy override tombstones the whole interface. */
+function preserveInterfacePermissions<T extends AppConfig>(baseConfig: AppConfig, merged: T): T {
+  const base = baseConfig.interfaceConfig as AnyObject | undefined;
+  if (!base) return merged;
+  const result = { ...merged.interfaceConfig } as AnyObject;
+  for (const field of INTERFACE_PERMISSION_FIELDS) {
+    const value = base[field];
+    if (value === undefined) continue;
+    if (RUNTIME_CONFIG_INTERFACE_FIELDS.has(field)) {
+      if (result[field] === undefined) result[field] = value;
+      continue;
+    }
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+      result[field] = value;
+      continue;
+    }
+    const current = result[field];
+    const composite = {
+      ...value,
+      ...(current && typeof current === 'object' ? current : {}),
+    } as AnyObject;
+    for (const permission of PERMISSION_SUB_KEYS) {
+      if (permission in value) composite[permission] = (value as AnyObject)[permission];
+    }
+    result[field] = composite;
+  }
+  return { ...merged, interfaceConfig: result };
 }
 
 /** Whether a runtime-config interface field reads as OFF in either of its two shapes:

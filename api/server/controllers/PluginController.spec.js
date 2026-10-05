@@ -1,3 +1,4 @@
+jest.mock('~/models', () => ({ getRoleByName: jest.fn() }));
 const { getCachedTools, getAppConfig } = require('~/server/services/Config');
 
 jest.mock('@librechat/data-schemas', () => ({

@@ -1,10 +1,12 @@
 import React from 'react';
 import '@testing-library/jest-dom';
 import { render, screen } from 'test/layout-test-utils';
+import { useResumeOnLoad } from '~/hooks';
 import ChatView from '../ChatView';
 
 const mockParams = jest.fn();
 const mockConversation = jest.fn();
+const mockMessagesQuery = jest.fn();
 const mockChatFormProps = jest.fn();
 
 jest.mock('react-router-dom', () => ({
@@ -19,7 +21,10 @@ jest.mock('~/hooks/AuthContext', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetMessagesByConvoId: () => ({ data: null, isLoading: false, isFetching: false }),
+  useGetMessagesByConvoId: (...args: unknown[]) => {
+    mockMessagesQuery(...args);
+    return { data: null, isLoading: false, isFetching: false };
+  },
   useProjectQuery: () => ({ data: undefined }),
 }));
 
@@ -44,6 +49,9 @@ jest.mock('../Presentation', () => ({
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 jest.mock('../Header', () => ({ __esModule: true, default: () => <div /> }));
+jest.mock('../Studio', () => ({
+  StudioProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 jest.mock('../Footer', () => ({
   __esModule: true,
   default: () => <div />,
@@ -67,14 +75,14 @@ describe('ChatView page heading', () => {
   });
 
   test('exposes a single h1 to assistive technology', () => {
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     const headings = screen.getAllByRole('heading', { level: 1 });
     expect(headings).toHaveLength(1);
   });
 
   test('announces a localized new chat heading on the landing page', () => {
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'New chat' })).toBeInTheDocument();
   });
@@ -83,16 +91,21 @@ describe('ChatView page heading', () => {
     mockParams.mockReturnValue({ conversationId: 'convo-1' });
     mockConversation.mockReturnValue({ conversationId: 'convo-1', title: 'Deploy checklist' });
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'Deploy checklist' })).toBeInTheDocument();
+    expect(mockMessagesQuery).toHaveBeenLastCalledWith(
+      'convo-1',
+      { enabled: false, refetchOnMount: false },
+      { isStreaming: false },
+    );
   });
 
   test('falls back to the localized heading when a title is blank', () => {
     mockParams.mockReturnValue({ conversationId: 'convo-1' });
     mockConversation.mockReturnValue({ conversationId: 'convo-1', title: '   ' });
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'New chat' })).toBeInTheDocument();
   });
@@ -100,7 +113,7 @@ describe('ChatView page heading', () => {
   test('prefers the localized heading over a stale title on the landing page', () => {
     mockConversation.mockReturnValue({ conversationId: 'new', title: 'New Chat' });
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'New chat' })).toBeInTheDocument();
   });
@@ -109,7 +122,7 @@ describe('ChatView page heading', () => {
     mockParams.mockReturnValue({ conversationId: 'convo-2' });
     mockConversation.mockReturnValue({ conversationId: 'convo-1', title: 'Previous chat' });
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(screen.getByRole('heading', { level: 1, name: 'New chat' })).toBeInTheDocument();
     expect(
@@ -132,7 +145,7 @@ describe('ChatView composer preferences', () => {
   test('reads the persisted enterToSend preference and passes it into ChatForm', () => {
     localStorage.setItem('enterToSend', JSON.stringify(false));
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ enterToSend: false }));
   });
@@ -142,7 +155,7 @@ describe('ChatView composer preferences', () => {
   test('passes the persisted Auto Send Text preference and the speech init state', () => {
     localStorage.setItem('autoSendText', JSON.stringify(3));
 
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(mockChatFormProps).toHaveBeenCalledWith(
       expect.objectContaining({ autoSendText: 3, speechSettingsInitialized: false }),
@@ -150,12 +163,12 @@ describe('ChatView composer preferences', () => {
   });
 
   test.each([true, false])('passes routePending=%p into ChatForm', (routePending) => {
-    render(<ChatView routePending={routePending} />);
+    render(<ChatView messagesReady routePending={routePending} />);
     expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ routePending }));
   });
 
   test('falls back to the atom default when nothing is persisted', () => {
-    render(<ChatView />);
+    render(<ChatView messagesReady />);
 
     expect(mockChatFormProps).toHaveBeenCalledWith(expect.objectContaining({ enterToSend: true }));
   });
@@ -172,7 +185,7 @@ describe('ChatView composer column', () => {
      run. The gutter that lines the column up with the messages has to be
      reserved with padding instead. */
   test('reserves the message column gutter without becoming a scroll container', () => {
-    const { container } = render(<ChatView />);
+    const { container } = render(<ChatView messagesReady />);
 
     const composerColumn = container.querySelector('.scrollbar-gutter-spacer');
 
@@ -182,11 +195,20 @@ describe('ChatView composer column', () => {
   });
 
   test('layers composer overlays above positioned tool glyphs in the message column', () => {
-    const { container } = render(<ChatView />);
+    const { container } = render(<ChatView messagesReady />);
 
     const composerColumn = container.querySelector('.scrollbar-gutter-spacer');
 
     expect(composerColumn).toHaveClass('[view-transition-name:chat-form]');
     expect(composerColumn).toHaveClass('relative', 'z-10');
   });
+});
+
+test('waits for the fetch owner before resuming from an idle cache subscriber', () => {
+  mockParams.mockReturnValue({ conversationId: 'convo-1' });
+  mockConversation.mockReturnValue({ conversationId: 'convo-1', title: 'Deploy checklist' });
+  const view = render(<ChatView messagesReady={false} />);
+  expect(jest.mocked(useResumeOnLoad).mock.calls.map((call) => call[3])).not.toContain(true);
+  view.rerender(<ChatView messagesReady />);
+  expect(jest.mocked(useResumeOnLoad).mock.calls.at(-1)?.[3]).toBe(true);
 });

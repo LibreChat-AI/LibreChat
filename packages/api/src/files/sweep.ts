@@ -3,6 +3,7 @@ import {
   EModelEndpoint,
   checkOpenAIStorage,
   defaultAssistantsVersion,
+  fileRetentionSweepLimitSchema,
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 
@@ -266,7 +267,7 @@ export async function resolveExpiredFileSweepConfig({
 }
 
 export async function sweepExpiredFiles(
-  { appConfig, limit = 100, loadAppConfig }: ExpiredFileSweepOptions | undefined = {},
+  { appConfig, limit, loadAppConfig }: ExpiredFileSweepOptions | undefined = {},
   {
     getExpiredFiles,
     processDeleteRequest,
@@ -281,7 +282,10 @@ export async function sweepExpiredFiles(
    * after the deletion I/O lands just past the next scheduled pass and the
    * file waits a whole extra interval. */
   const sweepStartedAt = Date.now();
-  const files = (await getExpiredFiles(limit)) ?? [];
+  const batchLimit = fileRetentionSweepLimitSchema.parse(
+    limit ?? appConfig?.fileConfig?.retentionSweepLimit,
+  );
+  const files = (await getExpiredFiles(batchLimit)) ?? [];
   let resolvedAppConfig = appConfig;
   let deleted = 0;
   let failed = 0;
@@ -373,7 +377,12 @@ export async function sweepExpiredFiles(
 export function createClusteredFileSweep(
   distributed: boolean,
   start: (options: ExpiredFileSweepOptions) => NodeJS.Timeout | null,
-): { configure: (options: ExpiredFileSweepOptions) => void; assign: () => void } {
+  leader?: () => Promise<boolean>,
+): {
+  configure: (options: ExpiredFileSweepOptions) => void;
+  assign: () => void;
+  isLeader: () => Promise<boolean>;
+} {
   let eligible = distributed;
   let started = false;
   let options: ExpiredFileSweepOptions | undefined;
@@ -383,6 +392,7 @@ export function createClusteredFileSweep(
     start(options);
   };
   return {
+    isLeader: async () => eligible && ((await leader?.()) ?? true),
     configure: (value) => {
       options = value;
       maybeStart();

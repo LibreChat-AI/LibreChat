@@ -27,6 +27,12 @@ import {
 
 describe('normalizePath', () => {
   it.each([
+    ['/api/media/submissions/request-secret', '/api/media/submissions/#id'],
+    ['/api/media/jobs/job-secret/outputs', '/api/media/jobs/#id/outputs'],
+    ['/api/media/threads/thread/turns/turn/jobs', '/api/media/threads/#id/turns/#id/jobs'],
+    ['/api/media/assets/file/content?token=secret', '/api/media/assets/#id/content'],
+    ['/api/media/uploads/url', '/api/media/uploads/url'],
+    ['/api/media/unrecognized-secret', '/api/#path'],
     // Known high-cardinality routes
     ['/api/messages/507f1f77bcf86cd799439011', '/api/messages/#id'],
     ['/api/messages/507f1f77bcf86cd799439011/507f1f77bcf86cd799439012', '/api/messages/#id/#id'],
@@ -137,6 +143,39 @@ describe('createMetrics', () => {
     expect(response.text).toMatch(
       /http_request_body_bytes_sum\{method="POST",path="\/api\/files\/#id"\} 42/,
     );
+  });
+
+  it('uses bounded media lifecycle labels and classifies hosted-reference uploads', async () => {
+    process.env.METRICS_SECRET = 'test-secret';
+    const { metricsMiddleware, metricsRouter, recordMediaEvent } = createMetrics();
+    const app = express();
+    app.use(metricsMiddleware);
+    app.post('/api/media/uploads/url', (_req, res) => {
+      res.sendStatus(201);
+    });
+    app.use('/metrics', metricsRouter);
+    recordMediaEvent({
+      kind: 'attempt',
+      result: 'completed',
+      api: 'openai.images',
+      operation: 'image.generate',
+      phase: 'succeeded',
+      durationMs: 100,
+      queueWaitMs: 50,
+    });
+    await request(app)
+      .post('/api/media/uploads/url')
+      .send({ url: 'private-reference' })
+      .expect(201);
+    const result = await request(app)
+      .get('/metrics')
+      .set('Authorization', 'Bearer test-secret')
+      .expect(200);
+    expect(result.text).toContain(
+      'media_attempts_total{result="completed",api="openai.images",operation="image.generate",execution_owner="none"} 1',
+    );
+    expect(result.text).toMatch(/upload[^\n]*path="\/api\/media\/uploads\/url"/);
+    expect(result.text).not.toContain('private-reference');
   });
 
   it('records locator traversal reasons and count distributions without content labels', async () => {

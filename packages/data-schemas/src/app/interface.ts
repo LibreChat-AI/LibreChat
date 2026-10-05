@@ -84,6 +84,7 @@ export async function loadDefaultInterface({
     skills: interfaceConfig?.skills,
     sharedLinks: interfaceConfig?.sharedLinks,
     schedules: interfaceConfig?.schedules,
+    media: interfaceConfig?.media,
 
     /* Merged per field rather than taken whole, so an operator who sets one capability keeps
        the defaults for the rest instead of silently turning the others off. */

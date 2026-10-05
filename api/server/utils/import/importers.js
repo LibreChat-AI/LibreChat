@@ -6,7 +6,13 @@ const {
   sanitizeUIResourceContent,
   stripMessageUIResourceMarkers,
 } = require('@librechat/data-schemas');
-const { EModelEndpoint, Constants, Tools, openAISettings } = require('librechat-data-provider');
+const {
+  EModelEndpoint,
+  Constants,
+  Tools,
+  openAISettings,
+  portableNativeContent,
+} = require('librechat-data-provider');
 const {
   withoutTraceRefs,
   orderMessageLineage,
@@ -78,7 +84,7 @@ function sanitizeImportedMessage(message) {
     ...(sanitizeTextMarkers &&
       typeof text === 'string' && { text: stripMessageUIResourceMarkers(text, false) }),
     ...(content && {
-      content: sanitizeUIResourceContent(content, sanitizeContentMarkers),
+      content: portableNativeContent(sanitizeUIResourceContent(content, sanitizeContentMarkers)),
     }),
     ...(attachments && {
       attachments: attachments.filter((attachment) => attachment?.type !== Tools.ui_resources),

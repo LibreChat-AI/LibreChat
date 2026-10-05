@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { getLocalE2EEnv, getE2EBaseURL } from './setup/env';
 import { managementAuth } from './setup/agent-management';
+import { mediaFixtureConfig, mediaFixturePort, mediaFixtureURL } from './setup/media';
 
 const rootPath = path.resolve(__dirname, '..');
 const replicaCount = Number(process.env.E2E_REPLICAS || '1');
@@ -102,6 +103,7 @@ if (modelFixtureRecording) {
 }
 const assistantsServerPath = path.resolve(rootPath, 'e2e/setup/fake-assistants-server.js');
 const ASSISTANTS_PORT = process.env.E2E_ASSISTANTS_PORT || '8890';
+const mediaServerPath = path.resolve(rootPath, 'e2e/setup/fake-media-server.js');
 const configTemplatePath = path.resolve(rootPath, 'e2e/config/librechat.e2e.yaml');
 const configPath = path.resolve(rootPath, 'e2e/.generated/librechat.e2e.yaml');
 const reportPath = path.resolve(rootPath, 'e2e/playwright-report');
@@ -161,6 +163,9 @@ const vanillaOverrides = {
   RESET_PASSWORD_MAX: '100',
   PASSKEY_MAX: '500',
   OPENAI_API_KEY: 'user_provided',
+  GOOGLE_KEY: 'e2e-native-fixture',
+  GOOGLE_MODELS: 'gemini-3-pro-image-preview',
+  GOOGLE_REVERSE_PROXY: mediaFixtureURL,
   OPENID_CLIENT_ID: '',
   OPENID_ISSUER: '',
   OPENID_AUTO_REDIRECT: 'false',
@@ -188,6 +193,7 @@ if (!externalCodeBaseUrl) {
 
 const baseEnv = {
   ...getLocalE2EEnv(),
+  E2E_MEDIA_PORT: mediaFixturePort,
   CONFIG_PATH: configPath,
   DEPLOYMENT_SKILLS_DIR: deploymentSkillsPath,
   /** Loaded in-process by `@librechat/api`'s `createRun` to swap in a fake model —
@@ -239,7 +245,7 @@ const preservedCredentialEnvKeys = new Set([
  * request does go out over HTTP — to `fake-label-server.js` on 127.0.0.1.
  */
 function writeRuntimeMockConfig() {
-  const template = fs.readFileSync(configTemplatePath, 'utf8');
+  const template = fs.readFileSync(configTemplatePath, 'utf8').replace(/\r\n/g, '\n');
   let config =
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
@@ -386,6 +392,10 @@ function writeRuntimeMockConfig() {
   if (MCP_OAUTH_PORT !== '8767') {
     config = config.split('127.0.0.1:8767').join(`127.0.0.1:${MCP_OAUTH_PORT}`);
   }
+  config = config
+    .split('127.0.0.1:8768')
+    .join(`127.0.0.1:${mediaFixturePort}`)
+    .replace('# __E2E_MEDIA_CONFIG__', `media: ${JSON.stringify(mediaFixtureConfig())}`);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, config);
   if (enableDynamicMcp) {
@@ -468,6 +478,15 @@ export default defineConfig({
     },
   ],
   webServer: [
+    {
+      command: `node ${mediaServerPath}`,
+      cwd: rootPath,
+      env: { ...process.env, E2E_MEDIA_PORT: mediaFixturePort },
+      url: `${mediaFixtureURL}/health`,
+      stdout: 'pipe',
+      timeout: 60_000,
+      reuseExistingServer: false,
+    },
     {
       // URL-based MCP fixture for the allowlist-override spec (its health route is GET /).
       command: `node ${mcpHttpServerPath}`,

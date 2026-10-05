@@ -52,12 +52,10 @@ const {
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
   isLeader,
+  deleteMediaAwareFile,
+  saveGeneratedImage,
 } = require('@librechat/api');
-const {
-  convertImage,
-  resizeAndConvert,
-  resizeImageBuffer,
-} = require('~/server/services/Files/images');
+const { convertImage, resizeAndConvert } = require('~/server/services/Files/images');
 const { addResourceFileId, deleteResourceFileId } = require('~/server/controllers/assistants/v2');
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
 const { loadAuthValues } = require('~/server/services/Tools/credentials');
@@ -202,7 +200,14 @@ const createDeleteFileWithSecondaryStorage = ({ source, deleteFile, deletionMeth
     }
 
     try {
-      await deleteFile(req, file, openai);
+      await deleteMediaAwareFile({
+        request: req,
+        file,
+        client: openai,
+        deleteFile,
+        repository: db,
+        resolveStrategy: getStrategyFunctions,
+      });
     } catch (err) {
       if (!isMissingStorageError(err)) {
         throw err;
@@ -1557,78 +1562,13 @@ async function retrieveAndProcessFile({
  * @param {string} base64String
  * @returns {Buffer<ArrayBufferLike>}
  */
-function base64ToBuffer(base64String) {
-  try {
-    const typeMatch = base64String.match(/^data:([A-Za-z-+/]+);base64,/);
-    const type = typeMatch ? typeMatch[1] : '';
-
-    const base64Data = base64String.replace(/^data:([A-Za-z-+/]+);base64,/, '');
-
-    if (!base64Data) {
-      throw new Error('Invalid base64 string');
-    }
-
-    return {
-      buffer: Buffer.from(base64Data, 'base64'),
-      type,
-    };
-  } catch (error) {
-    throw new Error(`Failed to convert base64 to buffer: ${error.message}`);
-  }
-}
-
-async function saveBase64Image(
-  url,
-  { req, file_id: _file_id, filename: _filename, endpoint, context, resolution },
-) {
-  const retentionExpiryPromise = getRetentionExpiry(req);
-  const appConfig = req.config;
-  const effectiveResolution = resolution ?? appConfig.fileConfig?.imageGeneration ?? 'high';
-  const file_id = _file_id ?? v4();
-  let filename = `${file_id}-${_filename}`;
-  const { buffer: inputBuffer, type: declaredType } = base64ToBuffer(url);
-
-  const image = await resizeImageBuffer(inputBuffer, effectiveResolution, endpoint);
-  /** Sharp re-encodes what it resizes, so the bytes being saved are not necessarily in the
-   * format the data URL declared — an SVG arrives here and is rasterized to PNG. The record has
-   * to describe the bytes, because `file.type` is handed to providers verbatim as `media_type`
-   * (Anthropic), `inlineData.mimeType` (Google), and the `data:` prefix (OpenAI). */
-  const type = image.type ?? declaredType;
-  if (!path.extname(_filename)) {
-    const extension = mime.getExtension(type);
-    if (extension) {
-      filename += `.${extension}`;
-    } else {
-      throw new Error(`Could not determine file extension from MIME type: ${type}`);
-    }
-  }
-  const source = getFileStrategy(appConfig, { isImage: true });
-  const { saveBuffer } = getStrategyFunctions(source);
-  const filepath = await saveBuffer({
-    userId: req.user.id,
-    fileName: filename,
-    buffer: image.buffer,
-    tenantId: req.user.tenantId,
+function saveBase64Image(url, options) {
+  return saveGeneratedImage(url, options, {
+    getExtension: mime.getExtension,
+    getRetentionExpiry,
+    getStrategy: getStrategyFunctions,
+    createFile: db.createFile,
   });
-  const storageMetadata = getStorageMetadata({ filepath, source });
-  return await db.createFile(
-    {
-      type,
-      source,
-      context,
-      file_id,
-      filepath,
-      ...storageMetadata,
-      filename,
-      user: req.user.id,
-      bytes: image.bytes,
-      width: image.width,
-      ...(await retentionExpiryPromise),
-      height: image.height,
-      tenantId: req.user.tenantId,
-    },
-    true,
-  );
 }
 
 /**

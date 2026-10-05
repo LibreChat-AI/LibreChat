@@ -4,6 +4,7 @@ jest.mock('@librechat/api', () => ({
   findMatchingPattern: jest.fn(),
   isDeploymentSkillId: jest.fn(),
   createMessageBudgetReader: jest.fn(() => ({ getBudget: jest.fn(), initialize: jest.fn() })),
+  createMediaConsumerConfigProvider: jest.fn(),
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());
 

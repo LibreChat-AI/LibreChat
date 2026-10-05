@@ -46,6 +46,8 @@ export interface ISubagentTaskControlReceipt {
 
 // @ts-ignore
 export interface IMessage extends Document {
+  /** Private fence for compensating only a failed media-bearing writer. */
+  mediaConsumerToken?: string;
   messageId: string;
   conversationId: string;
   user: string;

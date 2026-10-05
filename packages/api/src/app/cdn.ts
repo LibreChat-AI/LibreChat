@@ -2,9 +2,9 @@ import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import { initializeAzureBlobService } from '~/cdn/azure';
+import { initializeCloudFront } from '~/cdn/cloudfront';
 import { initializeFirebase } from '~/cdn/firebase';
 import { initializeS3 } from '~/cdn/s3';
-import { initializeCloudFront } from '~/cdn/cloudfront';
 
 function initializeStrategy(strategy: FileSources, appConfig: AppConfig): void {
   if (strategy === FileSources.firebase) {
@@ -39,7 +39,7 @@ function initializeStrategy(strategy: FileSources, appConfig: AppConfig): void {
 
 /**
  * Initializes file storage clients based on the configured file strategies.
- * Handles both the main fileStrategy and granular fileStrategies config.
+ * Handles fileStrategy, granular fileStrategies, and the Media Studio storage override.
  */
 export function initializeFileStorage(appConfig: AppConfig): void {
   const { fileStrategy, fileStrategies } = appConfig;
@@ -48,6 +48,11 @@ export function initializeFileStorage(appConfig: AppConfig): void {
 
   if (fileStrategy) {
     strategiesToInit.add(fileStrategy);
+  }
+
+  // Existing originals remain readable when Media Studio is subsequently disabled.
+  if (appConfig.media?.assets.source) {
+    strategiesToInit.add(appConfig.media.assets.source);
   }
 
   if (fileStrategies) {

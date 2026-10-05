@@ -1,23 +1,38 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { BarChart3, MessagesSquare } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { BarChart3, MessagesSquare, Images } from 'lucide-react';
 import { useUserKeyQuery } from 'librechat-data-provider/react-query';
 import { getConfigDefaults, getEndpointField } from 'librechat-data-provider';
 import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { NavLink } from '~/common';
-import { useGetEndpointsQuery, useGetStartupConfig, useInsightsAccessQuery } from '~/data-provider';
+import {
+  useGetEndpointsQuery,
+  useGetStartupConfig,
+  useInsightsAccessQuery,
+  useMediaActivity,
+  useMediaEvents,
+} from '~/data-provider';
 import ConversationsSection from '~/components/UnifiedSidebar/ConversationsSection';
+import { useMediaSessionGuard } from '~/components/Media/session';
+import { useMediaAccess } from '~/hooks/Media/useMediaAccess';
+import MediaSettingsPanel from '~/components/Media/Panel';
 import useSideNavLinks from '~/hooks/Nav/useSideNavLinks';
-import { useAuthContext } from '~/hooks';
+import { useAuthContext, useLocalize } from '~/hooks';
 import store from '~/store';
 
 const defaultInterface = getConfigDefaults().interface;
 
+/** Reserve the saved panel width while access resolves without mounting feature queries. */
+function MediaSettingsPlaceholder() {
+  return null;
+}
+
 export default function useUnifiedSidebarLinks() {
   const navigate = useNavigate();
+  const localize = useLocalize();
   const location = useLocation();
-  const { user } = useAuthContext();
+  const { user, token } = useAuthContext();
   /** Selector instead of the full conversation atom: the links only depend on
    * the endpoint, so parameter edits and other conversation writes stay out. */
   const endpoint = useRecoilValue(store.conversationEndpointByIndex(0)) ?? undefined;
@@ -28,6 +43,28 @@ export default function useUnifiedSidebarLinks() {
     () => startupConfig?.interface ?? defaultInterface,
     [startupConfig],
   );
+  const { studio: mediaVisible, scope: mediaScope, isAuthenticated } = useMediaAccess();
+  const isStudioRoute = location.pathname === '/studio' || location.pathname.startsWith('/studio/');
+  const isCurrentSession = useMediaSessionGuard(mediaScope, isAuthenticated);
+  const mediaActivityHost = {
+    scope: mediaScope ?? '',
+    userId: user?.id,
+    pollIntervalMs: startupConfig?.media?.clientPollIntervalMs ?? 0,
+    catchUpIntervalMs: startupConfig?.media?.clientCatchUpIntervalMs ?? 0,
+    isCurrentSession,
+  };
+  const mediaActivity = useMediaActivity(mediaActivityHost, mediaVisible);
+  // Settle the initial snapshot before opening a persistent connection; SSE ready catches up gaps.
+  useMediaEvents(
+    mediaActivityHost,
+    token,
+    mediaVisible && mediaActivity.isFetched && startupConfig?.media?.events === true,
+  );
+  const mediaActivityCount = `${mediaActivity.count}${mediaActivity.hasMore ? '+' : ''}`;
+  const mediaActivityLabel =
+    mediaActivity.count > 0
+      ? localize('com_media_activity_unfinished', { total: mediaActivityCount })
+      : undefined;
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
   const isInsightsRoute = location.pathname.startsWith('/insights');
   const { data: insightsAccess, isLoading: isInsightsAccessLoading } = useInsightsAccessQuery(
@@ -72,11 +109,31 @@ export default function useUnifiedSidebarLinks() {
       Component: ConversationsSection,
     };
 
+    const nextLinks = [...sideNavLinks];
+    if (mediaVisible || isStudioRoute) {
+      const agentIndex = nextLinks.findIndex((link) => link.id === 'agents');
+      nextLinks.splice(agentIndex >= 0 ? agentIndex + 1 : nextLinks.length, 0, {
+        title: 'com_media_studio',
+        label: '',
+        activity: mediaActivityLabel
+          ? { count: mediaActivityCount, label: mediaActivityLabel }
+          : undefined,
+        icon: Images,
+        id: 'media-studio',
+        Component: mediaVisible ? MediaSettingsPanel : MediaSettingsPlaceholder,
+        disabled: !mediaVisible,
+        route: '/studio',
+        onClick: () => {
+          if (!location.pathname.startsWith('/studio')) navigate('/studio');
+        },
+      });
+    }
+
     if (
       !insightsFeatureEnabled ||
       (!isInsightsRoute && !isInsightsAccessLoading && insightsAccess?.access !== true)
     ) {
-      return [conversationLink, ...sideNavLinks];
+      return [conversationLink, ...nextLinks];
     }
 
     const insightsLink: NavLink = {
@@ -84,6 +141,7 @@ export default function useUnifiedSidebarLinks() {
       label: '',
       icon: BarChart3,
       id: 'insights',
+      route: '/insights',
       disabled: !isInsightsRoute && isInsightsAccessLoading,
       onClick: () => {
         if (!location.pathname.startsWith('/insights')) {
@@ -91,12 +149,15 @@ export default function useUnifiedSidebarLinks() {
         }
       },
     };
-    const mcpIndex = sideNavLinks.findIndex((link) => link.id === 'mcp-builder');
-    const nextLinks = [...sideNavLinks];
+    const mcpIndex = nextLinks.findIndex((link) => link.id === 'mcp-builder');
     nextLinks.splice(mcpIndex >= 0 ? mcpIndex + 1 : nextLinks.length, 0, insightsLink);
 
     return [conversationLink, ...nextLinks];
   }, [
+    mediaVisible,
+    isStudioRoute,
+    mediaActivityCount,
+    mediaActivityLabel,
     insightsAccess?.access,
     insightsFeatureEnabled,
     isInsightsAccessLoading,

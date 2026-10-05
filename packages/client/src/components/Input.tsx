@@ -11,6 +11,8 @@ const INPUT_VARIANTS = {
   inline: 'h-theme-button',
   title: 'h-theme-field-lg text-2xl font-semibold tracking-tight',
   'title-sm': 'text-base font-semibold tracking-tight',
+  /** A search field whose caller positions an icon over its start edge. */
+  'leading-icon': 'ps-9',
 } as const;
 
 export type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {

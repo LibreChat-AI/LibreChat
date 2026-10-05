@@ -144,6 +144,10 @@ export const roleDefaults = defaultRolesSchema.parse({
   [SystemRoles.ADMIN]: {
     name: SystemRoles.ADMIN,
     permissions: {
+      [PermissionTypes.MEDIA]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
       [PermissionTypes.PROMPTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -225,6 +229,10 @@ export const roleDefaults = defaultRolesSchema.parse({
   [SystemRoles.USER]: {
     name: SystemRoles.USER,
     permissions: {
+      [PermissionTypes.MEDIA]: {
+        [Permissions.USE]: false,
+        [Permissions.CREATE]: false,
+      },
       [PermissionTypes.PROMPTS]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,

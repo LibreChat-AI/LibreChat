@@ -3,6 +3,8 @@ import type { RecordUsageDeps, RecordUsageParams, SubagentUsageEvent } from './u
 import type { UsageMetadata } from '../stream/interfaces/IJobStore';
 import type { BulkWriteDeps, PricingFns } from './transactions';
 import {
+  resolveUsageType,
+  withModelUsageType,
   computeUsageCostUSD,
   aggregateEmittedUsage,
   createDetachedSubagentUsageRecorder,
@@ -2386,6 +2388,10 @@ describe('priorRunOutputTokens', () => {
 });
 
 describe('buildAbortedResponseMetadata', () => {
+  it('preserves the private native snapshot for a cross-replica stop without requiring usage', () => {
+    const nativeSignatures = { '3': { thoughtSignature: 'private-native', mimeType: 'image/png' } };
+    expect(buildAbortedResponseMetadata({ nativeSignatures })).toEqual({ nativeSignatures });
+  });
   it('returns undefined for an empty job', () => {
     expect(buildAbortedResponseMetadata(undefined)).toBeUndefined();
     expect(buildAbortedResponseMetadata({})).toBeUndefined();
@@ -2773,5 +2779,23 @@ describe('hasRecordedPrimaryUsage', () => {
     expect(hasRecordedPrimaryUsage([{ input_tokens: 0, output_tokens: 0 }])).toBe(false);
     expect(hasRecordedPrimaryUsage([])).toBe(false);
     expect(hasRecordedPrimaryUsage(undefined)).toBe(false);
+  });
+});
+
+describe('model usage attribution', () => {
+  it.each([
+    { isSubagent: true, hideSequentialOutputs: true, isLastAgent: false, expected: 'subagent' },
+    { isSubagent: false, hideSequentialOutputs: true, isLastAgent: false, expected: 'sequential' },
+    { isSubagent: false, hideSequentialOutputs: true, isLastAgent: true, expected: undefined },
+  ])('keeps success and failure attribution aligned: $expected', ({ expected, ...context }) => {
+    const usage = { input_tokens: 2, output_tokens: 4, total_tokens: 6 };
+    expect(resolveUsageType(context)).toBe(expected);
+    expect(withModelUsageType(usage, context).usage_type).toBe(expected);
+  });
+  it('preserves explicit summarization and subagent attribution', () => {
+    for (const usage_type of ['summarization', 'subagent'] as const) {
+      const usage = { input_tokens: 2, output_tokens: 4, total_tokens: 6, usage_type };
+      expect(withModelUsageType(usage, { hideSequentialOutputs: true })).toBe(usage);
+    }
   });
 });

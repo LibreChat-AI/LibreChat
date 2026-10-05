@@ -1,3 +1,4 @@
+import { isMediaFileId } from '@librechat/data-schemas';
 import {
   FileSources,
   VisionModes,
@@ -15,6 +16,7 @@ import { getFileStream, isAttachmentObjectNotFoundError } from './utils';
 import { validateImage } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 import { logAxiosError } from '~/utils/axios';
+import { toPublicFile } from '../public';
 
 type ImageEncodingFile = Pick<
   IMongoFile,
@@ -108,7 +110,10 @@ export async function encodeAndFormatImages(
       continue;
     }
 
-    if (blobStorageSources.has(source)) {
+    if (
+      blobStorageSources.has(source) ||
+      (source === FileSources.local && isMediaFileId(file.file_id))
+    ) {
       try {
         const processedFile = await runGuardedEncode(file.bytes ?? 0, () =>
           getFileStream(req, file, encodingMethods, getStrategyFunctions),
@@ -178,7 +183,7 @@ export async function encodeAndFormatImages(
       fileMetadata.height = file.height;
       fileMetadata.width = file.width;
     }
-    result.files.push(fileMetadata);
+    result.files.push(toPublicFile(fileMetadata));
 
     if (!imageContent) {
       continue;

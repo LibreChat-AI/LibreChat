@@ -7,10 +7,17 @@ const {
   isTemporaryRecord,
   getAllMessagesUpToParent,
   transferNativeCopyProvenance,
+  saveNativeConversationClone,
 } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
-const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
-const { getConvo, getMessages, getSharedMessages } = require('~/models');
+const {
+  EModelEndpoint,
+  Constants,
+  ForkOptions,
+  stripSharedFileIds,
+} = require('librechat-data-provider');
+const nativeRepository = require('~/models');
+const { getConvo, getMessages, getSharedMessages } = nativeRepository;
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { getAppConfig } = require('~/server/services/Config');
 const { resolveImportDefaultEndpoint } = require('./defaults');
@@ -79,6 +86,7 @@ async function forkConversation({
   latestMessageId,
   filters,
   legacyPii,
+  appConfig,
   builderFactory = createImportBatchBuilder,
   interfaceConfig,
 }) {
@@ -136,7 +144,17 @@ async function forkConversation({
       new Date(),
       originalConvo,
     );
-    await importBatchBuilder.saveBatch();
+    await saveNativeConversationClone({
+      scope: { ownerId: requestUserId, tenantId: tenantStorage.getStore()?.tenantId },
+      sourceConversationId: originalConvoId,
+      conversationId: result.conversation.conversationId,
+      messages: result.messages,
+      appConfig,
+      loadConfig: getAppConfig,
+      repository: nativeRepository,
+      onCleanupError: logger.error,
+      save: () => importBatchBuilder.saveBatch(),
+    });
     logger.debug(
       `user: ${requestUserId} | New conversation "${
         newTitle || originalConvo.title
@@ -313,31 +331,6 @@ function splitAtTargetLevel(messages, targetMessageId) {
     .filter((msg) => msg !== null);
 
   return filteredMessages;
-}
-
-/**
- * Strips file identifiers from a shared message's `files` and `attachments`.
- * A shared fork is owned by the requesting user, but the underlying file records
- * still belong to the original sharer. Persisting their `file_id`s would let the
- * agents file-resend path collect them on the next turn and call `getUserCodeFiles`,
- * which looks them up by `file_id` with no ownership filter, rehydrating the
- * sharer's files into the viewer's run. Dropping the ids keeps a fork's file
- * access no broader than viewing the read-only share, while leaving render-only
- * metadata (e.g. `filepath`, `toolCallId`) intact.
- * @param {TMessage} message - The shared message to sanitize.
- * @returns {TMessage} The message with file identifiers removed.
- */
-function stripSharedFileIds(message) {
-  const sanitized = { ...message };
-  if (Array.isArray(sanitized.files)) {
-    sanitized.files = sanitized.files.map(({ file_id: _fileId, ...file }) => file);
-  }
-  if (Array.isArray(sanitized.attachments)) {
-    sanitized.attachments = sanitized.attachments.map(
-      ({ file_id: _fileId, ...attachment }) => attachment,
-    );
-  }
-  return sanitized;
 }
 
 /** Compares a client-held share revision against the stored one, tolerating the
@@ -520,6 +513,7 @@ async function duplicateConversation({
   interfaceConfig,
   filters,
   legacyPii,
+  appConfig,
   builderFactory = createImportBatchBuilder,
 }) {
   const originalConvo = await getConvo(userId, conversationId);
@@ -551,7 +545,17 @@ async function duplicateConversation({
 
   const duplicateTitle = title || originalConvo.title;
   const result = importBatchBuilder.finishConversation(duplicateTitle, new Date(), originalConvo);
-  await importBatchBuilder.saveBatch();
+  await saveNativeConversationClone({
+    scope: { ownerId: userId, tenantId: tenantStorage.getStore()?.tenantId },
+    sourceConversationId: conversationId,
+    conversationId: result.conversation.conversationId,
+    messages: result.messages,
+    appConfig,
+    loadConfig: getAppConfig,
+    repository: nativeRepository,
+    onCleanupError: logger.error,
+    save: () => importBatchBuilder.saveBatch(),
+  });
   logger.debug('Conversation duplicated', {
     userId,
     sourceConversationId: conversationId,

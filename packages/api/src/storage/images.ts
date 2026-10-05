@@ -12,6 +12,7 @@ import type {
   ProcessAvatarParams,
 } from '~/storage/types';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
+import { createImageTransform } from '~/files/resize';
 
 export interface ImageServiceDeps {
   resizeImageBuffer: (
@@ -85,7 +86,10 @@ export class ImageService {
         processedBuffer = resizedBuffer;
       } else {
         const outputFormat = outputType as keyof FormatEnum;
-        processedBuffer = await sharp(resizedBuffer).toFormat(outputFormat).toBuffer();
+        processedBuffer = await createImageTransform({
+          input: resizedBuffer,
+          format: outputFormat,
+        }).toBuffer();
         fileName = fileName.replace(new RegExp(path.extname(fileName) + '$'), targetExtension);
         if (!path.extname(fileName)) {
           fileName += targetExtension;

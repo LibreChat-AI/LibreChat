@@ -5,14 +5,19 @@ import type {
   BalanceReservationRenewal,
   BalanceReservationRelease,
   BalanceReservationResult,
+  BalancePreparationRequest,
   IBalancePendingRefill,
   IBalanceReservation,
   IBalanceUpdate,
   TransactionData,
+  CreditsTransactionWriter,
+  BalanceDeletionResult,
   IBalance,
 } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
+import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { createMediaLedgerReconciler } from './media/ledger';
 import logger from '~/config/winston';
 
 const cancelRate = 1.15;
@@ -66,7 +71,7 @@ export interface TxData {
   inputTokens?: number;
   writeTokens?: number;
   readTokens?: number;
-  balance?: { enabled?: boolean };
+  balance?: { enabled?: boolean } | null;
   transactions?: { enabled?: boolean };
 }
 
@@ -78,6 +83,68 @@ export interface TransactionResult {
   prompt?: number;
   completion?: number;
   credits?: number;
+}
+
+/** Inserts a fixed-identity credits receipt once, including when publication is replayed. */
+export function createCreditsTransactionWriter(
+  mongoose: typeof import('mongoose'),
+): CreditsTransactionWriter {
+  const reconcileLedger = createMediaLedgerReconciler(mongoose);
+  return async ({ transactionId, tenantId, mediaSettlementId, ...fields }) => {
+    const activeTenant = tenantStorage.getStore()?.tenantId;
+    if (activeTenant && activeTenant !== SYSTEM_TENANT_ID && activeTenant !== tenantId) {
+      throw new Error('Credits transaction tenant does not match the active scope');
+    }
+    const Transaction = mongoose.models.Transaction;
+    const filter = {
+      ...(mediaSettlementId
+        ? { mediaSettlementId }
+        : { _id: new mongoose.Types.ObjectId(transactionId) }),
+      ...(tenantId == null
+        ? { $or: [{ tenantId: null }, { tenantId: { $exists: false } }] }
+        : { tenantId }),
+    };
+    type Receipt = {
+      _id: Types.ObjectId;
+      mediaFingerprint?: string;
+      mediaAccountPending?: boolean;
+    };
+    let receipt: Receipt | null;
+    try {
+      receipt = await Transaction.findOneAndUpdate(
+        filter,
+        {
+          $setOnInsert: {
+            ...fields,
+            ...(mediaSettlementId
+              ? { _id: new mongoose.Types.ObjectId(), mediaSettlementId, mediaAccountPending: true }
+              : {}),
+            ...(tenantId == null ? {} : { tenantId }),
+            tokenType: 'credits',
+            ...(fields.tokenValue === undefined ? {} : { rate: 1 }),
+          },
+        },
+        { upsert: true, new: true, writeConcern: { w: 'majority', j: true } },
+      )
+        .select('_id mediaFingerprint +mediaAccountPending')
+        .lean<Receipt>();
+    } catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 11000)
+        throw error;
+      receipt = await Transaction.findOne(filter)
+        .select('_id mediaFingerprint +mediaAccountPending')
+        .lean<Receipt>();
+      if (!receipt) throw error;
+    }
+    if (receipt?.mediaAccountPending) {
+      await reconcileLedger(
+        { ownerId: fields.user, tenantId: tenantId ?? null },
+        1,
+        String(receipt._id),
+      );
+    }
+    return { fingerprint: receipt?.mediaFingerprint };
+  };
 }
 
 export function createTransactionMethods(
@@ -110,13 +177,16 @@ export function createTransactionMethods(
   deleteTransactions: (
     filter: FilterQuery<ITransaction>,
   ) => Promise<import('mongodb').DeleteResult>;
-  deleteBalances: (filter: FilterQuery<IBalance>) => Promise<import('mongodb').DeleteResult>;
+  deleteBalances: (filter: FilterQuery<IBalance>) => Promise<BalanceDeletionResult>;
   createTransaction: (_txData: TxData) => Promise<TransactionResult | undefined>;
   reserveBalance: (request: BalanceReservationRequest) => Promise<BalanceReservationResult | null>;
+  prepareBalance: (request: BalancePreparationRequest) => Promise<BalanceReservationResult | null>;
   renewBalanceReservation: (params: BalanceReservationRenewal) => Promise<void>;
   releaseBalanceReservation: (params: BalanceReservationRelease) => Promise<void>;
   createStructuredTransaction: (_txData: TxData) => Promise<TransactionResult | undefined>;
+  upsertCreditsTransaction: CreditsTransactionWriter;
 } {
+  const upsertCreditsTransaction = createCreditsTransactionWriter(mongoose);
   /** Calculate and set the tokenValue for a transaction */
   function calculateTokenValue(txn: InternalTxDoc) {
     const { valueKey, tokenType, model, endpointTokenConfig, inputTokenCount } = txn;
@@ -323,18 +393,17 @@ export function createTransactionMethods(
     balanceId: unknown,
     user: Types.ObjectId,
     { transactionId, rawAmount }: IBalancePendingRefill,
+    tenantId: string | null,
   ): Promise<boolean> {
     try {
-      const Transaction = mongoose.models.Transaction;
-      const transaction = new Transaction({
-        _id: transactionId,
-        user,
-        tokenType: 'credits',
+      await upsertCreditsTransaction({
+        transactionId: transactionId.toString(),
+        user: user.toString(),
+        tenantId,
         context: 'autoRefill',
         rawAmount,
+        tokenValue: rawAmount,
       });
-      calculateTokenValue(transaction);
-      await transaction.save();
     } catch (error) {
       if (!isDuplicateKeyError(error)) {
         logger.error('[Balance.reserve] Failed to record auto-refill transaction', error);
@@ -392,7 +461,7 @@ export function createTransactionMethods(
       user: record.user,
       rawAmount: record.refillAmount,
     });
-    await settleAutoRefill(record._id, record.user, pendingRefill);
+    await settleAutoRefill(record._id, record.user, pendingRefill, record.tenantId ?? null);
     return true;
   }
 
@@ -428,6 +497,7 @@ export function createTransactionMethods(
     user: string,
     fields: IBalanceUpdate,
     insertOnly: IBalanceUpdate = {},
+    scope?: { tenantId: string | null },
   ): Promise<IBalance | null> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
     const { user: _fieldsUser, ...set } = fields;
@@ -438,19 +508,24 @@ export function createTransactionMethods(
 
     const existing = updatesExisting
       ? await Balance.findOneAndUpdate(
-          { user },
+          { user, ...scope },
           { $set: set },
           { new: true, sort: oldestFirst },
         ).lean<IBalance>()
-      : await Balance.findOne({ user }).sort(oldestFirst).lean<IBalance>();
+      : await Balance.findOne({ user, ...scope })
+          .sort(oldestFirst)
+          .lean<IBalance>();
     if (existing) {
       return existing;
     }
 
     const create = () =>
       Balance.findOneAndUpdate(
-        { _id: user },
-        { ...(updatesExisting ? { $set: set } : {}), $setOnInsert: { ...setOnInsert, user } },
+        { _id: user, ...scope },
+        {
+          ...(updatesExisting ? { $set: set } : {}),
+          $setOnInsert: { ...setOnInsert, user, ...scope },
+        },
         { upsert: true, new: true },
       ).lean<IBalance>();
     try {
@@ -474,34 +549,42 @@ export function createTransactionMethods(
    * refill interval that is due again the instant it is applied still refills once. Returns null
    * when the user has no balance record and no `initialBalance` was given.
    */
-  async function reserveBalance({
-    user,
-    reservationId,
-    amount,
-    expiresAt,
-    initialBalance,
-  }: BalanceReservationRequest): Promise<BalanceReservationResult | null> {
+  async function admitBalance(
+    request: BalanceReservationRequest | BalancePreparationRequest,
+  ): Promise<BalanceReservationResult | null> {
+    const { user, amount, initialBalance } = request;
+    const balanceId = 'balanceId' in request ? request.balanceId : undefined;
+    const scope = 'tenantId' in request ? { tenantId: request.tenantId ?? null } : undefined;
     const Balance = mongoose.models.Balance as Model<IBalance>;
     let delay = 10;
     let refilled = false;
 
     for (let attempt = 1; attempt <= maxReservationAttempts; attempt++) {
-      const record = await Balance.findOne({ user })
+      const record = await Balance.findOne({
+        user,
+        ...scope,
+        ...(balanceId ? { _id: balanceId } : {}),
+      })
         .sort(oldestFirst)
-        .select('+reservations +reservedCredits +pendingRefill')
+        .select('+reservations +reservedCredits +pendingRefill +mediaDebtCredits')
         .lean<IBalance>();
       if (!record) {
-        if (!initialBalance) {
+        if (!initialBalance || balanceId) {
           return null;
         }
-        await upsertBalanceRecord(user, {}, initialBalance);
+        await upsertBalanceRecord(user, {}, initialBalance, scope);
         continue;
       }
 
       const now = new Date();
       const refillSettled =
         record.pendingRefill == null ||
-        (await settleAutoRefill(record._id, record.user, record.pendingRefill));
+        (await settleAutoRefill(
+          record._id,
+          record.user,
+          record.pendingRefill,
+          record.tenantId ?? null,
+        ));
 
       const expired = (record.reservations ?? []).filter(
         (reservation) => reservation.expiresAt <= now,
@@ -512,17 +595,19 @@ export function createTransactionMethods(
       }
 
       const credits = record.tokenCredits ?? 0;
-      const balance = credits - (record.reservedCredits ?? 0);
+      const mediaDebt = record.mediaDebtCredits ?? 0;
+      const balance = credits - (record.reservedCredits ?? 0) - mediaDebt;
       if (refillSettled && !refilled && balance - amount <= 0 && isAutoRefillDue(record, now)) {
         refilled = await applyAutoRefill(record, now);
         continue;
       }
 
       const reserved = balance >= amount;
-      if (!reserved || !(amount > 0)) {
+      if (!reserved || !(amount > 0) || !('reservationId' in request)) {
         return { reserved, balance };
       }
 
+      const { reservationId, expiresAt } = request;
       const held = Math.ceil(amount);
       let result: Awaited<ReturnType<typeof Balance.updateOne>>;
       try {
@@ -530,8 +615,9 @@ export function createTransactionMethods(
           {
             _id: record._id,
             tokenCredits: { $gte: credits },
+            mediaDebtCredits: record.mediaDebtCredits ?? null,
             $or: [
-              { reservedCredits: { $lte: credits - amount } },
+              { reservedCredits: { $lte: credits - amount - mediaDebt } },
               { reservedCredits: { $exists: false } },
             ],
           },
@@ -565,6 +651,9 @@ export function createTransactionMethods(
 
     throw new Error(`Balance reservation for user ${user} exceeded its retry bound.`);
   }
+
+  const reserveBalance = (request: BalanceReservationRequest) => admitBalance(request);
+  const prepareBalance = (request: BalancePreparationRequest) => admitBalance(request);
 
   /** Extends an in-flight reservation's expiry; a reservation already released or pruned stays gone. */
   async function renewBalanceReservation({
@@ -696,17 +785,26 @@ export function createTransactionMethods(
     if (!options?.includeReservedCredits) {
       return query.lean<IBalance>();
     }
-    const record = await query.select('+reservations').lean<IBalance>();
+    const record = await query
+      .select('+reservations +mediaHolds +mediaDebtCredits')
+      .lean<IBalance>();
     if (!record) {
       return null;
     }
     const now = new Date();
-    const { reservations, ...balance } = record;
+    const { reservations, mediaHolds, mediaDebtCredits, ...balance } = record;
+    const mediaHeldCredits = (mediaHolds ?? []).reduce((sum, hold) => sum + hold.amount, 0);
     const reservedCredits = (reservations ?? []).reduce(
       (sum, reservation) => (reservation.expiresAt > now ? sum + reservation.amount : sum),
-      0,
+      mediaHeldCredits + (mediaDebtCredits ?? 0),
     );
-    return { ...balance, reservedCredits } as IBalance;
+    return {
+      ...balance,
+      reservedCredits,
+      mediaHeldCredits,
+      mediaDebtCredits: mediaDebtCredits ?? 0,
+      availableCredits: Math.max(0, (balance.tokenCredits ?? 0) - reservedCredits),
+    } as IBalance;
   }
 
   /** Upserts balance fields for a user; `insertOnly` fields apply only when the record is created. */
@@ -727,11 +825,18 @@ export function createTransactionMethods(
   }
 
   /** Deletes balance records matching a filter. */
-  async function deleteBalances(
-    filter: FilterQuery<IBalance>,
-  ): Promise<import('mongodb').DeleteResult> {
+  async function deleteBalances(filter: FilterQuery<IBalance>): Promise<BalanceDeletionResult> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
-    return Balance.deleteMany(filter);
+    const result = await Balance.deleteMany({
+      $and: [filter, { 'mediaHolds.0': { $exists: false }, mediaPendingSettlement: null }],
+    });
+    const deferredCount = await Balance.countDocuments({
+      $and: [
+        filter,
+        { $or: [{ 'mediaHolds.0': { $exists: true } }, { mediaPendingSettlement: { $ne: null } }] },
+      ],
+    });
+    return { acknowledged: result.acknowledged, deletedCount: result.deletedCount, deferredCount };
   }
 
   async function bulkInsertTransactions(docs: TransactionData[]): Promise<void> {
@@ -757,9 +862,11 @@ export function createTransactionMethods(
     deleteBalances,
     createTransaction,
     reserveBalance,
+    prepareBalance,
     renewBalanceReservation,
     releaseBalanceReservation,
     createStructuredTransaction,
+    upsertCreditsTransaction,
   };
 }
 
