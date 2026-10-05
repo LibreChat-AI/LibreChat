@@ -752,13 +752,18 @@ export default function ActivityPhaseGroup({
    *  fading window under the header (#14546). The fold had swallowed that
    *  peek with the rows, leaving one throttled sentence on the header to
    *  stand for a paragraph of live reasoning. It takes the cursor's place:
-   *  moving text is its own sign the run is alive. */
+   *  moving text is its own sign the run is alive. Only a card that is still
+   *  just thinking shows it: once tool calls fold in with the thought, the
+   *  header names the mix and the cursor stands in for the reasoning (#16680). */
   const streamingThought = useMemo(() => {
     if (!isLive || isExpanded || liveParts == null) {
       return '';
     }
     const tail = liveParts[liveParts.length - 1];
     if (tail?.type !== ContentTypes.THINK) {
+      return '';
+    }
+    if (liveParts.some((part) => part?.type === ContentTypes.TOOL_CALL)) {
       return '';
     }
     return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
