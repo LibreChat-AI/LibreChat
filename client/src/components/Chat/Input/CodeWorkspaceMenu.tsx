@@ -331,7 +331,7 @@ function GitContext({
         <Ariakit.MenuProvider store={checkoutStore}>
           <TooltipAnchor
             description={localize(current.info)}
-            disabled={checkoutOpen}
+            showOnHover={!checkoutOpen}
             render={
               <Ariakit.MenuButton
                 data-testid="code-checkout"

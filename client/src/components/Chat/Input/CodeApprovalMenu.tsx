@@ -100,7 +100,9 @@ export default function CodeApprovalMenu({
     <Ariakit.MenuProvider store={menuStore}>
       <TooltipAnchor
         description={localize('com_ui_code_approval_mode')}
-        disabled={isOpen}
+        /** `disabled` here would mark the open chip itself `aria-disabled`; only the hover
+         *  tooltip has to stand down while the menu covers it. */
+        showOnHover={!isOpen}
         render={
           <Ariakit.MenuButton
             disabled={disabled}
