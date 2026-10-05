@@ -190,6 +190,9 @@ describe('index.html deployment theme boot script', () => {
     ['/d/prompts/new', 'rgb(1, 2, 3)'],
     ['/d/anything', 'rgb(1, 2, 3)'],
     ['/d/prompts/abc123', 'rgb(8, 10, 24)'],
+    ['/D/Prompts/abc123', 'rgb(8, 10, 24)'],
+    ['/D/Prompts/New', 'rgb(1, 2, 3)'],
+    ['/C/new', 'rgb(1, 2, 3)'],
   ])('classifies the legacy dashboard path %s by where it lands', (path, expected) => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
