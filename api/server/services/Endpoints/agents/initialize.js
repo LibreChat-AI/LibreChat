@@ -1369,6 +1369,7 @@ const initializeClientWithProvider = async ({
           requestFiles,
           authorizedRunFiles: getAuthorizedRunFileSnapshot({
             policy: appConfig.endpoints?.agents?.fileSharing,
+            capabilities: [...enabledCapabilities],
             agent: primaryConfig,
             files: primaryConfig.currentRequestAttachments,
           }),

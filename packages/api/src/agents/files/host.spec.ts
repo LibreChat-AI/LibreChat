@@ -6,7 +6,7 @@ import {
   FileSources,
   configSchema,
 } from 'librechat-data-provider';
-import type { Agent, CodeEnvRef, TFile } from 'librechat-data-provider';
+import type { Agent, AgentSubagentsConfig, CodeEnvRef, TFile } from 'librechat-data-provider';
 import type { SubagentExecutionContext } from '@librechat/agents';
 import type { ProvisionCallbackDeps } from '~/files/provision/callback';
 import type { RunFileSessionDeps } from './session';
@@ -68,15 +68,29 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function harness(options: { inputs?: TFile[]; setup?: TFile[] } = {}) {
+function harness(
+  options: {
+    inputs?: TFile[];
+    setup?: TFile[];
+    capabilities?: string[];
+    parentSubagents?: AgentSubagentsConfig;
+    maxFiles?: number;
+  } = {},
+) {
   const input = options.inputs ?? [file('input')];
   const setup = options.setup ?? [file('worker-setup', { context: FileContext.agents })];
   const parsed = configSchema.parse({
     version: '1.3.9',
     endpoints: {
       agents: {
-        capabilities: [AgentCapabilities.context],
-        fileSharing: { enabled: true },
+        capabilities: options.capabilities ?? [
+          AgentCapabilities.context,
+          AgentCapabilities.subagents,
+        ],
+        fileSharing: {
+          enabled: true,
+          ...(options.maxFiles != null && { maxFiles: options.maxFiles }),
+        },
       },
     },
   });
@@ -98,7 +112,10 @@ function harness(options: { inputs?: TFile[]; setup?: TFile[] } = {}) {
               file_search: { file_ids: setup.map((entry) => entry.file_id) },
             }
           : undefined,
-      subagents: { enabled: true, shareFiles: true, allowSelf: false, agent_ids: ['worker'] },
+      subagents:
+        id === 'parent' && options.parentSubagents != null
+          ? options.parentSubagents
+          : { enabled: true, shareFiles: true, allowSelf: false, agent_ids: ['worker'] },
     }) as Agent;
   const contexts = new Map<string, RunFileToolContext>(
     ['parent', 'worker'].map((id) => [
@@ -886,4 +903,89 @@ describe('run file execution host', () => {
     await expect(h.prepare()).rejects.toThrow('isolated managed');
     expect(h.loadFiles).not.toHaveBeenCalled();
   });
+});
+
+it('the production host applies request capabilities before touching retained graph-sharing inputs', async () => {
+  const parentSubagents = {
+    enabled: false,
+    graphsEnabled: true,
+    shareFiles: true,
+    allowSelf: false,
+    graphs: [
+      {
+        type: 'team',
+        name: 'Team',
+        description: 'Work',
+        agent_ids: ['worker'],
+        edges: [],
+        entry_agent_id: 'worker',
+        result_agent_id: 'worker',
+      },
+    ],
+  };
+  const {
+    host,
+    deps,
+    contexts,
+    input,
+    loadFiles,
+    filterFiles,
+    listPublications,
+    provisionToCodeEnv,
+    publish,
+    encodeMessages,
+  } = harness({
+    inputs: [file('first'), file('second')],
+    maxFiles: 1,
+    capabilities: [AgentCapabilities.context, AgentCapabilities.subagents],
+    parentSubagents,
+  });
+  try {
+    expect(deps.capabilities).toEqual([AgentCapabilities.context, AgentCapabilities.subagents]);
+    expect(host.session.isActive()).toBe(false);
+    expect(contexts.get('parent')?.agent?.subagents).toEqual(parentSubagents);
+    expect(input).toHaveLength(2);
+    for (const callback of [
+      loadFiles,
+      filterFiles,
+      listPublications,
+      provisionToCodeEnv,
+      publish,
+      encodeMessages,
+    ])
+      expect(callback).not.toHaveBeenCalled();
+  } finally {
+    await host.session.close();
+  }
+});
+
+it('the production host enables graph-only sharing only with the graph capability', async () => {
+  const parentSubagents = {
+    enabled: false,
+    graphsEnabled: true,
+    shareFiles: true,
+    allowSelf: false,
+    graphs: [
+      {
+        type: 'team',
+        name: 'Team',
+        description: 'Work',
+        agent_ids: ['worker'],
+        edges: [],
+        entry_agent_id: 'worker',
+        result_agent_id: 'worker',
+      },
+    ],
+  };
+  const { host, prepare, contexts } = harness({
+    capabilities: [AgentCapabilities.context, AgentCapabilities.subagent_graphs],
+    parentSubagents,
+  });
+  try {
+    expect(host.session.isActive()).toBe(true);
+    await expect(prepare()).resolves.toHaveProperty('agentSessions.worker');
+    expect(contexts.get('parent')?.agent?.subagents).toEqual(parentSubagents);
+  } finally {
+    await host.session.close();
+  }
 });
