@@ -514,6 +514,8 @@ export function createSubagentCodeRouting<TContext>({
 }): SubagentCodeRouting<TContext> {
   const routedContexts = new Map<string, { agentId: string; toolContext: TContext }>();
   const childRoutes = new Map<string, string>();
+  /** Machines each agent that runs no stateful code passed on, for runs it never placed. */
+  const passedOnByAgent = new Map<string, Set<string>>();
   /**
    * One machine per subagent per request, as with parent inheritance: run-wide
    * state such as the attached-machine permission policy is keyed by agent, so
@@ -671,7 +673,12 @@ export function createSubagentCodeRouting<TContext>({
       return recorded;
     }
     const claimed = routeByAgent.get(context.parentAgentId);
-    return claimed?.routed === true ? (claimed.environmentId ?? undefined) : undefined;
+    if (claimed?.routed === true) {
+      return claimed.environmentId ?? undefined;
+    }
+    /** Only an unambiguous pass-through is followed; otherwise static inheritance applies. */
+    const passedOn = passedOnByAgent.get(context.parentAgentId);
+    return passedOn?.size === 1 ? [...passedOn][0] : undefined;
   };
   /** The machine an omitted call should follow: this subagent's earlier per-call
    * route, else its routed parent's machine unless that would move it. */
@@ -765,6 +772,11 @@ export function createSubagentCodeRouting<TContext>({
       }
       if (executionId && placement.childEnvironmentId != null) {
         childRoutes.set(executionId, placement.childEnvironmentId);
+      }
+      if (placement.target == null && placement.childEnvironmentId != null) {
+        const passedOn = passedOnByAgent.get(agentId) ?? new Set<string>();
+        passedOn.add(placement.childEnvironmentId);
+        passedOnByAgent.set(agentId, passedOn);
       }
       if ((holds.get(placement)?.executions.length ?? 0) === 0) {
         commit(placement);

@@ -919,6 +919,58 @@ describe('subagent code routing', () => {
     expect(fromUnroutedAgent.target).toBeUndefined();
   });
 
+  it('passes a machine on from a self-spawned run of an agent without code', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const placeAndAttach = async (
+      agent: SubagentCodeAgent,
+      context: ReturnType<typeof call>,
+      agentFlags: SubagentCodeFlags = flags,
+    ) => {
+      const placement = await routing.place({ agent, flags: agentFlags, context });
+      routing.attach(new Map(), {
+        agentId: agent.id,
+        context,
+        placement,
+        codeExecutionContext: placement.target?.context,
+        toolContext: 'context',
+      });
+    };
+    const writer = { id: 'agent_writer', code_environment_id: 'laptop' };
+    const tester = {
+      id: 'agent_tester',
+      code_environment_id: 'laptop',
+      code_environment_ids: ['buildbox'],
+    };
+    const fromWriterSelfRun = () =>
+      routing.place({
+        agent: tester,
+        flags,
+        context: { ...call(undefined, `self-run-${Math.random()}`), parentAgentId: writer.id },
+      });
+
+    const parentCall = call({ machine: 'buildbox' });
+    await placeAndAttach(reviewer, parentCall);
+    await placeAndAttach(writer, call(undefined, parentCall.executionId), {
+      statefulCodeSessions: false,
+    });
+    await expect(fromWriterSelfRun()).resolves.toMatchObject({
+      target: { environmentId: 'buildbox' },
+    });
+
+    const lintCall = call({ machine: 'laptop' });
+    await placeAndAttach({ ...tester, id: 'agent_lint' }, lintCall);
+    await placeAndAttach(writer, call(undefined, lintCall.executionId), {
+      statefulCodeSessions: false,
+    });
+    const ambiguous = await routing.place({
+      agent: { ...tester, id: 'agent_docs' },
+      flags,
+      context: { ...call(undefined, 'self-run-ambiguous'), parentAgentId: writer.id },
+    });
+    expect(ambiguous.target).toBeUndefined();
+  });
+
   it('rejects a revoked allowlist entry and a principal that lost the machine', async () => {
     serveWorkers(allOnline);
 
