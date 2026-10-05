@@ -180,9 +180,14 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
     }
     const duplicates: string[] = [];
     const oversized: string[] = [];
+    const unsupported: string[] = [];
     for (const { file, reason } of skipped) {
       if (reason === 'duplicate') {
         duplicates.push(file.name);
+        continue;
+      }
+      if (reason === 'unsupported') {
+        unsupported.push(file.name);
         continue;
       }
       oversized.push(file.name);
@@ -197,6 +202,9 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
           1: oversized.join(', '),
         }),
       );
+    }
+    if (unsupported.length > 0) {
+      setError(localize('com_error_files_skipped_unsupported', { 0: unsupported.join(', ') }));
     }
   };
   const { addFile, replaceFile, updateFileById, deleteFileById } = useUpdateFiles(fileSetter);
@@ -529,14 +537,17 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
       return withoutSource;
     })();
 
-    /** Drop duplicates one by one rather than rejecting everything picked alongside them, and hand
-     * the survivors to `validateFiles`. Sizes wait for the partition below, once processing has
-     * settled each file's final bytes, which is also where the file count is finally applied: a
-     * file still headed for the discard pile must not spend a `fileLimit` slot. */
+    /** Drop duplicates and files the endpoint cannot accept one by one rather than rejecting
+     * everything picked alongside them, and hand the survivors to `validateFiles`. Sizes wait for
+     * the partition below, once processing has settled each file's final bytes, which is also where
+     * the file count is finally applied: a file still headed for the discard pile must not spend a
+     * `fileLimit` slot. */
     const selection = partitionUploads({
       files: filesForValidation,
       fileList,
       endpointFileConfig,
+      fileConfig: currentFileConfig,
+      toolResource: _toolResource,
       skipSizeValidation: true,
     });
     /** Nothing survived, so the whole selection is rejected and the untouched list reports it
@@ -713,6 +724,8 @@ const useFileHandlingCore = (params: UseFileHandling | undefined, fileState: Fil
         files: filesForValidation,
         fileList: processedFileList,
         endpointFileConfig,
+        fileConfig: currentFileConfig,
+        toolResource: _toolResource,
       });
       acceptedUploads = batch.keptIndices.map((index) => processedUploads[index]);
       const acceptedFiles = acceptedUploads.map(({ extendedFile }) => extendedFile.file as File);
