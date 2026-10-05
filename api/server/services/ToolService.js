@@ -131,7 +131,12 @@ const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSe
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys, getRoleByName, setConvoLaneGit } = require('~/models');
+const {
+  findPluginAuthsByKeys,
+  getRoleByName,
+  setConvoLaneGit,
+  getConvoOwnership,
+} = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -2391,6 +2396,11 @@ async function loadToolsForExecution({
                 user: req.user.id,
                 conversationId: conversationId ?? runtimeRequestBody?.conversationId,
                 repo: codeExecutionContext.codeWorkspace.environment?.repo,
+                workspace: {
+                  environmentId: codeExecutionContext.codeWorkspace.environmentId,
+                  workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
+                },
+                getConvoOwnership,
                 setConvoLaneGit,
               }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,

@@ -1134,19 +1134,40 @@ describe('agent pull request config', () => {
     });
   });
 
-  it('accepts an enabled block with an environment variable reference', () => {
-    const result = parse({ enabled: true, token: '${GITHUB_PULL_REQUEST_TOKEN}' });
-    expect(result.success).toBe(true);
+  const enabled = {
+    enabled: true,
+    token: '${GITHUB_PULL_REQUEST_TOKEN}',
+    allowedRepositories: ['LibreChat-AI/LibreChat'],
+  };
+
+  it('accepts an enabled block with a token reference and an allowed repository', () => {
+    expect(parse(enabled).success).toBe(true);
   });
 
   it('requires a token reference when enabled', () => {
-    expect(parse({ enabled: true }).success).toBe(false);
+    expect(parse({ ...enabled, token: undefined }).success).toBe(false);
   });
+
+  it('requires at least one allowed repository when enabled, so a worker cannot name its own', () => {
+    expect(parse({ ...enabled, allowedRepositories: undefined }).success).toBe(false);
+    expect(parse({ ...enabled, allowedRepositories: [] }).success).toBe(false);
+  });
+
+  it.each(['LibreChat-AI/*', 'o/r', 'My.Org/my_repo-2'])('accepts the repository %s', (repo) => {
+    expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
+  });
+
+  it.each(['*/*', '*', 'owner', 'o/r/extra', '../x', 'o/..', 'a b/c', 'o/*x', ''])(
+    'rejects %p as an allowed repository',
+    (repo) => {
+      expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(false);
+    },
+  );
 
   it.each(['ghp_abcdef', '${bad name}', '$GITHUB_TOKEN', '${}'])(
     'rejects %s as a token because only a reference is allowed',
     (token) => {
-      expect(parse({ enabled: true, token }).success).toBe(false);
+      expect(parse({ ...enabled, token }).success).toBe(false);
     },
   );
 

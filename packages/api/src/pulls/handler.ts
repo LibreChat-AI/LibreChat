@@ -24,6 +24,15 @@ export function resolveTokenReference(
   return env[name]?.trim() || null;
 }
 
+/** `owner/name` or `owner/*`, compared without case as GitHub does. Nothing else matches. */
+export function isAllowedRepository(repo: string, allowed: readonly string[] | undefined): boolean {
+  const [owner, name] = repo.toLowerCase().split('/');
+  return (allowed ?? []).some((entry) => {
+    const [allowedOwner, allowedName] = entry.toLowerCase().split('/');
+    return allowedOwner === owner && (allowedName === '*' || allowedName === name);
+  });
+}
+
 const validConversationId = (value: string | undefined): value is string =>
   value != null && value.trim() !== '' && value.length <= MAX_CONVERSATION_ID_LENGTH;
 
@@ -66,6 +75,14 @@ export function createConversationPullRequestHandler(deps: {
         return;
       }
 
+      /** The repository comes from the worker, so it is never used with the token unless the
+       *  administrator named it. A repository that is not allowed looks like one without a pull
+       *  request. */
+      if (!isAllowedRepository(laneGit.repo, settings.allowedRepositories)) {
+        res.status(200).json(NONE);
+        return;
+      }
+
       const token = resolveTokenReference(settings.token, deps.env);
       if (token == null) {
         logger.warn('[PullRequests] Enabled without a usable token reference');
@@ -76,6 +93,7 @@ export function createConversationPullRequestHandler(deps: {
       const result = await deps.lookup({
         repo: laneGit.repo,
         branch: laneGit.branch,
+        head: laneGit.head,
         token,
         ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
         limits: {

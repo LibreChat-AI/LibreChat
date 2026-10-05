@@ -336,6 +336,8 @@ export interface ConversationMethods {
     repo?: string;
     /** When the worker reported this state; defaults to now. */
     reportedAt?: Date;
+    /** The workspace the command ran in; the write applies only while the chat is still on it. */
+    workspace?: { environmentId: string; workspaceId: string; required?: boolean };
   }): Promise<boolean>;
   getConvoLaneGit(
     user: string,
@@ -3021,9 +3023,13 @@ export function createConversationMethods(
    * Record the branch and head a conversation's code lane last reported. Owner-scoped and fenced
    * by report time: the write matches only while the stored report is not newer than this one, so
    * a delayed older report, from this process or another replica, can never replace a newer
-   * state. Server-written only: generic saves and imports cannot set it. Resolves to whether the
-   * write applied; false means a newer report is already stored or there is no such conversation
-   * for this owner.
+   * state. When the caller names the workspace the command ran in, the write also matches only
+   * while the conversation is still attached to it, so a report queued before a move or detach
+   * cannot bring the old workspace's lane back. A conversation with no stored workspace (an agent
+   * default) accepts the report unless the caller requires a recorded one. Server-written only:
+   * generic saves and imports cannot set it. Resolves to whether the write applied; false means a
+   * newer report is already stored, the workspace no longer matches, or there is no such
+   * conversation for this owner.
    */
   async function setConvoLaneGit({
     user,
@@ -3031,12 +3037,14 @@ export function createConversationMethods(
     laneGit,
     repo,
     reportedAt = new Date(),
+    workspace,
   }: {
     user: string;
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
     reportedAt?: Date;
+    workspace?: { environmentId: string; workspaceId: string; required?: boolean };
   }): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const next = {
@@ -3045,15 +3053,49 @@ export function createConversationMethods(
       ...(repo ? { repo } : {}),
       reportedAt,
     };
+    const workspaceFence =
+      workspace == null
+        ? []
+        : [
+            {
+              $or: [
+                {
+                  codeWorkspaces: {
+                    $elemMatch: {
+                      environmentId: workspace.environmentId,
+                      workspaceId: workspace.workspaceId,
+                    },
+                  },
+                },
+                ...(workspace.required === true
+                  ? []
+                  : [
+                      {
+                        codeEnvironmentMode: { $ne: 'without_attached' },
+                        $or: [
+                          { codeWorkspaces: { $exists: false } },
+                          { codeWorkspaces: null },
+                          { codeWorkspaces: { $size: 0 } },
+                        ],
+                      },
+                    ]),
+              ],
+            },
+          ];
     const result = await withoutMeiliIndexing(
       Conversation.updateOne(
         {
           user,
           conversationId,
-          $or: [
-            { 'laneGit.reportedAt': { $exists: false } },
-            { 'laneGit.reportedAt': null },
-            { 'laneGit.reportedAt': { $lte: reportedAt } },
+          $and: [
+            {
+              $or: [
+                { 'laneGit.reportedAt': { $exists: false } },
+                { 'laneGit.reportedAt': null },
+                { 'laneGit.reportedAt': { $lte: reportedAt } },
+              ],
+            },
+            ...workspaceFence,
           ],
         },
         { $set: { laneGit: next } },

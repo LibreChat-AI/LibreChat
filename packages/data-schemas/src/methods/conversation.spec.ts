@@ -9527,6 +9527,92 @@ describe('laneGit', () => {
     });
   });
 
+  describe('workspace fence', () => {
+    const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
+    const team = { environmentId: 'code-team', workspaceId: 'shared' };
+    const seedRaw = async (decision: Record<string, unknown>) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Fence',
+        endpoint: 'agents',
+        messages: [],
+        ...decision,
+      });
+      return conversationId;
+    };
+    const write = (conversationId: string, workspace: Record<string, unknown>) =>
+      methods.setConvoLaneGit({
+        user: 'lane-user',
+        conversationId,
+        laneGit: { branch: 'feat/x', head },
+        workspace: workspace as never,
+      });
+
+    it('records for the workspace the conversation is attached to', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(true);
+    });
+
+    it('refuses a report from a workspace the conversation moved away from', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [team],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('refuses a report once the conversation has left attached execution', async () => {
+      const conversationId = await seedRaw({ codeEnvironmentMode: 'without_attached' });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+    });
+
+    it('does not let a write queued before a move repopulate the cleared lane', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac],
+        laneGit: { branch: 'old', head, repo: 'o/old', reportedAt: new Date(0) },
+      });
+      const stored = await methods.getConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await methods.replaceConvoCodeEnvironmentDecision({
+        user: 'lane-user',
+        conversationId,
+        expected: {
+          codeEnvironmentMode: stored?.codeEnvironmentMode,
+          codeWorkspaces: stored?.codeWorkspaces,
+          codeEnvironmentRevision: stored?.codeEnvironmentRevision,
+        },
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [team],
+      });
+      await expect(write(conversationId, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('records when no workspace is stored yet, as for an agent default workspace', async () => {
+      const conversationId = await seedRaw({});
+      await expect(write(conversationId, mac)).resolves.toBe(true);
+    });
+
+    it('refuses an unrecorded workspace when the caller requires a recorded one', async () => {
+      const conversationId = await seedRaw({});
+      await expect(write(conversationId, { ...mac, required: true })).resolves.toBe(false);
+    });
+
+    it('accepts a required workspace that matches the recorded one', async () => {
+      const conversationId = await seedRaw({
+        codeEnvironmentMode: 'attached',
+        codeWorkspaces: [mac, team],
+      });
+      await expect(write(conversationId, { ...team, required: true })).resolves.toBe(true);
+    });
+  });
+
   it('keeps a detached or empty lane distinct from an unknown one', async () => {
     const conversationId = await seed();
     const laneGit = { branch: null, head: null };

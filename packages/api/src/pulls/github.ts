@@ -13,6 +13,11 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_LOOKUP_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CHECK_RUN_PAGES = 10;
 const CHECK_RUN_PAGE_SIZE = 100;
+/** Bounds the extra requests spent matching a pull request to the recorded commit. */
+const MAX_HEAD_COMPARISONS = 3;
+/** Comparison results meaning the pull request and the recorded commit share a line of history. */
+const SAME_LINE_STATUSES = new Set(['ahead', 'behind', 'identical']);
+const COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_TITLE_LENGTH = 256;
 const REPO_PATTERN = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
 const FAILING_CONCLUSIONS = new Set([
@@ -86,7 +91,9 @@ function parsePull(value: unknown): GitHubPull {
   };
 }
 
-function parseListItem(value: unknown): { number: number; state: string; sha: string } {
+type ListItem = { number: number; state: string; sha: string };
+
+function parseListItem(value: unknown): ListItem {
   if (
     !isRecord(value) ||
     !isCount(value.number) ||
@@ -259,7 +266,7 @@ export function createGitHubPullRequestSource({
   }
 
   return {
-    async find({ repo, branch, token, limits }) {
+    async find({ repo, branch, head: recordedHead, token, limits }) {
       const lookup: Lookup = {
         token,
         requestTimeoutMs: limits?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
@@ -271,21 +278,48 @@ export function createGitHubPullRequestSource({
       const [, owner, name] = match;
       if (!isPathSegment(owner) || !isPathSegment(name)) return null;
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-      const head = encodeURIComponent(`${owner}:${branch}`);
-      /** `undefined`: the repository is not visible. `null`: it is, and nothing matched. */
+      const headFilter = encodeURIComponent(`${owner}:${branch}`);
+      /** `undefined`: the repository is not visible. An empty list: it is, and nothing matched. */
       const listPulls = async (state: 'open' | 'closed', perPage: number) => {
         const listed = await getJson(
-          `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&head=${head}`,
+          `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&head=${headFilter}`,
           lookup,
         );
         if (listed == null) return undefined;
         if (!Array.isArray(listed)) throw new PullRequestSourceError('UPSTREAM_ERROR');
-        return listed.map(parseListItem)[0] ?? null;
+        return listed.map(parseListItem);
+      };
+      const recorded =
+        typeof recordedHead === 'string' && COMMIT_ID.test(recordedHead) ? recordedHead : undefined;
+      let comparisons = 0;
+      /**
+       * A branch name can be deleted and reused, so with a recorded commit a pull request counts
+       * only when it carries that commit or builds on it. A commit GitHub no longer knows is no
+       * match, and the number of comparisons per lookup is bounded.
+       */
+      const matches = async (candidate: ListItem): Promise<boolean> => {
+        if (recorded == null || candidate.sha === recorded) return true;
+        if (comparisons >= MAX_HEAD_COMPARISONS) return false;
+        comparisons += 1;
+        const comparison = await getJson(`${base}/compare/${recorded}...${candidate.sha}`, lookup);
+        if (comparison == null) return false;
+        if (!isRecord(comparison) || typeof comparison.status !== 'string') {
+          throw new PullRequestSourceError('UPSTREAM_ERROR');
+        }
+        return SAME_LINE_STATUSES.has(comparison.status);
+      };
+      const choose = async (candidates: ListItem[]): Promise<ListItem | null> => {
+        for (const candidate of candidates) {
+          if (await matches(candidate)) return candidate;
+        }
+        return null;
       };
       /** Open first on its own, so closed history on a reused branch name cannot hide it. */
       const open = await listPulls('open', 10);
       if (open === undefined) return null;
-      const chosen = open ?? (await listPulls('closed', 1));
+      const chosen =
+        (await choose(open)) ??
+        (await choose((await listPulls('closed', recorded == null ? 1 : 10)) ?? []));
       if (chosen == null) return null;
 
       const [pull, checks] = await Promise.all([

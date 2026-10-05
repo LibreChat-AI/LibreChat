@@ -19,8 +19,8 @@ const scopeOf = (token: string): string =>
   createHash('sha256').update(token).digest('hex').slice(0, 32);
 
 /**
- * Caches lookups per credential, repository and branch, and shares one in-flight request between
- * concurrent callers with the same credential. What a token can see is part of the answer (a
+ * Caches lookups per credential, repository, branch, recorded commit and lookup policy, and shares
+ * one in-flight request between concurrent callers with all of those in common. What a token can see is part of the answer (a
  * private repository is a pull request for one tenant and nothing for another), so the credential
  * scopes both the cache and the in-flight map. A rate limit applies to the credential, not the
  * branch, so it starts a cooldown for every branch under that credential. Callers must have
@@ -59,9 +59,16 @@ export function createPullRequestLookup({
     }
   }
 
-  return async ({ repo, branch, token, ttlMs, limits }) => {
+  return async ({ repo, branch, head, token, ttlMs, limits }) => {
     const scope = scopeOf(token);
-    const key = `${scope}\0${repo}#${branch}`;
+    /** Everything that changes the answer or how long it may be reused is part of the key. */
+    const policy = [
+      ttlMs,
+      limits?.requestTimeoutMs,
+      limits?.lookupTimeoutMs,
+      limits?.maxCheckRunPages,
+    ].join(',');
+    const key = `${scope}\0${repo}#${branch}\0${head ?? ''}\0${policy}`;
     const cached = entries.get(key);
     if (cached != null && cached.expiresAt > now()) return cached.result;
     const pending = inflight.get(key);
@@ -75,7 +82,7 @@ export function createPullRequestLookup({
     const run = (async (): Promise<PullRequestLookupResult> => {
       let result: PullRequestLookupResult;
       try {
-        result = { ok: true, value: await source.find({ repo, branch, token, limits }) };
+        result = { ok: true, value: await source.find({ repo, branch, head, token, limits }) };
       } catch (error) {
         if (!(error instanceof PullRequestSourceError)) {
           logger.warn('[PullRequests] Lookup failed', getSafeErrorMetadata(error));

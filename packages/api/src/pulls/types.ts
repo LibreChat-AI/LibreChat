@@ -34,6 +34,8 @@ export type PullRequestFindInput = {
   /** `owner/name`. */
   repo: string;
   branch: string;
+  /** The commit the conversation last ran at; a pull request must carry it to be the match. */
+  head?: string | null;
   token: string;
   limits?: PullRequestLookupLimits;
 };

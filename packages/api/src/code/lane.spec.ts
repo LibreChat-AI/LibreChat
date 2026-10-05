@@ -272,3 +272,114 @@ describe('createLaneGitRecorder write order', () => {
     await expect(second).resolves.toBe(true);
   });
 });
+
+describe('createLaneGitRecorder target conversation', () => {
+  const workspace = { environmentId: 'code-mac', workspaceId: 'primary' };
+  const written = (setConvoLaneGit: jest.Mock) => setConvoLaneGit.mock.calls.map(([call]) => call);
+
+  it('passes the workspace it ran in, so a stale writer can be fenced', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'target-1',
+      workspace,
+      setConvoLaneGit,
+    });
+    await record?.(laneGit);
+    expect(written(setConvoLaneGit)[0]).toMatchObject({
+      conversationId: 'target-1',
+      workspace: { ...workspace },
+    });
+    expect(written(setConvoLaneGit)[0].workspace.required).not.toBe(true);
+  });
+
+  it('records a subagent thread on the visible conversation, and requires its workspace to match', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const getConvoOwnership = jest.fn().mockResolvedValue({
+      subagentThread: { rootConversationId: 'visible-root', parentConversationId: 'mid' },
+    });
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'child-thread',
+      workspace,
+      getConvoOwnership,
+      setConvoLaneGit,
+    });
+    await record?.(laneGit);
+    expect(getConvoOwnership).toHaveBeenCalledWith('u1', 'child-thread');
+    expect(written(setConvoLaneGit)[0]).toMatchObject({
+      conversationId: 'visible-root',
+      workspace: { ...workspace, required: true },
+    });
+  });
+
+  it('records an ordinary conversation on itself', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const getConvoOwnership = jest.fn().mockResolvedValue({ user: 'u1' });
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'plain',
+      workspace,
+      getConvoOwnership,
+      setConvoLaneGit,
+    });
+    await record?.(laneGit);
+    expect(written(setConvoLaneGit)[0].conversationId).toBe('plain');
+  });
+
+  it('looks the conversation up once however many reports follow', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const getConvoOwnership = jest.fn().mockResolvedValue({
+      subagentThread: { rootConversationId: 'visible-root' },
+    });
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'child-2',
+      workspace,
+      getConvoOwnership,
+      setConvoLaneGit,
+    });
+    await record?.({ branch: 'a', head });
+    await record?.({ branch: 'b', head });
+    expect(getConvoOwnership).toHaveBeenCalledTimes(1);
+    expect(written(setConvoLaneGit).map((call) => call.conversationId)).toEqual([
+      'visible-root',
+      'visible-root',
+    ]);
+  });
+
+  it('skips a report it cannot place rather than guess, and tries again on the next', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const getConvoOwnership = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('mongodb://user:secret@host'))
+      .mockResolvedValue({ subagentThread: { rootConversationId: 'visible-root' } });
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'child-3',
+      workspace,
+      getConvoOwnership,
+      setConvoLaneGit,
+    });
+    await expect(record?.({ branch: 'a', head })).resolves.toBe(false);
+    expect(setConvoLaneGit).not.toHaveBeenCalled();
+    expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
+    await expect(record?.({ branch: 'b', head })).resolves.toBe(true);
+    expect(written(setConvoLaneGit)[0].conversationId).toBe('visible-root');
+  });
+
+  it('does not write a subagent lane to the parent without a workspace to verify it against', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const getConvoOwnership = jest.fn().mockResolvedValue({
+      subagentThread: { rootConversationId: 'visible-root' },
+    });
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'child-4',
+      getConvoOwnership,
+      setConvoLaneGit,
+    });
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    expect(setConvoLaneGit).not.toHaveBeenCalled();
+  });
+});

@@ -2,6 +2,9 @@ import { logger } from '@librechat/data-schemas';
 import type { WorkspaceLaneGit } from './workspace';
 import { getSafeErrorMetadata } from '~/utils';
 
+/** The workspace a command ran in. `required` demands the conversation have it recorded. */
+export type LaneWorkspace = { environmentId: string; workspaceId: string; required?: boolean };
+
 export type LaneGitWriter = (input: {
   user: string;
   conversationId: string;
@@ -9,7 +12,15 @@ export type LaneGitWriter = (input: {
   repo?: string;
   /** When the command settled; the database ignores a report older than the one it holds. */
   reportedAt: Date;
+  /** The database ignores the report once the conversation is no longer on this workspace. */
+  workspace?: LaneWorkspace;
 }) => Promise<boolean>;
+
+/** Reads what the recorder needs to place a conversation: whether it is a subagent thread. */
+export type LaneOwnershipReader = (
+  user: string,
+  conversationId: string,
+) => Promise<{ subagentThread?: { rootConversationId?: string | null } | null } | null | undefined>;
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MAX_REPO_LENGTH = 256;
@@ -41,12 +52,16 @@ export function createLaneGitRecorder({
   user,
   conversationId,
   repo,
+  workspace,
+  getConvoOwnership,
   setConvoLaneGit,
   now = () => new Date(),
 }: {
   user: string | undefined;
   conversationId: string | undefined;
   repo?: string;
+  workspace?: { environmentId: string; workspaceId: string };
+  getConvoOwnership?: LaneOwnershipReader;
   setConvoLaneGit: LaneGitWriter;
   now?: () => Date;
 }): ((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined {
@@ -54,14 +69,44 @@ export function createLaneGitRecorder({
   const safeRepo = isSafeRepo(repo) ? repo : undefined;
   const queueKey = `${user}\0${conversationId}`;
 
+  /**
+   * A subagent thread is a hidden child of the conversation the user sees, and its commands run on
+   * the parent's machine, so its lane belongs to the visible root. That write must also match the
+   * root's recorded workspace, since nothing else ties the child to it. The lookup is made once;
+   * a failed one is retried on the next report.
+   */
+  let target: Promise<{ conversationId: string; required: boolean }> | undefined;
+  const resolveTarget = (): Promise<{ conversationId: string; required: boolean }> => {
+    if (target == null) {
+      const resolving = (async () => {
+        if (getConvoOwnership == null) return { conversationId, required: false };
+        const owned = await getConvoOwnership(user, conversationId);
+        const root = owned?.subagentThread?.rootConversationId;
+        return root
+          ? { conversationId: root, required: true }
+          : { conversationId, required: false };
+      })();
+      target = resolving;
+      resolving.catch(() => {
+        if (target === resolving) target = undefined;
+      });
+    }
+    return target;
+  };
+
   const write = async (laneGit: WorkspaceLaneGit, reportedAt: Date): Promise<boolean> => {
     try {
+      const placed = await resolveTarget();
+      if (placed.required && workspace == null) return false;
       return await setConvoLaneGit({
         user,
-        conversationId,
+        conversationId: placed.conversationId,
         laneGit,
         ...(safeRepo ? { repo: safeRepo } : {}),
         reportedAt,
+        ...(workspace
+          ? { workspace: { ...workspace, ...(placed.required ? { required: true } : {}) } }
+          : {}),
       });
     } catch (error) {
       logger.warn('[LaneGit] Failed to record lane state', getSafeErrorMetadata(error));

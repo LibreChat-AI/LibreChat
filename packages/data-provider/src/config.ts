@@ -498,6 +498,17 @@ const skillSyncTenantIdSchema = z
     message: 'must not be the reserved system tenant id',
   });
 
+/** `owner/name`, or `owner/*` for every repository of one owner; never a bare `*`. */
+const pullRequestRepositorySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)$/, {
+    message: 'must be owner/name or owner/*',
+  })
+  .refine((value) => value.split('/').every((segment) => segment !== '.' && segment !== '..'), {
+    message: 'must not contain dot segments',
+  });
+
 const pullRequestTokenReferenceSchema = z
   .string()
   .trim()
@@ -1851,6 +1862,10 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Environment variable reference holding a read-only GitHub token, e.g.
            *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. */
           token: pullRequestTokenReferenceSchema.optional(),
+          /** Repositories the token may be used for, as `owner/name` or `owner/*`. A worker reports
+           *  its own repository, so without this list a user could point the server's token at any
+           *  repository it can read. */
+          allowedRepositories: z.array(pullRequestRepositorySchema).max(256).optional(),
           /** Seconds a looked-up pull request is reused before GitHub is asked again. */
           cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */
@@ -1866,6 +1881,13 @@ export const agentsEndpointSchema = baseEndpointSchema
               code: z.ZodIssueCode.custom,
               path: ['token'],
               message: 'A token reference is required when pull requests are enabled',
+            });
+          }
+          if (value.enabled && (value.allowedRepositories?.length ?? 0) === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['allowedRepositories'],
+              message: 'At least one allowed repository is required when pull requests are enabled',
             });
           }
         })

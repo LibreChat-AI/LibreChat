@@ -352,3 +352,93 @@ describe('lookup bounds', () => {
     expect(seen.every((signal) => signal != null && !signal.aborted)).toBe(true);
   });
 });
+
+describe('matching the recorded head', () => {
+  const recorded = 'c'.repeat(40);
+  const compare = (status: string) => () => json({ status });
+  const findWith = (
+    source: ReturnType<typeof createGitHubPullRequestSource>,
+    head?: string | null,
+  ) => source.find({ repo: 'o/r', branch: 'feat/x', head, token: 't' });
+
+  const routes = (status: string) => ({
+    '/pulls?state=open': () => json(listed()),
+    '/compare/': compare(status),
+    '/pulls/7': () => json(pull()),
+    '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+  });
+
+  it('accepts the pull request whose head is the recorded commit, without a comparison', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json([{ number: 7, state: 'open', head: { sha: recorded } }]),
+      '/pulls/7': () => json(pull()),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(findWith(source, recorded)).resolves.toMatchObject({ number: 7 });
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+
+  it.each(['ahead', 'behind', 'identical'])(
+    'accepts a pull request on the same line of commits (%s)',
+    async (status) => {
+      const { source } = sourceFor(routes(status));
+      await expect(findWith(source, recorded)).resolves.toMatchObject({ number: 7 });
+    },
+  );
+
+  it('rejects a pull request whose commits diverged from the recorded head', async () => {
+    const { source } = sourceFor({ ...routes('diverged'), '/pulls?state=closed': () => json([]) });
+    await expect(findWith(source, recorded)).resolves.toBeNull();
+  });
+
+  it('treats a recorded commit GitHub no longer knows as no match', async () => {
+    const { source } = sourceFor({
+      ...routes('ahead'),
+      '/compare/': () => new Response('', { status: 404 }),
+      '/pulls?state=closed': () => json([]),
+    });
+    await expect(findWith(source, recorded)).resolves.toBeNull();
+  });
+
+  it('falls back to a closed pull request that matches when the open one does not', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json([{ number: 9, state: 'open', head: { sha } }]),
+      '/pulls?state=closed': () => json([{ number: 7, state: 'closed', head: { sha: recorded } }]),
+      '/compare/': compare('diverged'),
+      '/pulls/7': () => json(pull({ state: 'closed', merged: true })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(findWith(source, recorded)).resolves.toMatchObject({
+      number: 7,
+      state: 'merged',
+    });
+  });
+
+  it('limits how many candidates it compares', async () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({
+      number: index + 1,
+      state: 'open',
+      head: { sha },
+    }));
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json(many),
+      '/pulls?state=closed': () => json(many),
+      '/compare/': compare('diverged'),
+    });
+    await expect(findWith(source, recorded)).resolves.toBeNull();
+    const compares = fetchFn.mock.calls.filter(([url]) => String(url).includes('/compare/'));
+    expect(compares.length).toBeLessThanOrEqual(3);
+  });
+
+  it.each([null, undefined])('does not compare when no head was recorded (%s)', async (head) => {
+    const { source, fetchFn } = sourceFor(routes('diverged'));
+    await expect(findWith(source, head)).resolves.toMatchObject({ number: 7 });
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+
+  it('ignores a recorded head that is not a commit id rather than putting it in a path', async () => {
+    const { source, fetchFn } = sourceFor(routes('diverged'));
+    await expect(findWith(source, '../../etc')).resolves.toMatchObject({ number: 7 });
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+});

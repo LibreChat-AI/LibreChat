@@ -223,3 +223,56 @@ describe('rate limit cooldown', () => {
     expect(find).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('lookup policy scoping', () => {
+  it('does not serve a result read under a tighter page limit to a caller allowing more', async () => {
+    const incomplete = { ...value, checks: 'running' as const };
+    const find = jest.fn(async ({ limits }: { limits?: { maxCheckRunPages?: number } }) =>
+      limits?.maxCheckRunPages === 1 ? incomplete : { ...value, checks: 'failing' as const },
+    );
+    const lookup = createPullRequestLookup({ source: { find } });
+    await expect(lookup({ ...input, limits: { maxCheckRunPages: 1 } })).resolves.toEqual({
+      ok: true,
+      value: incomplete,
+    });
+    await expect(lookup({ ...input, limits: { maxCheckRunPages: 50 } })).resolves.toMatchObject({
+      value: { checks: 'failing' },
+    });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('honors the shorter freshness of a caller instead of the longer one another set', async () => {
+    let clock = 0;
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await lookup({ ...input, ttlMs: 3_600_000 });
+    clock = 6_000;
+    await lookup({ ...input, ttlMs: 5_000 });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not share an in-flight request between different policies', async () => {
+    const find = jest.fn(() => new Promise<null>(() => undefined));
+    const lookup = createPullRequestLookup({ source: { find } });
+    void lookup({ ...input, limits: { maxCheckRunPages: 1 } });
+    void lookup({ ...input, limits: { maxCheckRunPages: 2 } });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('keys by the recorded head, so a reused branch name does not share a result', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, head: 'a'.repeat(40) });
+    await lookup({ ...input, head: 'b'.repeat(40) });
+    await lookup({ ...input, head: 'a'.repeat(40) });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats an unchanged policy as the same entry', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, limits: { maxCheckRunPages: 3, requestTimeoutMs: 5_000 } });
+    await lookup({ ...input, limits: { requestTimeoutMs: 5_000, maxCheckRunPages: 3 } });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+});

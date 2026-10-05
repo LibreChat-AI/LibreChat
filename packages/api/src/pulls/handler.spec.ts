@@ -20,7 +20,12 @@ const pr: TConversationPullRequest = {
   checks: 'passing',
 };
 
-const enabled = { enabled: true, token: '${GH_TOKEN}', cacheTtlSeconds: 30 };
+const enabled = {
+  enabled: true,
+  token: '${GH_TOKEN}',
+  cacheTtlSeconds: 30,
+  allowedRepositories: ['o/r'],
+};
 const configWith = (pullRequests?: Record<string, unknown>) => ({
   endpoints: { agents: { pullRequests } },
 });
@@ -75,6 +80,7 @@ describe('createConversationPullRequestHandler', () => {
       repo: 'o/r',
       branch: 'feat/x',
       token: 'ghp_secret',
+      head: null,
       ttlMs: 30_000,
       limits: { requestTimeoutMs: 10_000, lookupTimeoutMs: 30_000, maxCheckRunPages: 10 },
     });
@@ -97,6 +103,56 @@ describe('createConversationPullRequestHandler', () => {
         limits: { requestTimeoutMs: 3_000, lookupTimeoutMs: 8_000, maxCheckRunPages: 4 },
       }),
     );
+  });
+
+  it('passes the recorded head so the pull request can be matched to what the chat ran', async () => {
+    const head = 'a'.repeat(40);
+    const { run, lookup } = setup({ laneGit: { branch: 'feat/x', head, repo: 'o/r' } });
+    await run();
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ head }));
+  });
+
+  describe('repository allowlist', () => {
+    const lane = (repo: string) => ({ branch: 'feat/x', head: null, repo });
+
+    it.each([
+      ['an exact match', ['o/r'], 'o/r'],
+      ['a different case', ['O/R'], 'o/r'],
+      ['an owner wildcard', ['o/*'], 'o/r'],
+      ['one of several', ['x/y', 'o/r'], 'o/r'],
+    ])('looks up a repository allowed by %s', async (_label, allowedRepositories, repo) => {
+      const { run, lookup } = setup({
+        settings: { ...enabled, allowedRepositories },
+        laneGit: lane(repo),
+      });
+      await run();
+      expect(lookup).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['another repository', ['o/r'], 'o/other'],
+      ['another owner', ['o/*'], 'x/r'],
+      ['a prefix of an allowed owner', ['org/*'], 'organization/r'],
+      ['an empty allowlist', [], 'o/r'],
+    ])('answers null without using the token for %s', async (_label, allowedRepositories, repo) => {
+      const { run, res, lookup } = setup({
+        settings: { ...enabled, allowedRepositories },
+        laneGit: lane(repo),
+      });
+      await run();
+      expect(lookup).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({ pullRequest: null });
+    });
+
+    it('does not reveal whether a disallowed repository exists', async () => {
+      const allowed = setup({ laneGit: lane('o/r') });
+      const denied = setup({ laneGit: lane('secret/private') });
+      await denied.run();
+      await allowed.run();
+      expect(denied.res.json).toHaveBeenCalledWith({ pullRequest: null });
+      expect(JSON.stringify(denied.res.json.mock.calls)).not.toContain('secret');
+    });
   });
 
   it('answers null without reading anything when the feature is off', async () => {
