@@ -53,7 +53,7 @@ function ComplexInput({ data }: { data: Record<string, unknown> }) {
       {Object.entries(data).map(([key, value]) => (
         <div key={key} className="flex items-baseline gap-1.5">
           <span className="text-text-secondary font-medium">{key}</span>
-          <span className="bg-surface-tertiary text-text-primary max-w-[300px] truncate overflow-hidden rounded px-1.5 py-0.5 font-mono">
+          <span className="bg-surface-tertiary text-text-primary max-w-[18.75rem] truncate overflow-hidden rounded px-1.5 py-0.5 font-mono">
             {formatParamValue(value)}
           </span>
         </div>

@@ -41,14 +41,19 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
         tabIndex={tabIndex}
         aria-label={currentLabel}
         className={cn(
-          'inline-flex select-none items-center justify-center text-text-secondary transition-all duration-200 ease-out',
+          'text-text-secondary inline-flex items-center justify-center transition-all duration-200 ease-out select-none',
           'hover:bg-surface-hover hover:text-text-primary',
-          'focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-heavy',
+          'focus-visible:outline-border-heavy focus-visible:outline focus-visible:outline-2',
           iconOnly ? 'rounded-lg p-1.5' : 'ml-auto gap-2 rounded-md px-2 py-1',
           className,
         )}
       >
-        <MorphIcon icon={isActive ? Check : icon} size={18} />
+        <span
+          className="relative flex size-[1.125rem] items-center justify-center"
+          aria-hidden="true"
+        >
+          <MorphIcon icon={isActive ? Check : icon} size="1.125rem" />
+        </span>
         {!iconOnly && (
           <span className="relative overflow-hidden">
             <span

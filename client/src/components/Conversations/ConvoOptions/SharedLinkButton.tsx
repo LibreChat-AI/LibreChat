@@ -340,7 +340,7 @@ export default function SharedLinkButton({
                       key={refreshAnimationId}
                       className={
                         refreshAnimationId > 0
-                          ? 'size-4 animate-refresh-link-spin motion-reduce:animate-none'
+                          ? 'animate-refresh-link-spin size-4 motion-reduce:animate-none'
                           : 'size-4'
                       }
                       aria-hidden="true"
@@ -424,7 +424,7 @@ export default function SharedLinkButton({
         >
           <OGDialogContent
             role="alertdialog"
-            className="w-11/12 max-w-[450px]"
+            className="w-11/12 max-w-[28.125rem]"
             showCloseButton={false}
           >
             <OGDialogHeader>

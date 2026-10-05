@@ -68,7 +68,7 @@ function FeedbackOptionButton({
       aria-label={label}
       aria-pressed={active}
     >
-      <Icon size="19" bold={active} aria-hidden="true" />
+      <Icon size="1.1875rem" bold={active} aria-hidden="true" />
       <span>{label}</span>
     </Button>
   );
@@ -158,7 +158,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsUp'}
             aria-haspopup="menu"
           >
-            <ThumbUpIcon size="19" bold={feedback?.rating === 'thumbsUp'} />
+            <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
           </Button>
         }
       />
@@ -193,7 +193,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsDown'}
             aria-haspopup="menu"
           >
-            <ThumbDownIcon size="19" bold={feedback?.rating === 'thumbsDown'} />
+            <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
           </Button>
         }
       />
@@ -293,7 +293,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             aria-label={label}
             aria-pressed="true"
           >
-            <Icon size="19" bold />
+            <Icon size="1.1875rem" bold />
           </Button>
         }
       />

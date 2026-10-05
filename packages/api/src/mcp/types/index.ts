@@ -234,7 +234,22 @@ export interface DirectBearerRecoveryState {
   resolvedConfig?: MCPOptions;
 }
 
+/** Host-supplied live headers; transport requests cannot reuse a prior allow observation. */
+export type MCPRequestHeaderResolver = ((
+  signal?: AbortSignal,
+  /** Stops this connection's retries at observation, before denial admission awaits. */
+  onDenied?: (error: unknown) => void,
+) => Promise<Record<string, string>>) & {
+  /** Synchronous completion/owner cutoff, checked beside dispatch with no intervening await. */
+  assertOpen?: () => void;
+  /** Records asynchronous transport denials at the owning request boundary. */
+  recordFailure?: (error: unknown) => Promise<void>;
+  /** Pending owner evidence must be admitted before transport disposal completes. */
+  settle?: () => Promise<void>;
+};
+
 export interface BasicConnectionOptions {
+  resolveRequestHeaders?: MCPRequestHeaderResolver;
   serverName: string;
   serverConfig: MCPOptions;
   /** Original unresolved definition retained across asynchronous credential preprocessing. */
@@ -318,6 +333,8 @@ export interface RequestScopedMCPConnectionStore {
   disposeConnection?: (connectionKey: string, connection: unknown) => Promise<void>;
   /** Set before cleanup snapshots pending work; new connection attempts must fail closed. */
   cleanupStarted?: boolean;
+  /** Completion cutoff: no new occurrence dispatch or connection may begin. */
+  quiesceStarted?: boolean;
 }
 
 export interface OAuthStartOptions {

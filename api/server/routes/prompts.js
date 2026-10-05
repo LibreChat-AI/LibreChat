@@ -3,8 +3,14 @@ const {
   generateCheckAccess,
   createPromptService,
   createPromptHandlers,
+  invalidateLinkedPrompt,
 } = require('@librechat/api');
-const { Permissions, PermissionBits, PermissionTypes } = require('librechat-data-provider');
+const {
+  CacheKeys,
+  Permissions,
+  PermissionBits,
+  PermissionTypes,
+} = require('librechat-data-provider');
 const {
   canAccessPromptGroupResource,
   canAccessPromptViaGroup,
@@ -13,15 +19,20 @@ const {
   configMiddleware,
 } = require('~/server/middleware');
 const { getEffectivePermissions, grantPermission } = require('~/server/services/PermissionService');
+const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
 const { getRoleByName } = db;
 const router = express.Router();
 
+const linkedInstructionsCache = getLogStores(CacheKeys.AGENT_LINKED_INSTRUCTIONS);
+
 const handlers = createPromptHandlers({
   service: createPromptService({ db, grantPermission }),
   getPromptGroupAccessContext: db.getPromptGroupAccessContext,
   getEffectivePermissions,
+  invalidateLinkedPrompt: (groupId, promptIds) =>
+    invalidateLinkedPrompt(linkedInstructionsCache, groupId, promptIds),
 });
 
 const checkPromptAccess = generateCheckAccess({
@@ -92,12 +103,14 @@ router.delete(
     requiredPermission: PermissionBits.DELETE,
     resourceIdParam: 'promptId',
   }),
+  configMiddleware,
   handlers.deletePrompt,
 );
 router.delete(
   '/groups/:groupId',
   checkPromptCreate,
   canAccessPromptGroupResource({ requiredPermission: PermissionBits.DELETE }),
+  configMiddleware,
   handlers.deletePromptGroup,
 );
 

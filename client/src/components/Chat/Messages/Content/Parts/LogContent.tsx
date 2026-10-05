@@ -207,10 +207,10 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
           {textAttachments.map((file, index) => (
             <div
               key={renderAttachmentKey('text', file, index)}
-              className="rounded-lg bg-surface-secondary p-3"
+              className="bg-surface-secondary rounded-lg p-3"
             >
               {file.filename && (
-                <div className="mb-1 truncate text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                <div className="text-text-secondary mb-1 truncate text-[10px] font-medium tracking-wide uppercase">
                   {file.filepath ? (
                     <LogLink
                       href={file.filepath}
@@ -226,7 +226,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
                   )}
                 </div>
               )}
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-text-primary">
+              <pre className="text-text-primary max-h-80 overflow-auto font-mono text-xs leading-5 break-words whitespace-pre-wrap">
                 {file.text}
               </pre>
             </div>

@@ -612,6 +612,21 @@ describe('createAgentChatCompletion - MCP permission user propagation', () => {
     );
   });
 
+  /** Unlike `resolveWebSearchGrant`, there is no default DB-backed resolution path
+   *  for a linked agent — the embedder's resolver (and usage-recording flag) must
+   *  reach `initializeAgent` verbatim or a linked agent silently loses its instructions. */
+  it('forwards resolveLinkedInstructions and recordLinkedPromptUsage verbatim to initializeAgent', async () => {
+    const resolveLinkedInstructions = jest.fn();
+    deps.resolveLinkedInstructions = resolveLinkedInstructions as never;
+    deps.recordLinkedPromptUsage = false;
+
+    await createAgentChatCompletion(createMockReq({ id: 'user-123' }), createMockRes(), deps);
+
+    expect(deps.initializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ resolveLinkedInstructions, recordLinkedPromptUsage: false }),
+    );
+  });
+
   it('preserves stateful scope policy status and code in an initialization error response', async () => {
     const policyError = Object.assign(
       new Error('Stateful code environment is not allowed by this deployment: conversation'),

@@ -70,7 +70,7 @@ function SelectDropDownPop({
               className={cn(
                 'border-border-light bg-surface-secondary relative flex cursor-pointer flex-col rounded-lg border py-2 pr-10 pl-3 text-left focus:ring-0 focus:ring-offset-0 sm:text-sm',
                 'hover:bg-surface-hover data-[state=open]:bg-surface-hover',
-                'max-w-[215px] min-w-[200px] sm:max-w-full sm:min-w-full',
+                'max-w-[min(13.4375rem,90vw)] min-w-[min(12.5rem,90vw)] sm:max-w-full sm:min-w-full',
               )}
               aria-label={localize('com_ui_select_var', { 0: title })}
               aria-haspopup="false"
@@ -82,7 +82,7 @@ function SelectDropDownPop({
                   className={cn(
                     'text-text-primary flex h-6 items-center gap-1 text-sm',
                     !showLabel ? 'text-xs' : '',
-                    'min-w-[75px] font-normal',
+                    'min-w-[4.6875rem] font-normal',
                   )}
                 >
                   {typeof value !== 'string' && value ? (value.label ?? '') : (value ?? '')}

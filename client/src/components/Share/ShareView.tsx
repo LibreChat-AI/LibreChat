@@ -264,7 +264,7 @@ function SharedView() {
               {artifactsContainer}
             </main>
           </div>
-          <SharedSubagentActivityDialog shareId={shareId} />
+          <SharedSubagentActivityDialog shareId={shareId} messages={data?.messages} />
         </AppChatSurface>
       </ShareContext.Provider>
     </CodeHighlightThrottleContext.Provider>

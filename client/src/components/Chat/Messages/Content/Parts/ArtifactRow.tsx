@@ -79,18 +79,18 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
   }
 
   return (
-    <div className={cn(TOOL_ROW_CLASSES, 'text-sm text-text-secondary')}>
+    <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm')}>
       <Button
         ref={ref}
         type="button"
-        variant="ghost"
+        variant="disclosure"
         aria-controls="artifact-viewer"
         aria-expanded={isSelected}
         data-artifact-trigger={artifactId}
         onClick={onOpen}
         className={cn(
           'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2.5 rounded-none p-0',
-          'hover:bg-transparent hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
+          'hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
           isSelected && 'text-text-primary',
         )}
       >
@@ -107,7 +107,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
             the streaming cursor and a call header can trade places without
             moving what is under them, and a taller child here would push
             past that box. */}
-        <span className="shrink-0 rounded px-1.5 text-[10px] font-medium uppercase leading-5 tracking-wide text-text-tertiary ring-1 ring-inset ring-border-light">
+        <span className="text-text-tertiary ring-border-light shrink-0 rounded px-1.5 text-[10px] leading-5 font-medium tracking-wide uppercase ring-1 ring-inset">
           {label}
         </span>
         {/* The glyph's tint is the visual half of the preview/source split
@@ -128,7 +128,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
           size="icon"
           onClick={onDownload}
           aria-label={`${localize('com_ui_download')} ${title}`}
-          className="size-5 shrink-0 rounded text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0"
+          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>

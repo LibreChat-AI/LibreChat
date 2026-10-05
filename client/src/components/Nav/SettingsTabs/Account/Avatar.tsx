@@ -187,11 +187,11 @@ function Avatar() {
         }
       }}
     >
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{localize('com_nav_profile_picture')}</span>
         <OGDialogTrigger asChild>
           <Button variant="outline">
-            <FileImage className="mr-2 flex w-[22px] items-center" aria-hidden="true" />
+            <FileImage className="mr-2 flex w-[1.375rem] items-center" aria-hidden="true" />
             <span>{localize('com_nav_change_picture')}</span>
           </Button>
         </OGDialogTrigger>
@@ -203,12 +203,12 @@ function Avatar() {
             {image != null ? localize('com_ui_preview') : localize('com_ui_upload_image')}
           </OGDialogTitle>
         </OGDialogHeader>
-        <div className="flex flex-col items-center justify-center p-2">
+        <div className="flex min-w-0 flex-col items-center justify-center p-2">
           {image != null ? (
             <>
               <div
                 className={cn(
-                  'ring-border-light relative overflow-hidden rounded-full ring-4 transition-all',
+                  'ring-border-light relative w-full max-w-[17.5rem] overflow-hidden rounded-full ring-4 transition-all',
                   isDragging && 'ring-ring-primary cursor-move',
                 )}
                 onMouseDown={() => setIsDragging(true)}
@@ -227,7 +227,11 @@ function Avatar() {
                   rotate={rotation}
                   position={position}
                   onPositionChange={handlePositionChange}
-                  className="cursor-move"
+                  /* The width/height props stay at 280 so the exported avatar keeps its
+                     resolution; only the rendered canvas yields to the dialog, which is
+                     narrower than 17.5rem once the scale or the reader's font grows. The
+                     editor writes its size inline, so the overrides are important. */
+                  className="aspect-square h-auto! w-full! cursor-move"
                 />
                 {!isDragging && (
                   <div className="pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 transition-opacity hover:opacity-100">
@@ -283,7 +287,7 @@ function Avatar() {
                   </div>
                 </div>
 
-                <div className="flex items-center justify-center space-x-3">
+                <div className="flex flex-wrap items-center justify-center gap-3">
                   <Button
                     type="button"
                     variant="outline"
@@ -313,7 +317,7 @@ function Avatar() {
               </div>
 
               {/* Action Buttons */}
-              <div className="mt-6 flex w-full space-x-3">
+              <div className="mt-6 flex w-full flex-wrap gap-3">
                 <Button
                   type="button"
                   variant="outline"
@@ -326,7 +330,7 @@ function Avatar() {
                 <Button
                   variant="submit"
                   type="button"
-                  className={cn('w-full', isUploading ? 'cursor-not-allowed opacity-90' : '')}
+                  className={cn('flex-1', isUploading ? 'cursor-not-allowed opacity-90' : '')}
                   onClick={handleUpload}
                   disabled={isUploading}
                 >

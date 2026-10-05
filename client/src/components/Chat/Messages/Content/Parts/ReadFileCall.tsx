@@ -141,7 +141,7 @@ export default function ReadFileCall({
               )}
             >
               <CodeWindowHeader language={fileName} code={output} />
-              <pre className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs">
+              <pre className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs">
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? output}
                 </code>

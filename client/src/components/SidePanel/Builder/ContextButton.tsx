@@ -101,7 +101,7 @@ export default function ContextButton({
       </DialogTrigger>
       <DialogTemplate
         title={localize('com_ui_delete_assistant')}
-        className="max-w-[450px]"
+        className="max-w-[28.125rem]"
         main={
           <>
             <div className="flex w-full flex-col items-center gap-2">

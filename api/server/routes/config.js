@@ -20,6 +20,7 @@ const {
   buildPreLoginInterface,
   resolveMaxPasskeysPerUser,
   resolveCodeEnvironmentMoveCapabilities,
+  resolveCodeWorkspaceInheritanceCapability,
   resolveCodeEnvironmentTransitionVersion,
   loadConversationListLimits,
 } = require('@librechat/api');
@@ -342,6 +343,7 @@ router.get('/', async function (req, res) {
         appConfig?.mcpAppSandbox?.operationLimits,
       ),
       ...codeEnvironmentMoveCapabilities,
+      ...resolveCodeWorkspaceInheritanceCapability(process.env.CODE_ENVIRONMENT_DECISION_VERSION),
       ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
       ...(rum ? { rum } : {}),

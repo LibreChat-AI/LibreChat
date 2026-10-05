@@ -49,6 +49,8 @@ export interface ResolvedToolApprovalHook {
   matcher?: string;
   /** Optional admission-only scope for hooks that inspect the executing agent at runtime. */
   agentIds?: ReadonlySet<string>;
+  /** Complete set of tool names this hook can ask about; omission means unresolved. */
+  toolNames?: readonly string[];
 }
 
 interface RegisteredHook {

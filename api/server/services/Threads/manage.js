@@ -598,6 +598,18 @@ const recordUsage = async ({
 
 const uniqueCitationStart = '^====||===';
 const uniqueCitationEnd = '==|||||^';
+const adjacentCitationRegex = new RegExp(
+  `${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(
+    uniqueCitationEnd,
+  )}(\\s*)${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)}`,
+  'g',
+);
+const remainingAdjacentRegex = new RegExp(
+  `(${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)})\\s*\\1+`,
+  'g',
+);
+const citationStartRegex = new RegExp(escapeRegExp(uniqueCitationStart), 'g');
+const citationEndRegex = new RegExp(escapeRegExp(uniqueCitationEnd), 'g');
 
 /**
  * Sorts, processes, and flattens messages to a single string.
@@ -723,12 +735,6 @@ async function processMessages({ openai, client, messages = [] }) {
   await Promise.all(fileRetrievalPromises);
 
   // Handle adjacent identical citations with the unique format
-  const adjacentCitationRegex = new RegExp(
-    `${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(
-      uniqueCitationEnd,
-    )}(\\s*)${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)}`,
-    'g',
-  );
   text = text.replace(adjacentCitationRegex, (match, num1, space, num2) => {
     return num1 === num2
       ? `${uniqueCitationStart}${num1}${uniqueCitationEnd}`
@@ -736,15 +742,11 @@ async function processMessages({ openai, client, messages = [] }) {
   });
 
   // Remove any remaining adjacent identical citations
-  const remainingAdjacentRegex = new RegExp(
-    `(${escapeRegExp(uniqueCitationStart)}(\\d+)${escapeRegExp(uniqueCitationEnd)})\\s*\\1+`,
-    'g',
-  );
   text = text.replace(remainingAdjacentRegex, '$1');
 
   // Replace the unique citation format with the final format
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationStart), 'g'), '^');
-  text = text.replace(new RegExp(escapeRegExp(uniqueCitationEnd), 'g'), '^');
+  text = text.replace(citationStartRegex, '^');
+  text = text.replace(citationEndRegex, '^');
 
   if (sources.size) {
     text += '\n\n';

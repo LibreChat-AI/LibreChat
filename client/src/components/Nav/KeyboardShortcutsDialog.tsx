@@ -189,7 +189,7 @@ function ShortcutRow({
             onClick={() => onStartEdit(info.id)}
             aria-label={editAriaLabel}
             data-testid={`edit-shortcut-${info.id}`}
-            className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt inline-flex h-[22px] items-center gap-1 rounded-md border border-dashed bg-transparent px-2 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-text-primary dark:hover:bg-surface-secondary-alt inline-flex h-[1.375rem] items-center gap-1 rounded-md border border-dashed bg-transparent px-2 text-[11px] font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             <Plus className="h-3 w-3" aria-hidden="true" />
             {localize('com_shortcut_set')}

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { PanelLeftOpen, PanelLeftClose } from 'lucide';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X, ArrowDownToLine, RotateCcw } from 'lucide-react';
-import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
+import { Button, MorphIcon, TooltipAnchor, useMediaQuery, useRemScale } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
 const imageSizeCache = new Map<string, string>();
@@ -245,16 +245,16 @@ export default function DialogImage({
     ? localize('com_ui_hide_image_details')
     : localize('com_ui_show_image_details');
 
-  // Calculate image max dimensions accounting for side panel (w-80 = 320px)
-  const getImageMaxWidth = () => {
-    if (isPromptOpen) {
-      // On mobile, panel overlays so use full width; on desktop, subtract panel width
-      return typeof window !== 'undefined' && window.innerWidth >= 640
-        ? 'calc(90vw - 320px)'
-        : '90vw';
-    }
-    return '90vw';
-  };
+  /* The details panel is 20rem wide, so the viewport it has to fit beside has to be
+     measured in the same units: a fixed 640px breakpoint puts the panel beside the
+     image at scales where 20rem leaves almost nothing for the image and pushes the
+     action controls offscreen. Below it the panel overlays instead, as on mobile. */
+  const remScale = useRemScale();
+  const detailsFitBesideImage = useMediaQuery(`(min-width: ${640 * remScale}px)`);
+  const detailsBeside = isPromptOpen && detailsFitBesideImage;
+
+  // Reserve the side panel's width (w-80 = 20rem) only when it sits beside the image
+  const getImageMaxWidth = () => (detailsBeside ? 'calc(90vw - 20rem)' : '90vw');
 
   return (
     <DialogPrimitive.Root open={isOpen} onOpenChange={onOpenChange}>
@@ -297,9 +297,9 @@ export default function DialogImage({
             />
           </div>
 
-          {/* Action buttons - top right (336px = 320px panel + 16px gap) */}
+          {/* Action buttons - top right (21rem = 20rem panel + 1rem gap) */}
           <div
-            className={`absolute top-4 z-20 flex items-center gap-2 transition-[right] duration-300 ${isPromptOpen ? 'right-[336px]' : 'right-4'}`}
+            className={`absolute top-4 z-20 flex items-center gap-2 transition-[right] duration-300 ${detailsBeside ? 'right-[21rem]' : 'right-4'}`}
           >
             {zoom > 1 && (
               <TooltipAnchor
@@ -351,7 +351,7 @@ export default function DialogImage({
 
           {/* Image container - centered */}
           <div
-            className={`transition-[margin] duration-300 ${isPromptOpen ? 'mr-80' : ''}`}
+            className={`transition-[margin] duration-300 ${detailsBeside ? 'mr-80' : ''}`}
             onClick={(e) => e.stopPropagation()}
           >
             <div
@@ -391,7 +391,7 @@ export default function DialogImage({
           {showDetails && (
             <div
               data-side-panel
-              className={`bg-surface-primary border-text-on-media/10 fixed top-0 right-0 z-30 h-full w-80 transform border-l shadow-2xl transition-transform duration-300 ${
+              className={`bg-surface-primary border-text-on-media/10 fixed top-0 right-0 z-30 h-full w-80 max-w-full transform border-l shadow-2xl transition-transform duration-300 ${
                 isPromptOpen ? 'translate-x-0' : 'translate-x-full'
               }`}
               onClick={(e) => e.stopPropagation()}
@@ -404,7 +404,8 @@ export default function DialogImage({
                   <Button
                     onClick={() => setIsPromptOpen(false)}
                     variant="ghost"
-                    className="h-10 w-10 p-0 sm:hidden"
+                    className={detailsBeside ? 'hidden' : 'h-10 w-10 p-0'}
+                    aria-label={localize('com_ui_hide_image_details')}
                   >
                     <X className="size-5" aria-hidden="true" />
                   </Button>

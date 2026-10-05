@@ -112,6 +112,15 @@ export type PromptServiceResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: PromptServiceError };
 
+/**
+ * `makePromptProduction` carries `groupId` outside `value` so a caller can clear the
+ * linked-instructions cache without changing `TMakePromptProductionResponse`, the HTTP body.
+ * `groupId` is absent when the promoted revision does not exist.
+ */
+export type MakePromptProductionResult =
+  | { readonly ok: true; readonly value: TMakePromptProductionResponse; readonly groupId?: string }
+  | { readonly ok: false; readonly error: PromptServiceError };
+
 export interface ResolvePromptInput {
   readonly groupId: string;
   readonly selection: PromptSelection;

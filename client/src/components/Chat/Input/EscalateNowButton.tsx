@@ -96,7 +96,7 @@ interface EscalateNowButtonProps {
   disabled: boolean;
   messageText: string;
   /** The queued rail uses the taller control height; the thread bubble keeps the compact one. */
-  size?: 'xs' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   shape?: 'round' | 'square' | 'control';
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }

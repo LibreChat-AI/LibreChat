@@ -1957,6 +1957,10 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         foregroundRunId: mcpRequestBody.messageId,
         requestBody: mcpRequestBody,
         toolTimingReplayEvents: resumeState?.replayEvents,
+        // This turn's generation was already counted when it first ran; resuming
+        // replays it rather than repeating it, so linked-prompt usage is not
+        // recorded again. Resolution itself still runs, cache-first.
+        isResume: true,
       });
       client = result.client;
 
@@ -1986,6 +1990,10 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       const resumeClient = () =>
         client.resumeCompletion({
           resumeValue: mapped.resumeValue,
+          reviewedToolApprovals: {
+            bindings: pendingAction.toolApprovalBindings,
+            decisions: req.body.decisions ?? [],
+          },
           seedContent,
           runSteps: resumeState?.runSteps ?? [],
           storedMessages,
@@ -2009,6 +2017,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           code: 'RUN_REPLACED',
         });
       }
+
       await recordToolApprovalAllows({
         userId,
         conversationId,

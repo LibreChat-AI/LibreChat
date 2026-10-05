@@ -132,7 +132,7 @@ export function isToolApprovalPauseCapable(
     const matches = (patterns: string[] | undefined, name: string): boolean =>
       patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
     return names.some((name) => {
-      if (matches(enabledPolicy.deny, name)) {
+      if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
         return false;
       }
       if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
@@ -178,6 +178,19 @@ export function isToolDeniedByApprovalPolicy(
     isHITLEnabled(policy) &&
     policy.deny?.some((pattern) => globToRegex(pattern).test(toolName)) === true
   );
+}
+
+/** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
+export function isToolBlockedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!isHITLEnabled(policy)) return false;
+  if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
+  if (policy.mode !== 'dontAsk') return false;
+  const matches = (patterns?: readonly string[]) =>
+    patterns?.some((pattern) => globToRegex(pattern).test(toolName)) === true;
+  return !matches(policy.ask) && !matches(policy.allow);
 }
 
 /**
@@ -952,6 +965,7 @@ export function toClientPendingAction(
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
     codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
     toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;

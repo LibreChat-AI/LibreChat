@@ -123,6 +123,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',

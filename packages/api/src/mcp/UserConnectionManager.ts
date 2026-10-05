@@ -26,16 +26,23 @@ import {
   MCP_APPS_CAPABILITY_PROFILE,
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from './capabilities';
+import {
+  resolveScheduledMCPBearerConfig,
+  requiresScheduledMCPBearerConnection,
+  isScheduledMCPBearer,
+} from '~/schedules/bearer';
+import { MCPAuthenticationRejectedError, createScheduledMCPTransportError } from '~/mcp/errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { detectOAuthRequirement } from '~/mcp/oauth';
+import { awaitOboOperation } from '~/mcp/oauth/obo';
 import { isMCPDomainAllowed } from '~/auth/domain';
+import { getMCPRequestSignal } from './request';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
 import { isEnabled } from '~/utils';
@@ -472,6 +479,7 @@ export abstract class UserConnectionManager {
     }
     const ephemeralConnection =
       opts.ephemeralConnection === true ||
+      requiresScheduledMCPBearerConnection(opts.requestScopedConnections, config) ||
       (config ? requiresEphemeralUserConnection(config) : false);
     const requestScopedConnections = ephemeralConnection
       ? opts.requestScopedConnections
@@ -481,6 +489,11 @@ export abstract class UserConnectionManager {
         throw new Error(`[MCP][User: ${userId}] Request-scoped connection context is closed`);
       }
       this.bindRequestScopedConnectionStore(requestScopedConnections);
+      const sharedCreation = requiresScheduledMCPBearerConnection(requestScopedConnections, config);
+      const creationSignal = sharedCreation
+        ? getMCPRequestSignal(requestScopedConnections)
+        : opts.signal;
+      opts.signal?.throwIfAborted();
       const requestConnectionKey = getUserConnectionKey(userId, serverName, capabilityProfile);
       const existing = requestScopedConnections.connections.get(requestConnectionKey) as
         | MCPConnection
@@ -496,13 +509,15 @@ export abstract class UserConnectionManager {
           if (activeRecovery) {
             await this.waitForConnectionRecovery(activeRecovery, opts.signal);
           }
-          let connected = await existing.isConnected();
+          let connected = await existing.isConnected(opts.signal);
+          opts.signal?.throwIfAborted();
           let recovery = this.getActiveConnectionRecovery(existing);
           this.propagateDirectBearerRecoveryState(existing, opts.directBearerRecoveryState);
           while (recovery && recovery !== awaitedRecovery) {
             awaitedRecovery = recovery;
             await this.waitForConnectionRecovery(recovery, opts.signal);
-            connected = await existing.isConnected();
+            connected = await existing.isConnected(opts.signal);
+            opts.signal?.throwIfAborted();
             recovery = this.getActiveConnectionRecovery(existing);
             this.propagateDirectBearerRecoveryState(existing, opts.directBearerRecoveryState);
           }
@@ -523,7 +538,9 @@ export abstract class UserConnectionManager {
         | undefined;
       if (pending) {
         logger.debug(`[MCP][User: ${userId}] Joining in-flight request-scoped connection attempt`);
-        const connection = await pending;
+        const connection = sharedCreation
+          ? await awaitOboOperation(pending, opts.signal)
+          : await pending;
         if (this.requestPendingDirectBearerRecoveryStates.get(pending)?.attempted) {
           directBearerRecoveryState.attempted = true;
         }
@@ -542,6 +559,7 @@ export abstract class UserConnectionManager {
       const connectionPromise = this.createUserConnectionWithLifecycleRestarts(
         {
           ...opts,
+          signal: creationSignal,
           forceNew: true,
           ephemeralConnection: true,
           connectionTarget,
@@ -552,23 +570,29 @@ export abstract class UserConnectionManager {
         userId,
         forceNew === true,
         creationGuard,
-      ).then(async (connection) => {
-        try {
-          opts.signal?.throwIfAborted();
-          this.assertCreationNotCancelled(creationGuard, userId, serverName);
-          if (requestScopedConnections.cleanupStarted) {
-            throw new Error(`[MCP][User: ${userId}] Request-scoped connection context is closed`);
+      )
+        .then(async (connection) => {
+          try {
+            creationSignal?.throwIfAborted();
+            this.assertCreationNotCancelled(creationGuard, userId, serverName);
+            if (requestScopedConnections.cleanupStarted) {
+              throw new Error(`[MCP][User: ${userId}] Request-scoped connection context is closed`);
+            }
+          } catch (error) {
+            await this.disposeEvictedConnection(
+              connection,
+              `[MCP][Request-scoped: ${requestConnectionKey}] Invalidated during connection creation`,
+            );
+            throw error;
           }
-        } catch (error) {
-          await this.disposeEvictedConnection(
-            connection,
-            `[MCP][Request-scoped: ${requestConnectionKey}] Invalidated during connection creation`,
-          );
-          throw error;
-        }
-        requestScopedConnections.connections.set(requestConnectionKey, connection);
-        return connection;
-      });
+          requestScopedConnections.connections.set(requestConnectionKey, connection);
+          return connection;
+        })
+        .finally(() => {
+          this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
+          if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise)
+            requestScopedConnections.pending.delete(requestConnectionKey);
+        });
 
       requestScopedConnections.pending.set(
         requestConnectionKey,
@@ -579,14 +603,8 @@ export abstract class UserConnectionManager {
         directBearerRecoveryState,
       );
 
-      try {
-        return await connectionPromise;
-      } finally {
-        this.unregisterConnectionCreation(requestConnectionKey, creationGuard);
-        if (requestScopedConnections.pending.get(requestConnectionKey) === connectionPromise) {
-          requestScopedConnections.pending.delete(requestConnectionKey);
-        }
-      }
+      // The occurrence owns the shared attempt; callers leave only their own waiters.
+      return sharedCreation ? awaitOboOperation(connectionPromise, opts.signal) : connectionPromise;
     }
 
     const forceNewConnection = forceNew || ephemeralConnection;
@@ -717,6 +735,7 @@ export abstract class UserConnectionManager {
       oboTokenResolver,
       oboTrustChecker,
       upstreamTokenProvider,
+      requestScopedConnections,
       upstreamTokenProviderResolver,
       oboIdentityContext,
       onOAuthCredentialsChanged,
@@ -881,10 +900,19 @@ export abstract class UserConnectionManager {
 
     try {
       signal?.throwIfAborted();
+      const scheduledConfig = await resolveScheduledMCPBearerConfig({
+        user,
+        serverName,
+        config: declaredConfig,
+        context: requestScopedConnections,
+        signal,
+      });
       const bearerConfig =
-        directBearerResolvedConfig ??
+        (!isScheduledMCPBearer(requestScopedConnections) && directBearerResolvedConfig) ||
         (await resolveDirectOpenIDBearerConfig({
-          config,
+          config: isScheduledMCPBearer(requestScopedConnections)
+            ? applyRequestHeaders(scheduledConfig)
+            : config,
           upstreamTokenProvider,
           signal,
         }));
@@ -981,6 +1009,7 @@ export abstract class UserConnectionManager {
         }
 
         connectionOptions = {
+          requestScopedConnections,
           useOAuth: true,
           user: user,
           customUserVars: customUserVars,
@@ -1005,6 +1034,7 @@ export abstract class UserConnectionManager {
         };
       } else {
         connectionOptions = {
+          requestScopedConnections,
           user,
           customUserVars,
           requestBody,
@@ -1053,6 +1083,8 @@ export abstract class UserConnectionManager {
         signal?.throwIfAborted();
         const toolListAuthenticationError = toolListSnapshot?.authenticationError;
         if (toolListAuthenticationError && directBearerRecovery && user) {
+          if (isScheduledMCPBearer(requestScopedConnections))
+            throw createScheduledMCPTransportError(toolListAuthenticationError, serverName);
           if (directBearerRecoveryState.attempted) {
             throw new MCPAuthenticationRejectedError(
               serverName,

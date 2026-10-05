@@ -1,8 +1,8 @@
 import { Constants } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
 import { EToolResources } from 'librechat-data-provider';
+import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
 import type { TFile } from 'librechat-data-provider';
-import type { CodeEnvFile } from '@librechat/agents';
 import type { CodeEnvRefUpdate, ProvisionService } from './service';
 import type { ProvisionToolContext } from '../code/queued';
 import type { ServerRequest } from '~/types';
@@ -42,6 +42,11 @@ export interface ProvisionCallbackDeps {
   req: ServerRequest;
   agentToolContexts: Map<string, ProvisionToolContext>;
   resolvePrimaryAgentId?: () => string | undefined;
+  /** A child routed per call keeps its own context, keyed by its execution. */
+  resolveExecutionContext?: (
+    agentId: string | undefined,
+    executionContext: SubagentExecutionContext | undefined,
+  ) => ProvisionToolContext | undefined;
   provisionToCodeEnv: ProvisionService['provisionToCodeEnv'];
   provisionToVectorDB: ProvisionService['provisionToVectorDB'];
   updateFile: (update: FileUpdate) => Promise<unknown>;
@@ -90,6 +95,7 @@ export function createProvisionFilesCallback({
   req,
   agentToolContexts,
   resolvePrimaryAgentId,
+  resolveExecutionContext,
   provisionToCodeEnv,
   provisionToVectorDB,
   updateFile,
@@ -99,6 +105,7 @@ export function createProvisionFilesCallback({
   toolNames: string[],
   agentId?: string,
   signal?: AbortSignal,
+  executionContext?: SubagentExecutionContext,
 ) => Promise<CodeEnvFile[]> {
   /* Agents in a handoff or parallel graph are initialized independently over the same
    * request attachments, so each holds its own ProvisionState for the same file. Keyed
@@ -132,6 +139,7 @@ export function createProvisionFilesCallback({
     toolNames: string[],
     agentId?: string,
     signal?: AbortSignal,
+    executionContext?: SubagentExecutionContext,
   ): Promise<CodeEnvFile[]> {
     signal?.throwIfAborted();
     /* agentId is optional on this callback and a batch for the primary agent may omit
@@ -141,11 +149,15 @@ export function createProvisionFilesCallback({
      * while reading state from a fallback context would upload them as user-scoped,
      * then reconstruct them as agent-scoped on the next turn, and the entity id used to
      * query those vectors would no longer match the one they were stored under. */
-    const { ctx, resolvedAgentId } = resolveProvisionContext({
-      agentId,
-      agentToolContexts,
-      primaryAgentId: resolvePrimaryAgentId?.(),
-    });
+    const placedCtx = resolveExecutionContext?.(agentId, executionContext);
+    const { ctx, resolvedAgentId } =
+      placedCtx != null
+        ? { ctx: placedCtx, resolvedAgentId: agentId }
+        : resolveProvisionContext({
+            agentId,
+            agentToolContexts,
+            primaryAgentId: resolvePrimaryAgentId?.(),
+          });
     if (!ctx?.provisionState) {
       return [];
     }
