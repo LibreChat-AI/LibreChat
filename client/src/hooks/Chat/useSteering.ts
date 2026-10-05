@@ -1967,10 +1967,18 @@ export default function useSteering({
                     }
                     return;
                   }
-                  /** The server's echo is authoritative: a deployment whose SDK
-                   *  cannot seal mid-stream still queues the steer and answers
-                   *  `preempt: false`, which relabels the chip to the ordinary
-                   *  wording instead of surfacing an error. */
+                  /** Unsupported runs retain the words as Steer, but never silently
+                   * claim to have requested tool cancellation. */
+                  if (
+                    preempt &&
+                    response.preempt !== true &&
+                    visibleConversationRef.current === conversationId
+                  ) {
+                    showToast({
+                      message: localize('com_ui_steer_preempt_unsupported'),
+                      status: 'warning',
+                    });
+                  }
                   const acknowledged = {
                     steerId: response.steerId,
                     clientSteerId: localId,

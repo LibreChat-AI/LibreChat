@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { Providers } from '@librechat/agents';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { EventHandler, StreamPreemption, ToolExecuteBatchRequest } from '@librechat/agents';
 import type { BackgroundToolResultClaim } from '@librechat/data-schemas';
 import type { InterruptibleToolBatchRequest } from '../tools';
-import { SteerToolInterrupt, interruptToolHandler } from '../tools';
+import { SteerToolInterrupt, interruptToolHandler, supportsRunInterruption } from '../tools';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createToolExecuteHandler } from '~/agents/handlers';
 
@@ -403,5 +404,28 @@ describe('interruptToolHandler', () => {
     expect(callback).not.toHaveBeenCalled();
     expect(input.resolve).toHaveBeenCalledTimes(1);
     expect(input.reject).not.toHaveBeenCalled();
+  });
+});
+
+describe('supportsRunInterruption', () => {
+  it('gates provider search plugins that do not expose tool definitions', () => {
+    expect(
+      supportsRunInterruption([
+        {
+          provider: Providers.OPENAI,
+          agentId: 'agent',
+          clientOptions: { modelKwargs: { plugins: [{ id: 'web' }] } },
+        },
+      ]),
+    ).toBe(false);
+    expect(
+      supportsRunInterruption([
+        {
+          provider: Providers.OPENAI,
+          agentId: 'agent',
+          clientOptions: { modelKwargs: { plugins: [{ id: 'other' }] } },
+        },
+      ]),
+    ).toBe(true);
   });
 });

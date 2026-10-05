@@ -53,13 +53,13 @@ import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
+import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runtime';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
-import type { TerminalSteerHook } from '~/agents/steering/runtime';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
@@ -114,6 +114,7 @@ import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPrompt
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
+import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
@@ -125,7 +126,6 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
-import { interruptToolHandler } from '~/agents/steering/tools';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -2262,7 +2262,7 @@ export async function createRun({
      * (`createSteerPreemptPoll`). Threaded into `RunConfig.preemption`, which
      * also makes the SDK reserve recursion-limit headroom for its seals.
      */
-    preemption?: StreamPreemption;
+    preemption?: StreamPreemption & Partial<Pick<SteerPreemption, 'disable'>>;
   };
   /**
    * Run-scoped tool-batch summary hook (PostToolBatch). Like steering, it
@@ -2995,12 +2995,17 @@ export async function createRun({
    * runtime) — excess-property checks only apply to fresh literals. Inline
    * the field at the call site once the dependency is bumped.
    */
+  let preemption = steering?.preemption;
+  if (preemption != null && !supportsRunInterruption(agentInputs)) {
+    await preemption.disable?.();
+    preemption = undefined;
+  }
   const toolHandler = customHandlers?.[GraphEvents.ON_TOOL_EXECUTE];
   const runHandlers =
-    toolHandler != null && steering?.preemption != null && isSteerPreemptSupported()
+    toolHandler != null && preemption != null && isSteerPreemptSupported()
       ? {
           ...customHandlers,
-          [GraphEvents.ON_TOOL_EXECUTE]: interruptToolHandler(toolHandler, steering.preemption),
+          [GraphEvents.ON_TOOL_EXECUTE]: interruptToolHandler(toolHandler, preemption),
         }
       : customHandlers;
 
@@ -3098,8 +3103,7 @@ export async function createRun({
     // Preemption is observation-only like the boundary hooks: the poll never
     // mutates and the SDK refuses to seal unless a PreemptBoundary matcher is
     // live, so gating both on the same capability keeps them in lockstep.
-    ...(steering?.preemption != null &&
-      isSteerPreemptSupported() && { preemption: steering.preemption }),
+    ...(preemption != null && isSteerPreemptSupported() && { preemption }),
     // Stream circuit breakers (librechat.yaml endpoints.agents.maxToolCallArgBytes /
     // maxDeltaEventsPerTurn). Omitted when unset so the SDK defaults apply: a runaway
     // streamed tool-call argument aborts the run at 64 KiB, the per-turn delta event

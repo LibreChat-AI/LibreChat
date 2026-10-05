@@ -40,6 +40,7 @@ import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
 import { duringRunActionAtom } from '~/store/duringRun';
 import { applyPendingAction } from '~/utils/approval';
+import English from '~/locales/en/translation.json';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
 
@@ -2469,6 +2470,10 @@ describe('useSteering', () => {
         expect.objectContaining({ preempt: true }),
         expect.anything(),
       );
+      expect(mockShowToast).toHaveBeenCalledWith({
+        message: English.com_ui_steer_preempt_unsupported,
+        status: 'warning',
+      });
     });
 
     it('serializes rapid steer POSTs in submission order', () => {

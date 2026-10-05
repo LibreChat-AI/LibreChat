@@ -3,7 +3,20 @@ import type {
   ToolExecuteResult,
   StreamPreemption,
   EventHandler,
+  AgentInputs,
 } from '@librechat/agents';
+
+/** The pinned SDK cannot cancel unanswered provider-hosted tools without orphaning them. */
+export function supportsRunInterruption(agents: readonly AgentInputs[]): boolean {
+  return agents.every((agent) => {
+    if (agent.tools?.some((tool) => !('invoke' in tool) || typeof tool.invoke !== 'function'))
+      return false;
+    const plugins = (
+      agent.clientOptions as { modelKwargs?: { plugins?: Array<{ id?: string }> } } | undefined
+    )?.modelKwargs?.plugins;
+    return !plugins?.some((plugin) => plugin.id === 'web');
+  });
+}
 
 /** Host-only admission channel for durable claims and completed-output validation. */
 export interface InterruptibleToolBatchRequest extends ToolExecuteBatchRequest {

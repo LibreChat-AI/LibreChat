@@ -2851,7 +2851,7 @@
   "com_ui_steer_interrupting_info": "Cancellation requested for active tools and reasoning. Completed output is kept, and the agent continues with your message. External effects already performed cannot be undone.",
   "com_ui_steer_moved_to_queue": "Moved to the queue: it sends when this response finishes",
   "com_ui_steer_paused_queued": "The agent is waiting for your review — your message was queued instead",
-  "com_ui_steer_preempt_unsupported": "This deployment can't steer mid-response. Your message waits for the next tool step or an end-of-response opportunity",
+  "com_ui_steer_preempt_unsupported": "Interrupt is unavailable for this run, including provider-hosted tools such as native search. Your message remains as Steer and waits for a safe insertion point.",
   "com_ui_steer_queued_info": "Sends when this response finishes",
   "com_ui_steer_send": "Steer the current response",
   "com_ui_steer_sending": "Sending…",

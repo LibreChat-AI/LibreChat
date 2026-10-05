@@ -5,6 +5,8 @@ import type { Page, Response } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
+  getAccessToken,
+  requestJson,
   messagesView,
   replyPrompt,
   replyText,
@@ -301,6 +303,64 @@ test.describe('escalating waiting messages to an interrupt', () => {
     });
     await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
     await expectModelContinuation(page, label, steerText);
+  });
+
+  test('native-search runs explicitly retain unsupported Interrupt messages as Steer', async ({
+    page,
+  }) => {
+    const label = uniqueLabel('native-search');
+    const text = `Change direction ${label}`;
+    await page.goto(NEW_CHAT_PATH);
+    const token = await getAccessToken(page);
+    const agent = await requestJson<{ id: string }>(page, {
+      path: '/api/agents',
+      token,
+      method: 'POST',
+      body: {
+        name: `Native search ${label}`,
+        provider: 'Mock Provider A',
+        model: 'mock-model-a',
+        model_parameters: { web_search: true },
+        tools: [],
+      },
+    });
+    try {
+      await page.goto(`${NEW_CHAT_PATH}?agent_id=${encodeURIComponent(agent.id)}`);
+      await establishConversation(page, `native-setup-${label}`);
+      await sendMessage(page, `E2E_SLOW_REPLY:${label}`);
+      await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
+      await typeDuringRun(page, text);
+      const [response] = await Promise.all([
+        page.waitForResponse(isSteerRequest),
+        messageInput(page).press('Alt+Enter'),
+      ]);
+      expect(response.status()).toBe(202);
+      expect((await response.json()).preempt).toBe(false);
+      await expect(
+        page
+          .getByRole('region', { name: 'Notifications (F8)' })
+          .getByText(/Interrupt is unavailable for this run/),
+      ).toBeVisible();
+      if (process.env.E2E_CAPTURE_DIR) {
+        mkdirSync(process.env.E2E_CAPTURE_DIR, { recursive: true });
+        await page.screenshot({
+          path: path.join(process.env.E2E_CAPTURE_DIR, 'native-interrupt-unavailable.png'),
+          animations: 'disabled',
+        });
+      }
+      const bubble = inFlightSteers(page).filter({ hasText: text });
+      await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+        'data-receipt-state',
+        'delivered',
+      );
+      await page.getByTestId('stop-generation-button').click();
+    } finally {
+      await requestJson(page, {
+        path: `/api/agents/${encodeURIComponent(agent.id)}`,
+        token,
+        method: 'DELETE',
+      });
+    }
   });
 
   test('Interrupt cancels a running foreground tool and continues the same response', async ({
