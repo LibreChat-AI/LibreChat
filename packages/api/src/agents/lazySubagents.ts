@@ -1,5 +1,12 @@
 import { createHash } from 'crypto';
-import type { Agent } from 'librechat-data-provider';
+import { logger } from '@librechat/data-schemas';
+import type { Agent, CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+import type { CodeExecutionContext } from './execution';
+import {
+  CodeWorkspaceSelectionError,
+  describeCodeWorkspaceUnavailableSubagent,
+  getSubagentCodeWorkspaceUnavailableReason,
+} from '~/code/errors';
 
 type VersionedAgent = Pick<
   Agent,
@@ -180,5 +187,68 @@ export function createViewableSubagentLoader<TAgent>({
       loads.set(agentId, loading);
     }
     return loading;
+  };
+}
+
+export interface SubagentCodeAvailability {
+  codeEnvAvailable: boolean;
+  statefulCodeSessions: boolean;
+  codeExecutionContext?: CodeExecutionContext;
+  /** Set when the subagent's machine has no usable workspace in this conversation. */
+  codeWorkspaceUnavailable?: Exclude<CodeWorkspaceSelectionErrorReason, 'locked'>;
+}
+
+/**
+ * Resolves a lazy subagent's code route for its descriptor. A subagent whose machine has no usable
+ * workspace is reported unavailable, with code off, instead of failing its parent's turn; a locked
+ * decision and every other error still propagate.
+ */
+export async function resolveSubagentCodeAvailability({
+  agentId,
+  codeEnvAvailable,
+  statefulCodeSessions,
+  resolveContext,
+}: {
+  agentId: string;
+  codeEnvAvailable: boolean;
+  statefulCodeSessions: boolean;
+  resolveContext: () => Promise<CodeExecutionContext | undefined>;
+}): Promise<SubagentCodeAvailability> {
+  try {
+    return { codeEnvAvailable, statefulCodeSessions, codeExecutionContext: await resolveContext() };
+  } catch (error) {
+    const codeWorkspaceUnavailable = getSubagentCodeWorkspaceUnavailableReason(error);
+    if (!codeWorkspaceUnavailable) {
+      throw error;
+    }
+    logger.warn('[resolveSubagentCodeAvailability] Subagent advertised without a code workspace', {
+      agentId,
+      reason: codeWorkspaceUnavailable,
+    });
+    return { codeEnvAvailable: false, statefulCodeSessions: false, codeWorkspaceUnavailable };
+  }
+}
+
+/**
+ * Keeps an unavailable subagent listed so its parent learns why, while its resolver rejects with
+ * the same `CODE_WORKSPACE_UNAVAILABLE` error so it can never run.
+ */
+export function guardUnavailableSubagent<TContext, TConfig>({
+  description,
+  codeWorkspaceUnavailable,
+  resolve,
+}: {
+  description?: string;
+  codeWorkspaceUnavailable?: CodeWorkspaceSelectionErrorReason;
+  resolve: (context: TContext) => Promise<TConfig>;
+}): { description?: string; resolve: (context: TContext) => Promise<TConfig> } {
+  if (!codeWorkspaceUnavailable) {
+    return { description, resolve };
+  }
+  return {
+    description: describeCodeWorkspaceUnavailableSubagent(description, codeWorkspaceUnavailable),
+    resolve: async () => {
+      throw new CodeWorkspaceSelectionError(codeWorkspaceUnavailable);
+    },
   };
 }

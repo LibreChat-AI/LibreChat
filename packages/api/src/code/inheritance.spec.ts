@@ -325,6 +325,48 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
     expect(inheritance.get(verifier)).toBe(LIA_RAG);
   });
 
+  it('never re-routes a saved agent that is also a parallel root', async () => {
+    const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
+    const reviewer = await seed(REVIEWER);
+    const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [root(lia), root({ ...reviewer, id: `${REVIEWER}____1` }, SKYNET)],
+      loadSubagent,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+    });
+    expect(inheritance.has(REVIEWER)).toBe(false);
+    expect(loadSubagent).not.toHaveBeenCalled();
+  });
+
+  it('reads nothing past the node limit', async () => {
+    const children = Array.from({ length: 50 }, (_, index) => `agent_child_${index}`);
+    const load = jest.fn(
+      async (agentId: string): Promise<SubagentCodeRoutingAgent> => ({
+        id: agentId,
+        ...demoCodeSettings,
+        subagents: { enabled: true, agent_ids: [`${agentId}_leaf`] },
+      }),
+    );
+    await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [
+        {
+          id: LIA,
+          subagents: { enabled: true, agent_ids: children },
+          statefulCodeSessions: true,
+          codeExecutionContext: { environmentId: LIA_RAG, environmentType: 'attached' },
+        },
+      ],
+      loadSubagent: load,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+    });
+    expect(load).toHaveBeenCalledTimes(50);
+  });
+
   it('reads nothing when the run cannot use stateful code or holds no selection', async () => {
     const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
     for (const [selections, codeExecutionAvailable] of [

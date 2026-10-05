@@ -2,6 +2,7 @@ import {
   Tools,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_GRAPH_NODES,
+  stripAgentIdSuffix,
   isCodeWorkspaceSelections,
   resolveCodeWorkspaceInheritance,
 } from 'librechat-data-provider';
@@ -52,10 +53,11 @@ export function getSpawnableSubagentIds(
   ];
 }
 
+/** Keyed by saved ID: a parallel root's runtime ID (`id____1`) must still mark that agent a root. */
 function toRootRoutingAgent(root: CodeWorkspaceInheritanceRoot): CodeWorkspaceRoutingAgent {
   const context = root.codeExecutionContext;
   return {
-    id: root.id,
+    id: stripAgentIdSuffix(root.id),
     routesCode: root.statefulCodeSessions === true,
     allowSelection: false,
     subagentIds: getSpawnableSubagentIds(root),
@@ -116,37 +118,41 @@ export async function resolveSubagentCodeWorkspaceInheritance({
   }
   const agents = new Map<string, CodeWorkspaceRoutingAgent>();
   for (const root of roots) {
-    agents.set(root.id, toRootRoutingAgent(root));
+    const node = toRootRoutingAgent(root);
+    if (!agents.has(node.id)) agents.set(node.id, node);
   }
+  const rootIds = [...agents.keys()];
   let frontier = [...agents.values()].flatMap(({ subagentIds }) => subagentIds ?? []);
   const attempted = new Set<string>();
-  /** Like graph construction, only admitted agents count toward the node limit. */
+  /** Like graph construction, only admitted agents count toward the node limit, and nothing past
+   *  it is read: graph construction rejects a graph that admits more. */
   let admitted = 0;
-  for (
-    let depth = 1;
-    depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0 && admitted <= MAX_SUBAGENT_GRAPH_NODES;
-    depth++
-  ) {
+  for (let depth = 1; depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0; depth++) {
     const ids = [...new Set(frontier)].filter((id) => !agents.has(id) && !attempted.has(id));
-    ids.forEach((id) => attempted.add(id));
-    const loaded = await Promise.all(ids.map((id) => loadSubagent(id).catch(() => null)));
     frontier = [];
-    for (let index = 0; index < ids.length; index++) {
-      const agent = loaded[index];
-      if (agent == null) continue;
-      admitted++;
-      const node = toSubagentRoutingAgent(
-        { ...agent, id: ids[index] },
-        environments,
-        allowEnvironmentSelection,
-      );
-      agents.set(node.id, node);
-      frontier.push(...(node.subagentIds ?? []));
+    for (let start = 0; start < ids.length && admitted < MAX_SUBAGENT_GRAPH_NODES; ) {
+      const batch = ids.slice(start, start + MAX_SUBAGENT_GRAPH_NODES - admitted);
+      start += batch.length;
+      batch.forEach((id) => attempted.add(id));
+      const loaded = await Promise.all(batch.map((id) => loadSubagent(id).catch(() => null)));
+      for (let index = 0; index < batch.length; index++) {
+        const agent = loaded[index];
+        if (agent == null) continue;
+        admitted++;
+        const node = toSubagentRoutingAgent(
+          { ...agent, id: batch[index] },
+          environments,
+          allowEnvironmentSelection,
+        );
+        agents.set(node.id, node);
+        frontier.push(...(node.subagentIds ?? []));
+      }
     }
+    if (admitted >= MAX_SUBAGENT_GRAPH_NODES) break;
   }
   return resolveCodeWorkspaceInheritance({
     selections,
-    rootIds: roots.map(({ id }) => id),
+    rootIds,
     agents,
     isAttachedEnvironment: (environmentId) =>
       isExecutableAttachedEnvironment(environmentId, environments),
