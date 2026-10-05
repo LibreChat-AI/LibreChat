@@ -3900,6 +3900,33 @@ describe('steady-state sync of an unchanged source', () => {
     expect((await getMirror()).version).toBe(before.version);
   });
 
+  it.each([
+    ['canonical', 'always-apply: true'],
+    ['camelCase alias', 'alwaysApply: true'],
+    ['both spellings', 'always-apply: true\nalwaysApply: true'],
+    ['placeholder canonical with alias', 'always-apply:\nalwaysApply: false'],
+    ['placeholder alias with canonical', 'always-apply: false\nalwaysApply:'],
+    ['mixed-case', 'Always-Apply: true\nAllowed-Tools: [Read]\nLicense: MIT'],
+  ])('skips an unchanged skill whose frontmatter uses %s keys', async (_label, frontmatter) => {
+    const repo = createRepo({
+      'skills/research/SKILL.md': {
+        content: `---\nname: research\ndescription: Research things\n${frontmatter}\n---\nBody`,
+      },
+    });
+    await seed(repo);
+    const before = await getMirror();
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({ status: 'succeeded', syncedSkillCount: 1, skippedSkillCount: 0 }),
+    );
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
+    expect(deps.updateSkill).not.toHaveBeenCalled();
+    expect((await getMirror()).version).toBe(before.version);
+  });
+
   it('downloads SKILL.md and updates the skill when its blob changes', async () => {
     const repo = createRepo(baseRepo());
     await seed(repo);
