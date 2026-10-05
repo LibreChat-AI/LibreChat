@@ -17,6 +17,7 @@ import { CodeWorkspaceSelectionError, describeCodeWorkspaceUnavailableSubagent }
 import { resolveCodeExecutionWorkspaceContext } from './capabilities';
 import { guardUnavailableSubagent } from '~/agents/lazySubagents';
 import { isCodeEnvironmentSelectionEnabled } from './protocol';
+import { createConcurrencyLimiter } from '~/utils/promise';
 
 /** Subagent call property naming the attached machine the child runs on. */
 export const SUBAGENT_MACHINE_ARG = 'machine';
@@ -122,6 +123,14 @@ export interface SubagentCodeTargetParams {
   conversationId?: string | null;
   getAppConfig?: CodeCapabilityConfigLoader;
 }
+
+/**
+ * Live target probes run through the process-wide worker status poller, which
+ * refuses requests past its own concurrency ceiling; queue them well below it so
+ * concurrent descriptors never misreport a healthy machine as unavailable.
+ */
+const SUBAGENT_TARGET_PROBE_CONCURRENCY = 8;
+const probeTarget = createConcurrencyLimiter(SUBAGENT_TARGET_PROBE_CONCURRENCY);
 
 const NO_TARGETS: SubagentCodeTargets = Object.freeze({
   targets: [],
@@ -234,7 +243,9 @@ export async function resolveSubagentCodeTargets(
     return NO_TARGETS;
   }
   const results = await Promise.all(
-    authorized.map((selection) => resolveCandidate(params, selections, selection)),
+    authorized.map((selection) =>
+      probeTarget(() => resolveCandidate(params, selections, selection)),
+    ),
   );
   const targets: SubagentCodeTarget[] = [];
   const unavailableMachines = new Set<string>();
@@ -531,11 +542,44 @@ export function createSubagentCodeRouting<TContext>({
   >();
   /** Pending placements by the execution whose resolution decides them. */
   const holdsByExecution = new Map<string, Set<object>>();
-  /** Per-agent tool contexts a pending placement set, with the entry it replaced. */
+  /**
+   * Per-agent tool context entries pending placements use: each user's own context,
+   * and the entry that preceded them, so the entry always belongs to a live placement.
+   */
   const contextOwners = new Map<
     string,
-    { placement: object; contexts: Map<string, TContext>; previous?: { value: TContext } }
+    {
+      contexts: Map<string, TContext>;
+      users: Map<object, TContext>;
+      previous?: { value: TContext };
+    }
   >();
+  const settleContext = (agentId: string, placement: object, keep: boolean): void => {
+    const owner = contextOwners.get(agentId);
+    const own = owner?.users.get(placement);
+    if (owner == null || own === undefined) {
+      return;
+    }
+    owner.users.delete(placement);
+    if (keep) {
+      owner.contexts.set(agentId, own);
+      contextOwners.delete(agentId);
+      return;
+    }
+    const survivor = owner.users.values().next();
+    if (!survivor.done) {
+      if (owner.contexts.get(agentId) === own) {
+        owner.contexts.set(agentId, survivor.value);
+      }
+      return;
+    }
+    contextOwners.delete(agentId);
+    if (owner.previous != null) {
+      owner.contexts.set(agentId, owner.previous.value);
+    } else {
+      owner.contexts.delete(agentId);
+    }
+  };
   /** Ends a placement's hold, keeping its claim when `keep` is true. */
   const endHold = (placement: object, keep: boolean): void => {
     const held = holds.get(placement);
@@ -544,15 +588,7 @@ export function createSubagentCodeRouting<TContext>({
     }
     holds.delete(placement);
     held.stopWatching();
-    const owner = contextOwners.get(held.agentId);
-    if (owner?.placement === placement) {
-      contextOwners.delete(held.agentId);
-      if (!keep && owner.previous != null) {
-        owner.contexts.set(held.agentId, owner.previous.value);
-      } else if (!keep) {
-        owner.contexts.delete(held.agentId);
-      }
-    }
+    settleContext(held.agentId, placement, keep);
     for (const executionId of held.executions) {
       const pending = holdsByExecution.get(executionId);
       pending?.delete(placement);
@@ -834,25 +870,28 @@ export function createSubagentCodeRouting<TContext>({
           holders: 0,
         });
       }
-      /** A placement still pending owns the entry it sets until its resolution settles. */
-      const seed = (): void => {
+      /** A pending placement is a user of the per-agent entry until its resolution settles. */
+      const register = (replace: boolean): void => {
+        const owner = contextOwners.get(agentId);
         if (holds.has(placement)) {
-          contextOwners.set(agentId, {
-            placement,
+          const record = owner ?? {
             contexts,
+            users: new Map<object, TContext>(),
             ...(contexts.has(agentId) ? { previous: { value: contexts.get(agentId)! } } : {}),
-          });
+          };
+          record.users.set(placement, toolContext);
+          contextOwners.set(agentId, record);
         }
-        contexts.set(agentId, toolContext);
+        if (replace || !contexts.has(agentId)) {
+          contexts.set(agentId, toolContext);
+        }
       };
       if (placement.target == null || !executionId) {
-        seed();
+        register(true);
         return;
       }
       routedContexts.set(executionId, { agentId, toolContext });
-      if (!contexts.has(agentId)) {
-        seed();
-      }
+      register(false);
     },
     getToolContext(agentId, executionContext) {
       if (!agentId || routedContexts.size === 0) {
@@ -864,8 +903,11 @@ export function createSubagentCodeRouting<TContext>({
         if (entry.subagentAgentId !== agentId) {
           continue;
         }
+        /** An unplaced run of the agent (an `allowSelf` spawn) defers to an enclosing one. */
         const routed = routedContexts.get(entry.subagentRunId);
-        return routed?.agentId === agentId ? routed.toolContext : undefined;
+        if (routed?.agentId === agentId) {
+          return routed.toolContext;
+        }
       }
       return undefined;
     },

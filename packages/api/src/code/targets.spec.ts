@@ -759,6 +759,90 @@ describe('subagent code routing', () => {
     expect(contexts.has(reviewer.id)).toBe(false);
   });
 
+  it('keeps the per-agent tool context of a surviving parallel placement', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const contexts = new Map<string, string>();
+    const select = async (toolContext: string, fail: boolean) => {
+      const selected = call({ machine: 'buildbox' });
+      const placement = await routing.place({ agent: reviewer, flags, context: selected });
+      routing.attach(contexts, {
+        agentId: reviewer.id,
+        context: selected,
+        placement,
+        codeExecutionContext: placement.target?.context,
+        toolContext,
+      });
+      return {
+        settle: () =>
+          routing.settleExecution(selected, async () => {
+            if (fail) throw new Error('canceled');
+          }),
+      };
+    };
+
+    const first = await select('first', true);
+    const second = await select('second', false);
+    await second.settle();
+    await expect(first.settle()).rejects.toThrow('canceled');
+    expect(contexts.get(reviewer.id)).toBe('second');
+
+    const third = await select('third', true);
+    const fourth = await select('fourth', true);
+    await expect(third.settle()).rejects.toThrow('canceled');
+    await expect(fourth.settle()).rejects.toThrow('canceled');
+    expect(contexts.get(reviewer.id)).toBe('second');
+  });
+
+  it('queues live target probes below the shared status poller limit', async () => {
+    const machines = Array.from({ length: 12 }, (_, index) => machine(`m${index}`, `w-m${index}`));
+    let inFlight = 0;
+    let peak = 0;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      const workerId = /\/bridge\/workers\/([^/]+)\/status$/.exec(String(input))?.[1] ?? '';
+      return new Response(
+        JSON.stringify({
+          protocolVersion: 1,
+          workerId,
+          online: true,
+          ready: true,
+          leaseExpiresInMs: 45_000,
+          capabilities: {
+            statefulWorkspace: true,
+            sandboxProfile: 'native-srt',
+            runtimes: ['bash'],
+            workspaceTools: {
+              protocolVersion: 1,
+              operations: ['read_file'],
+              workspaces: [{ id: `ws-${workerId}` }],
+            },
+          },
+        }),
+      );
+    });
+
+    const { targets } = await resolveSubagentCodeTargets({
+      ...request,
+      agentId: 'agent_reviewer',
+      statefulSessions: true,
+      environment: 'conversation',
+      environmentId: 'm0',
+      environmentIds: machines.map((entry) => entry.id),
+      environments: [controlPlane, ...machines],
+      persistedSelections: machines.map((entry) => ({
+        environmentId: entry.id,
+        workspaceId: `ws-w-${entry.id}`,
+      })),
+    });
+
+    expect(targets).toHaveLength(12);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
   it('gives back a machine whose initialization landed elsewhere', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);
@@ -1219,6 +1303,18 @@ describe('subagent tool contexts', () => {
     expect(contexts.get(agent.id)).toBe('laptop');
     expect(routing.isRouted('run-a')).toBe(true);
     expect(routing.isRouted('run-b')).toBe(false);
+  });
+
+  it('lets an unplaced self-spawn defer to the routed run that spawned it', () => {
+    const routing = createSubagentCodeRouting<string>({});
+    attach(routing, new Map(), 'run-parent', 'buildbox');
+
+    expect(
+      routing.getToolContext(
+        agent.id,
+        executionContext(['run-parent', agent.id], ['run-self', agent.id]),
+      ),
+    ).toBe('buildbox');
   });
 
   it('matches the innermost execution of the asking agent only', () => {
