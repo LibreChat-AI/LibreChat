@@ -147,6 +147,7 @@ import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
 import { primeResources } from './resources';
+import { pinAgentModel } from './pin';
 
 /**
  * Fraction of context budget reserved as headroom when no explicit maxContextTokens is set.
@@ -1544,10 +1545,7 @@ export async function initializeAgent(
     agent.provider = overrideProvider;
   }
 
-  const finalModelOptions = {
-    ...modelOptions,
-    model: agent.model,
-  };
+  const finalModelOptions = pinAgentModel(modelOptions, agent.model);
 
   const options: InitializeResultBase = await getOptions({
     runtime: {
