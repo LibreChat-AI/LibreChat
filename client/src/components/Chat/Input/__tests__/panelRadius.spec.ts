@@ -9,7 +9,7 @@ const PANEL_TAG =
   /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
 const PANEL_ROLE = /\brounded-theme-(?:menu-panel|popover)\b/;
-const DELEGATED = /className=\{[A-Za-z.]+\}|\{\.\.\./;
+const DELEGATED = /className=\{[A-Za-z.]+\}/;
 
 function sourcesUnder(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
