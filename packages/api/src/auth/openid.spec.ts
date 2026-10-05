@@ -1148,26 +1148,26 @@ describe('createOpenIDUser', () => {
     expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ tenantId }));
   });
 
-  it("skips the balance barrier when the recovered tenant account's config sets no start balance", async () => {
-    await tenantStorage.run({ tenantId }, () =>
-      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
-    );
-    getAppConfig.mockResolvedValueOnce(appConfigWith({ enabled: false, startBalance: 0 }));
-
-    const login = await tenantStorage.run({ tenantId }, () =>
-      firstLogin({ enabled: true, startBalance: 500 }),
-    );
-
-    expect(login.user).toEqual(expect.objectContaining({ openidId, tenantId }));
-  });
-
-  it("requires the start balance the recovered tenant account's config sets", async () => {
+  it("continues when only the recovered tenant account's config sets a start balance", async () => {
     await tenantStorage.run({ tenantId }, () =>
       User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
     );
     getAppConfig.mockResolvedValueOnce(appConfigWith({ enabled: true, startBalance: 500 }));
 
-    const login = tenantStorage.run({ tenantId }, () => firstLogin());
+    const login = await tenantStorage.run({ tenantId }, () => firstLogin());
+
+    expect(login.user).toEqual(expect.objectContaining({ openidId, tenantId }));
+  });
+
+  it('holds the recovered login on the start balance new users are created with', async () => {
+    await tenantStorage.run({ tenantId }, () =>
+      User.create({ email, provider: 'openid', openidId, openidIssuer: issuer }),
+    );
+    getAppConfig.mockResolvedValueOnce(appConfigWith({ enabled: false, startBalance: 0 }));
+
+    const login = tenantStorage.run({ tenantId }, () =>
+      firstLogin({ enabled: true, startBalance: 500 }),
+    );
 
     await expect(login).rejects.toThrow(ErrorTypes.AUTH_FAILED);
   });

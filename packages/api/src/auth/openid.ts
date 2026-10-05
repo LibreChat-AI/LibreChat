@@ -353,12 +353,13 @@ function hasStartBalance(balanceConfig?: BalanceConfig | null): boolean {
  * applies, and the account carries this callback's claims. Returns the account with the config
  * the login continues under (`appConfig` for a user this request created).
  *
- * It continues only once the winner finished provisioning that account: when the account's own
- * config (the one login balance sync initializes from) sets a start balance, the balance must
- * exist. `createUserIfAbsent` writes it before the user, but a winner on an earlier release
- * credits it after its insert, and login balance sync would otherwise initialize it in between;
- * such a login fails as it did before recovery existed. A conflict the lookup cannot account
- * for throws.
+ * It continues only once the winner finished provisioning that account. When the config new
+ * users are created under (`appConfig`) sets a start balance, the balance must exist:
+ * `createUserIfAbsent` writes it before the user, but a winner on an earlier release adds it with
+ * `$inc` after its insert, and login balance sync must not initialize it first; such a login fails
+ * as it did before recovery existed. A start balance only the account's tenant config sets is
+ * initialized by login balance sync with an insert-only write that cannot be added on top, so it
+ * does not hold the login back. A conflict the lookup cannot account for throws.
  */
 export async function createOpenIDUser({
   lookup,
@@ -415,7 +416,7 @@ export async function createOpenIDUser({
     throw new Error('Email domain not allowed');
   }
 
-  if (hasStartBalance(getBalanceConfig(accountConfig)) && !(await findBalanceByUser(userId))) {
+  if (hasStartBalance(getBalanceConfig(appConfig)) && !(await findBalanceByUser(userId))) {
     logger.warn(
       `[${strategyName}] Concurrent first login found user ${userId} before its start balance; failing this login`,
     );
