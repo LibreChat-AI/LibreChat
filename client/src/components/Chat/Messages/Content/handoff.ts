@@ -17,9 +17,10 @@ export default function useRowHandoff(bare: boolean) {
     if (node == null) {
       const held = rowNode.current?.contains(document.activeElement) === true;
       const root = rowNode.current?.closest('[data-fold-root]');
-      handoff.current = held
-        ? (root?.firstElementChild?.querySelector<HTMLElement>('button') ?? null)
-        : null;
+      /** The header precedes every row in document order, whatever else the
+       *  root leads with (a phase puts its announcer first). */
+      const header = held ? (root?.querySelector<HTMLElement>('button') ?? null) : null;
+      handoff.current = header != null && !rowNode.current?.contains(header) ? header : null;
     } else {
       handoff.current = null;
     }

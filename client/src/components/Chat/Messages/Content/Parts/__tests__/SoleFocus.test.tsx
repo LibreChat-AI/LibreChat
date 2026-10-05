@@ -22,10 +22,11 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
   ),
 }));
 
-const tree = (settled: boolean) => (
+const tree = (settled: boolean, announcer = false) => (
   <RecoilRoot>
     <input data-testid="outside" />
     <div data-fold-root="">
+      {announcer && <span role="status" data-testid="announcer" />}
       <div className="flex">
         <button type="button" data-testid="group-header">
           {'Group'}
@@ -53,6 +54,15 @@ describe('a sole call that drops its row on completion', () => {
     rerender(tree(true));
 
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(screen.getByTestId('group-header')).toHaveFocus();
+  });
+
+  it('finds the header when the fold root leads with a screen-reader announcer', () => {
+    const { rerender } = render(tree(false, true));
+    act(() => screen.getByTestId('progress-text').focus());
+
+    rerender(tree(true, true));
+
     expect(screen.getByTestId('group-header')).toHaveFocus();
   });
 
