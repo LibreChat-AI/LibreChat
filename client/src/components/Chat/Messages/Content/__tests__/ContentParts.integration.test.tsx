@@ -1786,7 +1786,7 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Confirmed the missing lens');
   });
 
-  it('previews reasoning between calls one sentence at a time, in the same single row', () => {
+  it('hides live reasoning when Show thinking is disabled', () => {
     jest.useFakeTimers();
     const frame = (think: string) => (
       <RecoilRoot>
@@ -1800,23 +1800,18 @@ describe('ContentParts — live activity fold', () => {
       </RecoilRoot>
     );
     const { rerender } = render(frame('Both refs share a commit.'));
-    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
+    expect(liveHeader()).toHaveTextContent('Reading the lens file');
+    expect(liveHeader()).not.toHaveTextContent('Both refs share a commit.');
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
     expect(screen.queryByTestId('reasoning')).toBeNull();
 
-    /** The next sentence is not shown while it is still being written. */
-    rerender(frame('Both refs share a commit. That leaves the ordering'));
-    act(() => {
-      jest.advanceTimersByTime(1000);
-    });
-    expect(liveHeader()).toHaveTextContent('Both refs share a commit.');
-    expect(liveHeader()).not.toHaveTextContent('That leaves the ordering');
     rerender(frame('Both refs share a commit. That leaves the ordering.'));
     act(() => {
       jest.advanceTimersByTime(1000);
     });
-    expect(liveHeader()).toHaveTextContent('That leaves the ordering.');
-    expect(within(liveHeader()).getByTitle('That leaves the ordering.')).toBeInTheDocument();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    expect(liveHeader()).toHaveTextContent('Reading the lens file');
+    expect(liveHeader()).not.toHaveTextContent('That leaves the ordering.');
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
   });
 
   it('leaves a reasoning-bearing span unfolded when thinking opens by default', () => {
