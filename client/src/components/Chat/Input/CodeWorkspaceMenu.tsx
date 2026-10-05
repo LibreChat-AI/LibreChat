@@ -169,6 +169,7 @@ function EnvironmentWorkspaces({
   onSelect,
   checkout,
   allowCheckoutSelection = false,
+  allowAutoCheckout = false,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
   requiredBy?: CodeWorkspaceEnvironmentResult['requiredBy'];
@@ -176,12 +177,17 @@ function EnvironmentWorkspaces({
   emptyLabel: string;
   hideOnClick: boolean;
   isSelected: (workspaceId: string) => boolean;
-  onSelect: (selection: CodeWorkspaceSelection) => void;
+  onSelect: (selection: CodeWorkspaceSelection, inheritCheckout?: boolean) => void;
   checkout?: CodeWorkspaceSelection['checkout'];
   allowCheckoutSelection?: boolean;
+  /** Offers Auto, which clears an override back to the worker's policy. */
+  allowAutoCheckout?: boolean;
 }) {
   const localize = useLocalize();
   const owners = requiredBy?.map(({ id, name }) => name || id).join(', ');
+  const currentCheckout: CheckoutChoice | undefined = allowAutoCheckout
+    ? (checkout ?? 'auto')
+    : checkout;
   const names = workspaces.map(({ id, name }) => name ?? id);
   const sharedNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
   return (
@@ -238,6 +244,7 @@ function EnvironmentWorkspaces({
                 .filter(
                   ({ value }) =>
                     value === 'source' ||
+                    (value === 'auto' && allowAutoCheckout) ||
                     (value === 'isolated' &&
                       descriptor.workspaceInstances?.includes('git_worktree')),
                 )
@@ -246,22 +253,27 @@ function EnvironmentWorkspaces({
                     key={value}
                     name={`codeCheckout:${environment.id}`}
                     value={value}
-                    checked={checkout === value}
+                    checked={currentCheckout === value}
                     hideOnClick={hideOnClick}
-                    className={cn(menuItemClasses(checkout === value), 'pl-8')}
+                    className={cn(menuItemClasses(currentCheckout === value), 'pl-8')}
                     onChange={() =>
-                      onSelect({
-                        environmentId: environment.id,
-                        workspaceId: descriptor.id,
-                        checkout: value as NonNullable<CodeWorkspaceSelection['checkout']>,
-                      })
+                      value === 'auto'
+                        ? onSelect(
+                            { environmentId: environment.id, workspaceId: descriptor.id },
+                            false,
+                          )
+                        : onSelect({
+                            environmentId: environment.id,
+                            workspaceId: descriptor.id,
+                            checkout: value,
+                          })
                     }
                   >
                     <ModeIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
                     <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
                       {localize(label)}
                     </span>
-                    {checkout === value && (
+                    {currentCheckout === value && (
                       <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                     )}
                   </Ariakit.MenuItemRadio>
@@ -1006,6 +1018,11 @@ export default function CodeWorkspaceMenu({
                       workspace.mode === 'attached' && workspaceId === selected?.workspaceId
                     }
                     onSelect={selectWorkspace}
+                    checkout={selected?.checkout}
+                    /** One environment gets the checkout chip in the rail; several share it here,
+                     *  one set of choices under each environment's selected workspace. */
+                    allowCheckoutSelection={!workspace.locked && workspace.environments.length > 1}
+                    allowAutoCheckout={true}
                   />
                 ))}
               {machine != null &&

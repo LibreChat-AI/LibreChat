@@ -594,6 +594,51 @@ describe('CodeWorkspaceMenu', () => {
     },
   );
 
+  test('offers checkout per environment in the menu when a chat uses several machines', async () => {
+    const graph = workspace();
+    graph.environments = ['isolated', undefined].map((checkout, index) => ({
+      environment: {
+        ...environment,
+        id: `vm-${index}`,
+        name: `Machine ${index}`,
+        configSchema: { workspaces: { allowCheckoutSelection: true } },
+      },
+      state: 'ready' as const,
+      workspaces: [
+        {
+          id: 'repo',
+          name: `Repository ${index}`,
+          workspaceInstances: ['git_worktree'] as ['git_worktree'],
+        },
+      ],
+      selected: {
+        environmentId: `vm-${index}`,
+        workspaceId: 'repo',
+        ...(checkout ? { checkout: checkout as 'isolated' } : {}),
+      },
+    }));
+    const setConversation = jest.fn();
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
+    );
+    /** The rail chip only serves a single machine. */
+    expect(screen.queryByTestId('code-checkout')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    const autoChoices = screen.getAllByRole('menuitemradio', {
+      name: /com_ui_code_checkout_automatic/,
+    });
+    expect(autoChoices).toHaveLength(2);
+    expect(autoChoices[0]).toHaveAttribute('aria-checked', 'false');
+    expect(autoChoices[1]).toHaveAttribute('aria-checked', 'true');
+    await userEvent.click(autoChoices[0]);
+    const next = setConversation.mock.calls[0][0](conversation);
+    const vm0 = next.codeWorkspaces.find(
+      ({ environmentId }: { environmentId: string }) => environmentId === 'vm-0',
+    );
+    expect(vm0).toMatchObject({ environmentId: 'vm-0', workspaceId: 'repo' });
+    expect(vm0).not.toHaveProperty('checkout');
+  });
+
   test('reports checkout modes for every environment on a restored sealed chat', () => {
     const graph = workspace({ locked: true, transition: undefined });
     graph.environments = ['source', 'isolated'].map((checkout, index) => ({
