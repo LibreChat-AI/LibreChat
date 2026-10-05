@@ -15,9 +15,9 @@ import {
   SoleToolContext,
 } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
 import { isToolCallPreparing, useToolPreparation } from './preparation';
-import { ToolIcon, getToolIconType, isError } from './ToolOutput';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
@@ -237,7 +237,7 @@ export default function ToolCall({
   const bare =
     (soleTool || loneGroup) &&
     hasInfo &&
-    (hasToolParams(args) || (output?.trim().length ?? 0) > 0) &&
+    (hasToolParams(args) || hasRenderableOutput(output)) &&
     phase === 'completed' &&
     !isMCPToolCall &&
     !isActionCall &&
