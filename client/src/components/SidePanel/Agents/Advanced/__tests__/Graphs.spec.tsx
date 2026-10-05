@@ -1,7 +1,12 @@
 import { useForm, FormProvider } from 'react-hook-form';
-import { AgentCapabilities } from 'librechat-data-provider';
-import { render, screen, fireEvent } from '@testing-library/react';
-import type { AgentSubagentsConfig, TAgentsEndpoint } from 'librechat-data-provider';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { EModelEndpoint, AgentCapabilities, Tools } from 'librechat-data-provider';
+import type {
+  AgentSubagentsConfig,
+  TAgentsEndpoint,
+  TAgentsMap,
+  Agent,
+} from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import Graphs from '../Graphs';
@@ -10,11 +15,13 @@ let mockAgentsConfig: Partial<TAgentsEndpoint> = {
   maxSubagents: 2,
   capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
 };
+let mockAgentsMap: TAgentsMap = {};
+let mockSetValue: UseFormReturn<AgentForm>['setValue'];
 let mockGetValues: UseFormReturn<AgentForm>['getValues'];
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('~/Providers', () => ({
   useAgentPanelContext: () => ({ agentsConfig: mockAgentsConfig }),
-  useAgentsMapContext: () => ({}),
+  useAgentsMapContext: () => mockAgentsMap,
 }));
 const team = {
   type: 'review',
@@ -43,10 +50,11 @@ function Harness({
     defaultValues: {
       ...defaults,
       subagents,
-      edges: [{ from: 'parent', to: 'handoff', edgeType: 'handoff' }],
+      edges: defaults.edges ?? [{ from: 'parent', to: 'handoff', edgeType: 'handoff' }],
     },
   });
   mockGetValues = methods.getValues;
+  mockSetValue = methods.setValue;
   return (
     <FormProvider {...methods}>
       <Graphs currentAgentId="parent" />
@@ -133,6 +141,7 @@ test('removing one disabled team does not activate any remaining definitions', (
 });
 
 beforeEach(() => {
+  mockAgentsMap = {};
   mockAgentsConfig = {
     maxSubagents: 2,
     capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
@@ -257,5 +266,156 @@ test('managed code does not show an implicit attached approval warning', () => {
     },
   };
   render(<Harness defaults={{ execute_code: true, stateful_code_sessions: true }} />);
+  expect(screen.queryByRole('note')).toBeNull();
+});
+
+const reachableAgent = (id: string, fields: Partial<Agent> = {}): Agent => ({
+  id,
+  name: id,
+  description: null,
+  created_at: 0,
+  avatar: null,
+  provider: EModelEndpoint.openAI,
+  model: null,
+  model_parameters: {
+    temperature: null,
+    maxContextTokens: null,
+    max_context_tokens: null,
+    max_output_tokens: null,
+    top_p: null,
+    frequency_penalty: null,
+    presence_penalty: null,
+  },
+  ...fields,
+});
+const useAttachedWarnings = (enabled?: boolean) => {
+  mockAgentsConfig = {
+    ...mockAgentsConfig,
+    capabilities: [
+      ...(mockAgentsConfig.capabilities ?? []),
+      AgentCapabilities.stateful_code_sessions,
+    ],
+    toolApproval: enabled == null ? undefined : { enabled },
+    statefulCodeSessions: {
+      allowedEnvironments: ['user', 'agent-user', 'conversation'],
+      environments: [
+        {
+          id: 'attached',
+          type: 'attached',
+          name: 'Machine',
+          owner: 'principal',
+          baseURL: 'https://example.invalid',
+          default: true,
+        },
+      ],
+    },
+  };
+  mockAgentsMap.attached = reachableAgent('attached', {
+    tools: [Tools.execute_code],
+    stateful_code_sessions: true,
+  });
+};
+
+test.each(['ordinary', 'handoff', 'ordinary-handoff', 'handoff-ordinary'])(
+  'warns for attached descendants reached through %s',
+  (path) => {
+    useAttachedWarnings();
+    const nested = path.includes('-');
+    const target = nested ? 'intermediate' : 'attached';
+    const rootHandoff = path.startsWith('handoff');
+    if (nested)
+      mockAgentsMap.intermediate = reachableAgent(
+        'intermediate',
+        path.endsWith('handoff')
+          ? { edges: [{ from: 'intermediate', to: 'attached', edgeType: 'handoff' }] }
+          : { subagents: { enabled: true, agent_ids: ['attached'] } },
+      );
+    render(
+      <Harness
+        subagents={{ ...initialSubagents, enabled: !rootHandoff, agent_ids: [target] }}
+        defaults={{
+          edges: rootHandoff ? [{ from: 'parent', to: target, edgeType: 'handoff' }] : [],
+        }}
+      />,
+    );
+    expect(screen.getByRole('note')).toHaveTextContent('com_ui_agent_graphs_approvals');
+  },
+);
+
+test.each(['disabled', 'capability-off', 'endpoint-off', 'unrelated'])(
+  'does not warn for an unavailable ordinary path: %s',
+  (reason) => {
+    useAttachedWarnings(reason === 'endpoint-off' ? false : undefined);
+    if (reason === 'capability-off')
+      mockAgentsConfig.capabilities = mockAgentsConfig.capabilities?.filter(
+        (capability) => capability !== AgentCapabilities.subagents,
+      );
+    render(
+      <Harness
+        subagents={{
+          ...initialSubagents,
+          enabled: reason !== 'disabled',
+          agent_ids: [reason === 'unrelated' ? 'other' : 'attached'],
+        }}
+        defaults={{ edges: [] }}
+      />,
+    );
+    expect(screen.queryByRole('note')).toBeNull();
+  },
+);
+
+test('draft handoff edits update the warning and cycles do not recurse forever', () => {
+  useAttachedWarnings();
+  mockAgentsMap.attached = {
+    ...reachableAgent('attached'),
+    ...mockAgentsMap.attached,
+    edges: [{ from: 'attached', to: 'parent', edgeType: 'handoff' }],
+  };
+  render(<Harness defaults={{ edges: [] }} />);
+  expect(screen.queryByRole('note')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_edit' }));
+  act(() => mockSetValue('edges', [{ from: 'parent', to: 'attached', edgeType: 'handoff' }]));
+  expect(screen.getByRole('note')).toBeVisible();
+  act(() => mockSetValue('edges', []));
+  expect(screen.queryByRole('note')).toBeNull();
+});
+
+test.each([false, true])(
+  'only capability-projected graph members contribute to the warning, enabled=%s',
+  (graphsEnabled) => {
+    useAttachedWarnings();
+    const attachedTeam = {
+      ...team,
+      agent_ids: ['attached'],
+      entry_agent_id: 'attached',
+      result_agent_id: 'attached',
+    };
+    render(
+      <Harness
+        subagents={{ ...initialSubagents, graphsEnabled, graphs: [attachedTeam] }}
+        defaults={{ edges: [] }}
+      />,
+    );
+    expect(screen.queryByRole('note') != null).toBe(graphsEnabled);
+  },
+);
+
+test('saved but capability-disabled graph members do not enable the warning', () => {
+  useAttachedWarnings();
+  mockAgentsConfig.capabilities = mockAgentsConfig.capabilities?.filter(
+    (capability) => capability !== AgentCapabilities.subagent_graphs,
+  );
+  const attachedTeam = {
+    ...team,
+    agent_ids: ['attached'],
+    entry_agent_id: 'attached',
+    result_agent_id: 'attached',
+  };
+  render(
+    <Harness
+      subagents={{ ...initialSubagents, graphs: [attachedTeam] }}
+      defaults={{ edges: [] }}
+    />,
+  );
   expect(screen.queryByRole('note')).toBeNull();
 });

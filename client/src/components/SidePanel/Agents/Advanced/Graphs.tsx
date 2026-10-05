@@ -1,4 +1,4 @@
-import { useContext, useState } from 'react';
+import { useContext, useState, useMemo } from 'react';
 import { Workflow, Plus, Pencil, X } from 'lucide-react';
 import { useFormContext, useWatch } from 'react-hook-form';
 import {
@@ -15,16 +15,21 @@ import {
   getSubagentGraphMemberCount,
   MAX_SUBAGENT_GRAPH_NODES,
   AgentCapabilities,
+  EModelEndpoint,
   Tools,
   isSubagentGraphsEnabled,
   MAX_SUBAGENTS,
   MAX_GRAPH_SUBAGENT_MEMBERS,
 } from 'librechat-data-provider';
-import type { AgentSubagentGraph, AgentSubagentGraphEdge } from 'librechat-data-provider';
+import type { AgentSubagentGraph, AgentSubagentGraphEdge, Agent } from 'librechat-data-provider';
 import type { AgentForm, OptionWithIcon } from '~/common';
+import {
+  collectReachableAgents,
+  findExecutionEnvironment,
+} from '~/hooks/Agents/useCodeApprovalMode';
 import { AgentPickerPortalContext, AddAgentSelect, useSelectableAgents } from './AgentList';
+import { useAgentPanelContext, useAgentsMapContext } from '~/Providers';
 import OrchestrationPattern from './OrchestrationPattern';
-import { useAgentPanelContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { CountPill } from './ui';
 
@@ -37,6 +42,7 @@ const endpoints = (value: string | string[]): string[] => (Array.isArray(value) 
 export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
   const localize = useLocalize();
   const { agentsConfig } = useAgentPanelContext();
+  const agentsMap = useAgentsMapContext();
   const { control, getValues, setValue } = useFormContext<AgentForm>();
   const subagents = useWatch({ control, name: 'subagents' });
   const graphs = subagents?.graphs ?? [];
@@ -54,29 +60,64 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     id === currentAgentId || id === ''
       ? localize('com_ui_agent_graphs_self')
       : (getAgent(id)?.name ?? id);
-  const [codeEnabled, statefulSessions, codeEnvironmentId] = useWatch({
-    control,
-    name: ['execute_code', 'stateful_code_sessions', 'code_environment_id'],
-  });
-  const environments = agentsConfig?.statefulCodeSessions?.environments;
-  const attachedEnvironment = (id?: string | null) =>
-    (id
-      ? environments?.find((environment) => environment.id === id)
-      : environments?.find((environment) => environment.default === true)
-    )?.type === 'attached';
+  const [codeEnabled, statefulSessions, codeEnvironmentId, codeEnvironmentIds, agentIds, edges] =
+    useWatch({
+      control,
+      name: [
+        'execute_code',
+        'stateful_code_sessions',
+        'code_environment_id',
+        'code_environment_ids',
+        'agent_ids',
+        'edges',
+      ],
+    });
+  const reachable = useMemo(() => {
+    const currentAgent: Agent = {
+      id: currentAgentId,
+      name: null,
+      description: null,
+      avatar: null,
+      created_at: 0,
+      provider: EModelEndpoint.openAI,
+      model: null,
+      model_parameters: getValues('model_parameters'),
+      tools: codeEnabled ? [Tools.execute_code] : [],
+      stateful_code_sessions: statefulSessions,
+      code_environment_id: codeEnvironmentId,
+      code_environment_ids: codeEnvironmentIds,
+      agent_ids: agentIds,
+      edges,
+      subagents,
+    };
+    return collectReachableAgents(
+      [currentAgent],
+      agentsMap,
+      [currentAgentId],
+      agentsConfig?.capabilities,
+    );
+  }, [
+    currentAgentId,
+    codeEnabled,
+    statefulSessions,
+    codeEnvironmentId,
+    codeEnvironmentIds,
+    agentIds,
+    edges,
+    subagents,
+    agentsMap,
+    agentsConfig?.capabilities,
+    getValues,
+  ]);
   const attachedCode =
     agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) &&
-    ((codeEnabled && statefulSessions && attachedEnvironment(codeEnvironmentId)) ||
-      graphs.some((team) =>
-        team.agent_ids.some((id) => {
-          const member = getAgent(id);
-          return (
-            member?.stateful_code_sessions === true &&
-            member.tools?.includes(Tools.execute_code) &&
-            attachedEnvironment(member.code_environment_id)
-          );
-        }),
-      ));
+    reachable.agents.some(
+      (agent) =>
+        agent.stateful_code_sessions === true &&
+        agent.tools?.includes(Tools.execute_code) &&
+        findExecutionEnvironment(agent, agentsConfig?.statefulCodeSessions?.environments)?.type ===
+          'attached',
+    );
   const approvalEnabled =
     agentsConfig?.toolApproval?.enabled === true ||
     (agentsConfig?.toolApproval?.enabled !== false && attachedCode);
