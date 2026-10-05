@@ -155,10 +155,11 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
-  # After ALL API replicas are upgraded and old title-generation jobs have drained:
+  # Allow renaming a running chat or one with a placeholder title (default: true).
+  # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
+  # title-generation jobs have drained. While false, rename is disabled for running chats
+  # and unowned placeholder titles; other actions stay available.
   # runningChatRename: true
-  # Keep false (default) during rolling upgrades. Missing server capability disables
-  # rename for running chats and unowned placeholder titles; other actions stay available.
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
   # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),

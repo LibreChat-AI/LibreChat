@@ -2578,8 +2578,8 @@ export const interfaceSchema = z
     customWelcome: z.string().optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
-    /** Enable only after every API replica supports title ownership and old title jobs drain. */
-    runningChatRename: z.boolean().default(false),
+    /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
+    runningChatRename: z.boolean().default(true),
     /** Milliseconds between syntax highlights while a code block streams. */
     codeHighlightThrottleMs: z.number().int().min(0).max(60_000).default(300),
     /** Most agents the agents panel selector lists before a search term is
@@ -2827,7 +2827,7 @@ export const interfaceSchema = z
   })
   .default({
     modelSelect: true,
-    runningChatRename: false,
+    runningChatRename: true,
     codeHighlightThrottleMs: 300,
     agentSelectorLimit: DEFAULT_AGENT_SELECTOR_LIMIT,
     parameters: true,

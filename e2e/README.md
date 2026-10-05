@@ -217,10 +217,10 @@ Keep storage state, traces, logs, and session data private. Check that the PNGs 
 
 ## Running-chat rename rollout
 
-`interface.runningChatRename` defaults to `false`. Keep it off during rolling upgrades.
-After **every API replica** supports title ownership, drain all title-generation tasks
-started on older replicas, then enable it fleet-wide. The client also requires the
-server's title-ownership capability; an old replica cannot advertise it.
+`interface.runningChatRename` defaults to `true`. Set it to `false` during rolling upgrades
+from a version without title ownership. After **every API replica** supports title ownership,
+drain all title-generation tasks started on older replicas, then remove the override. The client
+also requires the server's title-ownership capability; an old replica cannot advertise it.
 
 With the fence off, running rows and unowned placeholder titles cannot be renamed.
 Other menu actions remain available. Settled non-placeholder chats retain Rename.
