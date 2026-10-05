@@ -34,7 +34,7 @@ type TestToolCall = {
   function?: unknown;
 };
 
-type TestMessage = { messageId?: string; content?: unknown[] };
+type TestMessage = { messageId?: string; content?: unknown[]; updatedAt?: Date };
 
 const toolPart = (toolCall: TestToolCall) => ({
   type: ContentTypes.TOOL_CALL,
@@ -392,6 +392,22 @@ describe('previewMessagesToolCalls', () => {
     expect(parts[1]).toBe(content[1]);
     expect(parts[2]).toBe(content[2]);
     expect(parts[3].tool_call.outputTruncated).toBe(true);
+  });
+
+  it('stamps each preview with when its message last changed', () => {
+    const updatedAt = new Date('2026-10-05T01:00:00Z');
+    const [message] = previewMessagesToolCalls(
+      [
+        {
+          updatedAt,
+          content: [toolPart({ output: 'o'.repeat(10_000) }), toolPart({ id: 'b', output: 'ok' })],
+        },
+      ],
+      limits,
+    );
+    const parts = message.content as Array<{ tool_call: Record<string, unknown> }>;
+    expect(parts[0].tool_call.previewRevision).toBe(String(updatedAt.getTime()));
+    expect(parts[1].tool_call).not.toHaveProperty('previewRevision');
   });
 
   it('returns the same array when nothing needs shortening', () => {

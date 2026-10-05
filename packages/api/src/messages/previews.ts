@@ -84,6 +84,8 @@ interface StoredToolCallPart {
 /** A message as read for a client; only `content` is inspected. */
 export interface PreviewableMessage {
   content?: unknown[] | null;
+  /** Stamped onto each preview as `previewRevision`, so clients key fetched parts to it. */
+  updatedAt?: Date | string | number | null;
 }
 
 const isObject = (value: unknown): value is object => value != null && typeof value === 'object';
@@ -371,6 +373,7 @@ export function previewToolCallOutput(
 export function previewToolCall<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
+  revision = '',
 ): T {
   if (!isAgentToolCall(toolCall) || !isSettled(toolCall) || !hasIdentity(toolCall)) {
     return toolCall;
@@ -408,6 +411,9 @@ export function previewToolCall<T extends StoredToolCall>(
     next.subagentContentOmitted = true;
     next.subagentContentParts = (subagentContent as unknown[]).length;
   }
+  if (revision !== '') {
+    next.previewRevision = revision;
+  }
   return next;
 }
 
@@ -418,9 +424,10 @@ export function previewToolCall<T extends StoredToolCall>(
 function previewToolCallSafely<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
+  revision: string,
 ): T {
   try {
-    return previewToolCall(toolCall, limits);
+    return previewToolCall(toolCall, limits, revision);
   } catch (error) {
     logger.warn('[toolCallPreviews] Sending a tool call in full; its preview failed', error);
     return toolCall;
@@ -431,6 +438,7 @@ function previewToolCallSafely<T extends StoredToolCall>(
 export function previewContentToolCalls(
   content: unknown[],
   limits: ToolCallPreviewLimits,
+  revision = '',
 ): unknown[] {
   let result: unknown[] | undefined;
   /** First index of each identity; a repeat sends both calls whole (see `toolCallIdentity`). */
@@ -453,7 +461,7 @@ export function previewContentToolCalls(
       continue;
     }
     firstIndex.set(identity, i);
-    const toolCall = previewToolCallSafely(part.tool_call, limits);
+    const toolCall = previewToolCallSafely(part.tool_call, limits, revision);
     if (toolCall === part.tool_call) {
       continue;
     }
@@ -461,6 +469,14 @@ export function previewContentToolCalls(
     result[i] = { ...part, tool_call: toolCall };
   }
   return result ?? content;
+}
+
+function messageRevision(message: PreviewableMessage): string {
+  const { updatedAt } = message;
+  if (updatedAt instanceof Date) {
+    return String(updatedAt.getTime());
+  }
+  return updatedAt == null ? '' : String(updatedAt);
 }
 
 /** Applies previews across messages, copying only the messages whose content changed. */
@@ -474,7 +490,7 @@ export function previewMessagesToolCalls<T extends PreviewableMessage>(
     if (!Array.isArray(message?.content)) {
       continue;
     }
-    const content = previewContentToolCalls(message.content, limits);
+    const content = previewContentToolCalls(message.content, limits, messageRevision(message));
     if (content === message.content) {
       continue;
     }

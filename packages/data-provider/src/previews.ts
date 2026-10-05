@@ -21,25 +21,40 @@ export type ToolCallPreviewMarkers = Pick<
   | 'argsLength'
   | 'subagentContentOmitted'
   | 'subagentContentParts'
+  | 'previewRevision'
 >;
 
 /** A tool call as the full-part endpoint returns it, transcript included. */
 export type FullToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] };
 
+/** 32-bit FNV-1a over UTF-16 code units; a fingerprint for cache keys, not a security hash. */
+function fingerprint(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 /**
- * Identifies the server's current preview of a call. It changes when the stored call does (a
- * background result replacing its output, a transcript growing), so a client cache of the full
- * part keyed on it never outlives the content it was fetched for.
+ * Identifies the stored version a preview stands for: the server's `previewRevision` (when the
+ * message last changed) plus a fingerprint of everything the preview itself carries. Either
+ * changes when the stored call does, so a client cache of the full part keyed on it never
+ * outlives the content it was fetched for.
  */
 export function getToolCallPreviewRevision(toolCall: FullToolCall): string {
   const output = typeof toolCall.output === 'string' ? toolCall.output : '';
-  return [
-    output.length,
+  const args =
+    typeof toolCall.args === 'string' ? toolCall.args : JSON.stringify(toolCall.args ?? null);
+  const content = [
+    output,
+    args,
     toolCall.outputLength ?? '',
     toolCall.argsLength ?? '',
     toolCall.subagentContentParts ?? '',
-    output.slice(-48),
-  ].join(':');
+  ].join('\u0000');
+  return `${toolCall.previewRevision ?? ''}:${fingerprint(content)}`;
 }
 
 /** True when any of the tool call's content is a preview rather than the stored value. */

@@ -37,6 +37,7 @@ export function withFullToolCall(part: ToolCallPart, full: FullToolCall): ToolCa
     argsLength: _argsLength,
     subagentContentOmitted,
     subagentContentParts: _subagentContentParts,
+    previewRevision: _previewRevision,
     ...toolCall
   } = part.tool_call as FullToolCall;
   return {
@@ -69,6 +70,7 @@ export function PreviewedToolCallPart({
   const [requested, setRequested] = useState(false);
   const request = useCallback(() => setRequested(true), []);
   const toolCall = part.tool_call as FullToolCall;
+  const revision = useMemo(() => getToolCallPreviewRevision(toolCall), [toolCall]);
   const canFetch = !!conversationId && !!messageId && partIndex != null;
   const query = useToolCallPartQuery(
     {
@@ -80,7 +82,7 @@ export function PreviewedToolCallPart({
       agentId: part.agentId,
     },
     { enabled: requested && canFetch },
-    getToolCallPreviewRevision(toolCall),
+    revision,
   );
   const full = query.data?.tool_call;
   const effectivePart = useMemo(

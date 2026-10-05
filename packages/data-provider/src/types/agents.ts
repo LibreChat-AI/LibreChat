@@ -133,6 +133,9 @@ export namespace Agents {
     subagentContentOmitted?: true;
     /** Number of top-level parts in the omitted `subagent_content`. */
     subagentContentParts?: number;
+    /** When the stored message last changed, set on previews so a client cache of the full part
+     *  is keyed to the stored version it came from. */
+    previewRevision?: string;
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */
