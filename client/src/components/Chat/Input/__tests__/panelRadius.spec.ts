@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 const CHAT_DIR = path.resolve(__dirname, '../..');
-const SCAN_DIRS = ['Input', 'Menus'];
+const SCAN_DIRS = ['Input', 'Menus', 'Messages', 'BackgroundTasks'];
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =

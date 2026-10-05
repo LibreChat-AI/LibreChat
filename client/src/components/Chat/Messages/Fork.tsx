@@ -111,7 +111,7 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
             gutter={16}
             shift={40}
             flip={false}
-            className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-[min(20rem,90vw)] rounded-2xl border p-4 shadow-md"
+            className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
             portal={true}
             unmountOnHide={true}
           >
@@ -187,7 +187,7 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
         gutter={14}
         shift={40}
         flip={false}
-        className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-[min(20rem,90vw)] rounded-2xl border p-4 shadow-md"
+        className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
         portal={true}
         unmountOnHide={true}
       >
@@ -354,7 +354,7 @@ function Fork({
       <Ariakit.Popover
         store={popoverStore}
         gutter={10}
-        className={`popover-animate ${isActive ? 'open' : ''} border-border-medium bg-surface-secondary flex w-[min(15rem,90vw)] flex-col gap-3 overflow-hidden rounded-2xl border p-2 px-4 shadow-lg`}
+        className={`popover-animate ${isActive ? 'open' : ''} border-border-medium bg-surface-secondary rounded-theme-popover flex w-[min(15rem,90vw)] flex-col gap-3 overflow-hidden border p-2 px-4 shadow-lg`}
         style={{
           outline: 'none',
           pointerEvents: 'auto',
@@ -386,7 +386,7 @@ function Fork({
               gutter={19}
               shift={40}
               flip={false}
-              className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-[min(20rem,90vw)] rounded-2xl border p-4 shadow-md"
+              className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
               portal={true}
               unmountOnHide={true}
             >
