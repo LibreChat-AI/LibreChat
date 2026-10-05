@@ -217,6 +217,41 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
   });
 
+  it('settles a lazy child only after the run has its inputs, so a late cancel is given back', async () => {
+    const controller = new AbortController();
+    const outcomes: string[] = [];
+    const settle = jest.fn(<T>(_context: unknown, resolveInputs: () => Promise<T>) =>
+      resolveInputs().then(
+        (inputs) => {
+          outcomes.push('kept');
+          return inputs;
+        },
+        (error: unknown) => {
+          outcomes.push('given back');
+          throw error;
+        },
+      ),
+    );
+    const resolve = jest.fn(async () => {
+      controller.abort(new Error('canceled after resolving'));
+      return makeAgent({ id: 'child' });
+    });
+    const config = await captureRunConfig(
+      makeAgent({
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        lazySubagentConfigs: [{ id: 'child', configId: 'child:1', resolve, settle }],
+      }),
+    );
+    const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+
+    await expect(
+      resolveInputs({ signal: controller.signal } as SubagentResolveContext),
+    ).rejects.toThrow('canceled after resolving');
+    expect(outcomes).toEqual(['given back']);
+  });
+
   it('declares per-call machine choices only on lazy children that have them', async () => {
     const resolve = jest.fn().mockResolvedValue(makeAgent({ id: 'child' }));
     const subagentHostArgs = {

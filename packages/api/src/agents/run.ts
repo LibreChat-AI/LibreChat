@@ -540,6 +540,11 @@ type LazySubagentAgent = Pick<
   /** Lightweight graph-member metadata used only by run-wide capability gates. */
   subagentGraphMemberMetadata?: SubagentTreeNode[];
   resolve: (context: SubagentResolveContext) => Promise<RunAgent>;
+  /**
+   * Wraps the whole selection, through the inputs handed to the SDK, so host state the
+   * call reserved is kept only when the child is actually exposed.
+   */
+  settle?: <T>(context: SubagentResolveContext, resolveInputs: () => Promise<T>) => Promise<T>;
 };
 
 type SubagentTreeNode = Pick<
@@ -1626,6 +1631,43 @@ function createLazySubagentConfig(
   prebuiltGraphInputs?: ReadonlyMap<string, AgentInputs>,
   onResolvedAgent?: (agent: RunAgent) => void,
 ): SubagentConfig {
+  const resolveInputs = async (context: SubagentResolveContext): Promise<AgentInputs> => {
+    if (context.signal.aborted) {
+      throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    const resolvedChild = await child.resolve(context);
+    if (context.signal.aborted) {
+      throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    onResolvedAgent?.(resolvedChild);
+    /** Graph members initialized with the child may run on its per-call machine. */
+    for (const graph of resolvedChild.subagentGraphConfigs ?? []) {
+      for (const member of graph.memberConfigs) {
+        onResolvedAgent?.(member);
+      }
+    }
+    const childInputs = buildIsolatedAgentInputs(resolvedChild, toInput);
+    const resolutionState: SubagentBuildState = {
+      configCount: 1,
+      rootAgentIds: [resolvedChild.id],
+    };
+    const grandchildConfigs = buildSubagentConfigs(
+      resolvedChild,
+      childInputs,
+      toInput,
+      resolutionState,
+      agentsEConfig,
+      ancestors,
+      depth,
+      prebuiltGraphInputs,
+      false,
+      onResolvedAgent,
+    );
+    if (grandchildConfigs.length > 0) {
+      childInputs.subagentConfigs = grandchildConfigs;
+    }
+    return childInputs;
+  };
   const config: SubagentConfig = {
     type: child.id,
     name: child.name ?? child.id,
@@ -1635,43 +1677,10 @@ function createLazySubagentConfig(
     configId: child.configId,
     allowNested: true,
     maxTurns: resolveSubagentMaxTurns(agentsEConfig, child),
-    resolveAgentInputs: async (context) => {
-      if (context.signal.aborted) {
-        throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
-      }
-      const resolvedChild = await child.resolve(context);
-      if (context.signal.aborted) {
-        throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
-      }
-      onResolvedAgent?.(resolvedChild);
-      /** Graph members initialized with the child may run on its per-call machine. */
-      for (const graph of resolvedChild.subagentGraphConfigs ?? []) {
-        for (const member of graph.memberConfigs) {
-          onResolvedAgent?.(member);
-        }
-      }
-      const childInputs = buildIsolatedAgentInputs(resolvedChild, toInput);
-      const resolutionState: SubagentBuildState = {
-        configCount: 1,
-        rootAgentIds: [resolvedChild.id],
-      };
-      const grandchildConfigs = buildSubagentConfigs(
-        resolvedChild,
-        childInputs,
-        toInput,
-        resolutionState,
-        agentsEConfig,
-        ancestors,
-        depth,
-        prebuiltGraphInputs,
-        false,
-        onResolvedAgent,
-      );
-      if (grandchildConfigs.length > 0) {
-        childInputs.subagentConfigs = grandchildConfigs;
-      }
-      return childInputs;
-    },
+    resolveAgentInputs: (context) =>
+      child.settle == null
+        ? resolveInputs(context)
+        : child.settle(context, () => resolveInputs(context)),
   };
   /** Assigned rather than spread so the field typechecks against SDKs that predate it. */
   return child.subagentHostArgs == null

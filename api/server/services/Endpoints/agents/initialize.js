@@ -1611,42 +1611,37 @@ const initializeClientWithProvider = async ({
             lazySubagentConfigs: lazyChildren,
             subagentAgentConfigs: eagerChildren,
             subagentGraphMemberMetadata,
+            settle: (context, resolveInputs) =>
+              subagentCodeRouting.settleExecution(context, resolveInputs, () =>
+                forgetSharedConfig(context),
+              ),
             ...guardRoutableSubagent({
               description: metadata.description,
               codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
               subagentHostArgs: metadata.subagentHostArgs,
-              resolve: (context) =>
-                subagentCodeRouting.settleExecution(context, async () => {
-                  const config = await initializeLazySubagent({
-                    agentId: metadata.id,
-                    configId: metadata.configId,
-                    context,
-                    lazyChildren,
-                    codeFlags: metadata.subagentCodeFlags,
-                    codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
-                  });
-                  config.subagentAgentConfigs = eagerChildren;
-                  const shared = !subagentCodeRouting.isRouted(context.executionId);
-                  if (shared) {
-                    graphMemberConfigsById.set(config.id, config);
-                  }
-                  try {
-                    await resolveGraphSubagentsFor(
-                      config,
-                      context.signal,
-                      subagentCodeRouting.routesChildren(context.executionId)
-                        ? context.executionId
-                        : undefined,
-                    );
-                  } catch (error) {
-                    /** A failed resolution gives its route back, so its config must not be reused. */
-                    if (shared && graphMemberConfigsById.get(config.id) === config) {
-                      graphMemberConfigsById.delete(config.id);
-                    }
-                    throw error;
-                  }
-                  return config;
-                }),
+              resolve: async (context) => {
+                const config = await initializeLazySubagent({
+                  agentId: metadata.id,
+                  configId: metadata.configId,
+                  context,
+                  lazyChildren,
+                  codeFlags: metadata.subagentCodeFlags,
+                  codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
+                });
+                config.subagentAgentConfigs = eagerChildren;
+                if (!subagentCodeRouting.isRouted(context.executionId)) {
+                  graphMemberConfigsById.set(config.id, config);
+                  sharedConfigByCall.set(context, config);
+                }
+                await resolveGraphSubagentsFor(
+                  config,
+                  context.signal,
+                  subagentCodeRouting.routesChildren(context.executionId)
+                    ? context.executionId
+                    : undefined,
+                );
+                return config;
+              },
             }),
           },
           metadata,
@@ -1691,6 +1686,14 @@ const initializeClientWithProvider = async ({
   const graphMemberConfigsById = new Map(
     rootSubagentConfigs.filter((config) => config?.id).map((config) => [config.id, config]),
   );
+  /** A lazy call's shared config is reused only if that call's selection succeeds. */
+  const sharedConfigByCall = new WeakMap();
+  const forgetSharedConfig = (context) => {
+    const config = sharedConfigByCall.get(context);
+    if (config != null && graphMemberConfigsById.get(config.id) === config) {
+      graphMemberConfigsById.delete(config.id);
+    }
+  };
   const graphMemberLoadsById = new Map();
   const initializeGraphMember = createConcurrencyLimiter(SUBAGENT_GRAPH_LOAD_CONCURRENCY);
   const loadGraphMemberOnce = async (memberId) => {

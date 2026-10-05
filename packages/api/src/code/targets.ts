@@ -474,13 +474,15 @@ export interface SubagentCodeRouting<TContext> {
     initialization: Promise<TConfig>,
   ): Promise<TConfig>;
   /**
-   * Runs one lazy child's whole resolution. The routes it and the graph members it
-   * initialized hold become permanent only when it succeeds, and are given back
-   * (unless another execution holds them) when it fails.
+   * Runs one lazy child's whole resolution, through to the inputs handed to the SDK.
+   * The routes and per-agent tool contexts it and its graph members hold become
+   * permanent only when it succeeds; when it fails they are given back (unless
+   * another execution holds them) and `onRelease` undoes the caller's own state.
    */
   settleExecution<TConfig>(
     context: Pick<SubagentCodeCallContext, 'executionId'> | null | undefined,
     resolve: () => Promise<TConfig>,
+    onRelease?: () => void,
   ): Promise<TConfig>;
 }
 
@@ -529,6 +531,11 @@ export function createSubagentCodeRouting<TContext>({
   >();
   /** Pending placements by the execution whose resolution decides them. */
   const holdsByExecution = new Map<string, Set<object>>();
+  /** Per-agent tool contexts a pending placement set, with the entry it replaced. */
+  const contextOwners = new Map<
+    string,
+    { placement: object; contexts: Map<string, TContext>; previous?: { value: TContext } }
+  >();
   /** Ends a placement's hold, keeping its claim when `keep` is true. */
   const endHold = (placement: object, keep: boolean): void => {
     const held = holds.get(placement);
@@ -537,6 +544,15 @@ export function createSubagentCodeRouting<TContext>({
     }
     holds.delete(placement);
     held.stopWatching();
+    const owner = contextOwners.get(held.agentId);
+    if (owner?.placement === placement) {
+      contextOwners.delete(held.agentId);
+      if (!keep && owner.previous != null) {
+        owner.contexts.set(held.agentId, owner.previous.value);
+      } else if (!keep) {
+        owner.contexts.delete(held.agentId);
+      }
+    }
     for (const executionId of held.executions) {
       const pending = holdsByExecution.get(executionId);
       pending?.delete(placement);
@@ -818,13 +834,24 @@ export function createSubagentCodeRouting<TContext>({
           holders: 0,
         });
       }
-      if (placement.target == null || !executionId) {
+      /** A placement still pending owns the entry it sets until its resolution settles. */
+      const seed = (): void => {
+        if (holds.has(placement)) {
+          contextOwners.set(agentId, {
+            placement,
+            contexts,
+            ...(contexts.has(agentId) ? { previous: { value: contexts.get(agentId)! } } : {}),
+          });
+        }
         contexts.set(agentId, toolContext);
+      };
+      if (placement.target == null || !executionId) {
+        seed();
         return;
       }
       routedContexts.set(executionId, { agentId, toolContext });
       if (!contexts.has(agentId)) {
-        contexts.set(agentId, toolContext);
+        seed();
       }
     },
     getToolContext(agentId, executionContext) {
@@ -853,13 +880,14 @@ export function createSubagentCodeRouting<TContext>({
         throw error;
       }
     },
-    async settleExecution(context, resolve) {
+    async settleExecution(context, resolve, onRelease) {
       try {
         const resolved = await resolve();
         settleHoldsOf(context?.executionId, true);
         return resolved;
       } catch (error) {
         settleHoldsOf(context?.executionId, false);
+        onRelease?.();
         throw error;
       }
     },

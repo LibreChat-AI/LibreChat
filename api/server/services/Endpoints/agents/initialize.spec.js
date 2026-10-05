@@ -2685,6 +2685,10 @@ describe('initializeClient — subagent loading', () => {
       delete process.env.TEST_INHERIT_WORKSPACE_TOKEN;
     });
 
+    /** Selects a lazy child the way the run does: the whole resolution inside its settle hook. */
+    const select = (descriptor, context) =>
+      descriptor.settle(context, () => descriptor.resolve(context));
+
     it("routes the reviewer to its parent's machine and workspace, not its own default", async () => {
       const req = await setup();
       const fetchSpy = mockWorkerStatus();
@@ -2947,7 +2951,7 @@ describe('initializeClient — subagent loading', () => {
         });
         const controller = new AbortController();
 
-        const canceled = descriptor.resolve({
+        const canceled = select(descriptor, {
           signal: controller.signal,
           executionId: 'run-canceled',
           hostArgs: { machine: SKYNET },
@@ -2955,7 +2959,7 @@ describe('initializeClient — subagent loading', () => {
         await started;
         controller.abort();
         await expect(canceled).rejects.toBeDefined();
-        const config = await descriptor.resolve({
+        const config = await select(descriptor, {
           signal: new AbortController().signal,
           executionId: 'run-retry',
           hostArgs: { machine: LIA_RAG },
@@ -3031,14 +3035,14 @@ describe('initializeClient — subagent loading', () => {
         });
         const controller = new AbortController();
 
-        const canceled = descriptor.resolve({
+        const canceled = select(descriptor, {
           signal: controller.signal,
           executionId: 'run-canceled',
         });
         await started;
         controller.abort();
         await expect(canceled).rejects.toBeDefined();
-        const config = await descriptor.resolve({
+        const config = await select(descriptor, {
           signal: new AbortController().signal,
           executionId: 'run-retry',
           hostArgs: { machine: LIA_RAG },

@@ -721,6 +721,44 @@ describe('subagent code routing', () => {
     ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
   });
 
+  it('gives back the per-agent tool context a failed resolution set', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const contexts = new Map<string, string>();
+    const member = { ...reviewer, id: 'agent_member' };
+    const failedCall = call({ machine: 'buildbox' });
+    const routedMember = {
+      executionId: `${failedCall.executionId}:graph:${member.id}`,
+      parentRunId: failedCall.executionId,
+    };
+
+    await expect(
+      routing.settleExecution(failedCall, async () => {
+        const placed = await routing.place({ agent: reviewer, flags, context: failedCall });
+        routing.attach(contexts, {
+          agentId: reviewer.id,
+          context: failedCall,
+          placement: placed,
+          codeExecutionContext: placed.target?.context,
+          toolContext: 'reviewer-on-buildbox',
+        });
+        const memberPlaced = await routing.place({ agent: member, flags, context: routedMember });
+        routing.attach(contexts, {
+          agentId: member.id,
+          context: routedMember,
+          placement: memberPlaced,
+          codeExecutionContext: memberPlaced.target?.context,
+          toolContext: 'member-on-buildbox',
+        });
+        expect(contexts.get(member.id)).toBe('member-on-buildbox');
+        throw new Error('canceled');
+      }),
+    ).rejects.toThrow('canceled');
+
+    expect(contexts.has(member.id)).toBe(false);
+    expect(contexts.has(reviewer.id)).toBe(false);
+  });
+
   it('gives back a machine whose initialization landed elsewhere', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);
