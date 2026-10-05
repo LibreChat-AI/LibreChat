@@ -120,7 +120,9 @@ it('uses the configured SDK request deadline', async () => {
       fetch,
       getDispatcher: () => undefined,
     });
-    const rejected = expect(tool?.invoke(input)).rejects.toMatchObject({ name: 'TimeoutError' });
+    const rejected = (async () => {
+      await expect(tool?.invoke(input)).rejects.toMatchObject({ name: 'TimeoutError' });
+    })();
     await jest.advanceTimersByTimeAsync(2000);
     await rejected;
   } finally {
