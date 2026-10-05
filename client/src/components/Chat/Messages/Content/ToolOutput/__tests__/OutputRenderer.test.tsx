@@ -44,7 +44,7 @@ describe('OutputRenderer', () => {
     render(<OutputRenderer text={text} variant="terminal" />);
     const pre = screen.getByText(/line 30/);
     expect(pre.textContent).toBe(text);
-    expect(pre).toHaveClass('max-h-[300px]', 'overflow-auto');
+    expect(pre).toHaveClass('max-h-[18.75rem]', 'overflow-auto');
     expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
   });
 

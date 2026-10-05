@@ -32,14 +32,14 @@ export const ThemeSelector = ({
   const labelId = 'theme-selector-label';
 
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <div id={labelId}>{localize('com_nav_theme')}</div>
 
       <Dropdown
         value={theme}
         onChange={onChange}
         options={themeOptions}
-        sizeClasses={cn('z-50 w-[180px]', popoverClassName)}
+        sizeClasses={cn('z-50 w-[min(11.25rem,90vw)]', popoverClassName)}
         testId="theme-selector"
         aria-labelledby={labelId}
         portal={portal}
@@ -113,15 +113,15 @@ export const LangSelector = ({
   const labelId = 'language-selector-label';
 
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <div id={labelId}>{localize('com_nav_language')}</div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex max-w-full min-w-0 items-center gap-2">
         {isLanguageLoading && (
           <span
             role="status"
             aria-label={localize('com_ui_loading')}
-            className="flex size-5 items-center justify-center text-text-secondary"
+            className="text-text-secondary flex size-5 items-center justify-center"
           >
             <Spinner className="size-4" />
           </span>
@@ -129,7 +129,7 @@ export const LangSelector = ({
         <Dropdown
           value={langcode}
           onChange={onChange}
-          sizeClasses={cn('z-50 w-[220px]', popoverClassName)}
+          sizeClasses={cn('z-50 w-[min(13.75rem,90vw)]', popoverClassName)}
           options={languageOptions}
           aria-labelledby={labelId}
           portal={portal}

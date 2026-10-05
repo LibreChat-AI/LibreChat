@@ -1,6 +1,7 @@
 import { Plus } from 'lucide-react';
-import { Button, FilterInput, useMediaQuery } from '@librechat/client';
+import { Button, FilterInput } from '@librechat/client';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { useLocalize } from '~/hooks';
 
 type ProjectsNavBarProps = {
@@ -11,10 +12,10 @@ type ProjectsNavBarProps = {
 
 export default function ProjectsNavBar({ onCreate, search, onSearchChange }: ProjectsNavBarProps) {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   return (
     <header className="border-border-light bg-surface-primary-alt sticky top-0 z-10 border-b">
-      <div className="flex min-h-14 w-full flex-wrap items-center gap-2 px-4 py-2.5 md:min-h-16 md:flex-nowrap md:px-6">
+      <div className="flex min-h-14 w-full flex-wrap items-center gap-3 px-4 py-2.5 md:flex-nowrap md:px-6">
         {isSmallScreen ? <OpenSidebar className="size-9 shrink-0" /> : null}
         <h1 className="sr-only">{localize('com_ui_projects')}</h1>
         <FilterInput
@@ -26,7 +27,14 @@ export default function ProjectsNavBar({ onCreate, search, onSearchChange }: Pro
           containerClassName="order-last w-full min-w-0 md:order-none md:w-auto md:max-w-md md:flex-1"
         />
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          <Button type="button" variant="default" size="sm" onClick={onCreate} className="shrink-0">
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            shape="round"
+            onClick={onCreate}
+            className="shrink-0"
+          >
             <Plus className="size-4" aria-hidden="true" />
             {localize('com_ui_new_project')}
           </Button>

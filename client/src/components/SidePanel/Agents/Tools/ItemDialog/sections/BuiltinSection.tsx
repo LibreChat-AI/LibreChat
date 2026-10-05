@@ -10,6 +10,7 @@ import {
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentForm, ExtendedFile } from '~/common';
 import type { BuiltinId } from '../../items/types';
+import OrchestrationHub from '../../../Advanced/OrchestrationHub';
 import { useVerifyAgentToolAuth } from '~/data-provider';
 import CodeBackground from '../../../Code/Background';
 import UserToggleSelect from '../UserToggleSelect';
@@ -151,7 +152,9 @@ export default function BuiltinSection({
 
   let body: React.ReactNode = null;
 
-  if (builtinId === 'execute_code') {
+  if (builtinId === 'subagents' || builtinId === 'handoffs') {
+    body = <OrchestrationHub currentAgentId={agentId} tool={builtinId} />;
+  } else if (builtinId === 'execute_code') {
     body = (
       <div className="flex flex-col gap-4">
         <CodeSettings />
@@ -181,7 +184,10 @@ export default function BuiltinSection({
     );
   }
 
-  const localizedDescription = description ? localize(description as TranslationKeys) : '';
+  const localizedDescription =
+    description && builtinId !== 'subagents' && builtinId !== 'handoffs'
+      ? localize(description as TranslationKeys)
+      : '';
 
   return (
     <div className="flex flex-col gap-5">

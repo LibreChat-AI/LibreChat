@@ -2,7 +2,12 @@ import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
 import { useWatch } from 'react-hook-form';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilState, useRecoilValue } from 'recoil';
-import { composerSurfaceClasses, composerSurfaceShadow, TextareaAutosize } from '@librechat/client';
+import {
+  composerSurfaceClasses,
+  composerSurfaceShadow,
+  TextareaAutosize,
+  useRemScale,
+} from '@librechat/client';
 import {
   Constants,
   Permissions,
@@ -159,6 +164,8 @@ const focusOwningTargetSelector = [
   '[role="dialog"]',
   '[role="alertdialog"]',
 ].join(', ');
+/** Matches the composer's one-line height; scaled so it tracks its rem padding. */
+const INITIAL_TEXTAREA_HEIGHT = 44;
 
 const ChatForm = memo(function ChatForm({
   index,
@@ -188,6 +195,7 @@ const ChatForm = memo(function ChatForm({
   const composerBoxRef = useRef<HTMLDivElement>(null);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
+  const remScale = useRemScale();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [, setIsScrollable] = useState(false);
@@ -454,18 +462,16 @@ const ChatForm = memo(function ChatForm({
     return () => publishRewake(null);
   }, [publishRewake, steeringRewakeDrain]);
 
-  /** ⌘/Ctrl+Enter = the non-default during-run action, ⌥/Alt+Enter =
-   *  interrupt & send (discards the answer), ⌘/Ctrl+Shift+Enter = interrupt &
-   *  steer (keeps it): all counterparts of Enter's `submitDuringRun`. */
+  /** Ctrl/Cmd+Enter selects the alternate; both interrupt chords use the same mode. */
   const handleDuringRunModifier = useCallback(
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
       if (kind === 'interrupt') {
-        consumed = steering.interruptAndSend(text);
+        consumed = steering.interruptSteer(text);
       } else if (kind === 'preempt') {
         consumed = steering.interruptSteer(text);
-      } else if (steering.effectiveAction === 'steer') {
+      } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
       } else {
         consumed = steering.steerFromComposer(text);
@@ -538,7 +544,7 @@ const ChatForm = memo(function ChatForm({
     }
     measuredRowCountRef.current = nextRowCount;
     setVisualRowCount(nextRowCount);
-  }, [textValue]);
+  }, [textValue, remScale]);
 
   const isMoreThanThreeRows = visualRowCount > 3;
 
@@ -710,8 +716,8 @@ const ChatForm = memo(function ChatForm({
   const baseClasses = useMemo(
     () =>
       cn(
-        'md:py-3.5 m-0 w-full resize-none py-[13px] placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
-        isCollapsed ? 'max-h-[52px]' : 'max-h-[45vh] md:max-h-[55vh]',
+        'md:py-3.5 m-0 w-full resize-none py-3.25 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
+        isCollapsed ? 'max-h-[3.25rem]' : 'max-h-[45vh] md:max-h-[55vh]',
         'px-5',
       ),
     [isCollapsed],
@@ -799,14 +805,14 @@ const ChatForm = memo(function ChatForm({
             <div
               data-testid="composer-context-rail"
               className={cn(
-                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
+                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl',
+                'border-border-light bg-surface-secondary border px-2 pt-2 pb-5',
                 isRTL && 'flex-row-reverse',
               )}
             >
               {project ? <ProjectLandingChip project={project} /> : null}
               {codeWorkspace.visible ? (
-                <div className="min-w-0 px-1 pt-1">
+                <div className="min-w-0">
                   <CodeWorkspaceMenu
                     setConversation={setConversation}
                     workspace={codeWorkspace}
@@ -949,7 +955,7 @@ const ChatForm = memo(function ChatForm({
                           `code-workspace-hint-${index}`,
                       )}
                       onClick={handleFocusOrClick}
-                      style={{ height: 44, overflowY: 'auto' }}
+                      style={{ height: INITIAL_TEXTAREA_HEIGHT * remScale, overflowY: 'auto' }}
                       className={cn(
                         baseClasses,
                         removeFocusRings,
@@ -1059,7 +1065,6 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
-            steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             /* A staged reasoning choice forces the message to queue, and the
                send-now chord then queues too; do not advertise it. */

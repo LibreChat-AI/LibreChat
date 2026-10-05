@@ -163,6 +163,8 @@ export function useAgentItems({
   const showMemory = useShowMemory();
   const builtinAuthMap = useBuiltinAuthMap();
 
+  const subagents = useWatch({ control, name: 'subagents' });
+  const edges = useWatch({ control, name: 'edges' });
   const toolsField = useWatch({ control, name: 'tools' });
   const skillsWatch = useWatch({ control, name: 'skills' });
   const tools = useMemo(() => (toolsField ?? []) as string[], [toolsField]);
@@ -217,6 +219,8 @@ export function useAgentItems({
     () =>
       deriveSelectedItems(
         {
+          subagents,
+          edges,
           execute_code: executeCode,
           web_search: webSearch,
           file_search: fileSearch,
@@ -232,6 +236,8 @@ export function useAgentItems({
         agentActions,
       ),
     [
+      subagents,
+      edges,
       executeCode,
       webSearch,
       fileSearch,

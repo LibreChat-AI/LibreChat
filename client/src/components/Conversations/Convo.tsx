@@ -15,6 +15,7 @@ import {
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { focusableInRow, resolveRowBeside } from './focus';
 import { areConversationRenderPropsEqual } from './utils';
 import { NotificationSeverity } from '~/common';
@@ -62,7 +63,7 @@ function Conversation({
   const updateConvoMutation = useUpdateConversationMutation(currentConvoId ?? '');
   const unpinMutation = usePinConversationMutation();
   const activeConversationId = useRecoilValue(store.conversationIdByIndex(0));
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   /* A deployment with shared links off leaves existing links in the database but stops
      serving them, so the row must not advertise one that no longer resolves. */
   const { data: startupConfig } = useGetStartupConfig();
@@ -312,7 +313,7 @@ function Conversation({
     actionVisibilityClassName = 'pointer-events-auto scale-x-100 opacity-100';
     /** Shift over the active row swaps the menu for archive and delete. */
     if (!isPopoverActive && isActiveConvo && isShiftHeld) {
-      actionWidthClassName = 'w-[60px]';
+      actionWidthClassName = 'w-[3.75rem]';
     } else {
       actionWidthClassName = isSmallScreen ? 'w-9' : 'w-7';
     }

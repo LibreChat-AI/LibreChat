@@ -4,6 +4,7 @@ import { useFormContext, useWatch } from 'react-hook-form';
 import { Button, Spinner, Checkbox, Skeleton } from '@librechat/client';
 import {
   AgentCapabilities,
+  getToolApprovalConstraint,
   Constants,
   splitMCPToolKey,
   mcpServerToggleKey,
@@ -27,6 +28,7 @@ import { getStatusColor, getStatusTextKey } from '~/components/MCP/mcpServerUtil
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
+import ApprovalOption from '../../../ApprovalOption';
 import { useAgentPanelContext } from '~/Providers';
 import { getIconForItem } from '../../items/icons';
 import UserToggleSelect from '../UserToggleSelect';
@@ -110,6 +112,7 @@ export default function McpSection({ item }: Props) {
     toggleProgrammaticAll,
     toggleBackgroundAll,
     toggleIntentAll,
+    setToolApprovalMode,
   } = useMCPToolOptions();
 
   const serverName = item.server.serverName;
@@ -230,6 +233,11 @@ export default function McpSection({ item }: Props) {
    * edit persists it.
    */
   const formToolOptions = useWatch({ control, name: 'tool_options' });
+  const approvalsEnabled = agentsConfig?.toolApproval?.agentModes === true;
+  const approvalModes = new Set(
+    tools.map((tool) => formToolOptions?.[tool.tool_id]?.approval_mode),
+  );
+  const bulkApprovalMode = approvalModes.size > 1 ? 'mixed' : approvalModes.values().next().value;
   useEffect(() => {
     if (!formToolOptions) {
       return;
@@ -490,7 +498,7 @@ export default function McpSection({ item }: Props) {
       </div>
 
       <div className="flex flex-col gap-2">
-        <div className="flex min-h-7 items-center justify-between">
+        <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-2 gap-y-1">
           <span className="text-text-secondary text-[11px] font-medium tracking-wide uppercase">
             {localize('com_ui_tools_mcp_tools_section')}
           </span>
@@ -541,6 +549,19 @@ export default function McpSection({ item }: Props) {
                   onToggle={() => toggleIntentAll(intentEligibleTools)}
                 />
               )}
+              {hasTools && (
+                <ApprovalOption
+                  bulk={true}
+                  mode={bulkApprovalMode}
+                  disabled={!approvalsEnabled}
+                  onChange={(mode) =>
+                    setToolApprovalMode(
+                      tools.map((tool) => tool.tool_id),
+                      mode,
+                    )
+                  }
+                />
+              )}
               {hasTools &&
                 (deferredToolsEnabled ||
                   programmaticToolsEnabled ||
@@ -580,6 +601,14 @@ export default function McpSection({ item }: Props) {
                 <MCPToolItem
                   key={tool.tool_id}
                   tool={tool}
+                  approvalAgentId={getValues('id')}
+                  approvalConstraint={getToolApprovalConstraint(
+                    agentsConfig?.toolApproval,
+                    tool.tool_id,
+                  )}
+                  approvalMode={formToolOptions?.[tool.tool_id]?.approval_mode}
+                  approvalsEnabled={approvalsEnabled}
+                  onApprovalModeChange={(mode) => setToolApprovalMode([tool.tool_id], mode)}
                   isSelected={selectedTools.includes(tool.tool_id)}
                   isDeferred={deferredToolsEnabled && isToolDeferred(tool.tool_id)}
                   isProgrammatic={programmaticToolsEnabled && isToolProgrammatic(tool.tool_id)}

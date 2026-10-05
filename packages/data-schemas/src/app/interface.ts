@@ -58,6 +58,8 @@ export async function loadDefaultInterface({
     queuedSendLockTimeoutMs:
       interfaceConfig?.queuedSendLockTimeoutMs ?? defaults.queuedSendLockTimeoutMs,
     composerRecentFiles: interfaceConfig?.composerRecentFiles ?? defaults.composerRecentFiles,
+    historyCacheTtlMs: interfaceConfig?.historyCacheTtlMs ?? defaults.historyCacheTtlMs,
+    historyCacheRecent: interfaceConfig?.historyCacheRecent ?? defaults.historyCacheRecent,
 
     // Permissions and related settings - only include if explicitly configured
     bookmarks: interfaceConfig?.bookmarks,

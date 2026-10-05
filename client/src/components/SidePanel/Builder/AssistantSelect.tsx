@@ -265,12 +265,12 @@ export default function AssistantSelect({
       currentValueClass="text-base font-semibold"
       className={cn(
         'mt-1 rounded-md',
-        'z-50 flex h-[40px] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
+        'z-50 flex h-[2.5rem] w-full flex-none items-center justify-center px-4 hover:cursor-pointer',
       )}
       renderOption={() => (
         <span className="flex items-center gap-1.5 truncate">
           <span className="text-text-primary absolute inset-y-0 left-0 flex items-center pl-2">
-            <Plus className="w-[16px]" />
+            <Plus className="w-[1rem]" />
           </span>
           <span className={cn('text-text-primary ml-4 flex h-6 items-center gap-1')}>
             {createAssistant}

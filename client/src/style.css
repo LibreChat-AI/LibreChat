@@ -48,6 +48,14 @@
   --font-size-lg: 1.125rem;
   --font-size-xl: 1.25rem;
   --markdown-font-size: 1rem;
+  --ui-scale: 1;
+}
+
+/* Every size in the app is expressed in rem, so scaling the root font size scales
+   the whole interface. A percentage keeps the reader's own browser font-size
+   preference intact instead of pinning the root to a fixed pixel value. */
+html {
+  font-size: calc(100% * var(--ui-scale));
 }
 
 /* transitions-dev tokens: semantic names shared by every t-* class below. */
@@ -519,7 +527,7 @@ p > small {
   max-width: 65ch;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -1164,16 +1172,16 @@ html {
   height: 100%;
 }
 
-/* Scoped to the drawer-gesture breakpoint (useSidebarState's 768px): on small
-   screens the app never scrolls at the root, so chaining out of nested
-   scrollers has nothing legitimate to reach — this kills Chrome Android's
-   pull-to-refresh and horizontal overscroll gliding into browser navigation.
-   Desktop keeps native trackpad back/forward and refresh gestures. */
-@media (max-width: 768px) {
-  body,
-  html {
-    overscroll-behavior: none;
-  }
+/* Scoped to drawer mode rather than a fixed viewport width: that breakpoint is
+   scale-aware and a media query cannot read the scaled root font size, so Root
+   stamps this attribute from the same predicate. In drawer mode the app never
+   scrolls at the root, so chaining out of nested scrollers has nothing legitimate
+   to reach: this kills Chrome Android's pull-to-refresh and horizontal overscroll
+   gliding into browser navigation. Desktop keeps native trackpad back/forward
+   and refresh gestures. */
+html[data-drawer-nav],
+html[data-drawer-nav] body {
+  overscroll-behavior: none;
 }
 
 .dark body,
@@ -1191,7 +1199,7 @@ html {
   max-width: none;
   font-size: var(--markdown-font-size, var(--font-size-base));
   line-height: calc(
-    22px * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
+    1.375rem * var(--markdown-font-size, var(--font-size-base)) / var(--font-size-base)
   );
 }
 
@@ -1520,10 +1528,10 @@ html {
   border-radius: 50%;
   content: ' ';
   display: block;
-  height: 12px;
+  height: 0.75rem;
   position: absolute;
-  top: -11px;
-  width: 12px;
+  top: -0.6875rem;
+  width: 0.75rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1593,8 +1601,8 @@ html {
 .result-streaming > pre:last-child code:after {
   display: inline-block;
   content: '⬤';
-  width: 12px;
-  height: 12px;
+  width: 0.75rem;
+  height: 0.75rem;
   font-family:
     system-ui,
     Inter,
@@ -1631,8 +1639,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 }
 
@@ -1656,8 +1664,8 @@ html {
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
-    width: 12px;
-    height: 12px;
+    width: 0.75rem;
+    height: 0.75rem;
   }
 
   .result-streaming > ol:last-child > li:last-child > :is(ul, ol, pre) ~ :after,

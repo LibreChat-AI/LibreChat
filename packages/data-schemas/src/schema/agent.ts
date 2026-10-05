@@ -97,6 +97,26 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     code_workspace_id: { type: String },
     code_environment_ids: { type: [String], default: undefined },
     repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
+    instructionsPrompt: {
+      type: new Schema(
+        {
+          source: { type: String, enum: ['native'], required: true },
+          groupId: { type: String, required: true },
+          selection: {
+            type: new Schema(
+              {
+                type: { type: String, enum: ['production', 'exact'], required: true },
+                promptId: { type: String },
+              },
+              { _id: false },
+            ),
+            required: true,
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     git_identity: {
       type: new Schema(
         {

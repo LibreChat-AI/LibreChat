@@ -2278,6 +2278,19 @@
                     "on",
                     "off"
                   ]
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }
@@ -2732,6 +2745,19 @@
                     "on",
                     "off"
                   ]
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }
@@ -3210,6 +3236,19 @@
                     "on",
                     "off"
                   ]
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }
