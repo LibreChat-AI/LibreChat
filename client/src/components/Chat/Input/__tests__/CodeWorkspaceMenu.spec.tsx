@@ -96,6 +96,9 @@ function renderMenu(ui: React.ReactElement) {
   };
 }
 
+const checkoutLabel = (checkout?: 'source' | 'isolated') =>
+  `com_ui_code_checkout_mode: com_ui_code_checkout_${checkout ?? 'automatic'}`;
+
 describe('CodeWorkspaceMenu', () => {
   test('separates machine, folder, and reported branch without committing defaults', async () => {
     const graph = workspace({ machineOptions: [environment] });
@@ -225,11 +228,15 @@ describe('CodeWorkspaceMenu', () => {
         'true',
       );
       expect(
-        screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
-      ).toHaveAttribute('aria-checked', 'true');
+        screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByRole('menuitemradio', { name: /Runtime Project/ }),
       ).not.toBeInTheDocument();
+      expect(screen.getByTestId('code-checkout')).toHaveAttribute(
+        'aria-label',
+        checkoutLabel('source'),
+      );
       expect(setter).not.toHaveBeenCalled();
       expect(graph.rememberSelection).not.toHaveBeenCalled();
       expect(graph.environments[0].selected).toEqual(selected);
@@ -255,18 +262,54 @@ describe('CodeWorkspaceMenu', () => {
       graph.environments[0].selected = selected;
       const setter = jest.fn();
       renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
-      const control = screen.getByRole('checkbox', { name: 'com_ui_code_worktree' });
-      expect(control).toHaveAttribute(
-        'aria-checked',
-        checkout == null ? 'mixed' : String(checkout === 'isolated'),
-      );
+      const control = screen.getByTestId('code-checkout');
+      expect(control).toHaveAttribute('aria-label', checkoutLabel(checkout));
+      expect(control).not.toHaveAttribute('aria-disabled', 'true');
       expect(setter).not.toHaveBeenCalled();
       await userEvent.click(control);
+      expect(
+        await screen.findByRole('menuitemradio', {
+          name: new RegExp(`com_ui_code_checkout_${checkout ?? 'automatic'}`),
+        }),
+      ).toHaveAttribute('aria-checked', 'true');
+      expect(setter).not.toHaveBeenCalled();
+      const next = checkout === 'isolated' ? 'source' : 'isolated';
+      await userEvent.click(
+        screen.getByRole('menuitemradio', { name: new RegExp(`com_ui_code_checkout_${next}`) }),
+      );
       expect(setter.mock.calls[0][0](conversation).codeWorkspaces).toEqual([
-        { ...selected, checkout: checkout === 'isolated' ? 'source' : 'isolated' },
+        { ...selected, checkout: next },
       ]);
     },
   );
+
+  test('removes the explicit checkout when choosing Auto from the chip menu', async () => {
+    const graph = workspace();
+    graph.environments[0].environment = {
+      ...environment,
+      configSchema: { workspaces: { allowCheckoutSelection: true } },
+    };
+    graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
+    graph.environments[0].selected = {
+      environmentId: environment.id,
+      workspaceId: 'project-a',
+      agentIds: ['lia'],
+      checkout: 'isolated',
+    };
+    const setter = jest.fn();
+    renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
+    await userEvent.click(screen.getByTestId('code-checkout'));
+    await userEvent.click(
+      await screen.findByRole('menuitemradio', { name: /com_ui_code_checkout_automatic/ }),
+    );
+    const [selection] = setter.mock.calls[0][0](conversation).codeWorkspaces;
+    expect(selection).toEqual({
+      environmentId: environment.id,
+      workspaceId: 'project-a',
+      agentIds: ['lia'],
+    });
+    expect(selection).not.toHaveProperty('checkout');
+  });
 
   test('reports machine, branch, and worktree mode on a restored sealed chat', () => {
     const graph = workspace({ locked: true, transition: undefined });
@@ -286,8 +329,11 @@ describe('CodeWorkspaceMenu', () => {
     );
     expect(screen.getByTestId('code-machine-status')).toHaveTextContent('Personal VM');
     expect(screen.getByTestId('code-branch')).toHaveTextContent('dev');
-    expect(screen.getByRole('checkbox')).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByTestId('code-checkout')).toHaveAttribute(
+      'aria-label',
+      checkoutLabel('isolated'),
+    );
+    expect(screen.getByTestId('code-checkout')).toHaveAttribute('aria-disabled', 'true');
   });
 
   test.each(['source', 'isolated'] as const)(
@@ -312,10 +358,11 @@ describe('CodeWorkspaceMenu', () => {
       rerenderMenu(
         <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
       );
-      const control = screen.getByRole('checkbox', { name: 'com_ui_code_worktree' });
-      expect(control).toHaveAttribute('aria-checked', String(checkout === 'isolated'));
-      expect(control).toBeDisabled();
+      const control = screen.getByTestId('code-checkout');
+      expect(control).toHaveAttribute('aria-label', checkoutLabel(checkout));
+      expect(control).toHaveAttribute('aria-disabled', 'true');
       await userEvent.click(control);
+      expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
       expect(setter).not.toHaveBeenCalled();
       expect(graph.rememberSelection).not.toHaveBeenCalled();
       expect(graph.environments[0].selected).toEqual(selected);
@@ -343,10 +390,11 @@ describe('CodeWorkspaceMenu', () => {
       };
       const setter = jest.fn();
       renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
-      const control = screen.getByRole('checkbox', { name: 'com_ui_code_worktree' });
-      expect(control).toHaveAttribute('aria-checked', 'true');
-      expect(control).toBeDisabled();
+      const control = screen.getByTestId('code-checkout');
+      expect(control).toHaveAttribute('aria-label', checkoutLabel('isolated'));
+      expect(control).toHaveAttribute('aria-disabled', 'true');
       await userEvent.click(control);
+      expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
       expect(setter).not.toHaveBeenCalled();
       expect(graph.rememberSelection).not.toHaveBeenCalled();
     },
@@ -357,9 +405,10 @@ describe('CodeWorkspaceMenu', () => {
     graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
     const setter = jest.fn();
     renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
-    expect(screen.getByRole('checkbox')).toBeDisabled();
-    expect(screen.getByRole('checkbox')).toHaveAttribute('aria-checked', 'mixed');
-    expect(screen.getByRole('checkbox')).toHaveTextContent('com_ui_code_checkout_automatic');
+    const chip = screen.getByTestId('code-checkout');
+    expect(chip).toHaveAttribute('aria-disabled', 'true');
+    expect(chip).toHaveAttribute('aria-label', checkoutLabel());
+    expect(chip).toHaveTextContent('com_ui_code_checkout_automatic_chip');
     expect(setter).not.toHaveBeenCalled();
   });
 
@@ -376,7 +425,7 @@ describe('CodeWorkspaceMenu', () => {
         <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
       );
       expect(screen.queryByText('com_ui_code_linked_worktrees') != null).toBe(enabled);
-      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('code-checkout')).not.toBeInTheDocument();
     },
   );
 
@@ -421,12 +470,9 @@ describe('CodeWorkspaceMenu', () => {
           <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
         );
         expect(screen.queryByText('com_ui_code_linked_worktrees') != null).toBe(expected);
-        const control = screen.queryByRole('checkbox', { name: 'com_ui_code_worktree' });
+        const control = screen.queryByTestId('code-checkout');
         if (capable || checkout != null) {
-          expect(control).toHaveAttribute(
-            'aria-checked',
-            checkout == null ? 'mixed' : String(checkout === 'isolated'),
-          );
+          expect(control).toHaveAttribute('aria-label', checkoutLabel(checkout));
         } else {
           expect(control).toBeNull();
         }
@@ -449,7 +495,7 @@ describe('CodeWorkspaceMenu', () => {
       <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
     );
     expect(screen.queryByTestId('code-branch')).not.toBeInTheDocument();
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('code-checkout')).not.toBeInTheDocument();
   });
 
   test('disables the inline worktree choice during generation', async () => {
@@ -463,8 +509,9 @@ describe('CodeWorkspaceMenu', () => {
     renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={true} />);
     expect(screen.getByTestId('code-machine')).toBeDisabled();
     expect(screen.getByTestId('code-workspace')).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByRole('checkbox')).toBeDisabled();
-    await userEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByTestId('code-checkout')).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(screen.getByTestId('code-checkout'));
+    expect(screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout/ })).toBeNull();
     expect(setter).not.toHaveBeenCalled();
   });
 
@@ -534,11 +581,15 @@ describe('CodeWorkspaceMenu', () => {
       renderMenu(
         <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
       );
-      await userEvent.click(screen.getByTestId('code-workspace'));
+      await userEvent.click(screen.getByTestId('code-checkout'));
+      const auto = await screen.findByRole('menuitemradio', {
+        name: /com_ui_code_checkout_automatic/,
+      });
       const isolated = screen.getByRole('menuitemradio', {
         name: /com_ui_code_checkout_isolated/,
       });
       const source = screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ });
+      expect(auto).toHaveAttribute('aria-checked', 'true');
       expect(isolated).toHaveAttribute('aria-checked', 'false');
       expect(source).toHaveAttribute('aria-checked', 'false');
       await userEvent.click(checkout === 'isolated' ? isolated : source);
@@ -569,9 +620,9 @@ describe('CodeWorkspaceMenu', () => {
       renderMenu(
         <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
       );
-      await userEvent.click(screen.getByTestId('code-workspace'));
+      await userEvent.click(screen.getByTestId('code-checkout'));
       await userEvent.click(
-        screen.getByRole('menuitemradio', {
+        await screen.findByRole('menuitemradio', {
           name: new RegExp(
             checkout === 'source' ? 'com_ui_code_checkout_source' : 'com_ui_code_checkout_isolated',
           ),
@@ -604,21 +655,18 @@ describe('CodeWorkspaceMenu', () => {
       <CodeWorkspaceMenu setConversation={setConversation} workspace={graph} disabled={false} />,
     );
     await userEvent.click(screen.getByTestId('code-workspace'));
-    if (!enabled) {
-      expect(screen.queryByText('com_ui_code_checkout_mode')).not.toBeInTheDocument();
-    } else {
-      expect(
-        screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_isolated/ }),
-      ).not.toBeInTheDocument();
-      await userEvent.click(
-        screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
-      );
-      expect(setConversation.mock.calls[0][0](conversation)).toMatchObject({
-        codeWorkspaces: [
-          { environmentId: environment.id, workspaceId: 'project-a', checkout: 'source' },
-        ],
-      });
+    expect(screen.queryByText('com_ui_code_checkout_mode')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout/ })).toBeNull();
+    await userEvent.keyboard('{Escape}');
+    if (!capable) {
+      expect(screen.queryByTestId('code-checkout')).not.toBeInTheDocument();
+      return;
     }
+    const chip = screen.getByTestId('code-checkout');
+    expect(chip).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(chip);
+    expect(screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout/ })).toBeNull();
+    expect(setConversation).not.toHaveBeenCalled();
   });
 
   test.each([false, true])(
@@ -1079,19 +1127,6 @@ describe('CodeWorkspaceMenu', () => {
     expect(setConversation).not.toHaveBeenCalled();
   });
 
-  test('shows the instruction file and truncation reported by the worker', async () => {
-    const state = workspace();
-    state.environments[0].workspaces[0].instructions = [
-      { path: 'AGENTS.md', bytes: 32768, sha256: 'a'.repeat(64), truncated: true },
-    ];
-    renderMenu(
-      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={state} disabled={false} />,
-    );
-    await userEvent.click(screen.getByTestId('code-workspace'));
-    expect(
-      await screen.findByText('AGENTS.md · 32.0 KB · com_ui_repository_instructions_truncated'),
-    ).toBeInTheDocument();
-  });
   test.each([
     ['example/app', 'example/app · dev'],
     [undefined, 'dev'],

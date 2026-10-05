@@ -7,9 +7,9 @@ import type { TConversation, CodeApprovalMode, CodeEnvironmentMode } from 'libre
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
+import { chipClasses, chipMenuClasses, chipMenuItemClasses, chipMenuHeadingClasses } from './chip';
 import { useCodeApprovalModePreference } from '~/hooks/Agents/codeApprovalPreference';
 import { useCodeApprovalMode, useLocalize } from '~/hooks';
-import { chipClasses } from './chip';
 import { cn } from '~/utils';
 
 /** The modes answer one question — what may happen to the workspace without the
@@ -128,23 +128,9 @@ export default function CodeApprovalMenu({
           aria-hidden="true"
         />
       </TooltipAnchor>
-      <Ariakit.Menu
-        portal={true}
-        gutter={8}
-        unmountOnHide={true}
-        className={cn(
-          'z-50 flex max-w-[min(320px,calc(100vw-2rem))] min-w-[260px] flex-col rounded-2xl',
-          'border-border-menu bg-surface-menu max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
-          'origin-bottom opacity-0 transition duration-150 ease-out motion-reduce:transition-none',
-          'data-[enter]:scale-100 data-[enter]:opacity-100',
-          'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
-        )}
-      >
+      <Ariakit.Menu portal={true} gutter={8} unmountOnHide={true} className={chipMenuClasses}>
         {/* Names the menu without adding an `h1` to the page outline. */}
-        <Ariakit.MenuHeading
-          render={<div />}
-          className="text-text-secondary px-2.5 pt-2 pb-1 text-xs font-semibold"
-        >
+        <Ariakit.MenuHeading render={<div />} className={chipMenuHeadingClasses}>
           {localize('com_ui_code_approval_mode')}
         </Ariakit.MenuHeading>
         {modes.map((mode) => {
@@ -158,12 +144,7 @@ export default function CodeApprovalMenu({
               checked={isSelected}
               hideOnClick={true}
               onChange={() => selectMode(mode)}
-              className={cn(
-                'group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-1.5',
-                'duration-theme-fast outline-hidden transition-colors',
-                'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
-                isSelected && 'bg-surface-active-alt',
-              )}
+              className={cn(chipMenuItemClasses(isSelected), 'items-start')}
             >
               <Icon className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <div className="min-w-0 flex-1 text-left">
