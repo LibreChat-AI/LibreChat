@@ -66,7 +66,13 @@ type CodeEnvironmentPolicyAgent = {
     codeEnvironmentSettings?: CodeEnvironmentUserSettings;
   };
   /** Machines a parent may route this subagent to per call. */
-  codeExecutionChoices?: readonly { environmentType?: string }[] | null;
+  codeExecutionChoices?:
+    | readonly {
+        environmentType?: string;
+        codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
+        codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+      }[]
+    | null;
   subagentAgentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   lazySubagentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   subagentGraphMemberMetadata?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
@@ -216,6 +222,24 @@ export function collectAttachedCodeEnvironmentPolicySettings(
   return settingsByAgentId;
 }
 
+/**
+ * Every attached-machine policy the run may execute under, for validating the requested approval
+ * mode: each agent's default route and each machine a parent may route it to per call.
+ */
+export function collectAttachedCodeApprovalPolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): AttachedCodeEnvironmentPolicySettings[] {
+  return collectCodeEnvironmentPolicyAgents(roots).flatMap((agent) =>
+    [agent.codeExecutionContext, ...(agent.codeExecutionChoices ?? [])]
+      .filter((context) => context?.environmentType === 'attached')
+      .map((context) => ({
+        configSchema: context?.codeEnvironmentConfigSchema,
+        settings: context?.codeEnvironmentSettings,
+        skillAuthoringAvailable: agent.skillAuthoringAvailable === true,
+      })),
+  );
+}
+
 function permissionDecision(
   policy: AttachedCodeEnvironmentPolicySettings | undefined,
   category: PermissionCategory,
@@ -240,7 +264,7 @@ function permissionDecision(
 
 export function resolveAttachedCodeApprovalMode(
   requested: unknown,
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  policies: Iterable<AttachedCodeEnvironmentPolicySettings>,
   approvalsEnabled = true,
 ): CodeApprovalMode | undefined {
   if (!approvalsEnabled) {
@@ -255,7 +279,7 @@ export function resolveAttachedCodeApprovalMode(
   }
   let resolved: CodeApprovalMode | undefined;
   let rejection: Error | undefined;
-  for (const policy of settingsByAgentId.values()) {
+  for (const policy of policies) {
     try {
       resolved = resolveCodeApprovalMode(requested, {
         environment: 'attached',

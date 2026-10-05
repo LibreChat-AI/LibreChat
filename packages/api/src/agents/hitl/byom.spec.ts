@@ -3,6 +3,7 @@ import {
   assertAttachedCodeEnvironmentApprovalSupported,
   buildAttachedCodeEnvironmentAdmissionHooks,
   collectAttachedCodeEnvironmentAgentIds,
+  collectAttachedCodeApprovalPolicies,
   collectAttachedCodeEnvironmentPolicySettings,
   createAttachedCodeEnvironmentPolicyHook,
   isStatefulCodeEnvironmentToolName,
@@ -25,7 +26,7 @@ const fullAccessSettings: AttachedCodeEnvironmentPolicySettings = {
 describe('full access', () => {
   test('allows native writes and commands while preserving mandatory skill review', async () => {
     const settings = new Map([['attached-agent', fullAccessSettings]]);
-    const mode = resolveAttachedCodeApprovalMode('fullAccess', settings);
+    const mode = resolveAttachedCodeApprovalMode('fullAccess', settings.values());
     const hook = createAttachedCodeEnvironmentPolicyHook(new Set(settings.keys()), settings, mode);
     for (const toolName of ['create_file', 'edit_file', 'bash_tool', 'execute_code']) {
       await expect(
@@ -70,7 +71,7 @@ describe('full access', () => {
       expect(() =>
         resolveAttachedCodeApprovalMode(
           'fullAccess',
-          new Map(reverse ? entries.reverse() : entries),
+          new Map(reverse ? entries.reverse() : entries).values(),
         ),
       ).toThrow('not permitted');
     },
@@ -82,7 +83,7 @@ describe('full access', () => {
     const hook = createAttachedCodeEnvironmentPolicyHook(
       attachedIds,
       settings,
-      resolveAttachedCodeApprovalMode('fullAccess', settings),
+      resolveAttachedCodeApprovalMode('fullAccess', settings.values()),
     );
     settings.set('attached-agent', {
       ...fullAccessSettings,
@@ -96,7 +97,7 @@ describe('full access', () => {
     await expect(
       hook({ toolName: 'bash_tool', executingAgentId: 'lazy-agent' } as never, signal),
     ).resolves.toMatchObject({ decision: 'ask' });
-    expect(() => resolveAttachedCodeApprovalMode('fullAccess', settings, false)).toThrow(
+    expect(() => resolveAttachedCodeApprovalMode('fullAccess', settings.values(), false)).toThrow(
       'not permitted',
     );
   });
@@ -255,7 +256,7 @@ describe('createAttachedCodeEnvironmentPolicyHook', () => {
         },
       ],
     ]);
-    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings);
+    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings.values());
     const hook = createAttachedCodeEnvironmentPolicyHook(
       new Set(['attached-agent']),
       settings,
@@ -272,19 +273,13 @@ describe('createAttachedCodeEnvironmentPolicyHook', () => {
 
   test('rejects accept edits when the attached machine excludes file-write allow', () => {
     expect(() =>
-      resolveAttachedCodeApprovalMode(
-        'acceptEdits',
-        new Map([
-          [
-            'attached-agent',
-            {
-              configSchema: {
-                permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
-              },
-            },
-          ],
-        ]),
-      ),
+      resolveAttachedCodeApprovalMode('acceptEdits', [
+        {
+          configSchema: {
+            permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
+          },
+        },
+      ]),
     ).toThrow('not permitted');
   });
 
@@ -307,7 +302,7 @@ describe('createAttachedCodeEnvironmentPolicyHook', () => {
         },
       ],
     ]);
-    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings);
+    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings.values());
     const hook = createAttachedCodeEnvironmentPolicyHook(
       new Set(['permissive-agent', 'restrictive-agent']),
       settings,
@@ -334,7 +329,7 @@ describe('createAttachedCodeEnvironmentPolicyHook', () => {
         },
       ],
     ]);
-    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings);
+    const mode = resolveAttachedCodeApprovalMode('acceptEdits', settings.values());
     const hook = createAttachedCodeEnvironmentPolicyHook(attachedIds, settings, mode);
 
     attachedIds.add('lazy-agent');
@@ -350,11 +345,11 @@ describe('createAttachedCodeEnvironmentPolicyHook', () => {
   });
 
   test('rejects an explicit mode when approvals are disabled by the administrator', () => {
-    expect(resolveAttachedCodeApprovalMode('ask', new Map(), false)).toBeUndefined();
-    expect(() => resolveAttachedCodeApprovalMode('acceptEdits', new Map(), false)).toThrow(
+    expect(resolveAttachedCodeApprovalMode('ask', [], false)).toBeUndefined();
+    expect(() => resolveAttachedCodeApprovalMode('acceptEdits', [], false)).toThrow(
       'not permitted',
     );
-    expect(resolveAttachedCodeApprovalMode(undefined, new Map(), false)).toBeUndefined();
+    expect(resolveAttachedCodeApprovalMode(undefined, [], false)).toBeUndefined();
   });
 
   test.each(['create_file', 'edit_file'])(
@@ -598,6 +593,60 @@ describe('collectAttachedCodeEnvironmentAgentIds', () => {
       settings: undefined,
       skillAuthoringAvailable: true,
     });
+  });
+});
+
+describe('collectAttachedCodeApprovalPolicies', () => {
+  const acceptEditsMachine = {
+    environmentType: 'attached',
+    codeEnvironmentConfigSchema: fullAccessSettings.configSchema,
+    codeEnvironmentSettings: { permissions: { fileWrite: 'allow' as const } },
+  };
+
+  test('validates a mode against a fallback-routable child by its per-call machines', () => {
+    const agents = [
+      {
+        id: 'root',
+        codeExecutionContext: { environmentType: 'managed' },
+        lazySubagentConfigs: [
+          {
+            id: 'reviewer',
+            codeExecutionChoices: [{ environmentType: 'managed' }, acceptEditsMachine],
+          },
+        ],
+      },
+    ];
+
+    expect(() =>
+      resolveAttachedCodeApprovalMode(
+        'acceptEdits',
+        collectAttachedCodeEnvironmentPolicySettings(agents).values(),
+      ),
+    ).toThrow('not permitted');
+    expect(
+      resolveAttachedCodeApprovalMode('acceptEdits', collectAttachedCodeApprovalPolicies(agents)),
+    ).toBe('acceptEdits');
+  });
+
+  test('requires every machine a child may be routed to before granting full access', () => {
+    const agents = [
+      {
+        id: 'reviewer',
+        codeExecutionContext: { ...acceptEditsMachine, codeEnvironmentSettings: undefined },
+        codeExecutionChoices: [
+          {
+            environmentType: 'attached',
+            codeEnvironmentConfigSchema: fullAccessSettings.configSchema,
+          },
+          { environmentType: 'attached' },
+        ],
+      },
+    ];
+
+    expect(collectAttachedCodeApprovalPolicies(agents)).toHaveLength(3);
+    expect(() =>
+      resolveAttachedCodeApprovalMode('fullAccess', collectAttachedCodeApprovalPolicies(agents)),
+    ).toThrow('not permitted');
   });
 });
 

@@ -61,6 +61,7 @@ const {
   buildToolApprovalExecutionConfig,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
+  collectAttachedCodeApprovalPolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   markNativeCodeToolApprovalRequests,
@@ -1986,7 +1987,7 @@ class AgentClient extends BaseClient {
     const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
     const codeApprovalMode = resolveAttachedCodeApprovalMode(
       this.options.req.body.codeApprovalMode,
-      collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
+      collectAttachedCodeApprovalPolicies(topLevelAgents),
       agentsEConfig?.toolApproval?.enabled !== false,
     );
     const persistedCodeEnvironmentDecision = resolvePersistableCodeEnvironmentDecision({
@@ -4563,7 +4564,7 @@ class AgentClient extends BaseClient {
         collectAttachedCodeEnvironmentPolicySettings(topLevelAgents);
       const codeApprovalMode = resolveAttachedCodeApprovalMode(
         this.options.req.body.codeApprovalMode,
-        attachedCodeEnvironmentSettings,
+        collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
