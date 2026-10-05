@@ -2,8 +2,8 @@ import { AxiosError } from 'axios';
 import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { dataService } from 'librechat-data-provider';
-import { render, screen, within, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { AxiosResponse } from 'axios';
 import type { CodeWorkspaceResult } from '~/hooks';
@@ -492,6 +492,25 @@ describe('CodeWorkspaceMenu', () => {
         expect(graph.environments[0].selected).toEqual(selected);
       },
     );
+  });
+
+  test('ignores a checkout pick once the composer is disabled with the menu open', async () => {
+    const graph = workspace();
+    graph.environments[0].environment = {
+      ...environment,
+      configSchema: { workspaces: { allowCheckoutSelection: true } },
+    };
+    graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];
+    const setter = jest.fn();
+    const { rerenderMenu } = renderMenu(
+      <CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-checkout'));
+    rerenderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={true} />);
+    const source = screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_source/ });
+    if (source != null) fireEvent.click(source);
+    expect(setter).not.toHaveBeenCalled();
+    expect(graph.rememberSelection).not.toHaveBeenCalled();
   });
 
   test('tells same-named workspaces apart by id when they have no repository', async () => {

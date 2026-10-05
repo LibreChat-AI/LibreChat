@@ -299,7 +299,7 @@ function GitContext({
   const current = checkoutModes.find(({ value }) => value === (checkout ?? 'auto'));
   const options = checkoutModes.filter(({ value }) => value !== 'isolated' || supportsWorktree);
   const chooseCheckout = (choice: CheckoutChoice) => {
-    if (target.selected == null || !checkoutEditable) return;
+    if (target.selected == null || !checkoutEditable || disabled) return;
     const { checkout: _previous, ...selection } = target.selected;
     onSelect?.(choice === 'auto' ? selection : { ...selection, checkout: choice }, false);
   };
@@ -364,6 +364,7 @@ function GitContext({
                   name="codeCheckout"
                   value={value}
                   checked={selected}
+                  disabled={disabled}
                   hideOnClick={true}
                   onChange={() => chooseCheckout(value)}
                   className={cn(menuItemClasses(selected), 'items-start')}
