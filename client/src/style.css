@@ -1289,13 +1289,21 @@ html[data-drawer-nav] body {
 }
 
 /* The column rules take the inset share of the border-medium edge, so a theme that draws no inset
- * border keeps the row rules and the outer frame only. The outer left edge, the first cell's in a
- * left-to-right table and the last cell's in a right-to-left one, is the frame and stays whole. The
- * selectors outrank the cell rules above, which restate the edge in one declaration, and leave
- * high contrast to its own. */
-html:not(.high-contrast, [dir='rtl']) .markdown :is(th, td):not(:first-child),
-html[dir='rtl']:not(.high-contrast) .markdown :is(th, td):not(:last-child) {
+ * border keeps the row rules and the outer frame only. Each cell's own resolved direction picks its
+ * edges, since a message can lay a table out right-to-left under a left-to-right page: the outer
+ * left edge, the first cell's in a left-to-right table and the last cell's in a right-to-left one,
+ * is the frame and stays whole, and the right-to-left table's last cell rules its inner right edge
+ * with the rest. The selectors outrank the cell rules above, which restate the edge in one
+ * declaration, and leave high contrast to its own. */
+html:not(.high-contrast) .markdown :is(th, td):dir(ltr):not(:first-child),
+html:not(.high-contrast) .markdown :is(th, td):dir(rtl):not(:last-child) {
   border-left-color: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+}
+
+html:not(.high-contrast) .markdown :is(th, td):dir(rtl):last-child {
+  border-right-color: rgb(
     var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
   );
 }

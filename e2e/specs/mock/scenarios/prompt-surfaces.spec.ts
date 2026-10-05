@@ -8,7 +8,8 @@ import { NEW_CHAT_PATH } from '../helpers';
  * solid by default and a 10% tint under the destructive ink when the theme's `destructiveStyle` is
  * `soft`; `border-inset-medium` is `border-medium` at the inset share, so the prompt editor's form
  * boxes keep their edge in the bundled themes and drop it in ClickHouse; and a markdown table keeps
- * its column rules only while the inset share is above zero, and always its outer left edge, whichever way the table is laid out. The probes carry the classes the
+ * its column rules only while the inset share is above zero, and always its outer left edge, whichever way the table is laid out, including a right-to-left
+ * table under a left-to-right page. The probes carry the classes the
  * components compose, so only the roles style them.
  */
 
@@ -20,6 +21,7 @@ type Paint = {
   frame: string;
   rtlColumn: string;
   rtlFrame: string;
+  rtlInner: string;
 };
 
 const SOFT_THEME = {
@@ -78,9 +80,13 @@ function paint(page: Page): Promise<Paint> {
       return value;
     };
     const rtl = (html: string, pick: (node: Element) => string) => {
-      document.documentElement.dir = 'rtl';
-      const value = read(html, pick, 'markdown');
-      document.documentElement.removeAttribute('dir');
+      const host = document.createElement('div');
+      host.className = 'markdown';
+      host.dir = 'rtl';
+      host.innerHTML = html;
+      document.body.append(host);
+      const value = pick(host.firstElementChild as Element);
+      host.remove();
       return value;
     };
     return {
@@ -110,6 +116,10 @@ function paint(page: Page): Promise<Paint> {
         '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
         (node) => getComputedStyle(node.querySelectorAll('td')[1]).borderLeftColor,
       ),
+      rtlInner: rtl(
+        '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
+        (node) => getComputedStyle(node.querySelectorAll('td')[1]).borderRightColor,
+      ),
     };
   });
 }
@@ -124,7 +134,7 @@ const CASES: Array<{
   title: string;
   mode: Mode;
   definition?: { name: string };
-  expects: { [K in Exclude<keyof Paint, 'frame' | 'rtlColumn' | 'rtlFrame'>]: RegExp };
+  expects: { [K in Exclude<keyof Paint, 'frame' | 'rtlColumn' | 'rtlFrame' | 'rtlInner'>]: RegExp };
 }> = [
   {
     title:
@@ -173,6 +183,7 @@ test.describe('prompt editor and table surfaces', () => {
       expect(painted.frame).toMatch(opaque);
       expect(painted.rtlColumn).toMatch(expects.column);
       expect(painted.rtlFrame).toMatch(opaque);
+      expect(painted.rtlInner).toMatch(expects.column);
     });
   }
 });
