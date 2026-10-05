@@ -1,19 +1,16 @@
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes } from 'librechat-data-provider';
-import type {
-  IUser,
-  UserMethods,
-  UserRecord,
-  NewUserData,
-  BalanceConfig,
-  CreateUserIfAbsentResult,
-  AppConfig,
-} from '@librechat/data-schemas';
+import type { IUser, AppConfig, UserMethods, UserRecord } from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
+import type {
+  GetAppConfig,
+  GetBalanceConfig,
+  FindBalanceByUser,
+  CreateUserIfAbsent,
+} from './provision';
 import type { OpenIDUserLookupResult } from '~/app/metrics';
 import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
-import { resolveAppConfigForUser } from '~/app/resolve';
-import { isEmailDomainAllowed } from './domain';
+import { createUserOnce } from './provision';
 
 export type OpenIdEmailClaims = {
   email?: unknown;
@@ -339,27 +336,13 @@ export function applyOpenIDProfile<T extends UserRecord>(user: T, profile: OpenI
   return updated;
 }
 
-/** Whether new users start with a balance record (the condition data-schemas credits it under). */
-function hasStartBalance(balanceConfig?: BalanceConfig | null): boolean {
-  return Boolean(balanceConfig?.enabled && balanceConfig.startBalance);
-}
-
 /**
- * Creates a first-login OpenID user. Concurrent first logins for one identity all miss
- * `findOpenIDUser`, and `createUserIfAbsent` reports `user_exists` for every insert but the
- * first; a rejected request repeats the lookup, with its provider and issuer checks, and
- * continues as the account that won, admitted and refreshed exactly as if its first lookup had
- * found it: a tenant account resolves its tenant config and that config's email-domain policy
- * applies, and the account carries this callback's claims. Returns the account with the config
- * the login continues under (`appConfig` for a user this request created).
- *
- * It continues only once the winner finished provisioning that account. When the config new
- * users are created under (`appConfig`) sets a start balance, the balance must exist:
- * `createUserIfAbsent` writes it before the user, but a winner on an earlier release adds it with
- * `$inc` after its insert, and login balance sync must not initialize it first; such a login fails
- * as it did before recovery existed. A start balance only the account's tenant config sets is
- * initialized by login balance sync with an insert-only write that cannot be added on top, so it
- * does not hold the login back. A conflict the lookup cannot account for throws.
+ * Creates a first-login OpenID user through `createUserOnce`, which recovers a concurrent first
+ * login by repeating `findOpenIDUser`, with its provider and issuer checks, once the winner
+ * finished provisioning the account, and admits that account exactly as a found one (tenant
+ * config and email-domain policy). The recovered account is refreshed with this callback's
+ * claims like any account the lookup finds. Returns the account with the config the login
+ * continues under (`appConfig` for a user this request created).
  */
 export async function createOpenIDUser({
   lookup,
@@ -373,16 +356,14 @@ export async function createOpenIDUser({
   lookup: Parameters<typeof findOpenIDUser>[0];
   profile: OpenIDProfile;
   appConfig: AppConfig;
-  getAppConfig: Parameters<typeof resolveAppConfigForUser>[0];
-  getBalanceConfig: (appConfig: AppConfig) => BalanceConfig | null | undefined;
-  createUserIfAbsent: (
-    data: NewUserData,
-    balanceConfig?: BalanceConfig,
-  ) => Promise<CreateUserIfAbsentResult>;
-  findBalanceByUser: (userId: string) => Promise<object | null>;
+  getAppConfig: GetAppConfig;
+  getBalanceConfig: GetBalanceConfig;
+  createUserIfAbsent: CreateUserIfAbsent;
+  findBalanceByUser: FindBalanceByUser;
 }): Promise<{ user: UserRecord; appConfig: AppConfig }> {
-  const created = await createUserIfAbsent(
-    {
+  const result = await createUserOnce({
+    strategyName: lookup.strategyName ?? 'openid',
+    newUser: {
       provider: 'openid',
       openidId: profile.openidId,
       username: profile.username,
@@ -392,39 +373,17 @@ export async function createOpenIDUser({
       idOnTheSource: profile.idOnTheSource,
       openidIssuer: profile.openidIssuer,
     },
-    getBalanceConfig(appConfig) ?? undefined,
-  );
-  if (created.ok) return { user: created.value, appConfig };
-
-  const strategyName = lookup.strategyName ?? 'openid';
-  const resolution = await findOpenIDUser(lookup);
-  if (resolution.error) throw new Error(ErrorTypes.AUTH_FAILED);
-  if (!resolution.user) {
-    throw new Error(
-      `[${strategyName}] New user conflicts with an account the lookup cannot resolve`,
-    );
-  }
-
-  const userId = resolution.user._id.toString();
-  const accountConfig = resolution.user.tenantId
-    ? await resolveAppConfigForUser(getAppConfig, resolution.user)
-    : appConfig;
-  if (!isEmailDomainAllowed(profile.email ?? '', accountConfig?.registration?.allowedDomains)) {
-    logger.error(
-      `[${strategyName}] Authentication blocked - email domain not allowed for the recovered account [Identifier: ${profile.email}]`,
-    );
-    throw new Error('Email domain not allowed');
-  }
-
-  if (hasStartBalance(getBalanceConfig(appConfig)) && !(await findBalanceByUser(userId))) {
-    logger.warn(
-      `[${strategyName}] Concurrent first login found user ${userId} before its start balance; failing this login`,
-    );
-    throw new Error(ErrorTypes.AUTH_FAILED);
-  }
-
-  logger.info(
-    `[${strategyName}] Concurrent first login for user ${userId}; continuing as that user`,
-  );
-  return { user: applyOpenIDProfile(resolution.user, profile), appConfig: accountConfig };
+    email: profile.email ?? '',
+    appConfig,
+    getAppConfig,
+    getBalanceConfig,
+    lookup: () => findOpenIDUser(lookup),
+    createUserIfAbsent,
+    findBalanceByUser,
+  });
+  if (result.error !== null) throw new Error(result.error);
+  return {
+    user: result.created ? result.user : applyOpenIDProfile(result.user, profile),
+    appConfig: result.appConfig,
+  };
 }
