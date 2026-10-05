@@ -8,12 +8,19 @@ import { NEW_CHAT_PATH } from '../helpers';
  * solid by default and a 10% tint under the destructive ink when the theme's `destructiveStyle` is
  * `soft`; `border-inset-medium` is `border-medium` at the inset share, so the prompt editor's form
  * boxes keep their edge in the bundled themes and drop it in ClickHouse; and a markdown table keeps
- * its column rules only while the inset share is above zero, and always its outer left edge. The probes carry the classes the
+ * its column rules only while the inset share is above zero, and always its outer left edge, whichever way the table is laid out. The probes carry the classes the
  * components compose, so only the roles style them.
  */
 
 type Mode = 'light' | 'dark';
-type Paint = { destructive: string; inset: string; column: string; frame: string };
+type Paint = {
+  destructive: string;
+  inset: string;
+  column: string;
+  frame: string;
+  rtlColumn: string;
+  rtlFrame: string;
+};
 
 const SOFT_THEME = {
   version: 1,
@@ -70,6 +77,12 @@ function paint(page: Page): Promise<Paint> {
       host.remove();
       return value;
     };
+    const rtl = (html: string, pick: (node: Element) => string) => {
+      document.documentElement.dir = 'rtl';
+      const value = read(html, pick, 'markdown');
+      document.documentElement.removeAttribute('dir');
+      return value;
+    };
     return {
       destructive: read(
         '<div class="bg-surface-destructive theme-destructive-soft:bg-surface-destructive/10"></div>',
@@ -89,6 +102,14 @@ function paint(page: Page): Promise<Paint> {
         (node) => getComputedStyle(node.querySelector('td') as Element).borderLeftColor,
         'markdown',
       ),
+      rtlColumn: rtl(
+        '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
+        (node) => getComputedStyle(node.querySelector('td') as Element).borderLeftColor,
+      ),
+      rtlFrame: rtl(
+        '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
+        (node) => getComputedStyle(node.querySelectorAll('td')[1]).borderLeftColor,
+      ),
     };
   });
 }
@@ -103,7 +124,7 @@ const CASES: Array<{
   title: string;
   mode: Mode;
   definition?: { name: string };
-  expects: { [K in Exclude<keyof Paint, 'frame'>]: RegExp };
+  expects: { [K in Exclude<keyof Paint, 'frame' | 'rtlColumn' | 'rtlFrame'>]: RegExp };
 }> = [
   {
     title:
@@ -150,6 +171,8 @@ test.describe('prompt editor and table surfaces', () => {
       expect(painted.inset).toMatch(expects.inset);
       expect(painted.column).toMatch(expects.column);
       expect(painted.frame).toMatch(opaque);
+      expect(painted.rtlColumn).toMatch(expects.column);
+      expect(painted.rtlFrame).toMatch(opaque);
     });
   }
 });
