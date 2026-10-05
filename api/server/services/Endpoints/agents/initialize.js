@@ -1691,6 +1691,7 @@ const initializeClientWithProvider = async ({
         configId: getLazySubagentConfigId(agent),
         context: { signal },
         lazyChildren: [],
+        codeFlags: getSubagentCodeFlags(agent),
         viewAccessChecked: true,
       });
       graphMemberConfigsById.set(memberId, config);
