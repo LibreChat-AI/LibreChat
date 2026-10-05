@@ -110,6 +110,9 @@ test('subagents and handoffs have separate native tools, settings, and persisten
     expect(saved.edges).toEqual(parent.edges?.filter((edge) => edge.edgeType === 'direct'));
     await page.reload();
     const reopened = await openAgentBuilder(page, { navigate: false });
+    await reopened.getByRole('combobox', { name: 'Agent', exact: true }).click();
+    await page.getByRole('option', { name: parent.name, exact: true }).click();
+    await expect(reopened.getByLabel('Agent name')).toHaveValue(parent.name ?? '');
     await expect(toolRow(reopened, 'Subagents')).toBeVisible();
     await expect(toolRow(reopened, 'Handoffs')).toHaveCount(0);
   } finally {
