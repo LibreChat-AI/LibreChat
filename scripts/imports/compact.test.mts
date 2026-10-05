@@ -163,7 +163,7 @@ test('measures complete attributed imports and preserves their syntax at the wid
 
 test('dependency-manifest-only changes select the import tooling CI gate', async () => {
   const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
-  const filter = workflow.match(/^            import_tools:\n((?:              - [^\n]+\n)+)/m);
+  const filter = workflow.match(/^ {12}import_tools:\n((?: {14}- [^\n]+\n)+)/m);
   assert.ok(filter, 'import_tools filter exists');
   const paths = [...filter[1].matchAll(/- '([^']+)'/g)].map((match) => match[1]);
   for (const manifest of ['package.json', 'package-lock.json']) {
@@ -174,7 +174,7 @@ test('dependency-manifest-only changes select the import tooling CI gate', async
   }
   assert.match(
     workflow,
-    /name: Test and typecheck import cleanup tooling\n        if: always\(\) && steps\.paths\.outputs\.import_tools == 'true'/,
+    /name: Test and typecheck import cleanup tooling\n {8}if: always\(\) && steps\.paths\.outputs\.import_tools == 'true'/,
   );
 });
 
