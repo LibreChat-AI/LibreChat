@@ -194,4 +194,5 @@ export enum MutationKeys {
   moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
   convoSeen = 'convoSeen',
   convoUnread = 'convoUnread',
+  requestCredits = 'requestCredits',
 }

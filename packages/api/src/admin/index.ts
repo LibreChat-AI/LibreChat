@@ -1,3 +1,4 @@
+export { createAdminBalanceHandlers } from './balance';
 export { createAdminConfigHandlers } from './config';
 export { createAdminLangfuseHandlers } from './langfuse';
 export { createAdminGrantsHandlers } from './grants';
@@ -9,6 +10,7 @@ export { createAdminAuditLogHandlers } from './auditLog';
 export { createAdminCodeEnvironmentHandlers } from './code';
 export { buildAuditContext } from './context';
 export { resolveConfigSecret, redactConfigSecretMaps } from './secrets';
+export type { AdminBalanceDeps } from './balance';
 export type { AdminConfigDeps } from './config';
 export type { AdminLangfuseDeps } from './langfuse';
 export type { AdminGrantsDeps, GrantPrincipalType } from './grants';

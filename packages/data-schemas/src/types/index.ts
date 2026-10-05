@@ -13,6 +13,7 @@ export * from './chatProject';
 export * from './session';
 export * from './passkey';
 export * from './balance';
+export * from './balanceRequest';
 export * from './banner';
 export * from './transaction';
 export * from './message';

@@ -2,6 +2,7 @@ const accessPermissions = require('./accessPermissions');
 const assistants = require('./assistants');
 const categories = require('./categories');
 const adminAuth = require('./admin/auth');
+const adminBalance = require('./admin/balance');
 const adminConfig = require('./admin/config');
 const adminCodeEnvironments = require('./admin/code');
 const codeEnvironments = require('./code-environments');
@@ -50,6 +51,7 @@ module.exports = {
   mcp,
   auth,
   adminAuth,
+  adminBalance,
   adminConfig,
   adminCodeEnvironments,
   codeEnvironments,

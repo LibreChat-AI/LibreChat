@@ -67,6 +67,11 @@ const balanceSchema: Schema<t.IBalance> = new Schema<t.IBalance>({
     default: undefined,
     select: false,
   },
+  /** Recently applied administrative credit keys for standalone MongoDB idempotency. */
+  recentIdempotencyKeys: {
+    type: [String],
+    default: undefined,
+  },
 });
 
 export default balanceSchema;

@@ -13,6 +13,7 @@ import type {
 } from '~/types';
 import type { ITransaction } from '~/schema/transaction';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { supportsTransactions } from '~/utils/transactions';
 import logger from '~/config/winston';
 
 const cancelRate = 1.15;
@@ -68,6 +69,7 @@ export interface TxData {
   readTokens?: number;
   balance?: { enabled?: boolean };
   transactions?: { enabled?: boolean };
+  idempotencyKey?: string;
 }
 
 /** Return value from a successful transaction that also updates the balance */
@@ -101,6 +103,7 @@ export function createTransactionMethods(
     user: string,
     options?: { includeReservedCredits?: boolean },
   ) => Promise<IBalance | null>;
+  findBalancesByUsers: (userIds: string[]) => Promise<IBalance[]>;
   upsertBalanceFields: (
     user: string,
     fields: IBalanceUpdate,
@@ -115,6 +118,16 @@ export function createTransactionMethods(
   reserveBalance: (request: BalanceReservationRequest) => Promise<BalanceReservationResult | null>;
   renewBalanceReservation: (params: BalanceReservationRenewal) => Promise<void>;
   releaseBalanceReservation: (params: BalanceReservationRelease) => Promise<void>;
+  applyIdempotentCredit: (params: {
+    user: string;
+    incrementValue: number;
+    idempotencyKey: string;
+    context: string;
+  }) => Promise<{ resultingBalance: number; applied: boolean; transactionId: string }>;
+  claimAuditRecording: (transactionId: string, leaseMs?: number) => Promise<boolean>;
+  markAuditRecorded: (transactionId: string) => Promise<void>;
+  releaseAuditRecordingLease: (transactionId: string) => Promise<void>;
+  ensureTransactionIdempotencyIndex: () => Promise<void>;
   createStructuredTransaction: (_txData: TxData) => Promise<TransactionResult | undefined>;
 } {
   /** Calculate and set the tokenValue for a transaction */
@@ -290,6 +303,240 @@ export function createTransactionMethods(
         `Failed to update balance for user ${user} after maximum retries due to persistent conflicts.`,
       )
     );
+  }
+
+  const MAX_RECENT_IDEMPOTENCY_KEYS = 50;
+  const DEFAULT_AUDIT_RECORDING_LEASE_MS = 60_000;
+
+  async function getCreditBalanceRecord(user: string): Promise<IBalance> {
+    const balance = await upsertBalanceRecord(user, {}, { tokenCredits: 0 });
+    if (!balance) {
+      throw new Error(`Failed to find or create a balance for user ${user}`);
+    }
+    return balance;
+  }
+
+  async function recordCreditLedgerEntry({
+    user,
+    incrementValue,
+    idempotencyKey,
+    context,
+  }: {
+    user: string;
+    incrementValue: number;
+    idempotencyKey: string;
+    context: string;
+  }): Promise<string> {
+    const Transaction = mongoose.models.Transaction;
+    const transaction = new Transaction({
+      user,
+      tokenType: 'credits',
+      context,
+      rawAmount: incrementValue,
+      idempotencyKey,
+    });
+    calculateTokenValue(transaction);
+
+    try {
+      await transaction.save();
+      return (transaction._id as Types.ObjectId).toString();
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        const existing = await Transaction.findOne({ idempotencyKey }).lean<{
+          _id: Types.ObjectId;
+        }>();
+        if (existing) {
+          return existing._id.toString();
+        }
+      }
+      throw error;
+    }
+  }
+
+  async function getExistingCreditResult(
+    user: string,
+    idempotencyKey: string,
+  ): Promise<{ resultingBalance: number; applied: false; transactionId: string } | null> {
+    const transaction = await mongoose.models.Transaction.findOne({ idempotencyKey }).lean<{
+      _id: Types.ObjectId;
+    }>();
+    if (!transaction) {
+      return null;
+    }
+    const balance = await findBalanceByUser(user);
+    return {
+      resultingBalance: balance?.tokenCredits ?? 0,
+      applied: false,
+      transactionId: transaction._id.toString(),
+    };
+  }
+
+  async function applyIdempotentCreditTransactional({
+    user,
+    incrementValue,
+    idempotencyKey,
+    context,
+  }: {
+    user: string;
+    incrementValue: number;
+    idempotencyKey: string;
+    context: string;
+  }): Promise<{ resultingBalance: number; applied: boolean; transactionId: string }> {
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    const Transaction = mongoose.models.Transaction;
+    const target = await getCreditBalanceRecord(user);
+    const session = await mongoose.startSession();
+
+    try {
+      let resultingBalance = 0;
+      let transactionId = '';
+      await session.withTransaction(async () => {
+        const transaction = new Transaction({
+          user,
+          tokenType: 'credits',
+          context,
+          rawAmount: incrementValue,
+          idempotencyKey,
+        });
+        calculateTokenValue(transaction);
+        await transaction.save({ session });
+        transactionId = (transaction._id as Types.ObjectId).toString();
+
+        const updated = await Balance.findOneAndUpdate(
+          { _id: target._id },
+          [
+            {
+              $set: {
+                tokenCredits: {
+                  $max: [0, { $add: [{ $ifNull: ['$tokenCredits', 0] }, incrementValue] }],
+                },
+              },
+            },
+          ],
+          { new: true, session },
+        ).lean<IBalance>();
+        if (!updated) {
+          throw new Error(`Balance disappeared while crediting user ${user}`);
+        }
+        resultingBalance = updated.tokenCredits;
+      });
+      return { resultingBalance, applied: true, transactionId };
+    } catch (error) {
+      if (isDuplicateKeyError(error)) {
+        const existing = await getExistingCreditResult(user, idempotencyKey);
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  async function applyIdempotentCreditSingleDocument({
+    user,
+    incrementValue,
+    idempotencyKey,
+    context,
+  }: {
+    user: string;
+    incrementValue: number;
+    idempotencyKey: string;
+    context: string;
+  }): Promise<{ resultingBalance: number; applied: boolean; transactionId: string }> {
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    const target = await getCreditBalanceRecord(user);
+    const updated = await Balance.findOneAndUpdate(
+      { _id: target._id, recentIdempotencyKeys: { $ne: idempotencyKey } },
+      [
+        {
+          $set: {
+            tokenCredits: {
+              $max: [0, { $add: [{ $ifNull: ['$tokenCredits', 0] }, incrementValue] }],
+            },
+            recentIdempotencyKeys: {
+              $slice: [
+                { $concatArrays: [{ $ifNull: ['$recentIdempotencyKeys', []] }, [idempotencyKey]] },
+                -MAX_RECENT_IDEMPOTENCY_KEYS,
+              ],
+            },
+          },
+        },
+      ],
+      { new: true },
+    ).lean<IBalance>();
+
+    const current = updated ?? (await Balance.findById(target._id).lean<IBalance>());
+    const transactionId = await recordCreditLedgerEntry({
+      user,
+      incrementValue,
+      idempotencyKey,
+      context,
+    });
+    return {
+      resultingBalance: current?.tokenCredits ?? 0,
+      applied: updated != null,
+      transactionId,
+    };
+  }
+
+  async function applyIdempotentCredit({
+    user,
+    incrementValue,
+    idempotencyKey,
+    context,
+  }: {
+    user: string;
+    incrementValue: number;
+    idempotencyKey: string;
+    context: string;
+  }): Promise<{ resultingBalance: number; applied: boolean; transactionId: string }> {
+    const existing = await getExistingCreditResult(user, idempotencyKey);
+    if (existing) {
+      return existing;
+    }
+    const params = { user, incrementValue, idempotencyKey, context };
+    return (await supportsTransactions(mongoose))
+      ? applyIdempotentCreditTransactional(params)
+      : applyIdempotentCreditSingleDocument(params);
+  }
+
+  async function claimAuditRecording(
+    transactionId: string,
+    leaseMs: number = DEFAULT_AUDIT_RECORDING_LEASE_MS,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await mongoose.models.Transaction.findOneAndUpdate(
+      {
+        _id: transactionId,
+        auditRecorded: { $ne: true },
+        $or: [
+          { auditRecordingLeaseExpiresAt: { $exists: false } },
+          { auditRecordingLeaseExpiresAt: { $lte: now } },
+        ],
+      },
+      { $set: { auditRecordingLeaseExpiresAt: new Date(now.getTime() + leaseMs) } },
+    );
+    return claimed != null;
+  }
+
+  async function markAuditRecorded(transactionId: string): Promise<void> {
+    await mongoose.models.Transaction.updateOne(
+      { _id: transactionId },
+      { $set: { auditRecorded: true }, $unset: { auditRecordingLeaseExpiresAt: 1 } },
+    );
+  }
+
+  async function releaseAuditRecordingLease(transactionId: string): Promise<void> {
+    await mongoose.models.Transaction.updateOne(
+      { _id: transactionId },
+      { $unset: { auditRecordingLeaseExpiresAt: 1 } },
+    );
+  }
+
+  async function ensureTransactionIdempotencyIndex(): Promise<void> {
+    await mongoose.models.Transaction.createIndexes();
   }
 
   function isAutoRefillDue(record: IBalance, now: Date): boolean {
@@ -709,6 +956,26 @@ export function createTransactionMethods(
     return { ...balance, reservedCredits } as IBalance;
   }
 
+  /** Returns the canonical oldest balance record for each requested user. */
+  async function findBalancesByUsers(userIds: string[]): Promise<IBalance[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+    const Balance = mongoose.models.Balance as Model<IBalance>;
+    const records = await Balance.find({ user: { $in: userIds } })
+      .sort(oldestFirst)
+      .lean<IBalance[]>();
+    const seen = new Set<string>();
+    return records.filter((record) => {
+      const userId = record.user.toString();
+      if (seen.has(userId)) {
+        return false;
+      }
+      seen.add(userId);
+      return true;
+    });
+  }
+
   /** Upserts balance fields for a user; `insertOnly` fields apply only when the record is created. */
   async function upsertBalanceFields(
     user: string,
@@ -749,8 +1016,14 @@ export function createTransactionMethods(
 
   return {
     updateBalance,
+    applyIdempotentCredit,
+    claimAuditRecording,
+    markAuditRecorded,
+    releaseAuditRecordingLease,
+    ensureTransactionIdempotencyIndex,
     bulkInsertTransactions,
     findBalanceByUser,
+    findBalancesByUsers,
     upsertBalanceFields,
     getTransactions,
     deleteTransactions,

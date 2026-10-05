@@ -296,6 +296,12 @@ export function getUserBalance(): Promise<t.TBalanceResponse> {
   return request.get(endpoints.balance());
 }
 
+export function requestBalanceTopUp(
+  payload: t.TRequestBalanceBody,
+): Promise<t.TRequestBalanceResponse> {
+  return request.post(endpoints.requestBalance(), payload);
+}
+
 export const updateTokenCount = (text: string) => {
   return request.post(endpoints.tokenizer(), { arg: text });
 };

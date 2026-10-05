@@ -1257,6 +1257,46 @@ export type TBalanceResponse = {
   refillIntervalUnit?: RefillIntervalUnit;
   lastRefill?: Date | string;
   refillAmount?: number;
+  /** Present while the user has an unresolved "request more credits" request. */
+  pendingCreditRequest?: {
+    requestId: string;
+    requestedAt: Date | string;
+    reason?: string;
+  };
+};
+
+export type TRequestBalanceBody = {
+  reason?: string;
+};
+
+export type TRequestBalanceResponse = {
+  requestId: string;
+  requestedAt: Date | string;
+  reason?: string;
+};
+
+/** User balance row returned by the administrative balance API. */
+export type AdminBalanceListItem = {
+  id: string;
+  name: string;
+  email: string;
+  avatar: string;
+  /**
+   * 0 when the user has no Balance document yet OR when `balanceEnabled` is
+   * false — always check `balanceEnabled` before treating this as a real,
+   * exhausted balance.
+   */
+  tokenCredits: number;
+  /** Whether balance is enabled for this user's effective configuration. */
+  balanceEnabled: boolean;
+  lastRefill?: string;
+  /** Configured auto-refill amount used as the suggested administrative reset. */
+  refillAmount?: number;
+  pendingRequest?: {
+    requestId: string;
+    requestedAt: string;
+    reason?: string;
+  };
 };
 
 /* -------------------------------------------------------------------------- */

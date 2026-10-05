@@ -2,6 +2,7 @@ export * from './Audio';
 export * from './Auth';
 export * from './Assistants';
 export * from './Agents';
+export * from './Balance';
 export * from './Chat';
 export * from './Config';
 export * from './Conversations';

@@ -12,6 +12,7 @@ const setBalanceConfig = createSetBalanceConfig({
   upsertBalanceFields,
 });
 
-router.get('/', requireJwtAuth, setBalanceConfig, controller);
+router.get('/', requireJwtAuth, setBalanceConfig, controller.getBalance);
+router.post('/request', requireJwtAuth, controller.requestTopUp);
 
 module.exports = router;
