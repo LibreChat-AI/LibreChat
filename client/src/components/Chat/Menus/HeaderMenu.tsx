@@ -10,7 +10,7 @@ import type * as t from '~/common';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
 import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
 import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
-import useExportShare from '~/hooks/Chat/useExportShare';
+import useChatOptions from '~/hooks/Chat/useChatOptions';
 import useMultiConvo from '~/hooks/Chat/useMultiConvo';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -51,8 +51,9 @@ export default function HeaderMenu({
   const multiConvo = useMultiConvo();
   const temporary = useTemporaryChat();
   const bookmarks = useBookmarkItems({ enabled: hasAccessToBookmarks === true });
-  const exportShare = useExportShare({
+  const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
+    closeMenu: () => setIsOpen(false),
   });
 
   const showBookmarks = hasAccessToBookmarks === true && bookmarks.show;
@@ -129,7 +130,7 @@ export default function HeaderMenu({
 
   /** Mirrors the desktop share button, which surfaces an active link in its tooltip. */
   const triggerDescription = exportShare.hasSharedLink
-    ? localize('com_ui_export_share_link_active')
+    ? localize('com_ui_chat_options_link_active')
     : localize('com_ui_more_options');
 
   return (

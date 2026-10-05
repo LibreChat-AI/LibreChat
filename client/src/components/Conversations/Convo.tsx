@@ -286,7 +286,6 @@ function Conversation({
     isActiveConvo,
     isUnseen,
     conversationId,
-    chatProjectId: conversation.chatProjectId,
     isPopoverActive,
     isGenerating,
     contextMenuPosition,
