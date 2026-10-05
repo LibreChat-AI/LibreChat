@@ -71,6 +71,12 @@ export interface AgentCodeFlagsParams {
   allowedStatefulCodeEnvironments?: readonly StatefulCodeEnvironment[];
   /** Whether the deployment's versioned implicit stateful route is live. */
   implicitStatefulRouteAvailable?: boolean;
+  /**
+   * The opt-out initialization already decided for this agent. A caller that only holds a
+   * partial agent record (a tool loader) passes it so the decision is never lost; the rule
+   * can add an opt-out but never clears one.
+   */
+  attachedEnvironmentOptOut?: boolean;
 }
 
 export interface AgentCodeFlags {
@@ -92,12 +98,14 @@ export interface AgentCodeFlags {
  */
 export function resolveAgentCodeFlags(params: AgentCodeFlagsParams): AgentCodeFlags {
   const { agent } = params;
-  const attachedEnvironmentOptOut = optsOutOfAttachedCodeEnvironment(
-    agent,
-    params.requestBody,
-    params.environments,
-    params.implicitStatefulRouteAvailable === true,
-  );
+  const attachedEnvironmentOptOut =
+    params.attachedEnvironmentOptOut === true ||
+    optsOutOfAttachedCodeEnvironment(
+      agent,
+      params.requestBody,
+      params.environments,
+      params.implicitStatefulRouteAvailable === true,
+    );
   const codeEnvAvailable =
     params.codeExecutionAvailable &&
     agent?.tools?.includes(Tools.execute_code) === true &&

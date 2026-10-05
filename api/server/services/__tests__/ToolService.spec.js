@@ -3325,6 +3325,36 @@ describe('ToolService - Action Capability Gating', () => {
         expect(mockLoadToolsUtil).not.toHaveBeenCalled();
       });
 
+      it('keeps the initializer opt-out for the definitions of a partial agent record', async () => {
+        const req = createDecisionReq('without_attached');
+        req.config.endpoints.agents.capabilities.push(AgentCapabilities.programmatic_tools);
+        mockGetEndpointsConfig.mockResolvedValue(
+          createEndpointsConfig(req.config.endpoints.agents.capabilities),
+        );
+        const loadDefinitions = (attachedEnvironmentOptOut) =>
+          loadAgentTools({
+            req,
+            res: {},
+            agent: { id: terra.id, tools: [Tools.execute_code, 'calculator'] },
+            definitionsOnly: true,
+            codeExecutionContext: {
+              baseUrl: 'https://api.librechat.ai/v1',
+              codeSessionKey: 'execute_code',
+              executionProfile: 'default',
+              statefulSessions: false,
+            },
+            attachedEnvironmentOptOut,
+          });
+
+        await loadDefinitions(true);
+        const optedOut = mockLoadToolDefinitions.mock.calls.at(-1)[0];
+        await loadDefinitions(undefined);
+        const kept = mockLoadToolDefinitions.mock.calls.at(-1)[0];
+
+        expect(optedOut.codeExecutionEnabled).toBe(false);
+        expect(kept.codeExecutionEnabled).toBe(true);
+      });
+
       it('still requires a workspace selection when the conversation runs on attached machines', async () => {
         await expect(
           loadFor(createDecisionReq('attached'), [AgentConstants.SKILL_TOOL]),

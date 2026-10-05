@@ -835,6 +835,7 @@ async function loadToolDefinitionsWrapper({
   jobCreatedAt,
   tool_resources,
   codeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   signal,
   upstreamTokenProvider: suppliedUpstreamTokenProvider,
@@ -889,6 +890,7 @@ async function loadToolDefinitionsWrapper({
         ),
         conversationId: runtimeRequestBody?.conversationId,
         resolvedContext: codeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
     );
   const resolvedCodeExecutionContext = await resolveCodeExecutionWorkspaceContext({
@@ -1666,6 +1668,7 @@ async function loadAgentTools({
   jobCreatedAt,
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
+  attachedEnvironmentOptOut,
   accessibleMcpServerNames,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
@@ -1682,6 +1685,7 @@ async function loadAgentTools({
         jobCreatedAt,
         tool_resources,
         codeExecutionContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
         accessibleMcpServerNames,
         signal,
         upstreamTokenProvider,
@@ -1813,6 +1817,7 @@ async function loadAgentTools({
         ),
         conversationId: runtimeRequestBody?.conversationId,
         resolvedContext: providedCodeExecutionContext,
+        attachedEnvironmentOptOut,
       }),
     );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({

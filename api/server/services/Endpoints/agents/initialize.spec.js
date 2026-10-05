@@ -2400,6 +2400,35 @@ describe('initializeClient — subagent loading', () => {
     }
   });
 
+  it('forwards the initializer code opt-out through the tool loader', async () => {
+    const codeExecutionContext = {
+      baseUrl: 'https://api.librechat.ai/v1',
+      codeSessionKey: 'execute_code',
+      executionProfile: 'default',
+      statefulSessions: false,
+    };
+    mockInitializeAgent.mockImplementationOnce(async (params) => {
+      await params.loadTools({
+        agentId: PRIMARY_ID,
+        tools: ['execute_code'],
+        codeExecutionContext,
+        attachedEnvironmentOptOut: true,
+      });
+      return makePrimaryConfig({});
+    });
+
+    await initializeClient({
+      req: makeSubagentReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(loadAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ codeExecutionContext, attachedEnvironmentOptOut: true }),
+    );
+  });
+
   it('keeps a lazy subagent off its attached machine in a conversation that chose no workspace', async () => {
     const subAgent = await createAgent({
       id: SUBAGENT_ID,

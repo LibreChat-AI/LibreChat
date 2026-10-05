@@ -138,6 +138,23 @@ describe('resolveAgentCodeExecution', () => {
     ).toBe(false);
   });
 
+  it('keeps an opt-out initialization decided for a caller holding a partial agent record', () => {
+    const stripped = { id: terra.id, tools: terra.tools };
+
+    expect(resolveAgentCodeFlags({ ...baseParams, agent: stripped }).codeEnvAvailable).toBe(true);
+    expect(
+      resolveAgentCodeFlags({ ...baseParams, agent: stripped, attachedEnvironmentOptOut: true }),
+    ).toMatchObject({ attachedEnvironmentOptOut: true, codeEnvAvailable: false });
+    expect(
+      resolveAgentCodeFlags({
+        ...baseParams,
+        agent: terra,
+        requestBody: { codeEnvironmentMode: 'without_attached' },
+        attachedEnvironmentOptOut: false,
+      }).attachedEnvironmentOptOut,
+    ).toBe(true);
+  });
+
   it('applies the conversation rule to a context initialization already resolved', () => {
     const resolvedContext = resolveAgentCodeExecution({ ...baseParams, agent: terra }).context;
     const reused = resolveAgentCodeExecution({

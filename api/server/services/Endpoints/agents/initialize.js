@@ -168,6 +168,7 @@ function createToolLoader(
     tool_resources,
     requestBody,
     codeExecutionContext,
+    attachedEnvironmentOptOut,
     accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
@@ -182,6 +183,7 @@ function createToolLoader(
         requestBody,
         tool_resources,
         codeExecutionContext,
+        attachedEnvironmentOptOut,
         definitionsOnly,
         accessibleMcpServerNames,
         upstreamTokenProvider,

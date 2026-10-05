@@ -925,6 +925,8 @@ export interface InitializeAgentParams {
     requestBody?: RequestBody;
     /** Trusted endpoint/profile resolved for this agent before any code-file priming. */
     codeExecutionContext: CodeExecutionContext;
+    /** The conversation's "No workspace" decision removed this agent's code tools. */
+    attachedEnvironmentOptOut?: boolean;
     /** Full accessible MCP server names (operator + user DB) when the heal
      *  already fetched them — lets execution-side collision guards see
      *  cross-tier shadowing without another registry round-trip. */
@@ -2123,6 +2125,7 @@ export async function initializeAgent(
       tool_resources: runtimeToolResources,
       requestBody,
       codeExecutionContext,
+      attachedEnvironmentOptOut,
       accessibleMcpServerNames: resolvedAuditNames,
     });
 
