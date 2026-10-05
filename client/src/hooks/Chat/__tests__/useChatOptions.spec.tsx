@@ -51,9 +51,18 @@ jest.mock('~/data-provider', () => ({
 jest.mock('~/components/Conversations/ConvoOptions', () => ({
   ProjectButton: () => <div data-testid="project-dialog" />,
 }));
+const mockDeleteProps: {
+  current?: {
+    setShowDeleteDialog: (open: boolean) => void;
+    getCurrentConversationId: () => string | undefined;
+  };
+} = {};
 jest.mock('~/components/Conversations/ConvoOptions/DeleteButton', () => ({
   __esModule: true,
-  default: () => <div data-testid="delete-dialog" />,
+  default: (props: NonNullable<typeof mockDeleteProps.current>) => {
+    mockDeleteProps.current = props;
+    return <div data-testid="delete-dialog" />;
+  },
 }));
 jest.mock('~/components/Chat/Rename', () => ({
   __esModule: true,
@@ -307,6 +316,34 @@ describe('useChatOptions', () => {
     render(<>{result.current.dialogs}</>);
 
     expect(screen.queryByTestId('project-dialog')).not.toBeInTheDocument();
+  });
+
+  it('tells the delete dialog which chat is open when the request settles', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_delete').onClick?.({} as never));
+    render(<>{result.current.dialogs}</>);
+    const props = mockDeleteProps.current;
+    mockState.route = 'convo-2';
+    rerender();
+
+    expect(props?.getCurrentConversationId()).toBe('convo-2');
+  });
+
+  it('keeps a newer chat dialog open when an earlier delete settles', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_delete').onClick?.({} as never));
+    const first = render(<>{result.current.dialogs}</>);
+    const settleEarlierDelete = mockDeleteProps.current?.setShowDeleteDialog;
+    first.unmount();
+    mockState.conversation = { conversationId: 'convo-2', title: 'Other' };
+    rerender();
+    act(() => find(result.current.items, 'com_ui_rename').onClick?.({} as never));
+    act(() => settleEarlierDelete?.(false));
+    render(<>{result.current.dialogs}</>);
+
+    expect(screen.getByTestId('rename-dialog')).toBeInTheDocument();
   });
 
   it('leaves an archived chat for a new one once the archive lands', () => {

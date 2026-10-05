@@ -34,8 +34,8 @@ function RenameContent({
   conversationId,
   title,
   titleSetByUser,
-  onOpenChange,
-}: Pick<RenameProps, 'conversationId' | 'title' | 'titleSetByUser' | 'onOpenChange'>) {
+  onClose,
+}: Pick<RenameProps, 'conversationId' | 'title' | 'titleSetByUser'> & { onClose: () => void }) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [value, setValue] = useState(title);
@@ -51,12 +51,12 @@ function RenameContent({
     event.preventDefault();
     const next = value.trim() || localize('com_ui_untitled');
     if (next === title && titleSetByUser) {
-      onOpenChange(false);
+      onClose();
       return;
     }
     try {
       await updateMutation.mutateAsync({ conversationId, title: next });
-      onOpenChange(false);
+      onClose();
     } catch (error) {
       logger.error('Error renaming conversation', error);
       showToast({
@@ -111,13 +111,20 @@ export default function Rename({
   onOpenChange,
   triggerRef,
 }: RenameProps) {
+  /** Closing from a save bypasses the dialog's own handler, which is what returns focus to the
+   *  menu item that opened it, so the same return is done here. */
+  const close = () => {
+    setTimeout(() => triggerRef?.current?.focus(), 0);
+    onOpenChange(false);
+  };
+
   return (
     <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
       <RenameContent
         conversationId={conversationId}
         title={title}
         titleSetByUser={titleSetByUser}
-        onOpenChange={onOpenChange}
+        onClose={close}
       />
     </OGDialog>
   );

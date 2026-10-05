@@ -37,6 +37,8 @@ jest.mock('~/utils', () => ({ logger: { error: jest.fn() } }));
 
 const setup = (titleSetByUser = true, title = 'Old title') => {
   const onOpenChange = jest.fn();
+  const trigger = document.createElement('button');
+  document.body.appendChild(trigger);
   render(
     <Rename
       conversationId="convo-1"
@@ -44,9 +46,10 @@ const setup = (titleSetByUser = true, title = 'Old title') => {
       titleSetByUser={titleSetByUser}
       open={true}
       onOpenChange={onOpenChange}
+      triggerRef={{ current: trigger }}
     />,
   );
-  return { onOpenChange, input: screen.getByLabelText('com_ui_new_conversation_title') };
+  return { onOpenChange, trigger, input: screen.getByLabelText('com_ui_new_conversation_title') };
 };
 
 describe('Rename', () => {
@@ -94,6 +97,22 @@ describe('Rename', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(mockMutateAsync).not.toHaveBeenCalled();
+  });
+  it('returns focus to the menu item after a successful save', async () => {
+    const { input, trigger } = setup();
+
+    fireEvent.change(input, { target: { value: 'New title' } });
+    fireEvent.click(screen.getByText('com_ui_save'));
+
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('returns focus to the menu item when an unchanged title closes the dialog', async () => {
+    const { trigger } = setup();
+
+    fireEvent.click(screen.getByText('com_ui_save'));
+
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it('stays open and reports a failed rename', async () => {

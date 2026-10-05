@@ -109,8 +109,15 @@ export default function useChatOptions({
   const showRename = isDialogOpen('rename');
   const showProject = isDialogOpen('project');
   const showDelete = isDialogOpen('delete');
+  /** A close only clears the dialog it belongs to: a delete that settles after another chat
+   *  opened its own dialog must not take that one down. */
   const toggleDialog = (kind: DialogKind) => (open: boolean) =>
-    setOpenDialog(open ? { kind, id: conversationId } : null);
+    setOpenDialog((prev) => {
+      if (open) {
+        return { kind, id: conversationId };
+      }
+      return prev?.kind === kind && prev.id === conversationId ? null : prev;
+    });
   const setShowRename = toggleDialog('rename');
   const setShowProject = toggleDialog('project');
   const setShowDelete = toggleDialog('delete');
@@ -299,6 +306,7 @@ export default function useChatOptions({
             title={title}
             retainView={noop}
             triggerRef={deleteRef}
+            getCurrentConversationId={() => openConvoIdRef.current}
             setMenuOpen={closeMenu}
             conversationId={conversationId}
             showDeleteDialog={showDelete}
