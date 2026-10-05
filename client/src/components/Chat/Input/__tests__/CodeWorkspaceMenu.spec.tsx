@@ -494,6 +494,20 @@ describe('CodeWorkspaceMenu', () => {
     );
   });
 
+  test('tells same-named workspaces apart by id when they have no repository', async () => {
+    const graph = workspace();
+    graph.environments[0].workspaces = [
+      { id: 'repo-main', name: 'Repo' },
+      { id: 'repo-fork', name: 'Repo' },
+    ];
+    renderMenu(
+      <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
+    );
+    await userEvent.click(screen.getByTestId('code-workspace'));
+    expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-main/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-fork/ })).toBeInTheDocument();
+  });
+
   test('hides Git context when continuing without an attached workspace', () => {
     const graph = workspace({ mode: 'without_attached', state: 'without_attached' });
     graph.environments[0].workspaces[0].workspaceInstances = ['git_worktree'];

@@ -200,9 +200,10 @@ function EnvironmentWorkspaces({
       )}
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
-        const source = [descriptor.environment?.repo, descriptor.environment?.ref]
-          .filter(Boolean)
-          .join(' · ');
+        /** The id stands in when there is no repository to tell same-named workspaces apart. */
+        const source =
+          [descriptor.environment?.repo, descriptor.environment?.ref].filter(Boolean).join(' · ') ||
+          (descriptor.name != null && descriptor.name !== descriptor.id ? descriptor.id : '');
         return (
           <Fragment key={descriptor.id}>
             <Ariakit.MenuItemRadio
