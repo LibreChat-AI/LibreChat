@@ -470,6 +470,7 @@ export function createTransactionMethods(
     amount,
     expiresAt,
     initialBalance,
+    refillPolicy,
   }: BalanceReservationRequest): Promise<BalanceReservationResult | null> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
     let delay = 10;
@@ -485,6 +486,19 @@ export function createTransactionMethods(
           return null;
         }
         await upsertBalanceRecord(user, {}, initialBalance);
+        continue;
+      }
+
+      if (
+        refillPolicy != null &&
+        (record.autoRefillEnabled !== refillPolicy.autoRefillEnabled ||
+          (refillPolicy.autoRefillEnabled === true &&
+            ((record.refillMode ?? 'add') !== (refillPolicy.refillMode ?? 'add') ||
+              record.refillAmount !== refillPolicy.refillAmount ||
+              record.refillIntervalValue !== refillPolicy.refillIntervalValue ||
+              record.refillIntervalUnit !== refillPolicy.refillIntervalUnit)))
+      ) {
+        await upsertBalanceRecord(user, refillPolicy);
         continue;
       }
 

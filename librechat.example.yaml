@@ -449,9 +449,10 @@ registration:
 #   enabled: false
 #   startBalance: 20000
 #   autoRefillEnabled: false
-#   refillIntervalValue: 30
+#   refillIntervalValue: 30 # Reset mode requires a positive integer
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   # Deploy reset-capable servers to every replica before selecting 'reset'.
 #   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)

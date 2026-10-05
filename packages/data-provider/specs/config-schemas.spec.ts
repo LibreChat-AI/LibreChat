@@ -2019,7 +2019,7 @@ describe('balance refill mode', () => {
 });
 
 describe('reset interval validation', () => {
-  test.each([0, -1])(
+  test.each([0, -1, 0.5, 1.5])(
     'rejects reset interval %s while preserving additive settings',
     (refillIntervalValue) => {
       expect(balanceSchema.safeParse({ refillMode: 'reset', refillIntervalValue }).success).toBe(

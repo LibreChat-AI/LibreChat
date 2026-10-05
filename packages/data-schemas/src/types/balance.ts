@@ -56,6 +56,14 @@ export interface BalanceReservationRequest {
   expiresAt: Date;
   /** Creates the balance record with these fields when the user has none */
   initialBalance?: IBalanceUpdate;
+  /** Current request policy; synchronized before existing-record admission without changing credits. */
+  refillPolicy?: Pick<
+    IBalanceUpdate,
+    'refillAmount' | 'refillIntervalValue' | 'refillIntervalUnit'
+  > & {
+    autoRefillEnabled: boolean;
+    refillMode: BalanceRefillMode;
+  };
 }
 
 export interface BalanceReservationRenewal {

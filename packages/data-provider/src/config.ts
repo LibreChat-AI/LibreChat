@@ -3404,11 +3404,14 @@ export const balanceSchema = z
     display: z.enum(BALANCE_DISPLAY_MODES).optional().default('credits'),
   })
   .superRefine((balance, ctx) => {
-    if (balance.refillMode === 'reset' && balance.refillIntervalValue <= 0) {
+    if (
+      balance.refillMode === 'reset' &&
+      !(Number.isInteger(balance.refillIntervalValue) && balance.refillIntervalValue > 0)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['refillIntervalValue'],
-        message: 'Reset intervals must be greater than zero',
+        message: 'Reset intervals must be positive integers',
       });
     }
   });

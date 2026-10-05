@@ -1590,7 +1590,7 @@ describe('Balance Reservations', () => {
         },
       );
 
-      test.each([0, -1, 0.0001])(
+      test.each([0, -1, 0.0001, 0.5, 1.5])(
         'does not grant repeated allowances for invalid interval %s',
         async (refillIntervalValue) => {
           const user = new mongoose.Types.ObjectId();

@@ -83,7 +83,11 @@ export function isBalanceRefillDue(
   }
   if (
     record.refillMode === 'reset' &&
-    !(record.refillIntervalValue != null && record.refillIntervalValue > 0)
+    !(
+      record.refillIntervalValue != null &&
+      Number.isInteger(record.refillIntervalValue) &&
+      record.refillIntervalValue > 0
+    )
   ) {
     return false;
   }

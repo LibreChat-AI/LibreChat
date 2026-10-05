@@ -84,7 +84,9 @@ export function buildBalanceUpdateFields(
     config.autoRefillEnabled &&
     config.refillIntervalValue != null &&
     config.refillIntervalUnit != null &&
-    config.refillAmount != null;
+    config.refillAmount != null &&
+    (config.refillMode !== 'reset' ||
+      (Number.isInteger(config.refillIntervalValue) && config.refillIntervalValue > 0));
 
   if (!isAutoRefillConfigValid) {
     if (userRecord?.autoRefillEnabled === true) {
