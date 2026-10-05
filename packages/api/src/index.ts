@@ -85,6 +85,8 @@ export * from './prompts';
 export * from './projects';
 /* Conversations */
 export * from './conversations';
+/* Messages */
+export * from './messages';
 /* Skills */
 export * from './schedules';
 export * from './schedules/service';

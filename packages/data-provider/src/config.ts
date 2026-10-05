@@ -30,6 +30,7 @@ import {
 } from './schemas';
 import {
   REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
   MIN_BALANCE_RESERVATION_TTL_MS,
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
@@ -2580,8 +2581,8 @@ export const interfaceSchema = z
     customWelcome: z.string().optional(),
     mcpServers: mcpServersSchema.optional(),
     modelSelect: z.boolean().optional(),
-    /** Enable only after every API replica supports title ownership and old title jobs drain. */
-    runningChatRename: z.boolean().default(false),
+    /** Set to false during a rolling upgrade, until every API replica supports title ownership and old title jobs drain. */
+    runningChatRename: z.boolean().default(true),
     /** Milliseconds between syntax highlights while a code block streams. */
     codeHighlightThrottleMs: z.number().int().min(0).max(60_000).default(300),
     /** Most agents the agents panel selector lists before a search term is
@@ -2829,7 +2830,7 @@ export const interfaceSchema = z
   })
   .default({
     modelSelect: true,
-    runningChatRename: false,
+    runningChatRename: true,
     codeHighlightThrottleMs: 300,
     agentSelectorLimit: DEFAULT_AGENT_SELECTOR_LIMIT,
     parameters: true,
@@ -3397,6 +3398,8 @@ export const balanceSchema = z.object({
     .min(MIN_BALANCE_RESERVATION_TTL_MS)
     .optional()
     .default(DEFAULT_BALANCE_RESERVATION_TTL_MS),
+  /** How the UI presents the balance; `credits` keeps the raw figure. */
+  display: z.enum(BALANCE_DISPLAY_MODES).optional().default('credits'),
 });
 
 export const transactionsSchema = z.object({
@@ -3734,6 +3737,24 @@ export const conversationListConfigSchema = z.object({
 
 export type TConversationListConfig = z.infer<typeof conversationListConfigSchema>;
 
+/**
+ * Bounded previews of settled tool calls on conversation loads. A client that asks for them
+ * receives the start and end of each long output and argument string, without subagent
+ * transcripts, and fetches a part in full only when the reader opens it. `enabled: false` sends
+ * every load in full, as before previews existed.
+ */
+export const toolCallPreviewsConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Characters of `output` kept per tool call, half from the start and half from the end.
+   *  JSON output stays valid JSON, and an exit-status trailer is always kept whole. */
+  outputChars: z.number().int().min(256).max(1_000_000).default(512),
+  /** Characters of serialized `args` kept per tool call. JSON arguments stay valid JSON with
+   *  every field present; only the longest strings are shortened. */
+  argsChars: z.number().int().min(256).max(1_000_000).default(512),
+});
+
+export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
@@ -3741,6 +3762,13 @@ export const configSchema = z.object({
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  githubCompare: z
+    .object({
+      enabled: z.boolean().default(false),
+      timeoutMs: z.number().int().min(1).max(30000).default(10000),
+    })
+    .strict()
+    .optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
@@ -3749,6 +3777,9 @@ export const configSchema = z.object({
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),
   conversationList: conversationListConfigSchema.default(() =>
     conversationListConfigSchema.parse({}),
+  ),
+  toolCallPreviews: toolCallPreviewsConfigSchema.default(() =>
+    toolCallPreviewsConfigSchema.parse({}),
   ),
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),

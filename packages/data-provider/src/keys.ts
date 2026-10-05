@@ -1,5 +1,7 @@
 export enum QueryKeys {
   messages = 'messages',
+  /* Full content of one tool-call part, fetched when its preview is not enough */
+  toolCallPart = 'toolCallPart',
   ownerMessageTexts = 'ownerMessageTexts',
   sharedMessages = 'sharedMessages',
   sharedStartupConfig = 'sharedStartupConfig',

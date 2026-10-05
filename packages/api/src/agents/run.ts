@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { resolveSubagents } from 'librechat-data-provider';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
-import { Run, Providers, Constants, HookRegistry } from '@librechat/agents';
+import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -54,16 +54,17 @@ import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
+import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runtime';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
-import type { TerminalSteerHook } from '~/agents/steering/runtime';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
+import type { SubagentCodeHostArgSpecs } from '~/code/targets';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
@@ -76,6 +77,7 @@ import {
   collectNativeEditFileAgentIds,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
+  collectAttachedCodeApprovalPolicies,
   createAttachedCodeEnvironmentPolicyHook,
   resolveAttachedCodeApprovalMode,
 } from '~/agents/hitl/byom';
@@ -115,6 +117,7 @@ import { applyCustomHandoffPromptKeyCompatibility } from '~/agents/handoffPrompt
 import { stripIntentFromToolRegistry, stripIntentFromToolDefinitions } from '~/agents/intent';
 import { createAgentToolApprovalSession, bindRunToolApprovalSession } from './hitl/modes';
 import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils/headers';
+import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
@@ -530,11 +533,20 @@ type LazySubagentAgent = Pick<
   | 'mcpToolAliases'
 > & {
   configId: string;
+  /** Per-call machine choices declared on the child's subagent call. */
+  subagentHostArgs?: SubagentCodeHostArgSpecs;
+  /** The routes behind those choices, for run-wide gates and approval bindings. */
+  codeExecutionChoices?: CodeExecutionContext[];
   subagentAgentConfigs?: RunAgent[];
   lazySubagentConfigs?: LazySubagentAgent[];
   /** Lightweight graph-member metadata used only by run-wide capability gates. */
   subagentGraphMemberMetadata?: SubagentTreeNode[];
   resolve: (context: SubagentResolveContext) => Promise<RunAgent>;
+  /**
+   * Wraps the whole selection, through the inputs handed to the SDK, so host state the
+   * call reserved is kept only when the child is actually exposed.
+   */
+  settle?: <T>(context: SubagentResolveContext, resolveInputs: () => Promise<T>) => Promise<T>;
 };
 
 type SubagentTreeNode = Pick<
@@ -552,6 +564,7 @@ type SubagentTreeNode = Pick<
   | 'includeReasoningHistory'
   | 'mcpToolAliases'
 > & {
+  codeExecutionChoices?: CodeExecutionContext[];
   subagentAgentConfigs?: SubagentTreeNode[];
   lazySubagentConfigs?: SubagentTreeNode[];
   subagentGraphMemberMetadata?: SubagentTreeNode[];
@@ -1620,7 +1633,44 @@ function createLazySubagentConfig(
   prebuiltGraphInputs?: ReadonlyMap<string, AgentInputs>,
   onResolvedAgent?: (agent: RunAgent) => void,
 ): SubagentConfig {
-  return {
+  const resolveInputs = async (context: SubagentResolveContext): Promise<AgentInputs> => {
+    if (context.signal.aborted) {
+      throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    const resolvedChild = await child.resolve(context);
+    if (context.signal.aborted) {
+      throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
+    }
+    onResolvedAgent?.(resolvedChild);
+    /** Graph members initialized with the child may run on its per-call machine. */
+    for (const graph of resolvedChild.subagentGraphConfigs ?? []) {
+      for (const member of graph.memberConfigs) {
+        onResolvedAgent?.(member);
+      }
+    }
+    const childInputs = buildIsolatedAgentInputs(resolvedChild, toInput);
+    const resolutionState: SubagentBuildState = {
+      configCount: 1,
+      rootAgentIds: [resolvedChild.id],
+    };
+    const grandchildConfigs = buildSubagentConfigs(
+      resolvedChild,
+      childInputs,
+      toInput,
+      resolutionState,
+      agentsEConfig,
+      ancestors,
+      depth,
+      prebuiltGraphInputs,
+      false,
+      onResolvedAgent,
+    );
+    if (grandchildConfigs.length > 0) {
+      childInputs.subagentConfigs = grandchildConfigs;
+    }
+    return childInputs;
+  };
+  const config: SubagentConfig = {
     type: child.id,
     name: child.name ?? child.id,
     description:
@@ -1629,38 +1679,15 @@ function createLazySubagentConfig(
     configId: child.configId,
     allowNested: true,
     maxTurns: resolveSubagentMaxTurns(agentsEConfig, child),
-    resolveAgentInputs: async (context) => {
-      if (context.signal.aborted) {
-        throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
-      }
-      const resolvedChild = await child.resolve(context);
-      if (context.signal.aborted) {
-        throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
-      }
-      onResolvedAgent?.(resolvedChild);
-      const childInputs = buildIsolatedAgentInputs(resolvedChild, toInput);
-      const resolutionState: SubagentBuildState = {
-        configCount: 1,
-        rootAgentIds: [resolvedChild.id],
-      };
-      const grandchildConfigs = buildSubagentConfigs(
-        resolvedChild,
-        childInputs,
-        toInput,
-        resolutionState,
-        agentsEConfig,
-        ancestors,
-        depth,
-        prebuiltGraphInputs,
-        false,
-        onResolvedAgent,
-      );
-      if (grandchildConfigs.length > 0) {
-        childInputs.subagentConfigs = grandchildConfigs;
-      }
-      return childInputs;
-    },
+    resolveAgentInputs: (context) =>
+      child.settle == null
+        ? resolveInputs(context)
+        : child.settle(context, () => resolveInputs(context)),
   };
+  /** Assigned rather than spread so the field typechecks against SDKs that predate it. */
+  return child.subagentHostArgs == null
+    ? config
+    : Object.assign(config, { hostArgs: child.subagentHostArgs });
 }
 
 function enqueueSubagentChildren(
@@ -1763,7 +1790,7 @@ function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
       continue;
     }
     visited.add(agent.id);
-    if (agent.codeEnvAvailable === true) {
+    if (agent.codeEnvAvailable === true || (agent.codeExecutionChoices?.length ?? 0) > 0) {
       return true;
     }
     enqueueSubagentChildren(agent, pending, visited);
@@ -2265,7 +2292,7 @@ export async function createRun({
      * (`createSteerPreemptPoll`). Threaded into `RunConfig.preemption`, which
      * also makes the SDK reserve recursion-limit headroom for its seals.
      */
-    preemption?: StreamPreemption;
+    preemption?: StreamPreemption & Partial<Pick<SteerPreemption, 'disable'>>;
   };
   /**
    * Run-scoped tool-batch summary hook (PostToolBatch). Like steering, it
@@ -2645,7 +2672,7 @@ export async function createRun({
   const attachedCodeEnvironmentSettings = collectAttachedCodeEnvironmentPolicySettings(agents);
   const codeApprovalMode = resolveAttachedCodeApprovalMode(
     requestedCodeApprovalMode,
-    attachedCodeEnvironmentSettings,
+    collectAttachedCodeApprovalPolicies(agents),
     agentsEndpointConfig?.toolApproval?.enabled !== false,
   );
   assertAttachedCodeEnvironmentApprovalSupported({
@@ -2861,6 +2888,11 @@ export async function createRun({
         settings: resolvedAgent.codeExecutionContext.codeEnvironmentSettings,
         skillAuthoringAvailable: resolvedAgent.skillAuthoringAvailable === true,
       });
+    } else {
+      /** A routable child counted as attached before its call chose a route; it resolved
+       *  off attached machines, and runs on that one route for the whole request. */
+      attachedCodeEnvironmentAgentIds.delete(resolvedAgent.id);
+      attachedCodeEnvironmentSettings.delete(resolvedAgent.id);
     }
     const discoveredAliases = collectRunMCPToolAliases([resolvedAgent]).filter(
       ({ name, aliasName }) => {
@@ -3002,11 +3034,25 @@ export async function createRun({
    * runtime) — excess-property checks only apply to fresh literals. Inline
    * the field at the call site once the dependency is bumped.
    */
+  let preemption = steering?.preemption;
+  if (preemption != null && !supportsRunInterruption(agentInputs)) {
+    await preemption.disable?.();
+    preemption = undefined;
+  }
+  const toolHandler = customHandlers?.[GraphEvents.ON_TOOL_EXECUTE];
+  const runHandlers =
+    toolHandler != null && preemption != null && isSteerPreemptSupported()
+      ? {
+          ...customHandlers,
+          [GraphEvents.ON_TOOL_EXECUTE]: interruptToolHandler(toolHandler, preemption),
+        }
+      : customHandlers;
+
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
-    customHandlers,
+    customHandlers: runHandlers,
     initialSessions,
     calibrationRatio,
     fadingTier,
@@ -3096,8 +3142,7 @@ export async function createRun({
     // Preemption is observation-only like the boundary hooks: the poll never
     // mutates and the SDK refuses to seal unless a PreemptBoundary matcher is
     // live, so gating both on the same capability keeps them in lockstep.
-    ...(steering?.preemption != null &&
-      isSteerPreemptSupported() && { preemption: steering.preemption }),
+    ...(preemption != null && isSteerPreemptSupported() && { preemption }),
     // Stream circuit breakers (librechat.yaml endpoints.agents.maxToolCallArgBytes /
     // maxDeltaEventsPerTurn). Omitted when unset so the SDK defaults apply: a runaway
     // streamed tool-call argument aborts the run at 64 KiB, the per-turn delta event

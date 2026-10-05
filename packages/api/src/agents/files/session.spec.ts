@@ -5,7 +5,11 @@ import type { SubagentExecutionContext } from '@librechat/agents';
 import type { RunArtifactDescriptor } from '~/files/code/publication';
 import type { RunFileSessionDeps } from './session';
 import type { ServerRequest } from '~/types';
-import { createRunFileSession, getAuthorizedRunFileSnapshot } from './session';
+import {
+  createRunFileSession,
+  getAuthorizedRunFileSnapshot,
+  isRunFileSharingRequested,
+} from './session';
 import { AgentAttachmentLimitError } from '../attachments';
 import { resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
@@ -689,6 +693,19 @@ it.each(fileCapabilityMatrix)(
     const { session, getInputs, prepared, read } = setup(enabled, { capabilities, subagents });
     try {
       expect(session.isActive()).toBe(expected);
+      expect(
+        isRunFileSharingRequested({
+          capabilities,
+          agent: { subagents },
+          policy: {
+            enabled: true,
+            allowSiblingSharing: false,
+            maxFiles: 1,
+            maxPrivateBytes: 100,
+            ttlMs: 60000,
+          },
+        }),
+      ).toBe(expected);
       expect(getInputs).toHaveBeenCalledTimes(expected ? 1 : 0);
       expect(read).not.toHaveBeenCalled();
       expect(prepared).not.toHaveBeenCalled();

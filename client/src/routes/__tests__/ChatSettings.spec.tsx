@@ -1,7 +1,9 @@
 import React from 'react';
+import { useAtomValue, getDefaultStore } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
 import { RecoilRoot, useRecoilValue, type MutableSnapshot } from 'recoil';
 import { defaultChatSettings, useChatSettings } from '~/Providers/ChatSettingsContext';
+import { duringRunActionAtom } from '~/store/duringRun';
 import ChatSettingsProvider from '../ChatSettings';
 import store from '~/store';
 
@@ -9,7 +11,7 @@ const renderSettings = (initialize?: (snapshot: MutableSnapshot) => void) =>
   renderHook(
     () => ({
       settings: useChatSettings(),
-      storedAction: useRecoilValue(store.duringRunDefaultAction),
+      storedAction: useAtomValue(duringRunActionAtom),
       visibleArtifacts: useRecoilValue(store.visibleArtifacts),
     }),
     {
@@ -22,15 +24,14 @@ const renderSettings = (initialize?: (snapshot: MutableSnapshot) => void) =>
   );
 
 describe('ChatSettingsProvider', () => {
+  beforeEach(() => getDefaultStore().set(duringRunActionAtom, 'steer'));
   it('supplies the stored preferences to the chat', () => {
-    const { result } = renderSettings(({ set }) => {
-      set(store.duringRunDefaultAction, 'queue');
-      set(store.steerInterruptsByDefault, true);
+    const { result } = renderSettings(() => {
+      getDefaultStore().set(duringRunActionAtom, 'interrupt');
     });
 
     expect(result.current.settings).toMatchObject({
-      duringRunDefaultAction: 'queue',
-      steerInterruptsByDefault: true,
+      duringRunDefaultAction: 'interrupt',
     });
   });
 

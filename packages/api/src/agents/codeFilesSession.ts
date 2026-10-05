@@ -20,12 +20,16 @@ export interface CodeFilesAgent {
   id?: string;
   codeEnvAvailable?: boolean;
   codeExecutionContext?: CodeExecutionContext;
+  /** Routes a parent may place this subagent on per call; each is primed like the default. */
+  codeExecutionChoices?: CodeExecutionContext[];
   codeSessionKey?: string;
   primedCodeFiles?: CodeEnvFile[];
   statefulCodeSessions?: boolean;
   statefulCodeEnvironment?: StatefulCodeEnvironment;
   subagentAgentConfigs?: CodeFilesAgent[];
   lazySubagentConfigs?: CodeFilesAgent[];
+  /** Graph members a lazy child initializes only when it is selected. */
+  subagentGraphMemberMetadata?: CodeFilesAgent[];
   subagentGraphConfigs?: Array<{ memberConfigs: CodeFilesAgent[] }>;
 }
 
@@ -42,6 +46,7 @@ function enqueueCodeFilesChildren(
   for (const child of [
     ...(agent.subagentAgentConfigs ?? []),
     ...(agent.lazySubagentConfigs ?? []),
+    ...(agent.subagentGraphMemberMetadata ?? []),
   ]) {
     if (child && !visited.has(child)) queue.push(child);
   }
@@ -83,14 +88,20 @@ export function collectCodeExecutionProfileRoutes(
             conversationId: scope.conversationId,
           })
         : undefined);
-    if (agent.codeEnvAvailable === true && context) {
-      const routeKey = getCodeExecutionRouteKey(context);
+    const addRoute = (routeContext: CodeExecutionContext, codeSessionKey: string): void => {
+      const routeKey = getCodeExecutionRouteKey(routeContext);
       const route = routes.get(routeKey) ?? {
-        codeExecutionContext: context,
+        codeExecutionContext: routeContext,
         codeSessionKeys: new Set<string>(),
       };
-      route.codeSessionKeys.add(agent.codeSessionKey ?? context.codeSessionKey);
+      route.codeSessionKeys.add(codeSessionKey);
       routes.set(routeKey, route);
+    };
+    if (agent.codeEnvAvailable === true && context) {
+      addRoute(context, agent.codeSessionKey ?? context.codeSessionKey);
+    }
+    for (const choice of agent.codeExecutionChoices ?? []) {
+      addRoute(choice, choice.codeSessionKey);
     }
     enqueueCodeFilesChildren(agent, queue, visited);
   }

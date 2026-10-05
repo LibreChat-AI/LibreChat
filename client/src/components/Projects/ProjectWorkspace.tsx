@@ -212,8 +212,8 @@ export default function ProjectWorkspace() {
   ) : (
     <div className="min-w-0">
       <div className="flex min-w-0 items-start gap-4">
-        <span className="bg-surface-secondary text-text-secondary flex size-12 shrink-0 items-center justify-center rounded-2xl">
-          <Folder className="size-6" aria-hidden="true" />
+        <span className="bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl">
+          <Folder className="size-5" aria-hidden="true" />
         </span>
         <h1 className="min-w-0 flex-1">
           <Button
@@ -221,9 +221,9 @@ export default function ProjectWorkspace() {
             type="button"
             variant="inline-edit"
             onClick={() => startEditing('name')}
-            className="min-h-12 w-full min-w-0"
+            className="min-h-10 w-full min-w-0"
           >
-            <span className="line-clamp-2 min-w-0 text-2xl font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+            <span className="line-clamp-2 min-w-0 text-xl font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
               {project.name}
             </span>
             <span className="sr-only">, {localize('com_ui_project_edit_name')}</span>
@@ -247,7 +247,7 @@ export default function ProjectWorkspace() {
 
   const instructionsSection = (
     <section
-      className="border-border-light bg-surface-secondary flex h-full min-h-0 min-w-0 flex-col rounded-2xl border p-4 sm:p-5"
+      className="border-border-light bg-surface-secondary flex h-full min-h-0 min-w-0 flex-col rounded-2xl border p-4"
       aria-labelledby="project-instructions-heading"
     >
       <div className="mb-3 flex items-center justify-between gap-2">
@@ -365,7 +365,7 @@ export default function ProjectWorkspace() {
   return (
     <main className="bg-surface-primary-alt text-text-primary flex h-full min-h-0 min-w-0 flex-col">
       <header className="border-border-light bg-surface-primary-alt sticky top-0 z-10 border-b">
-        <div className="flex h-14 w-full items-center gap-2 px-4 md:h-16 md:px-6">
+        <div className="flex h-14 w-full items-center gap-2 px-4 md:px-6">
           {isSmallScreen ? <OpenSidebar className="size-9 shrink-0" /> : null}
           <Button
             type="button"
@@ -380,6 +380,7 @@ export default function ProjectWorkspace() {
           <Button
             type="button"
             size="sm"
+            shape="round"
             className="ml-auto shrink-0"
             variant="default"
             onClick={startProjectChat}

@@ -679,7 +679,7 @@ test.describe('mid-run steering and queuing', () => {
     await expect(followupReply.locator('.agent-turn')).toBeVisible();
   });
 
-  test('interrupt & send (Alt+Enter) stops the run and auto-sends the text as the next turn', async ({
+  test('Interrupt (Alt+Enter) keeps completed text and continues the same response', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -699,23 +699,20 @@ test.describe('mid-run steering and queuing', () => {
     await typeDuringRun(page, interruptText);
     await messageInput(page).press('Alt+Enter');
 
-    // The abort settles and the text auto-sends as the next user turn.
-    await expect(messageTurns(page)).toHaveCount(6, { timeout: 60000 });
-    const interruptTurn = messageTurns(page).nth(4);
-    await expect(interruptTurn).toContainText(interruptText);
-    await expect(interruptTurn.locator('.user-turn')).toBeVisible();
-
-    // The follow-up run streams its response into the LIVE view — no reload.
-    const freshReply = messageTurns(page).nth(5);
-    await expect(freshReply).toContainText(MOCK_REPLY_TEXT, { timeout: 30000 });
-    await expect(freshReply.locator('.agent-turn')).toBeVisible();
+    await expect(appliedSteerParts(page).filter({ hasText: interruptText })).toHaveCount(1);
+    await expect(messageTurns(page)).toHaveCount(4);
+    await expect(messagesView(page).getByText('chunk-010')).toBeVisible();
+    await expect(messagesView(page).getByText(`[steers-seen=1] ${interruptText}`)).toBeVisible();
+    await expect(
+      messagesView(page).getByText(`${SLOW_REPLY_CONTINUATION_TEXT} ${label}`),
+    ).toBeVisible();
 
     // The interrupted response was stopped mid-stream: its final chunk never
     // arrived (an uninterrupted slow run always ends with it).
     await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
   });
 
-  test('interrupt & send drains after a created response with no persistable content', async ({
+  test('Interrupt restarts a silent attempt and preserves the response parent', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -754,27 +751,98 @@ test.describe('mid-run steering and queuing', () => {
       .toBe(true);
 
     await typeDuringRun(page, interruptText);
+    const [steerResponse] = await Promise.all([
+      page.waitForResponse(isSteerRequest),
+      messageInput(page).press('Alt+Enter'),
+    ]);
+    expect(steerResponse.status()).toBe(202);
+    await expect(messagesView(page).getByText(`E2E empty reply continued ${label}`)).toBeVisible();
+    await expect(messagesView(page).getByText(`[steers-seen=1] ${interruptText}`)).toBeVisible();
+    await expect(appliedSteerParts(page).filter({ hasText: interruptText })).toHaveCount(1);
+    await expect(messageTurns(page)).toHaveCount(4);
+
+    await expect
+      .poll(async () => {
+        const records = await requestJson<PersistedMessage[]>(page, {
+          path: messagesPath,
+          token: accessToken,
+        });
+        return records.some(
+          (message) =>
+            message.isCreatedByUser === false &&
+            message.unfinished !== true &&
+            JSON.stringify(message.content).includes(interruptText),
+        );
+      })
+      .toBe(true);
+    const persisted = await requestJson<PersistedMessage[]>(page, {
+      path: messagesPath,
+      token: accessToken,
+    });
+    const interruptedUser = persisted.find(
+      (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
+    );
+    expect(interruptedUser).toBeTruthy();
+    const continued = persisted.find(
+      (message) =>
+        message.isCreatedByUser === false && message.parentMessageId === interruptedUser?.messageId,
+    );
+    expect(continued).toBeTruthy();
+    expect(continued?.unfinished).not.toBe(true);
+    expect(JSON.stringify(continued?.content)).toContain(interruptText);
+    await expect(queuedRows(page)).toHaveCount(0);
+  });
+
+  test('Stop preserves an empty response parent for the next turn', async ({ page }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel('stop-empty');
+    const emptyRunPrompt = `E2E_EMPTY_SLOW_REPLY:${label}`;
+    const interruptText = `Interrupt empty follow-up ${label}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await establishConversation(page, `interrupt-empty-setup-${label}`);
+
+    const conversationId = new URL(page.url()).pathname.split('/').pop();
+    expect(conversationId).toBeTruthy();
+    const accessToken = await getAccessToken(page);
+    const messagesPath = `/api/messages/${encodeURIComponent(conversationId as string)}`;
+
+    const run = await sendMessage(page, emptyRunPrompt);
+    expect(run.ok()).toBeTruthy();
+
+    /** BaseClient starts its user-row write only after `onStart` emitted
+     * `created`. Waiting for that row proves the server is in the exact
+     * created-but-still-whitespace state, without relying on a sleep. */
+    await expect
+      .poll(
+        async () => {
+          const persisted = await requestJson<PersistedMessage[]>(page, {
+            path: messagesPath,
+            token: accessToken,
+          });
+          return persisted.some(
+            (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
+          );
+        },
+        { timeout: 30000 },
+      )
+      .toBe(true);
+
     const [abortResponse] = await Promise.all([
       page.waitForResponse(
         (response) =>
           response.request().method() === 'POST' &&
           new URL(response.url()).pathname === '/api/agents/chat/abort',
-        { timeout: 30000 },
       ),
-      messageInput(page).press('Alt+Enter'),
+      page.getByTestId('stop-generation-button').click(),
     ]);
     expect(abortResponse.ok()).toBeTruthy();
+    await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
+    await sendMessage(page, interruptText);
+    await expect(messageTurns(page)).toHaveCount(6);
+    await expect(messageTurns(page).nth(5)).toContainText(MOCK_REPLY_TEXT);
 
-    // The abort FINAL releases the queued follow-up, which completes live.
-    await expect(messageTurns(page)).toHaveCount(6, { timeout: 60000 });
-    const followupTurn = messageTurns(page).nth(4);
-    await expect(followupTurn).toContainText(interruptText);
-    await expect(followupTurn.locator('.user-turn')).toBeVisible();
-    await expect(messageTurns(page).nth(5)).toContainText(MOCK_REPLY_TEXT, { timeout: 30000 });
-
-    /** The empty assistant is a durable parent, not merely the optimistic
-     * row that the created handler rendered. Without that row an underscore
-     * preliminary id can reject this same queued submission. */
     const persisted = await requestJson<PersistedMessage[]>(page, {
       path: messagesPath,
       token: accessToken,
@@ -789,26 +857,11 @@ test.describe('mid-run steering and queuing', () => {
           message.isCreatedByUser === false &&
           message.parentMessageId === interruptedUser?.messageId,
       ),
-    ).toMatchObject({
-      content: [],
-      unfinished: true,
-      isCreatedByUser: false,
-    });
+    ).toMatchObject({ content: [], unfinished: true });
     await expect(queuedRows(page)).toHaveCount(0);
   });
 
-  /**
-   * Interrupt & steer is the only path that can inject with NO tool boundary
-   * ahead of it: the server asks the generating replica to seal the model
-   * stream at the next provider-safe chunk, keeps the partial answer, and
-   * resumes in the same message.
-   *
-   * The contrast with the two tests above IS the feature. `E2E_SLOW_REPLY`
-   * streams pure text with no tools, so an ordinary steer there provably
-   * degrades to a queued follow-up turn ("steer after the last tool boundary"
-   * above), and interrupt & send discards the half-written answer entirely.
-   * This path does neither: same absence of a boundary, opposite outcome.
-   */
+  /** The other interrupt chord uses the same no-tool-boundary continuation. */
   test('interrupt & steer (Cmd/Ctrl+Shift+Enter) seals mid-stream and injects with no tool boundary', async ({
     page,
   }) => {
