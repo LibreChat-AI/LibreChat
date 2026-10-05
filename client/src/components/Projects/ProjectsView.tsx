@@ -77,8 +77,8 @@ function ProjectCard({
   return (
     <article
       className={cn(
-        'group/project border-border-light bg-surface-secondary relative flex min-h-[9.5rem] max-w-full min-w-0 flex-col rounded-2xl border',
-        'hover:bg-surface-hover transition-colors duration-150 ease-out',
+        'group/project border-border-light bg-surface-secondary relative flex min-h-[8.5rem] max-w-full min-w-0 flex-col rounded-2xl border',
+        'hover:border-border-medium hover:bg-surface-hover transition-colors duration-150 ease-out motion-reduce:transition-none',
         isMenuOpen && 'bg-surface-hover',
       )}
     >
@@ -86,13 +86,13 @@ function ProjectCard({
         type="button"
         variant="card"
         size="tile"
-        className="min-h-[9.5rem] w-full max-w-full min-w-0 flex-1 flex-col items-stretch"
+        className="min-h-[8.5rem] w-full max-w-full min-w-0 flex-1 flex-col items-stretch"
         onClick={() => onOpen(project._id)}
       >
-        <span className="bg-surface-tertiary text-text-secondary group-hover/project:text-text-primary flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors">
-          <Folder className="h-5 w-5" aria-hidden="true" />
+        <span className="bg-surface-tertiary text-text-secondary group-hover/project:text-text-primary flex size-9 shrink-0 items-center justify-center rounded-xl transition-colors">
+          <Folder className="size-4" aria-hidden="true" />
         </span>
-        <span className="text-text-primary mt-3 line-clamp-2 max-w-full min-w-0 text-base font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
+        <span className="text-text-primary mt-2.5 line-clamp-2 max-w-full min-w-0 text-sm font-semibold tracking-tight wrap-anywhere md:line-clamp-1">
           {project.name}
         </span>
         {project.description ? (
@@ -100,7 +100,7 @@ function ProjectCard({
             {project.description}
           </span>
         ) : null}
-        <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-4 text-xs tabular-nums">
+        <span className="text-text-secondary mt-auto flex max-w-full min-w-0 items-center gap-2 pt-3 text-xs tabular-nums">
           <span>
             {project.conversationCount === 1
               ? localize('com_ui_project_chat_count_single')
@@ -162,13 +162,13 @@ function ProjectCard({
 
 function ProjectGridSkeleton() {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3" aria-hidden="true">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3" aria-hidden="true">
       {Array.from({ length: 6 }, (_, index) => (
         <div
           key={index}
-          className="bg-surface-secondary flex min-h-[9.5rem] flex-col rounded-2xl p-4"
+          className="bg-surface-secondary flex min-h-[8.5rem] flex-col rounded-2xl p-4"
         >
-          <Skeleton className="h-11 w-11 rounded-xl" />
+          <Skeleton className="size-9 rounded-xl" />
           <Skeleton className="mt-3 h-5 w-2/3" />
           <Skeleton className="mt-2 h-4 w-full" />
           <Skeleton className="mt-auto h-3 w-24" />
@@ -271,7 +271,7 @@ export default function ProjectsView() {
         <div className="mt-4 flex flex-1 flex-col">
           {isLoading && <ProjectGridSkeleton />}
           {!isLoading && projects.length > 0 && (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3">
               {projects.map((project) => (
                 <ProjectCard
                   key={project._id}

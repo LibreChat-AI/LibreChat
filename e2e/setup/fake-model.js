@@ -50,6 +50,7 @@ const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
@@ -757,9 +758,19 @@ function replyResponses(text) {
    * for the user row, then interrupts this whitespace-only stream. */
   const emptySlowName = getMarkerValue(text, EMPTY_SLOW_REPLY_MARKER);
   if (emptySlowName) {
+    let invocation = 0;
     return {
-      responses: [' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)],
+      responses: [''],
       sleep: SLOW_CHUNK_DELAY_MS,
+      resolveInvocation: async (messages) => {
+        invocation += 1;
+        return {
+          response:
+            invocation === 1
+              ? ' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)
+              : `E2E empty reply continued ${emptySlowName} ${steerEchoSuffix(messages)}`,
+        };
+      },
     };
   }
 
@@ -1759,6 +1770,39 @@ function activityProseReplyResponses(label, toolNames) {
         };
       }
       return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+function interruptToolReplyResponses(label, toolNames) {
+  const remember = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  const slow = Array.from(toolNames).find((name) => name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX));
+  if (!remember || !slow) return { responses: ['E2E interrupt tools unavailable'] };
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async (messages) => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: `E2E interrupt tools running ${label}`,
+          toolCalls: [
+            {
+              id: `call_interrupt_fast_${label}`,
+              name: remember,
+              args: { fact: `completed ${label}` },
+              type: 'tool_call',
+            },
+            {
+              id: `call_interrupt_slow_${label}`,
+              name: slow,
+              args: { text: `late ${label}`, delay_ms: 5000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E interrupt tool reply done ${label} ${steerEchoSuffix(messages)}` };
     },
   };
 }
@@ -3382,6 +3426,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   if (statefulCodeOperation) {
     return statefulCodeResponses(statefulCodeOperation, toolNames);
   }
+
+  const interruptToolLabel = getMarkerValue(text, INTERRUPT_TOOL_REPLY_MARKER);
+  if (interruptToolLabel) return interruptToolReplyResponses(interruptToolLabel, toolNames);
 
   const steerToolLabel = getMarkerValue(text, STEER_TOOL_REPLY_MARKER);
   if (steerToolLabel) {

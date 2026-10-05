@@ -2575,10 +2575,14 @@ it.each([{ baseMs: 1 }, { maxMs: 600001 }, { baseMs: 1000, maxMs: 500 }])(
 );
 
 describe('conversation title ownership rollout', () => {
-  it('defaults running rename off and accepts only an explicit deployment opt-in', () => {
-    expect(interfaceSchema.parse({}).runningChatRename).toBe(false);
-    expect(interfaceSchema.parse(undefined).runningChatRename).toBe(false);
-    expect(interfaceSchema.parse({ runningChatRename: true }).runningChatRename).toBe(true);
+  it('defaults running rename on when the option is omitted', () => {
+    expect(interfaceSchema.parse({}).runningChatRename).toBe(true);
+  });
+  it('defaults running rename on when the whole interface block is omitted', () => {
+    expect(interfaceSchema.parse(undefined).runningChatRename).toBe(true);
+  });
+  it('lets a deployment opt out of running rename explicitly', () => {
+    expect(interfaceSchema.parse({ runningChatRename: false }).runningChatRename).toBe(false);
   });
   it('fails closed when an old replica omits the version or the operator leaves the fence off', () => {
     expect(supportsConversationTitleOwnership(undefined)).toBe(false);
@@ -2640,4 +2644,34 @@ describe('workspace admission configuration', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('GitHub comparison configuration', () => {
+  it('keeps outbound comparison disabled unless explicitly enabled', () => {
+    expect(configSchema.parse({ version: '1.0' }).githubCompare).toBeUndefined();
+    expect(configSchema.parse({ version: '1.0', githubCompare: {} }).githubCompare).toEqual({
+      enabled: false,
+      timeoutMs: 10000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', githubCompare: { enabled: true, timeoutMs: 2000 } })
+        .githubCompare,
+    ).toEqual({
+      enabled: true,
+      timeoutMs: 2000,
+    });
+  });
+  it.each([0, -1, 30001, 1.5, '10000'])('rejects invalid timeout %p', (timeoutMs) => {
+    expect(configSchema.safeParse({ version: '1.0', githubCompare: { timeoutMs } }).success).toBe(
+      false,
+    );
+  });
+  it('rejects unknown comparison settings', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        githubCompare: { enabled: true, baseURL: 'https://other.test' },
+      }).success,
+    ).toBe(false);
+  });
 });

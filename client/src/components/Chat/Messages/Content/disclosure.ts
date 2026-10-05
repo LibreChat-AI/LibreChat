@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo } from 'react';
+import { createContext, useContext, useEffect, useMemo } from 'react';
 import { atom, useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { PrimitiveAtom } from 'jotai';
@@ -70,6 +70,28 @@ export function useToolAutoExpand() {
   return autoExpand || soleTool === true;
 }
 
+/** Asks the enclosing tool-call part to load its stored content in place of a server preview.
+ *  `null` outside a part that holds a preview. */
+export const ToolContentRequestContext = createContext<(() => void) | null>(null);
+
+/** True while the enclosing part still shows a server preview, so content actions (copy) would
+ *  hand out shortened text. False outside a previewed part. */
+export const ToolContentPendingContext = createContext(false);
+
+export function useToolContentPending(): boolean {
+  return useContext(ToolContentPendingContext);
+}
+
+/** Requests the part's full content while `active`: its card is open or its panel is showing. */
+export function useToolContentRequest(active: boolean) {
+  const request = useContext(ToolContentRequestContext);
+  useEffect(() => {
+    if (active) {
+      request?.();
+    }
+  }, [active, request]);
+}
+
 /** A tool card's disclosure. The reader's explicit choice lives in the
  *  per-tool atom, so it survives the card remounting when a live batch
  *  regroups. Until they choose, the card follows `useToolAutoExpand` and
@@ -78,5 +100,6 @@ export function useToolExpansion(canExpand: boolean) {
   const autoExpand = useToolAutoExpand();
   const [override, setOverride] = useAtom(useToolDisclosure());
   const expanded = override ?? (autoExpand && canExpand);
+  useToolContentRequest(expanded);
   return [expanded, setOverride] as const;
 }

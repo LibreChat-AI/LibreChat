@@ -3,7 +3,12 @@ import { Copy, Check } from 'lucide';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
 import type { MarkdownVariant } from '~/utils/richtext';
-import { useLocalize, useCopyMessageToClipboard, hasCopyableText } from '~/hooks';
+import {
+  useLocalize,
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from '~/hooks';
 import { revealOnRowHoverClasses } from './styles';
 import { cn } from '~/utils';
 
@@ -17,17 +22,15 @@ type THoverButtons = {
 export default function MinimalHoverButtons({ message, searchResults, variant }: THoverButtons) {
   const localize = useLocalize();
   const [isCopied, setIsCopied] = useState(false);
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
   const copyToClipboard = useCopyMessageToClipboard({
-    text: message.text,
-    content: message.content,
+    ...clipboardSource,
     searchResults,
-    isCreatedByUser: message.isCreatedByUser,
-    error: message.error,
-    variant,
+    variant: clipboardSource.variant ?? variant,
   });
   const canCopy = useMemo(
-    () => hasCopyableText({ text: message.text, content: message.content, searchResults }),
-    [message.text, message.content, searchResults],
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
   );
 
   return (

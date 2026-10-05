@@ -165,12 +165,15 @@ function RawContent({
 const COPIED_MS = 2000;
 const CALL_CONTENT_LENGTH = 4000;
 
-function toContent(value?: string): TTraceContent | undefined {
+function toContent(value?: string, previewed = false): TTraceContent | undefined {
   if (value == null) {
     return undefined;
   }
   const truncated = value.length > CALL_CONTENT_LENGTH;
-  return { value: truncated ? value.slice(0, CALL_CONTENT_LENGTH) : value, truncated };
+  return {
+    value: truncated ? value.slice(0, CALL_CONTENT_LENGTH) : value,
+    truncated: truncated || previewed,
+  };
 }
 
 /** The saved agent a record ran: who it is, its id to copy, and a chat with it one click away. */
@@ -245,8 +248,14 @@ function ToolCalls({
               </span>
             )}
           </h4>
-          <ContentBlock label="com_ui_trace_tool_sent" content={toContent(call.input)} />
-          <ContentBlock label="com_ui_trace_tool_returned" content={toContent(call.output)} />
+          <ContentBlock
+            label="com_ui_trace_tool_sent"
+            content={toContent(call.input, call.inputTruncated)}
+          />
+          <ContentBlock
+            label="com_ui_trace_tool_returned"
+            content={toContent(call.output, call.outputTruncated)}
+          />
         </div>
       ))}
       {fromConversation && (

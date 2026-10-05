@@ -1,4 +1,4 @@
-import { Providers, WebSearchToolDefinition } from '@librechat/agents';
+import { Providers, WebSearchToolDefinition, GitHubCompareToolDefinition } from '@librechat/agents';
 import type {
   LoadToolDefinitionsParams,
   LoadToolDefinitionsDeps,
@@ -34,6 +34,43 @@ describe('definitions.ts', () => {
   });
 
   describe('loadToolDefinitions', () => {
+    it.each([undefined, false, true])(
+      'gates selected comparison definitions on explicit opt-in (%p)',
+      async (githubCompareEnabled) => {
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user',
+            agentId: 'reviewer',
+            tools: ['github_compare'],
+            githubCompareEnabled,
+          },
+          { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+        );
+        expect(result.toolRegistry.has('github_compare')).toBe(githubCompareEnabled === true);
+        expect(result.toolDefinitions.map(({ name }) => name)).toEqual(
+          githubCompareEnabled === true ? ['github_compare'] : [],
+        );
+        if (githubCompareEnabled) {
+          expect(result.toolRegistry.get('github_compare')?.description).toBe(
+            GitHubCompareToolDefinition.description,
+          );
+        }
+        expect(mockGetOrFetchMCPServerTools).not.toHaveBeenCalled();
+      },
+    );
+    it('does not auto-register comparison for code execution agents', async () => {
+      const result = await loadToolDefinitions(
+        {
+          userId: 'user',
+          agentId: 'coder',
+          tools: ['calculator'],
+          githubCompareEnabled: true,
+        },
+        { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+      );
+      expect(result.toolRegistry.has('github_compare')).toBe(false);
+    });
+
     it('should return empty result for empty tools array', async () => {
       const params: LoadToolDefinitionsParams = {
         userId: 'user-123',

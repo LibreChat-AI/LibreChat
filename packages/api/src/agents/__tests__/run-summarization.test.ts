@@ -210,6 +210,8 @@ async function callAndCapture(
     user?: IUser;
     tenantId?: string;
     requestBody?: Parameters<typeof createRun>[0]['requestBody'];
+    steering?: Parameters<typeof createRun>[0]['steering'];
+    customHandlers?: Parameters<typeof createRun>[0]['customHandlers'];
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -230,6 +232,8 @@ async function callAndCapture(
     user: opts.user,
     tenantId: opts.tenantId,
     requestBody: opts.requestBody,
+    steering: opts.steering,
+    customHandlers: opts.customHandlers,
     streaming: true,
     streamUsage: true,
   });
@@ -5086,5 +5090,42 @@ describe('summarizeOnly resolution', () => {
     });
     expect(agents[0].summarizeOnly).toBe(true);
     expect(agents[1].summarizeOnly).toBeUndefined();
+  });
+});
+
+describe('steering provider capabilities', () => {
+  it.each([
+    ['Anthropic search', { type: 'web_search_20250305', name: 'web_search' }],
+    ['Google search', { googleSearch: {} }],
+    ['OpenAI search', { type: 'web_search' }],
+    ['Google URL context', { urlContext: {} }],
+  ])('disables interruption before constructing a run with %s', async (_name, tool) => {
+    const disable = jest.fn(async () => undefined);
+    const handler = { handle: jest.fn() };
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      customHandlers: { on_tool_execute: handler },
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).toHaveBeenCalledTimes(1);
+    const config = jest.mocked(Run.create).mock.calls[0]?.[0];
+    expect(config?.preemption).toBeUndefined();
+    expect(config?.customHandlers?.on_tool_execute).toBe(handler);
+  });
+
+  it('keeps interruption for host-executed tools', async () => {
+    const disable = jest.fn(async () => undefined);
+    const tool = new DynamicStructuredTool({
+      name: 'web_search',
+      description: 'Host search',
+      schema: z.object({}),
+      func: async () => 'found it',
+    });
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).not.toHaveBeenCalled();
+    expect(jest.mocked(Run.create).mock.calls[0]?.[0].preemption).toBeDefined();
   });
 });

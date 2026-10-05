@@ -5,7 +5,6 @@ import type { ChatSettings } from '~/hooks/Chat/contract';
 export const defaultChatSettings: ChatSettings = {
   duringRunDefaultAction: 'steer',
   setDuringRunDefaultAction: () => undefined,
-  steerInterruptsByDefault: false,
   resetVisibleArtifacts: () => undefined,
   saveDrafts: true,
   isTemporary: false,

@@ -84,6 +84,13 @@
     ]
   },
   {
+    "name": "GitHub Compare",
+    "pluginKey": "github_compare",
+    "description": "Compare frozen commit ancestry in a public GitHub repository without a workspace.",
+    "agentsOnly": true,
+    "authConfig": []
+  },
+  {
     "name": "Calculator",
     "pluginKey": "calculator",
     "description": "Perform simple and complex mathematical calculations.",
