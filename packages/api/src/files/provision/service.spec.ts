@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { AxiosError, AxiosHeaders } from 'axios';
+import { generateKeyPairSync } from 'node:crypto';
 import type { TFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 
@@ -422,6 +423,147 @@ describe('createProvisionService', () => {
       const alive = await service.checkSessionsAlive({ files: [staleFile('f5')], apiKey: 'k' });
 
       expect(alive.has('f5')).toBe(false);
+    });
+
+    describe('on an attached or stateful route', () => {
+      const ROUTE_KEY = 'stateful:env1';
+      const BYOM_URL = 'https://code-byom.test/v1';
+      const AUTH_ENV = [
+        'CODEAPI_AUTH_PROVIDER',
+        'CODEAPI_JWT_PRIVATE_KEY',
+        'CODEAPI_JWT_ALGORITHM',
+      ] as const;
+      const savedEnv = new Map<string, string | undefined>();
+
+      const routeFile = (id: string) =>
+        makeFile({
+          file_id: id,
+          metadata: {
+            codeEnvRefs: {
+              [ROUTE_KEY]: {
+                kind: 'user',
+                id: 'u1',
+                storage_session_id: 'sess-route',
+                file_id: `remote-${id}`,
+                executionProfile: 'stateful',
+                executionRouteKey: ROUTE_KEY,
+                provisionedAt: 1,
+              },
+            },
+          } as never,
+        });
+
+      const decodeClaims = (authorization: string): Record<string, unknown> =>
+        JSON.parse(Buffer.from(authorization.split('.')[1], 'base64url').toString('utf8'));
+
+      beforeEach(() => {
+        for (const name of AUTH_ENV) {
+          savedEnv.set(name, process.env[name]);
+        }
+      });
+
+      afterEach(() => {
+        for (const name of AUTH_ENV) {
+          const value = savedEnv.get(name);
+          if (value === undefined) {
+            delete process.env[name];
+          } else {
+            process.env[name] = value;
+          }
+        }
+      });
+
+      it('mints a bearer bound to the route worker and never sends the managed key', async () => {
+        process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+        process.env.CODEAPI_JWT_ALGORITHM = 'EdDSA';
+        process.env.CODEAPI_JWT_PRIVATE_KEY = generateKeyPairSync('ed25519')
+          .privateKey.export({ format: 'pem', type: 'pkcs8' })
+          .toString();
+        mockGetCodeApiAuthHeaders.mockImplementation(
+          jest.requireActual<typeof import('~/auth/codeapi')>('~/auth/codeapi')
+            .getCodeApiAuthHeaders,
+        );
+        mockAxios.mockResolvedValue({ data: [{ fileId: 'remote-r1' }] });
+        const { service } = buildService();
+
+        const alive = await service.checkSessionsAlive({
+          files: [routeFile('r1')],
+          req,
+          apiKey: 'managed-key',
+          baseURL: BYOM_URL,
+          routeKey: ROUTE_KEY,
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-1',
+        });
+
+        expect(alive.has('r1')).toBe(true);
+        expect(mockGetCodeApiAuthHeaders).toHaveBeenCalledWith(req, 'worker-1');
+        const { url, headers } = mockAxios.mock.calls[0][0];
+        expect(url).toBe(`${BYOM_URL}/files/sess-route`);
+        expect(headers['X-API-Key']).toBeUndefined();
+        expect(headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+        expect(headers['X-LibreChat-Code-Worker-ID']).toBe('worker-1');
+        expect(headers.Authorization).toMatch(/^Bearer /);
+        expect(decodeClaims(headers.Authorization)).toEqual(
+          expect.objectContaining({ sub: 'u1', code_worker_id: 'worker-1' }),
+        );
+      });
+
+      it('leaves refs unverified without a request when no bearer can be minted', async () => {
+        /* Without a request there is nothing to mint from, and the managed key is not a
+         * credential this route accepts: probing would only collect a 401. */
+        process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+        const { service } = buildService();
+
+        const alive = await service.checkSessionsAlive({
+          files: [routeFile('r2')],
+          apiKey: 'managed-key',
+          baseURL: BYOM_URL,
+          routeKey: ROUTE_KEY,
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-1',
+        });
+
+        expect(alive.has('r2')).toBe(true);
+        expect(mockAxios).not.toHaveBeenCalled();
+      });
+
+      it('sends no managed key to the route when JWT auth is disabled', async () => {
+        /* Matches the route's own uploads, which send only what the bearer helper yields. */
+        delete process.env.CODEAPI_AUTH_PROVIDER;
+        mockAxios.mockResolvedValue({ data: [] });
+        const { service } = buildService();
+
+        const alive = await service.checkSessionsAlive({
+          files: [routeFile('r3')],
+          req,
+          apiKey: 'managed-key',
+          baseURL: BYOM_URL,
+          routeKey: ROUTE_KEY,
+          executionProfile: 'stateful',
+        });
+
+        expect(alive.has('r3')).toBe(false);
+        const { headers } = mockAxios.mock.calls[0][0];
+        expect(headers['X-API-Key']).toBeUndefined();
+        expect(headers.Authorization).toBeUndefined();
+        expect(headers['X-CodeAPI-Expected-Profile']).toBe('stateful');
+      });
+
+      it('still uses the managed key on the default route when no bearer can be minted', async () => {
+        process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+        mockAxios.mockResolvedValue({ data: [{ fileId: 'remote-f7' }] });
+        const { service } = buildService();
+
+        const alive = await service.checkSessionsAlive({
+          files: [staleFile('f7')],
+          apiKey: 'managed-key',
+          routeKey: 'default',
+        });
+
+        expect(alive.has('f7')).toBe(true);
+        expect(mockAxios.mock.calls[0][0].headers['X-API-Key']).toBe('managed-key');
+      });
     });
   });
 });

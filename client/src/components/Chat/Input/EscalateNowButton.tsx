@@ -95,6 +95,9 @@ interface EscalateNowButtonProps {
   surface: 'bubble' | 'queued';
   disabled: boolean;
   messageText: string;
+  /** The queued rail uses the taller control height; the thread bubble keeps the compact one. */
+  size?: 'xs' | 'md' | 'lg';
+  shape?: 'round' | 'square' | 'control';
   onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
@@ -109,6 +112,8 @@ export default function EscalateNowButton({
   surface,
   disabled,
   messageText,
+  size = 'xs',
+  shape,
   onClick,
 }: EscalateNowButtonProps) {
   const localize = useLocalize();
@@ -148,7 +153,8 @@ export default function EscalateNowButton({
           render={
             <IconButton
               label={accessibleLabel}
-              size="xs"
+              size={size}
+              shape={shape}
               variant="primary"
               aria-keyshortcuts={isActive ? ariaKey : undefined}
               data-escalate-steer={surface}

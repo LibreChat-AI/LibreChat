@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { Constants, getCodeBaseURL } from '@librechat/agents';
-import { resolveCodeEnvironmentSelection } from 'librechat-data-provider';
+import { stripAgentIdSuffix, resolveCodeEnvironmentSelection } from 'librechat-data-provider';
 import type {
   Agents,
   CodeWorkspaceOperation,
@@ -13,6 +13,7 @@ import type {
   TAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { WorkspaceEditFileFeature } from '~/code/edits';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
 
 export const CODE_API_EXPECTED_PROFILE_HEADER = 'X-CodeAPI-Expected-Profile';
@@ -61,6 +62,8 @@ export interface CodeExecutionContext {
     workspaceInstanceId?: string;
     /** The worker schedules each `.worktrees/<name>` of this root as its own lane. */
     linkedWorktrees?: boolean;
+    /** The worker advertises the native SRT sandbox: read-only filesystem outside the workspace and `$TMPDIR`. */
+    nativeSandbox?: boolean;
     /** Live Code API execution ceiling. Omitted by older deployments. */
     maxCommandTimeoutMs?: number;
     /** Edit features the worker negotiated with the Code API. Omitted by older workers. */
@@ -344,6 +347,42 @@ function resolveConfiguredEnvironment(params: {
   return executableEnvironments?.find((environment) => environment.default === true);
 }
 
+/** Machine an agent runs on without a conversation choice, and whether a choice applies to it. */
+export function resolveAgentCodeEnvironmentRouting(params: {
+  environmentId?: string | null;
+  environmentIds?: readonly string[];
+  environments?: readonly CodeEnvironmentConfig[];
+  /** Deployment ceiling (on unless `false` or the decision protocol is off). */
+  allowEnvironmentSelection?: boolean;
+}): { defaultEnvironment?: CodeEnvironmentConfig; allowSelection: boolean } {
+  const defaultEnvironment = params.environments?.find(
+    (candidate) =>
+      isExecutableEnvironment(candidate) &&
+      (params.environmentId ? candidate.id === params.environmentId : candidate.default === true),
+  );
+  const allowSelection =
+    isCodeEnvironmentSelectionEnabled(params.allowEnvironmentSelection) &&
+    (params.environmentIds?.length ?? 0) > 0 &&
+    (defaultEnvironment?.type === 'attached' ||
+      (defaultEnvironment == null && Boolean(params.environmentId)));
+  return { defaultEnvironment, allowSelection };
+}
+
+/** Whether the principal-scoped environment list admits running on this attached machine. */
+export function isExecutableAttachedEnvironment(
+  environmentId: string,
+  environments?: readonly CodeEnvironmentConfig[],
+): boolean {
+  return (
+    environments?.some(
+      (candidate) =>
+        candidate.id === environmentId &&
+        candidate.type === 'attached' &&
+        isExecutableEnvironment(candidate),
+    ) === true
+  );
+}
+
 export function resolveCodeExecutionContext(params: {
   statefulSessions: boolean;
   environment?: StatefulCodeEnvironment | string | null;
@@ -352,10 +391,14 @@ export function resolveCodeExecutionContext(params: {
   userId?: string | null;
   agentId?: string | null;
   conversationId?: string | null;
-  /** Deployment ceiling and the persisted agent machine allowlist are both required. */
+  /** Deployment ceiling (on unless `false` or the decision protocol is off) and a persisted
+   *  agent machine allowlist are both required. */
   allowEnvironmentSelection?: boolean;
   environmentIds?: readonly string[];
   workspaceSelections?: unknown;
+  /** Request-scoped subagent inheritance, keyed by saved agent ID. An inherited machine the
+   *  principal can no longer use is ignored, leaving the agent on its own route. */
+  inheritedEnvironments?: ReadonlyMap<string, string>;
 }): CodeExecutionContext {
   if (!params.statefulSessions) {
     return {
@@ -367,22 +410,22 @@ export function resolveCodeExecutionContext(params: {
   }
 
   const environment = normalizeStatefulCodeEnvironment(params.environment);
-  const defaultEnvironment = params.environments?.find(
-    (candidate) =>
-      isExecutableEnvironment(candidate) &&
-      (params.environmentId ? candidate.id === params.environmentId : candidate.default === true),
-  );
-  const allowSelection =
-    params.allowEnvironmentSelection === true &&
-    (params.environmentIds?.length ?? 0) > 0 &&
-    (defaultEnvironment?.type === 'attached' ||
-      (defaultEnvironment == null && Boolean(params.environmentId)));
+  const { defaultEnvironment, allowSelection } = resolveAgentCodeEnvironmentRouting(params);
+  const inheritedEnvironmentId =
+    params.agentId == null
+      ? undefined
+      : params.inheritedEnvironments?.get(stripAgentIdSuffix(params.agentId));
   const selection = resolveCodeEnvironmentSelection({
     agentId: params.agentId,
     environmentId: params.environmentId ?? defaultEnvironment?.id,
     environmentIds: params.environmentIds,
     allowSelection,
     selections: params.workspaceSelections,
+    inheritedEnvironmentId:
+      inheritedEnvironmentId != null &&
+      isExecutableAttachedEnvironment(inheritedEnvironmentId, params.environments)
+        ? inheritedEnvironmentId
+        : undefined,
   });
   if (!selection.valid) throw new CodeWorkspaceSelectionError('invalid');
   if (

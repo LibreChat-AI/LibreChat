@@ -33,7 +33,7 @@ export default function Gauge({ percent, indeterminate }: GaugeProps) {
       width={SIZE}
       height={SIZE}
       viewBox={`0 0 ${SIZE} ${SIZE}`}
-      className="-rotate-90"
+      className="size-5 -rotate-90"
       aria-hidden="true"
       focusable="false"
     >

@@ -9,7 +9,7 @@ import {
   ApprovalEvents,
   SteerEvents,
   parseTextParts,
-  hasToolCallErrorPrefix,
+  isFailedToolOutput,
   reconcileContextUsageFromEvent,
 } from 'librechat-data-provider';
 import type {
@@ -82,6 +82,7 @@ import { synthesizeReasoningLabelGapEvents } from '~/agents/reasoningLabels';
 import { InMemoryEventTransport } from './implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
+import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { emitChunkWithReceipt } from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
@@ -128,13 +129,7 @@ function completedToolExecutionStatus(call: Agents.ToolCall): ToolExecutionStatu
   if (call.inputValidationError === true) {
     return 'error';
   }
-  const output = call.output;
-  return typeof output === 'string' &&
-    (hasToolCallErrorPrefix(output) ||
-      /^Error processing tool(?::|$)/i.test(output) ||
-      /^Error:[\s\S]*\n Please fix your mistakes\.$/i.test(output))
-    ? 'error'
-    : 'success';
+  return typeof call.output === 'string' && isFailedToolOutput(call.output) ? 'error' : 'success';
 }
 
 /** Bounded completed-request replay horizon. It exceeds the default 24-hour
@@ -367,6 +362,93 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
     }
   }
   return paths;
+}
+
+/** Rewrites `/content/N/...` paths recorded against the unfiltered content onto
+ * the filtered abort content, dropping paths whose part was filtered out. A
+ * path past the end of the content names no part and is left as recorded. */
+function remapContentPath(
+  path: string,
+  contentLength: number,
+  indexMap: ReadonlyMap<number, number>,
+): string | null {
+  const match = /^\/content\/(\d+)(\/.*)?$/.exec(path);
+  if (match == null || Number(match[1]) >= contentLength) {
+    return path;
+  }
+  const index = indexMap.get(Number(match[1]));
+  return index == null ? null : `/content/${index}${match[2] ?? ''}`;
+}
+
+/** A tool-call path the latest approval claim added is user-authored only once
+ * its decision reached this content: the resumed call completed (a string
+ * output, which may be empty for a void tool) or the abort route stamped the
+ * answer. An unanswered `ask_user_question` already holds an empty output, so
+ * only a non-empty one counts as its answer. Other claimed paths (steers already
+ * in the seed content) need no decision to apply and are kept. Paths are checked
+ * against the unfiltered content they were recorded on, then remapped onto the
+ * filtered abort content that the final event and the persisted row carry. */
+function getPublishedProvenance(
+  jobData: SerializableJobData,
+  content: readonly unknown[],
+  abortContent: readonly unknown[],
+): Pick<SerializableJobData, 'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'> {
+  const claimedPaths = jobData.userSubmittedPaths ?? [];
+  const claimedFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
+  const preResume = jobData.preResumeProvenance;
+  const prePaths = new Set(preResume?.userSubmittedPaths ?? []);
+  const preFieldPaths = new Set(
+    (preResume?.userSubmittedMessageFieldPaths ?? []).map(({ path, field }) => `${field}:${path}`),
+  );
+  const isAppliedPath = (path: string): boolean => {
+    if (preResume == null) {
+      return true;
+    }
+    const match = /^\/content\/(\d+)\/tool_call\//.exec(path);
+    if (match == null) {
+      return true;
+    }
+    const part = content[Number(match[1])] as TMessageContentParts | undefined;
+    if (part?.type !== 'tool_call') {
+      return false;
+    }
+    const toolCall = part.tool_call as { name?: unknown; output?: unknown } | undefined;
+    const output = toolCall?.output;
+    if (typeof output !== 'string') {
+      return false;
+    }
+    return output.length > 0 || toolCall?.name !== ASK_USER_QUESTION_TOOL_NAME;
+  };
+  /** The filter keeps part references in order, so a forward scan maps them. */
+  const indexMap = new Map<number, number>();
+  for (let index = 0, filtered = 0; index < content.length; index++) {
+    if (filtered < abortContent.length && content[index] === abortContent[filtered]) {
+      indexMap.set(index, filtered++);
+    }
+  }
+  const userSubmittedPaths: string[] = [];
+  for (const path of claimedPaths) {
+    const remapped =
+      prePaths.has(path) || isAppliedPath(path)
+        ? remapContentPath(path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedPaths.push(remapped);
+    }
+  }
+  const userSubmittedMessageFieldPaths: NonNullable<
+    SerializableJobData['userSubmittedMessageFieldPaths']
+  > = [];
+  for (const entry of claimedFieldPaths) {
+    const remapped =
+      preFieldPaths.has(`${entry.field}:${entry.path}`) || isAppliedPath(entry.path)
+        ? remapContentPath(entry.path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedMessageFieldPaths.push({ ...entry, path: remapped });
+    }
+  }
+  return { userSubmittedPaths, userSubmittedMessageFieldPaths };
 }
 
 function getToolCallName(toolCall: unknown): unknown {
@@ -899,6 +981,20 @@ class GenerationJobManagerClass {
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = options?.eventTransport ?? new InMemoryEventTransport();
     this._cleanupOnComplete = options?.cleanupOnComplete ?? true;
+    this.bindStaleGenerationHandler();
+  }
+
+  private bindStaleGenerationHandler(): void {
+    const store = this.jobStore;
+    store.setStaleGenerationHandler?.((streamId, createdAt) => {
+      if (this.jobStore !== store) return;
+      const runtime = this.runtimeState.get(streamId);
+      if (runtime?.createdAt !== createdAt) return;
+      this.releaseAbortSubscription(runtime);
+      runtime.abortController.abort();
+      this.releaseJobOwnership(streamId, createdAt);
+      // Keep buffers, subscribers and the open provider segment until its actual drain.
+    });
   }
 
   /**
@@ -992,7 +1088,9 @@ class GenerationJobManagerClass {
     this.releaseOpenProviderExecutions();
     setGenerationJobsInFlight(previousStore, 0);
 
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     this.jobStore = services.jobStore;
+    this.bindStaleGenerationHandler();
     this._approvals = this.createApprovalLifecycle(this.jobStore);
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = services.eventTransport;
@@ -2985,8 +3083,10 @@ class GenerationJobManagerClass {
         scheduledFor: jobData.scheduledFor,
         scheduleConfigRevision: jobData.scheduleConfigRevision,
         scheduleManual: jobData.scheduleManual,
+        scheduleMCPCompletion: jobData.scheduleMCPCompletion,
         scheduleOutcome: jobData.scheduleOutcome,
         scheduleOutcomeError: jobData.scheduleOutcomeError,
+        scheduleMCPFailure: jobData.scheduleMCPFailure,
         preserveForScheduleReconcile: jobData.preserveForScheduleReconcile,
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).
@@ -4816,6 +4916,12 @@ class GenerationJobManagerClass {
 
       /** Final event for abort */
       const userMessageId = jobData.userMessage?.messageId;
+      /** The final event and the persisted row (`beforePublish` reads
+       * `jobData`) must label the same content, so both take this selection. */
+      jobData = {
+        ...jobData,
+        ...getPublishedProvenance(jobData, content, abortContent),
+      };
       const userSubmittedPaths = [
         ...new Set([
           ...(jobData.userSubmittedPaths ?? []),
@@ -9294,10 +9400,11 @@ class GenerationJobManagerClass {
         const currentJob = await this.jobStore.getJob(streamId);
         if (
           currentJob?.createdAt === observedRuntime.createdAt &&
-          currentJob.terminalHostActionPending === true
+          (currentJob.terminalHostActionPending === true ||
+            currentJob.terminalPersistencePending === true ||
+            currentJob.providerDrained === false)
         ) {
-          // The callback retry still owns this generation's evidence. Retain
-          // runtime buffers until it acknowledges and clears the durable marker.
+          // Persistence, provider drain and host acknowledgement still own this evidence.
           continue;
         }
         const isRetainedTerminal =
@@ -9646,6 +9753,7 @@ class GenerationJobManagerClass {
     await this.drainSubscriberCleanups();
     await this.awaitGenerationSettlements(Math.max(0, settlementDeadline - Date.now()));
     await this.finalizeOwnedJobsForShutdown();
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     await this.jobStore.destroy();
     this.eventTransport.destroy();
     /** Whatever the bounded wait left behind must not outlive this store: a later

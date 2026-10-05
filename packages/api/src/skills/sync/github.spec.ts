@@ -1,6 +1,7 @@
 import crypto from 'crypto';
-import { Types } from 'mongoose';
-import { logger, getTenantId } from '@librechat/data-schemas';
+import mongoose, { Types } from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import { logger, getTenantId, createModels, createMethods } from '@librechat/data-schemas';
 import type {
   ISkill,
   ISkillFile,
@@ -2861,7 +2862,7 @@ describe('createGitHubSkillSyncRunner', () => {
     );
   });
 
-  it('skips existing skill updates when the upstream package is unchanged', async () => {
+  it('records a sync fingerprint once on an unchanged mirror that predates it', async () => {
     const skillMarkdown = '---\nname: research\ndescription: Research things\n---\nBody';
     const existing = makeSkill({
       name: 'research',
@@ -2901,7 +2902,15 @@ describe('createGitHubSkillSyncRunner', () => {
       getSkillById: jest.fn(async () => existing),
       getSkillFileByPath: jest.fn(async () => unchangedFile),
       listSkillFiles: jest.fn(async () => [unchangedFile]),
-      updateSkill: jest.fn(),
+      updateSkill: jest.fn(
+        async ({ update }: { update: UpdateSkillInput }): Promise<UpdateSkillResult> => ({
+          status: 'updated',
+          skill: { ...existing, ...update, version: existing.version + 1 } as ISkill & {
+            _id: Types.ObjectId;
+          },
+          warnings: [],
+        }),
+      ),
     });
     const runner = createGitHubSkillSyncRunner(deps);
     const result = await runner.runOnce();
@@ -2909,7 +2918,18 @@ describe('createGitHubSkillSyncRunner', () => {
     expect(result.status).toBe('completed');
     expect(deps.saveBuffer).not.toHaveBeenCalled();
     expect(deps.upsertSkillFile).not.toHaveBeenCalled();
-    expect(deps.updateSkill).not.toHaveBeenCalled();
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    expect(deps.updateSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          body: skillMarkdown,
+          sourceMetadata: expect.objectContaining({
+            skillBlobSha: 'skill-md-sha',
+            syncFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+          }),
+        }),
+      }),
+    );
     expect(deps.grantPermission).toHaveBeenCalled();
   });
 
@@ -3730,5 +3750,349 @@ describe('files whose paths cannot be mirrored', () => {
         skippedFiles: [expect.objectContaining({ skillPath: 'skills/research/nested' })],
       }),
     );
+  });
+});
+
+describe('steady-state sync of an unchanged source', () => {
+  const researchMarkdown = '---\nname: research\ndescription: Research things\n---\nBody';
+  const writingMarkdown = '---\nname: writing\ndescription: Write things\n---\nBody';
+  let server: MongoMemoryServer;
+  let db: ReturnType<typeof createMethods>;
+
+  beforeAll(async () => {
+    server = await MongoMemoryServer.create();
+    await mongoose.connect(server.getUri());
+    createModels(mongoose);
+    db = createMethods(mongoose);
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await server.stop();
+  });
+
+  beforeEach(async () => {
+    await mongoose.connection.dropDatabase();
+  });
+
+  type RepoFile = { content: string; revision?: number };
+
+  /** The provider boundary: a repository held in memory whose content ids can move. */
+  function createRepo(initial: Record<string, RepoFile>) {
+    let files = initial;
+    const fetchFileContent = jest.fn(async (_commit: unknown, entry: RepoTreeEntry) =>
+      Buffer.from(files[entry.path].content),
+    );
+    const adapter: GitRepoAdapter = {
+      resolveCommit: async () => ({ id: 'fake-commit', treeId: 'fake-tree' }),
+      fetchTreeEntries: async (_commit, { pathPrefix }) =>
+        Object.entries(files)
+          .map(([path, file]) => ({
+            path,
+            type: 'blob' as const,
+            id: `${path}@${file.revision ?? 1}`,
+            size: Buffer.byteLength(file.content),
+          }))
+          .filter((entry) => !pathPrefix || entry.path.startsWith(`${pathPrefix}/`)),
+      fetchFileContent,
+    };
+    return {
+      adapter,
+      fetchFileContent,
+      setFiles: (next: Record<string, RepoFile>) => {
+        files = next;
+      },
+      fetchedPaths: () => fetchFileContent.mock.calls.map(([, entry]) => entry.path),
+    };
+  }
+
+  function createDbDeps(
+    repo: ReturnType<typeof createRepo>,
+    sourceOverrides: Partial<{ ref: string }> = {},
+  ) {
+    return createDeps({
+      getConfig: () => ({
+        github: {
+          enabled: true,
+          intervalMinutes: 60,
+          runOnStartup: false,
+          sources: [
+            {
+              id: 'librechat-skills',
+              owner: 'LibreChat',
+              repo: 'skills',
+              ref: sourceOverrides.ref ?? 'main',
+              paths: ['skills'],
+              credentialKey: 'github-skills-prod',
+            },
+          ],
+        },
+      }),
+      createAdapter: () => repo.adapter,
+      createSkill: jest.fn(db.createSkill),
+      updateSkill: jest.fn(db.updateSkill),
+      getSkillById: jest.fn(db.getSkillById),
+      findSkillBySourceIdentity: jest.fn(db.findSkillBySourceIdentity),
+      listSkillsBySource: jest.fn(db.listSkillsBySource),
+      listSkillFiles: jest.fn(db.listSkillFiles),
+      getSkillFileByPath: jest.fn(db.getSkillFileByPath),
+      upsertSkillFile: jest.fn(db.upsertSkillFile),
+      deleteSkillFile: jest.fn(db.deleteSkillFile),
+      deleteSkill: jest.fn(db.deleteSkill),
+      saveBuffer: jest.fn(async ({ fileName }: { fileName: string }) => ({
+        filepath: `/uploads/${fileName}`,
+        source: 'local',
+      })),
+    });
+  }
+
+  async function seed(repo: ReturnType<typeof createRepo>) {
+    const result = await createGitHubSkillSyncRunner(createDbDeps(repo)).runOnce();
+    expect(result.status).toBe('completed');
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({ status: 'succeeded', syncedSkillCount: expect.any(Number) }),
+    );
+    repo.fetchFileContent.mockClear();
+  }
+
+  async function getMirror(rootPath = 'skills/research') {
+    const skill = await db.findSkillBySourceIdentity({
+      source: 'github',
+      upstreamId: `librechat-skills:${rootPath}`,
+    });
+    if (!skill) {
+      throw new Error(`missing mirror for ${rootPath}`);
+    }
+    return skill;
+  }
+
+  const baseRepo = (): Record<string, RepoFile> => ({
+    'skills/research/SKILL.md': { content: researchMarkdown },
+    'skills/research/scripts/run.sh': { content: 'echo hi' },
+    'skills/research/notes.md': { content: 'notes' },
+  });
+
+  it('neither downloads SKILL.md nor updates the skill on a second sync', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    const before = await getMirror();
+    expect(before.sourceMetadata?.syncFingerprint).toEqual(expect.stringMatching(/^[0-9a-f]{64}$/));
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        syncedSkillCount: 1,
+        syncedFileCount: 0,
+        deletedSkillCount: 0,
+        deletedFileCount: 0,
+      }),
+    );
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
+    expect(deps.updateSkill).not.toHaveBeenCalled();
+    expect(deps.getSkillFileByPath).not.toHaveBeenCalled();
+    expect(deps.upsertSkillFile).not.toHaveBeenCalled();
+    expect(deps.grantPermission).toHaveBeenCalledWith(
+      expect.objectContaining({ resourceId: before._id }),
+    );
+    expect((await getMirror()).version).toBe(before.version);
+  });
+
+  it.each([
+    ['canonical', 'always-apply: true'],
+    ['camelCase alias', 'alwaysApply: true'],
+    ['both spellings', 'always-apply: true\nalwaysApply: true'],
+    ['placeholder canonical with alias', 'always-apply:\nalwaysApply: false'],
+    ['placeholder alias with canonical', 'always-apply: false\nalwaysApply:'],
+    ['mixed-case', 'Always-Apply: true\nAllowed-Tools: [Read]\nLicense: MIT'],
+  ])('skips an unchanged skill whose frontmatter uses %s keys', async (_label, frontmatter) => {
+    const repo = createRepo({
+      'skills/research/SKILL.md': {
+        content: `---\nname: research\ndescription: Research things\n${frontmatter}\n---\nBody`,
+      },
+    });
+    await seed(repo);
+    const before = await getMirror();
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({ status: 'succeeded', syncedSkillCount: 1, skippedSkillCount: 0 }),
+    );
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
+    expect(deps.updateSkill).not.toHaveBeenCalled();
+    expect((await getMirror()).version).toBe(before.version);
+  });
+
+  it('downloads SKILL.md and updates the skill when its blob changes', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    repo.setFiles({
+      ...baseRepo(),
+      'skills/research/SKILL.md': {
+        content: '---\nname: research\ndescription: Research more things\n---\nBody',
+        revision: 2,
+      },
+    });
+
+    const deps = createDbDeps(repo);
+    await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    const mirror = await getMirror();
+    expect(mirror.description).toBe('Research more things');
+    expect(mirror.sourceMetadata?.skillBlobSha).toBe('skills/research/SKILL.md@2');
+  });
+
+  it('updates the skill when a bundled file changes', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    repo.setFiles({
+      ...baseRepo(),
+      'skills/research/scripts/run.sh': { content: 'echo bye', revision: 2 },
+    });
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchedPaths().sort()).toEqual([
+      'skills/research/SKILL.md',
+      'skills/research/scripts/run.sh',
+    ]);
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    expect(result.sources[0]).toEqual(expect.objectContaining({ syncedFileCount: 1 }));
+    const mirror = await getMirror();
+    const file = await db.getSkillFileByPath(mirror._id, 'scripts/run.sh');
+    expect(file?.sourceMetadata?.blobSha).toBe('skills/research/scripts/run.sh@2');
+  });
+
+  it('updates the skill and deletes the file when a bundled file is removed upstream', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    const { 'skills/research/notes.md': _removed, ...remaining } = baseRepo();
+    repo.setFiles(remaining);
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    expect(deps.deleteSkillFile).toHaveBeenCalledWith(expect.anything(), 'notes.md');
+    expect(result.sources[0]).toEqual(expect.objectContaining({ deletedFileCount: 1 }));
+    const files = await db.listSkillFiles((await getMirror())._id);
+    expect(files.map((file) => file.relativePath)).toEqual(['scripts/run.sh']);
+  });
+
+  it('updates the skill when the source config it records changes', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+
+    const deps = createDbDeps(repo, { ref: 'release' });
+    await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    expect((await getMirror()).sourceMetadata?.ref).toBe('release');
+  });
+
+  it('re-syncs a mirror whose stored definition was edited outside the sync', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    const mirror = await getMirror();
+    await db.updateSkill({
+      id: mirror._id.toString(),
+      expectedVersion: mirror.version,
+      update: { body: 'Edited body' },
+    });
+
+    const deps = createDbDeps(repo);
+    await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
+    expect(deps.updateSkill).toHaveBeenCalledTimes(1);
+    expect((await getMirror()).body).toBe(researchMarkdown);
+  });
+
+  it('fully syncs a mirror without a fingerprint once, then skips it', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    const mirror = await getMirror();
+    const { syncFingerprint: _fingerprint, ...legacyMetadata } = mirror.sourceMetadata ?? {};
+    await db.updateSkill({
+      id: mirror._id.toString(),
+      expectedVersion: mirror.version,
+      update: { sourceMetadata: legacyMetadata },
+    });
+
+    const legacyDeps = createDbDeps(repo);
+    await createGitHubSkillSyncRunner(legacyDeps).runOnce();
+
+    expect(repo.fetchedPaths()).toEqual(['skills/research/SKILL.md']);
+    expect(legacyDeps.updateSkill).toHaveBeenCalledTimes(1);
+    expect(legacyDeps.upsertSkillFile).not.toHaveBeenCalled();
+    expect((await getMirror()).sourceMetadata?.syncFingerprint).toBe(
+      mirror.sourceMetadata?.syncFingerprint,
+    );
+
+    repo.fetchFileContent.mockClear();
+    const steadyDeps = createDbDeps(repo);
+    await createGitHubSkillSyncRunner(steadyDeps).runOnce();
+
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
+    expect(steadyDeps.updateSkill).not.toHaveBeenCalled();
+  });
+
+  it('still reconciles a skill deleted upstream while skipping the unchanged ones', async () => {
+    const repo = createRepo({
+      ...baseRepo(),
+      'skills/writing/SKILL.md': { content: writingMarkdown },
+      'skills/writing/guide.md': { content: 'guide' },
+    });
+    await seed(repo);
+    const writing = await getMirror('skills/writing');
+    repo.setFiles(baseRepo());
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
+    expect(deps.updateSkill).not.toHaveBeenCalled();
+    expect(deps.deleteSkill).toHaveBeenCalledWith(writing._id.toString());
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({
+        status: 'succeeded',
+        syncedSkillCount: 1,
+        deletedSkillCount: 1,
+        deletedFileCount: 1,
+      }),
+    );
+    expect(await db.getSkillById(writing._id)).toBeNull();
+  });
+
+  it('still rejects an unchanged skill that exceeds the import limits', async () => {
+    const repo = createRepo(baseRepo());
+    await seed(repo);
+    const maxEntries = DEFAULT_SKILL_IMPORT_LIMITS.maxEntries;
+    const tooMany = { ...baseRepo() };
+    for (let index = 0; index < maxEntries; index++) {
+      tooMany[`skills/research/extra/${index}.txt`] = { content: 'x' };
+    }
+    repo.setFiles(tooMany);
+
+    const deps = createDbDeps(repo);
+    const result = await createGitHubSkillSyncRunner(deps).runOnce();
+
+    expect(result.sources[0]).toEqual(
+      expect.objectContaining({
+        skippedSkillCount: 1,
+        skippedSkills: [expect.objectContaining({ errorCode: 'GITHUB_TOO_MANY_FILES' })],
+      }),
+    );
+    expect(deps.findSkillBySourceIdentity).not.toHaveBeenCalled();
+    expect(repo.fetchFileContent).not.toHaveBeenCalled();
   });
 });

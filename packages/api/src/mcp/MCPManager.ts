@@ -11,7 +11,9 @@ import type {
   UpstreamTokenProvider,
   UpstreamTokenProviderResolver,
 } from '~/mcp/oauth/obo';
+import type { ScheduledMCPInvocation } from '~/schedules/authorization/execution';
 import type { MCPAppOperationContext, MCPAppValidationContext } from './apps';
+import type { ScheduledMCPBearerInvocation } from '~/schedules/bearer';
 import type { MCPClientCapabilityProfile } from './capabilities';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
@@ -40,6 +42,19 @@ import {
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from './capabilities';
 import {
+  resolveScheduledMCPBearerConfig,
+  requiresScheduledMCPBearerConnection,
+  isScheduledMCPBearer,
+  rejectScheduledMCPBearer,
+  ScheduledMCPBearerError,
+} from '~/schedules/bearer';
+import {
+  MCPAuthenticationRejectedError,
+  isMCPTransportAuthenticationError,
+  isMCPInitializationError,
+  createScheduledMCPTransportError,
+} from './errors';
+import {
   projectMCPAppRuntimeTarget,
   type MCPAppBindingCodec,
   type MCPAppBindingSubject,
@@ -47,14 +62,15 @@ import {
 } from './apps/binding';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
-import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
 import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
 import { MCPAppOperationBudget, getMCPAppOperationLimits } from './apps/budget';
+import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { formatToolContent, selectResolvedAppResource } from './parsers';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
 import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
+import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { getToolUiResourceUri, isToolHiddenFromApp } from './apps';
 import { MCPServerInspector } from './registry/MCPServerInspector';
 import { MCPServersRegistry } from './registry/MCPServersRegistry';
@@ -64,6 +80,7 @@ import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { isOwnedAbortError } from '~/utils/errors';
+import { markMCPToolResultError } from './status';
 import { withMCPRequestSignal } from './signal';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
@@ -256,7 +273,15 @@ export class MCPManager extends UserConnectionManager {
       connectionTarget,
     } as t.UserMCPConnectionOptions;
     const userId = opts.user?.id;
-    if (opts.forceNew || opts.ephemeralConnection || !userId) {
+    if (
+      opts.forceNew ||
+      opts.ephemeralConnection ||
+      !userId ||
+      requiresScheduledMCPBearerConnection(
+        opts.requestScopedConnections,
+        connectionTarget.serverConfig,
+      )
+    ) {
       return super.getUserConnection(resolvedOpts);
     }
 
@@ -1404,6 +1429,7 @@ Please follow these instructions when using tools from the respective MCP server
    */
   async callTool({
     user,
+    scheduledBearerInvocation,
     serverName,
     serverConfig: providedConfig,
     toolName,
@@ -1426,7 +1452,10 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanged,
     onOAuthCredentialsChanging,
     mcpApps,
+    scheduledMCPInvocation,
   }: {
+    scheduledBearerInvocation?: ScheduledMCPBearerInvocation;
+    scheduledMCPInvocation?: ScheduledMCPInvocation;
     user?: IUser;
     serverName: string;
     /** Pre-resolved config from tool creation context — avoids readThrough TTL and cross-tenant issues */
@@ -1452,7 +1481,10 @@ Please follow these instructions when using tools from the respective MCP server
     onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
     mcpApps?: TMCPAppsPolicy;
   }): Promise<t.FormattedToolResponse> {
+    if (scheduledBearerInvocation) requestScopedConnections = scheduledBearerInvocation.context;
     const userId = user?.id;
+    const enforceSchedule =
+      scheduledMCPInvocation != null && scheduledMCPInvocation.enrolled !== false;
     const capabilityProfile = resolveMCPClientCapabilityProfile(mcpApps);
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
     this.bindRequestScopedConnectionStore(requestScopedConnections);
@@ -1594,8 +1626,18 @@ Please follow these instructions when using tools from the respective MCP server
                 scopes: process.env.GRAPH_API_SCOPES,
               });
         const directBearerRecovery = usesDirectOpenIDBearerRecovery(rawConfig);
+        const scheduledConfig = await resolveScheduledMCPBearerConfig({
+          user,
+          serverName,
+          config: declaredConfig,
+          context: requestScopedConnections,
+          signal: options?.signal,
+        });
         const bearerConfig = await resolveDirectOpenIDBearerConfig({
-          config: graphProcessedConfig,
+          config:
+            scheduledConfig === declaredConfig
+              ? graphProcessedConfig
+              : applyRequestHeaders(scheduledConfig),
           upstreamTokenProvider,
           resolvedConfig: directBearerRecoveryState.resolvedConfig,
           signal: options?.signal,
@@ -1781,6 +1823,12 @@ Please follow these instructions when using tools from the respective MCP server
           if (directBearerRecoveryState.attempted) {
             throw new MCPAuthenticationRejectedError(serverName, false, connectionCheckError);
           }
+          if (isScheduledMCPBearer(requestScopedConnections))
+            throw createScheduledMCPTransportError(
+              connectionCheckError,
+              serverName,
+              scheduledBearerInvocation?.agentId,
+            );
           directBearerRecoveryState.attempted = true;
           const recovery = this.recoverDirectOpenIDBearerConnection({
             connection,
@@ -1850,25 +1898,61 @@ Please follow these instructions when using tools from the respective MCP server
           }
         }
 
-        const requestTool = () =>
-          withMCPRequestSignal(options?.signal, (signal) =>
-            connection!.client.request(
-              {
-                method: 'tools/call',
-                params: {
-                  name: toolName,
-                  arguments: toolArguments,
-                },
-              },
-              CallToolResultSchema,
-              {
-                timeout: connection!.timeout,
-                resetTimeoutOnProgress: true,
-                ...options,
-                signal,
-              },
-            ),
+        const requestTool = async () => {
+          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
+            if (!scheduledBearerInvocation)
+              throw new ScheduledMCPBearerError('tool_policy_denied', serverName);
+            const current = await scheduledBearerInvocation.resolve({
+              user,
+              serverName,
+              config: declaredConfig,
+              signal: options?.signal,
+            });
+            const bearerHeader = Object.entries(
+              'headers' in current ? (current.headers ?? {}) : {},
+            ).find(([name]) => name.toLowerCase() === 'authorization');
+            if (!bearerHeader) throw new ScheduledMCPBearerError('binding_mismatch', serverName);
+            connection!.setRequestHeaders({
+              ...resolvedHeaders,
+              [bearerHeader[0]]: bearerHeader[1],
+            });
+          }
+          await scheduledMCPInvocation?.authorize({
+            user,
+            serverName,
+            serverConfig: declaredConfig,
+            toolName,
+            loadTools: () => connection!.fetchToolsSnapshot(undefined, options?.signal),
+            signal: options?.signal,
+          });
+          options?.signal?.throwIfAborted();
+          await assertToolApprovalTransportEpoch(
+            serverName,
+            connection!.getOAuthCredentialSetId?.() ?? null,
+            true,
           );
+          return withMCPRequestSignal(
+            options?.signal,
+            (signal) =>
+              connection!.client.request(
+                {
+                  method: 'tools/call',
+                  params: {
+                    name: toolName,
+                    arguments: toolArguments,
+                  },
+                },
+                CallToolResultSchema,
+                {
+                  timeout: connection!.timeout,
+                  resetTimeoutOnProgress: true,
+                  ...options,
+                  signal,
+                },
+              ),
+            isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery,
+          );
+        };
 
         // Deliberately use `request`: the typed wrapper also enforces the tool's output schema and
         // rejects task-required tools, which would turn a server response into a host-side failure.
@@ -1877,6 +1961,28 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
+          if (error instanceof ScheduledMCPPolicyError) throw error;
+          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
+            if (isMCPTransportAuthenticationError(error)) {
+              const failure = createScheduledMCPTransportError(
+                error,
+                serverName,
+                scheduledBearerInvocation?.agentId,
+              );
+              rejectScheduledMCPBearer(
+                requestScopedConnections,
+                serverName,
+                failure.failure.reason,
+              );
+              throw failure;
+            }
+            throw error;
+          }
+          if (enforceSchedule) {
+            if (isMCPTransportAuthenticationError(error))
+              throw new MCPAuthenticationRejectedError(serverName, false, error);
+            throw error;
+          }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);
@@ -1989,8 +2095,13 @@ Please follow these instructions when using tools from the respective MCP server
               requiresEphemeralUserConnection(rawConfig),
               options?.signal,
             );
-          } catch {
-            /* empty */
+          } catch (error) {
+            if (
+              isScheduledMCPBearer(requestScopedConnections) &&
+              (error instanceof ScheduledMCPPolicyError ||
+                isMCPInitializationError(error, options?.signal))
+            )
+              throw error;
           }
         }
         if (options?.signal?.aborted) {
@@ -2005,18 +2116,26 @@ Please follow these instructions when using tools from the respective MCP server
           const resourceUri = resourceMeta.uri;
           try {
             const limits = getMCPAppOperationLimits(mcpApps?.operationLimits);
-            const readResult = await this.appOperationBudget.run(
-              options?.signal ?? new AbortController().signal,
-              (signal) =>
-                appConnection.client.readResource(
-                  { uri: resourceUri },
-                  {
-                    timeout: Math.min(appConnection.timeout ?? limits.timeoutMs, limits.timeoutMs),
-                    maxTotalTimeout: limits.timeoutMs,
-                    signal,
-                  },
+            const readResult = await withMCPRequestSignal(
+              options?.signal,
+              (callerSignal) =>
+                this.appOperationBudget.run(
+                  callerSignal ?? new AbortController().signal,
+                  (signal) =>
+                    appConnection.client.readResource(
+                      { uri: resourceUri },
+                      {
+                        timeout: Math.min(
+                          appConnection.timeout ?? limits.timeoutMs,
+                          limits.timeoutMs,
+                        ),
+                        maxTotalTimeout: limits.timeoutMs,
+                        signal,
+                      },
+                    ),
+                  limits,
                 ),
-              limits,
+              isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery,
             );
             if (!options?.signal?.aborted) {
               resolvedAppResource = selectResolvedAppResource(readResult.contents, resourceUri);
@@ -2027,6 +2146,12 @@ Please follow these instructions when using tools from the respective MCP server
               );
             }
           } catch (error) {
+            if (
+              isScheduledMCPBearer(requestScopedConnections) &&
+              (error instanceof ScheduledMCPPolicyError ||
+                isMCPInitializationError(error, options?.signal))
+            )
+              throw error;
             if (!options?.signal?.aborted) {
               logger.warn(
                 `[MCP][${serverName}][${toolName}] Could not resolve App resource "${resourceUri}"; retaining bound URI for a later read`,
@@ -2061,20 +2186,23 @@ Please follow these instructions when using tools from the respective MCP server
           resolvedAppResource = undefined;
         }
 
-        return formatToolContent(
-          toolResult,
-          provider,
-          appCompatible
-            ? {
-                serverName,
-                toolName,
-                resourceUri: resourceMeta?.uri,
-                resolvedAppResource,
-                serverBinding,
-                toolArgs: toolArguments,
-                mcpApps: admittedMCPApps,
-              }
-            : { mcpApps: admittedMCPApps },
+        return markMCPToolResultError(
+          formatToolContent(
+            toolResult,
+            provider,
+            appCompatible
+              ? {
+                  serverName,
+                  toolName,
+                  resourceUri: resourceMeta?.uri,
+                  resolvedAppResource,
+                  serverBinding,
+                  toolArgs: toolArguments,
+                  mcpApps: admittedMCPApps,
+                }
+              : { mcpApps: admittedMCPApps },
+          ),
+          toolResult?.isError === true,
         );
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {
@@ -2088,6 +2216,13 @@ Please follow these instructions when using tools from the respective MCP server
         if (isOwnedAbortError(error, options?.signal)) {
           logger.debug(`${logPrefix}[${toolName}] Tool call cancelled by user abort`);
           throw error;
+        }
+        if (enforceSchedule && error instanceof MCPAuthenticationRejectedError) {
+          throw new ScheduledMCPPolicyError(
+            'credential_rejected',
+            serverName,
+            scheduledMCPInvocation?.agentId,
+          );
         }
         // Log with context and re-throw or handle as needed
         logger.error(`${logPrefix}[${toolName}] Tool call failed`, error);

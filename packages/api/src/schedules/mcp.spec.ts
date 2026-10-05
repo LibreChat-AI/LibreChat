@@ -11,6 +11,7 @@ import {
 } from './mcp';
 import { OboTokenResolutionError, createLazyOboUpstreamTokenProvider } from '../mcp/oauth/obo';
 import { MCPServersRegistry } from '../mcp/registry/MCPServersRegistry';
+import { executionFixture } from './authorization/execution.helper';
 
 const principal = { id: 'owner', role: 'USER' };
 const server: ParsedServerConfig = { type: 'streamable-http', url: 'https://mcp.example.test/mcp' };
@@ -113,6 +114,45 @@ function setup(tools = ['search_mcp_docs']) {
     ) => preflight(agentId, user, { concurrency: 3, ...options }),
   };
 }
+
+it.each([
+  { tools: ['web_search'], reason: 'tool_policy_denied' },
+  { tools: [], reason: 'binding_mismatch' },
+])(
+  'retains enrolled execution-policy denial before B1 preview shortcuts: %p',
+  async ({ tools, reason }) => {
+    const fixture = await executionFixture('activation');
+    const { deps, check } = setup(tools);
+    deps.execution = fixture.factory;
+    deps.getUser = jest.fn(async () => fixture.user);
+    const onSelected = jest.fn();
+    await expect(
+      check(
+        fixture.identity.agentId,
+        { ...principal, tenantId: fixture.user.tenantId },
+        {
+          scheduleId: fixture.identity.scheduleId,
+          inspectOboTarget: { serverName: 'warehouse', onSelected },
+        },
+      ),
+    ).rejects.toMatchObject({ outcomes: [expect.objectContaining({ reason })] });
+    expect(deps.connect).not.toHaveBeenCalled();
+    expect(onSelected).not.toHaveBeenCalled();
+  },
+);
+
+it('keeps a missing selected OBO preview distinct from an unenrolled empty agent', async () => {
+  const { deps, check } = setup([]);
+  const onSelected = jest.fn();
+  await expect(
+    check('agent', principal, {
+      scheduleId: 'schedule',
+      inspectOboTarget: { serverName: 'docs', onSelected },
+    }),
+  ).rejects.toMatchObject({ outcomes: [{ server: 'docs', status: 'mcp_configuration_missing' }] });
+  expect(onSelected).not.toHaveBeenCalled();
+  expect(deps.connect).not.toHaveBeenCalled();
+});
 
 it('leaves agents without MCP tools independent of MCP config and credentials', async () => {
   const { check, deps } = setup(['web_search']);

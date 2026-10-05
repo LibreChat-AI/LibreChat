@@ -148,7 +148,7 @@
   },
   "client/src/components/Chat/Footer.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Input/AddedConvo.tsx": {
@@ -158,12 +158,12 @@
   },
   "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 7
     }
   },
   "client/src/components/Chat/Input/ChatForm.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-inline-styles": {
       "count": 3
@@ -265,9 +265,6 @@
     }
   },
   "client/src/components/Chat/Input/OptionsPopover.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 5
     }
@@ -402,21 +399,13 @@
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 11
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/AskUserQuestions.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
     }
   },
   "client/src/components/Chat/Messages/Content/Container.tsx": {
@@ -481,7 +470,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 13
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Attachment.tsx": {
@@ -567,7 +556,7 @@
       "count": 4
     },
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/SkillCall.tsx": {
@@ -585,13 +574,13 @@
   },
   "client/src/components/Chat/Messages/Content/Parts/Summary.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 2
+      "count": 1
     },
     "shadcn/no-inline-styles": {
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 18
+      "count": 17
     },
     "shadcn/require-static-classes": {
       "count": 1
@@ -603,9 +592,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Thinking.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -709,7 +695,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 16
+      "count": 15
     }
   },
   "client/src/components/Chat/Messages/Content/animate.tsx": {
@@ -824,9 +810,6 @@
     }
   },
   "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 13
     },
@@ -883,21 +866,10 @@
   "client/src/components/Chat/ask/options.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 8
     }
   },
   "client/src/components/Conversations/Convo.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Conversations/ConvoActions.tsx": {
-    "shadcn/no-restyle": {
       "count": 1
     }
   },
@@ -1046,7 +1018,7 @@
   },
   "client/src/components/Insights/InsightsView.tsx": {
     "shadcn/no-restyle": {
-      "count": 32
+      "count": 30
     }
   },
   "client/src/components/MCP/CustomUserVarsSection.tsx": {
@@ -1430,9 +1402,6 @@
     }
   },
   "client/src/components/Prompts/sidebar/GroupSidePanel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 11
     }
@@ -1612,14 +1581,6 @@
   "client/src/components/SidePanel/Agents/Images.tsx": {
     "shadcn/no-inline-styles": {
       "count": 3
-    }
-  },
-  "client/src/components/SidePanel/Agents/Instructions.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 5
     }
   },
   "client/src/components/SidePanel/Agents/MCPIcon.tsx": {
@@ -2072,9 +2033,6 @@
     "shadcn/no-arbitrary-values": {
       "count": 1
     },
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 56
     },
@@ -2168,11 +2126,6 @@
       "count": 1
     }
   },
-  "packages/client/src/components/DropdownPopup.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/FileUpload.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -2196,11 +2149,6 @@
   "packages/client/src/components/SegmentedMeter.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
-    }
-  },
-  "packages/client/src/components/Select.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "packages/client/src/components/SplitText.tsx": {

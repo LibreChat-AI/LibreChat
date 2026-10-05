@@ -155,8 +155,16 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # After ALL API replicas are upgraded and old title-generation jobs have drained:
+  # runningChatRename: true
+  # Keep false (default) during rolling upgrades. Missing server capability disables
+  # rename for running chats and unowned placeholder titles; other actions stay available.
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
+  # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
+  # historyCacheTtlMs: 60000
+  # historyCacheRecent: 1
   # Deployment theme applied to every user, in both light and dark mode (default: unset).
   # It is not saved to the browser, outranks REACT_APP_THEME_* colors and stored themes,
   # and yields to the high-contrast modes. Either a bundled theme name (librechat, clickhouse):
@@ -698,6 +706,13 @@ endpoints:
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
   #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
   #   maxToolCallArgBytes: 65536
   #   # (optional) Abort a run once a single model generation emits more than this many stream events.
   #   # Defense in depth against looping provider streams. Disabled by default.
@@ -775,16 +790,18 @@ endpoints:
   #   skills:
   #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
-  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "chain", "ocr"]
+  #   # web_search controls only LibreChat's external pipeline, not provider-native search.
+  #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
+  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
   #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
   #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
-  #     # Keep false until ALL API replicas support this field, then refresh clients.
-  #     # Omitted/false preserves agents' fixed machine bindings.
-  #     allowEnvironmentSelection: false
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
   #     # Maximum additional machines per agent; default 32, supported ceiling 128.
   #     maxEnvironmentChoices: 32
   #     # Keep move-only behavior unless attach/detach is explicitly enabled.
@@ -884,18 +901,27 @@ endpoints:
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:
   #     completionWakeups: true
+  #     # Deliver a conversation's ready results together in one wake-up. On by default; set false
+  #     # during a rolling upgrade while replicas from releases without it still serve traffic.
+  #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
   #   toolApproval:
+  #     # Opt in after all replicas have been upgraded. Agent tool rows then expose
+  #     # Always ask, Always approve, Ask once per chat, and Ask once then always approve.
+  #     # Explicit administrator ask/deny rules and hooks remain authoritative.
+  #     agentModes: false
+  #     grantLookupTimeoutMs: 3000
   #     enabled: true
   #     mode: default # default, dontAsk, or bypass
   #     allow: ["mcp:trusted-server:read_*"]
   #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
   #     ask: ["mcp:*:*"]
   #     reason: "Review {tool} before it runs."
+  #     allowAlways: false # Offer "Always allow" to stop prompting for a tool for the rest of a conversation
   #   # (optional) Persist Agent runs paused for approval or Ask User. MongoDB is the durable default.
   #   checkpointer:
   #     type: mongo # mongo (default) or memory (single-process development only)

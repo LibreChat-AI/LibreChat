@@ -49,7 +49,7 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
     <div className="w-full">
       <div className="flex flex-wrap justify-start gap-1.5">
         {[...Array(6)].map((_, i) => (
-          <div key={i} className="bg-surface-tertiary h-8 min-w-[80px] rounded-full" />
+          <div key={i} className="bg-surface-tertiary h-8 min-w-[5rem] rounded-full" />
         ))}
       </div>
     </div>

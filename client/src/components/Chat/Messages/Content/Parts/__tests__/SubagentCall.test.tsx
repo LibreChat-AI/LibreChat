@@ -25,6 +25,8 @@ import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
+import { FOLD_GLYPH_SELECTOR } from '../../rows';
+import { litFoldPath } from '../../rail';
 
 const mockMCPServerNames: string[] = [];
 
@@ -192,6 +194,35 @@ const event = (
 });
 
 describe('SubagentCall', () => {
+  it('registers its existing header glyph for both containing fold rails', () => {
+    renderWithState({ toolCallId: 'fold-glyph', initialProgress: 1 });
+    const row = screen.getByRole('button', { name: 'Ran agent' }).cloneNode(true) as HTMLElement;
+    const glyph = row.querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+    expect(glyph).not.toBeNull();
+    expect(glyph).toHaveClass('h-5', 'w-5');
+    expect(glyph).not.toHaveClass('min-w-6');
+    glyph!.getBoundingClientRect = () => ({ top: 150, height: 20 }) as DOMRect;
+    const root = document.createElement('div');
+    let parent = root;
+    const rails: HTMLElement[] = [];
+    for (const top of [40, 104]) {
+      const panel = document.createElement('div');
+      panel.setAttribute('data-fold-panel', '');
+      const rail = document.createElement('button');
+      rail.setAttribute('data-fold-rail', '');
+      rail.getBoundingClientRect = () => ({ top }) as DOMRect;
+      panel.append(rail);
+      parent.append(panel);
+      parent = panel;
+      rails.push(rail);
+    }
+    parent.append(row);
+    expect(litFoldPath(root, row, 155)).toEqual([
+      { rail: rails[1], length: 54, end: true },
+      { rail: rails[0], length: 118, end: false },
+    ]);
+  });
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',

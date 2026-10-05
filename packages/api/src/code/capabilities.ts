@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import {
   isCodeWorkspaceSelections,
+  isLinkedWorktreeRoutingAllowed,
   canonicalizeCodeWorkspaceSelections,
   isCodeWorkspaceCheckoutAvailable,
 } from 'librechat-data-provider';
@@ -20,6 +21,20 @@ import {
 export type CodeCapabilityConfigLoader = ReturnType<typeof createAppConfigService>['getAppConfig'];
 
 const pollWorkerStatus = createCodeBridgeStatusPoller();
+
+/** The worker's default label for native SRT workspace commands, optionally `:<command-policy-preset>`. */
+const NATIVE_SANDBOX_PROFILE = 'anthropic-srt';
+
+/**
+ * Whether the worker reports the native SRT command sandbox, whose filesystem is
+ * read-only outside the workspace and a private `$TMPDIR`. A custom operator
+ * label is not recognized, so its description omits the claim.
+ */
+export function isNativeSandboxProfile(profile: string | undefined): boolean {
+  return (
+    profile === NATIVE_SANDBOX_PROFILE || profile?.startsWith(`${NATIVE_SANDBOX_PROFILE}:`) === true
+  );
+}
 
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
@@ -161,11 +176,14 @@ export async function resolveCodeExecutionWorkspaceContext({
       ...selection,
       operations: [...(workspace.operations ?? status.operations)],
       ...(usesIsolation ? { workspaceInstanceId: context.conversationWorkspaceInstanceId } : {}),
-      ...(context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees === true &&
+      ...(isLinkedWorktreeRoutingAllowed(
+        context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees,
+      ) &&
       workspace.workspaceScopes?.includes('git_linked_worktree') &&
       !usesIsolation
         ? { linkedWorktrees: true }
         : {}),
+      ...(isNativeSandboxProfile(status.sandboxProfile) ? { nativeSandbox: true } : {}),
       ...(status.maxCommandTimeoutMs == null
         ? {}
         : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),

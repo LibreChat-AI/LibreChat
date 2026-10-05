@@ -1,8 +1,13 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
+import type {
+  FunctionTool,
+  ToolResources,
+  AgentToolOptions,
+  ToolApprovalGrantBinding,
+} from './tools';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { FunctionTool, ToolResources, AgentToolOptions } from './tools';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
 import type { TFile } from './files';
@@ -133,6 +138,10 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      remember_scope?: 'chat' | 'always';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
     };
   };
 
@@ -470,9 +479,17 @@ export namespace Agents {
    * by `tool_call_id`. `action_name` is retained for display only.
    */
   export interface ToolReviewConfig {
+    remember_scope?: 'chat' | 'always';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
+    /**
+     * Server-authored: the user may approve this call for the rest of the conversation
+     * (`scope: 'session'`). Absent when `toolApproval.allowAlways` is off or the tool is
+     * ineligible (admin `deny`/`ask` match, native code tool, wildcard name).
+     */
+    allow_always?: boolean;
   }
 
   /** Interrupt payload for a tool-approval pause. */
@@ -591,6 +608,13 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {
@@ -606,9 +630,10 @@ export namespace Agents {
   }
 
   /**
-   * Scope of a tool-approval decision — drives the "remember this" persistence
-   * envelope. Storage of session/always decisions is a Slice B+ concern; the
-   * field is on the wire today so route signatures don't break later.
+   * Scope of a tool-approval decision. `once` (the default) applies to this call only.
+   * `session` on an `approve` auto-approves the same tool for the rest of the
+   * conversation, and is accepted only when the call's review config sets
+   * `allow_always`. `always` is reserved and currently rejected.
    */
   export type DecisionScope = 'once' | 'session' | 'always';
 
@@ -1010,6 +1035,43 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
   })
   .optional();
 
+/** Selects which revision of a linked prompt group an agent's instructions follow. */
+export type AgentInstructionsPromptSelection =
+  | { type: 'production' }
+  | { type: 'exact'; promptId: string };
+
+/** A link from an agent to a native LibreChat prompt group used as its instructions. */
+export type AgentInstructionsPrompt = {
+  source: 'native';
+  groupId: string;
+  selection: AgentInstructionsPromptSelection;
+};
+
+/** Returned to an editor who lacks VIEW on the linked group. Hides the group identity.
+ *  `matchesCurrent` is set only on a version snapshot's stub (never on the current
+ *  agent's own stub): whether that version's raw link equals the agent's current raw
+ *  link (same `groupId` and selection), without revealing which group either is. */
+export type RestrictedAgentInstructionsPrompt = {
+  source: 'native';
+  restricted: true;
+  matchesCurrent?: boolean;
+};
+
+/** Stable, machine-readable error codes for agent-instructions-prompt link failures. */
+export const InstructionsPromptErrorCode = {
+  /** The selection does not resolve (missing group, missing Production, revision not in
+   *  group) or its content is blocked. */
+  UNAVAILABLE: 'instructions_prompt_unavailable',
+  /** The editor sets or changes a link to a group without PROMPTGROUP `VIEW`. */
+  FORBIDDEN: 'instructions_prompt_forbidden',
+  /** The role, ACL, or prompt-store lookup backing the write check failed unexpectedly
+   *  (not a content-policy rejection). No detail about the failure is disclosed. */
+  VALIDATION_FAILED: 'instructions_prompt_validation_failed',
+} as const;
+
+export type InstructionsPromptErrorCode =
+  (typeof InstructionsPromptErrorCode)[keyof typeof InstructionsPromptErrorCode];
+
 export type Agent = {
   _id?: string;
   id: string;
@@ -1023,6 +1085,8 @@ export type Agent = {
   avatar: AgentAvatar | null;
   instructions?: string | null;
   additional_instructions?: string | null;
+  /** Links these instructions to a native prompt group revision instead of inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null;
   tools?: string[];
   tool_kwargs?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
@@ -1098,6 +1162,8 @@ export type AgentCreateParams = {
   avatar?: AgentAvatar | null;
   file_ids?: string[];
   instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` keeps inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   tools?: Array<FunctionTool | string>;
   provider: AgentProvider;
   model: string | null;
@@ -1134,6 +1200,8 @@ export type AgentUpdateParams = {
   avatar?: AgentAvatar | null;
   file_ids?: string[];
   instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` removes the link. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   tools?: Array<FunctionTool | string>;
   tool_resources?: ToolResources;
   provider?: AgentProvider;

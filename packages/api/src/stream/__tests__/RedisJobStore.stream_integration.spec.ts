@@ -1,5 +1,5 @@
 import { StandardGraph } from '@librechat/agents';
-import { StepTypes } from 'librechat-data-provider';
+import { StepTypes, readScheduleMCPReceipts } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
 import type { Redis, Cluster } from 'ioredis';
 import type { SteerQueueItem, SteerReceipt } from '../interfaces/IJobStore';
@@ -92,6 +92,76 @@ describe('RedisJobStore Integration Tests', () => {
     }
     process.env = originalEnv;
   });
+
+  test.each(['update', 'transition'] as const)(
+    'retains the strongest scheduled denial atomically through %s',
+    async (writer) => {
+      expect(ioredisClient).not.toBeNull();
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { ScheduledMCPPolicyError } = await import('../../schedules/authorization/policy');
+      const first = new RedisJobStore(ioredisClient!);
+      const second = new RedisJobStore(ioredisClient!);
+      const id = 'schedule-denial';
+      const job = await first.createJob(id, 'owner', id, 'tenant');
+      const lineage = {
+        scheduleId: 'original-schedule',
+        ownerId: 'owner',
+        tenantId: 'tenant',
+        agentId: 'original-root',
+        invocationMode: 'delegated' as const,
+      };
+      await first.updateJob(id, { scheduleMCPCompletion: lineage }, job.createdAt);
+      expect((await second.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+
+      const transient = new ScheduledMCPPolicyError('dependency_unavailable', 'warehouse', 'root')
+        .outcomes[0];
+      const permanent = new ScheduledMCPPolicyError('binding_mismatch', 'warehouse', 'child')
+        .outcomes[0];
+      const patch = (scheduleMCPFailure: typeof permanent) => ({
+        scheduleMCPFailure,
+        preserveForScheduleReconcile: true,
+        scheduleOutcome: 'error' as const,
+        scheduleOutcomeError: `${scheduleMCPFailure.status}: ${JSON.stringify([scheduleMCPFailure])}`,
+      });
+      try {
+        await first.updateJob(id, patch(permanent), job.createdAt);
+        if (writer === 'update') await second.updateJob(id, patch(transient), job.createdAt);
+        else
+          expect(
+            await second.transitionStatus(id, {
+              from: 'running',
+              to: 'complete',
+              expectCreatedAt: job.createdAt,
+              patch: patch(transient),
+            }),
+          ).toBe(true);
+        const retained = await first.getJob(id);
+        expect(retained).toMatchObject({
+          scheduleMCPFailure: permanent,
+          scheduleOutcome: 'error',
+          scheduleOutcomeError: expect.stringMatching(/^mcp_reauth_required: /),
+        });
+        expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toEqual(
+          expect.arrayContaining([permanent, transient]),
+        );
+        expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toHaveLength(2);
+        await second.updateJob(
+          id,
+          patch(new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),
+          job.createdAt - 1,
+        );
+        expect((await first.getJob(id))?.scheduleMCPFailure).toEqual(permanent);
+        expect((await first.getJob(id))?.scheduleMCPCompletion).toEqual(lineage);
+        await ioredisClient!.hset(`stream:{${id}}:job`, 'scheduleMCPCompletion', '{invalid');
+        await expect(second.getJob(id)).rejects.toMatchObject({
+          failure: { reason: 'binding_mismatch' },
+        });
+      } finally {
+        await first.destroy();
+        await second.destroy();
+      }
+    },
+  );
 
   test.each([false, true])(
     'owner cleanup recovers legacy terminal membership once (detached=%s)',
@@ -209,6 +279,51 @@ describe('RedisJobStore Integration Tests', () => {
         notAfterMs: expect.any(Number),
       });
       await expect(store.getJob(streamId)).resolves.toMatchObject({ status: 'running' });
+
+      await store.destroy();
+    });
+
+    test('persists user-submitted provenance patched by a resume transition', async () => {
+      if (!ioredisClient) {
+        return;
+      }
+
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const store = new RedisJobStore(ioredisClient);
+      await store.initialize();
+
+      const streamId = `test-transition-provenance-${Date.now()}`;
+      const created = await store.createJob(streamId, 'provenance-user', streamId);
+      await store.transitionStatus(streamId, { from: 'running', to: 'requires_action' });
+      const userSubmittedMessageFieldPaths = [
+        { path: '/content/0/tool_call/output', field: 'answer' as const },
+      ];
+
+      await expect(
+        store.transitionStatus(streamId, {
+          from: 'requires_action',
+          to: 'running',
+          patch: {
+            userSubmittedPaths: ['/content/0/tool_call/args'],
+            userSubmittedMessageFieldPaths,
+            preResumeProvenance: {
+              userSubmittedPaths: ['/content/0/steer'],
+              userSubmittedMessageFieldPaths: [],
+            },
+          },
+          expectCreatedAt: created.createdAt,
+        }),
+      ).resolves.toBe(true);
+
+      await expect(store.getJob(streamId)).resolves.toMatchObject({
+        status: 'running',
+        userSubmittedPaths: ['/content/0/tool_call/args'],
+        userSubmittedMessageFieldPaths,
+        preResumeProvenance: {
+          userSubmittedPaths: ['/content/0/steer'],
+          userSubmittedMessageFieldPaths: [],
+        },
+      });
 
       await store.destroy();
     });

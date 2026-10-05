@@ -63,6 +63,9 @@ const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
 const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
+/** A three-question batch; the LONG variant gives the first question a maximum-size prompt. */
+const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
+const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
@@ -1876,6 +1879,68 @@ function askUserQuestionResponses(label, toolNames) {
   };
 }
 
+function askUserQuestionBatchResponses(label, toolNames, { long }) {
+  if (!toolNames.has(ASK_USER_QUESTION_TOOL_NAME)) {
+    return askUserQuestionResponses(label, toolNames);
+  }
+  /** Near the tool's limits: a 2,000-character question and a 4,000-character description. */
+  const longQuestion =
+    `Which environment for ${label}? ${'Explain the deployment target. '.repeat(64)}`
+      .slice(0, 2000)
+      .trim();
+  const longDescription = Array.from(
+    { length: 60 },
+    (_, index) => `Line ${index + 1} of the long clarification for ${label}.`,
+  )
+    .join(' ')
+    .slice(0, 4000);
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `call_e2e_ask_user_questions_${label}`,
+        name: ASK_USER_QUESTION_TOOL_NAME,
+        args: {
+          questions: [
+            {
+              id: 'environment',
+              question: long ? longQuestion : `Which environment for ${label}?`,
+              ...(long ? { description: longDescription } : {}),
+              options: [
+                { label: 'Staging', value: 'staging' },
+                { label: 'Production', value: 'production' },
+                ...(long
+                  ? Array.from({ length: 6 }, (_, index) => ({
+                      label: `Region ${index + 1}: ${'a deliberately long option label '.repeat(4)}`,
+                      value: `region-${index + 1}`,
+                    }))
+                  : []),
+              ],
+            },
+            {
+              id: 'region',
+              question: `Which region for ${label}?`,
+              options: [
+                { label: 'Europe', value: 'europe' },
+                { label: 'Americas', value: 'americas' },
+              ],
+            },
+            {
+              id: 'notes',
+              question: `Anything else for ${label}?`,
+              options: [
+                { label: 'Nothing else', value: 'none' },
+                { label: 'Call me first', value: 'call' },
+              ],
+            },
+          ],
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function findLastToolMessageText(messages, requiredToken) {
   for (let index = (messages ?? []).length - 1; index >= 0; index--) {
     const message = messages[index];
@@ -3385,6 +3450,14 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const activityFailedLabel = getMarkerValue(text, ACTIVITY_FAILED_REPLY_MARKER);
   if (activityFailedLabel) {
     return activityFailedReplyResponses(activityFailedLabel, toolNames);
+  }
+
+  const askBatchLabel = getMarkerValue(text, ASK_USER_QUESTIONS_MARKER);
+  const askLongBatchLabel = getMarkerValue(text, ASK_USER_LONG_QUESTIONS_MARKER);
+  if (askBatchLabel || askLongBatchLabel) {
+    return askUserQuestionBatchResponses(askBatchLabel || askLongBatchLabel, toolNames, {
+      long: Boolean(askLongBatchLabel),
+    });
   }
 
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);

@@ -1258,7 +1258,11 @@ describe('scheduled OBO activation preflight', () => {
       Parameters<SchedulesHandlersDeps['preflightMCP']>
     >(async (_agent, _owner, options) => {
       expect(paused.enabled).toBe(false);
-      expect(options).toMatchObject({ scheduleId: paused.id, activationPreflight: true });
+      expect(options).toMatchObject({
+        scheduleId: paused.id,
+        stage: 'activation',
+        activationPreflight: true,
+      });
       return [];
     });
     const deps = makeCreateDeps({

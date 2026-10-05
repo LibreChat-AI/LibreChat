@@ -9,9 +9,9 @@ import {
   OboTokenResolutionError,
   ReauthenticationRequiredError,
 } from '~/mcp/oauth';
+import { MCPAuthenticationRejectedError, ScheduledMCPBearerError } from '~/mcp/errors';
 import { PENDING_STALE_MS, FlowStateNotFoundError } from '~/flow/manager';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { getMCPServerGeneration } from '~/mcp/oauth/cleanup';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { MCPConnection } from '~/mcp/connection';
@@ -71,6 +71,10 @@ class InspectableMCPConnectionFactory extends MCPConnectionFactory {
     options?: t.OAuthConnectionOptions | t.UserConnectionContext,
   ) {
     super(basic, options);
+  }
+
+  public async discoverToolsForTest() {
+    return this.discoverToolsInternal();
   }
 
   public async createConnectionForTest(): Promise<MCPConnection> {
@@ -479,6 +483,33 @@ describe('MCPConnectionFactory', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(mockFlowManager.deleteFlow).not.toHaveBeenCalled();
   });
+
+  it.each(['authenticated', 'fallback'] as const)(
+    'preserves a fatal catalog denial in %s discovery and disposes the session',
+    async (path) => {
+      const config: t.MCPOptions = {
+        type: 'streamable-http',
+        url: 'https://resource.example/mcp',
+        requiresOAuth: false,
+      };
+      mockProcessMCPEnv.mockReturnValue(config);
+      const factory = new InspectableMCPConnectionFactory(
+        { serverName: 'catalog-denial', serverConfig: config },
+        { user: mockUser },
+      );
+      const denial = new ScheduledMCPBearerError('consent_revoked', 'catalog-denial');
+      mockConnectionInstance.connect.mockResolvedValue(undefined);
+      mockConnectionInstance.isConnected.mockResolvedValue(true);
+      if (path === 'fallback')
+        mockConnectionInstance.connect.mockRejectedValueOnce(
+          new Error('temporary transport failure'),
+        );
+      mockConnectionInstance.fetchOrderedToolsSnapshot = jest.fn().mockRejectedValue(denial);
+      await expect(factory.discoverToolsForTest()).rejects.toBe(denial);
+      expect(mockMCPConnection).toHaveBeenCalledTimes(path === 'fallback' ? 2 : 1);
+      expect(mockConnectionInstance.dispose).toHaveBeenCalledTimes(path === 'fallback' ? 2 : 1);
+    },
+  );
 
   describe('static create method', () => {
     it('should create a basic connection without OAuth', async () => {

@@ -1963,6 +1963,11 @@ jest.mock('~/server/services/MCP', () => ({
   resolveConfigServers: jest.fn().mockResolvedValue({}),
 }));
 
+const mockLinkedInstructionsResolver = jest.fn();
+jest.mock('~/server/services/Endpoints/agents/linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockLinkedInstructionsResolver),
+}));
+
 jest.mock('~/models', () => ({
   bulkInsertTransactions: jest.fn(),
   getCacheMultiplier: jest.fn(),
@@ -2290,6 +2295,14 @@ describe('AgentClient - startup telemetry', () => {
   });
 
   it.each([
+    ...['ask', 'chat', 'always'].map((mode) => ({
+      name: `a deselected MCP tool retaining ${mode} mode`,
+      toolApproval: { enabled: true, mode: 'bypass', agentModes: true },
+      tool_options: {
+        deselected_mcp_db: { approval_mode: mode },
+        read_file: { approval_mode: 'allow' },
+      },
+    })),
     {
       name: 'a bypass-only approval policy',
       toolApproval: { enabled: true, mode: 'bypass' },
@@ -2298,6 +2311,44 @@ describe('AgentClient - startup telemetry', () => {
     {
       name: 'an approval rule that matches no selected tool',
       toolApproval: { enabled: true, mode: 'bypass', ask: ['approval_probe'] },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk denied attached-code lazy graph member',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['read_file'] },
+      primaryTools: [{ name: 'read_file' }],
+      subagentAgentConfigs: [
+        {
+          id: 'lazy-parent',
+          subagentGraphMemberMetadata: [
+            {
+              id: 'attached-member',
+              codeExecutionContext: { environmentType: 'attached' },
+              skillAuthoringAvailable: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'dontAsk fallback-denied ask agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'ask' } },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk fallback-denied chat agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'chat' } },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk fallback-denied always agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'always' } },
       subagentAgentConfigs: undefined,
     },
     {
@@ -2318,7 +2369,7 @@ describe('AgentClient - startup telemetry', () => {
     },
   ])(
     'does not reject scheduled runs for $name',
-    async ({ toolApproval, primaryTools, subagentAgentConfigs }) => {
+    async ({ toolApproval, primaryTools, subagentAgentConfigs, tool_options }) => {
       mockDeleteAgentCheckpoint.mockReset().mockResolvedValue(undefined);
       const processStream = jest.fn().mockResolvedValue();
       mockCreateRun.mockResolvedValueOnce({
@@ -2345,6 +2396,7 @@ describe('AgentClient - startup telemetry', () => {
           hide_sequential_outputs: false,
           tools: primaryTools ?? [{ name: 'read_file' }],
           subagentAgentConfigs,
+          tool_options,
         },
         endpointTokenConfig: {},
         eventHandlers: {},
@@ -2373,6 +2425,124 @@ describe('AgentClient - startup telemetry', () => {
         );
       } else {
         expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: 'selected review-gated tool',
+      tools: [{ name: 'query_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'ask' } },
+    },
+    {
+      name: 'selected tool with verified legacy mode',
+      tools: [{ name: 'query_mcp_db' }],
+      tool_options: { db_query_mcp_db: { approval_mode: 'chat' } },
+      mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    },
+    {
+      name: 'unresolved lazy review-gated child',
+      tools: [{ name: 'read_file' }],
+      lazySubagentConfigs: [
+        { id: 'lazy-agent', tool_options: { query_mcp_db: { approval_mode: 'always' } } },
+      ],
+    },
+  ])(
+    'rejects scheduled memory-store runs with a $name before provider execution',
+    async (surface) => {
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: { enabled: true, mode: 'bypass', agentModes: true },
+              },
+            },
+          },
+          _isScheduledFire: true,
+          _resumableStreamId: 'scheduled-agent-mode',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          ...surface,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'scheduled-agent-mode';
+      client.responseMessageId = 'scheduled-agent-mode-response';
+      client.parentMessageId = 'scheduled-agent-mode-parent';
+      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
+        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+      });
+      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    },
+  );
+
+  it.each(['db', 'Db', 'dB', 'DB'])(
+    'refuses unresolved %s legacy-hook schedules before provider startup under canonical dontAsk allow',
+    async (prefix) => {
+      mockIsHITLEnabled.mockReturnValue(true);
+      const hook = jest.fn(async () => ({ decision: 'ask' }));
+      const unregister = registerToolApprovalHook(() => hook, {
+        matcher: `^${prefix}_query_mcp_db$`,
+      });
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: {
+                  enabled: true,
+                  mode: 'dontAsk',
+                  allow: ['query_mcp_db', 'subagent'],
+                },
+              },
+            },
+          },
+          _isScheduledFire: true,
+          _resumableStreamId: 'scheduled-legacy-hook',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'subagent' }],
+          lazySubagentConfigs: [{ id: 'lazy-child', tools: ['query_mcp_db'] }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'scheduled-legacy-hook';
+      client.responseMessageId = 'scheduled-legacy-hook-response';
+      client.parentMessageId = 'scheduled-legacy-hook-parent';
+      try {
+        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
+          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+        });
+        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(hook).not.toHaveBeenCalled();
+      } finally {
+        unregister();
       }
     },
   );
@@ -6237,6 +6407,159 @@ describe('AgentClient - titleConvo', () => {
       ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
     });
 
+    it.each([3, 0])(
+      'continues with %i current files after cumulative history reaches the count limit',
+      async (currentCount) => {
+        client.options.resendFiles = true;
+        const historical = Array.from({ length: currentCount ? 8 : 11 }, (_, index) =>
+          makeTextFile(`history-${index}`, `history-${index}.txt`, 'history'),
+        );
+        const current = Array.from({ length: currentCount }, (_, index) =>
+          makeTextFile(`current-${index}`, `current-${index}.txt`, 'current'),
+        );
+        client.options.attachments = Promise.resolve(current);
+        require('~/models').getFiles.mockResolvedValue(historical);
+        const messages = historical.map((file, index) => ({
+          messageId: `history-message-${index}`,
+          parentMessageId: index ? `history-message-${index - 1}` : null,
+          isCreatedByUser: true,
+          text: 'Inspect this file.',
+          files: [{ file_id: file.file_id }],
+        }));
+        messages.push({
+          messageId: 'current-message',
+          parentMessageId: messages[messages.length - 1].messageId,
+          isCreatedByUser: true,
+          text: 'Continue.',
+        });
+
+        const replayedMessages = await client.addPreviousAttachments(messages);
+        await expect(
+          client.buildMessages(replayedMessages, 'current-message', {}),
+        ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+        expect(Object.values(client.message_file_map).flat()).toHaveLength(11);
+      },
+    );
+
+    it('rejects an oversized current batch without blocking a later file-free turn', async () => {
+      client.options.resendFiles = true;
+      const files = Array.from({ length: 11 }, (_, index) =>
+        makeTextFile(`rejected-${index}`, `rejected-${index}.txt`, 'context'),
+      );
+      client.options.attachments = files;
+      await expect(
+        client.buildMessages(
+          [{ messageId: 'rejected-message', isCreatedByUser: true, text: 'Inspect files.' }],
+          'rejected-message',
+          {},
+        ),
+      ).rejects.toMatchObject({ limitType: 'count', observed: 11, limit: 10 });
+
+      client.options.attachments = [];
+      client.message_file_map = {};
+      require('~/models').getFiles.mockResolvedValue(files);
+      const replayedMessages = await client.addPreviousAttachments([
+        {
+          messageId: 'rejected-message',
+          isCreatedByUser: true,
+          text: 'Inspect files.',
+          files: files.map(({ file_id }) => ({ file_id })),
+        },
+        {
+          messageId: 'recovery-message',
+          parentMessageId: 'rejected-message',
+          isCreatedByUser: true,
+          text: 'Continue without new files.',
+        },
+      ]);
+      await expect(client.buildMessages(replayedMessages, 'recovery-message', {})).resolves.toEqual(
+        expect.objectContaining({ prompt: expect.any(Array) }),
+      );
+    });
+
+    it('counts resubmitted historical files during steering without mutating rejected state', () => {
+      const historical = Array.from({ length: 11 }, (_, index) =>
+        makeTextFile(`history-${index}`, `history-${index}.txt`, 'context'),
+      );
+      client.turnSharedAttachmentFiles = historical;
+      client.turnHistoricalAttachmentIds = new Set(historical.map(({ file_id }) => file_id));
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+
+      expect(() => client.admitSteerAttachments(historical, 'rejected-steer')).toThrow(
+        expect.objectContaining({ limitType: 'count', observed: 11, limit: 10 }),
+      );
+      expect(client.turnHistoricalAttachmentIds.size).toBe(11);
+      expect(client.turnSharedAttachmentFiles).toBe(historical);
+      expect(() => client.admitSteerAttachments([historical[0]], 'accepted-steer')).not.toThrow();
+      expect(client.turnHistoricalAttachmentIds.has(historical[0].file_id)).toBe(false);
+    });
+
+    it('releases a failed historical resubmission before admitting later steer files', () => {
+      mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+      const historical = makeTextFile('history', 'history.txt', 'history');
+      const current = makeTextFile('current', 'current.txt', 'current');
+      client.turnSharedAttachmentFiles = [historical];
+      client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+      client.attachmentMemoryContext = { attachments: [historical] };
+      client.admitSteerAttachments([historical], 'failed-steer');
+
+      client.rollbackSteerAttachmentAdmission('failed-steer');
+
+      expect(client.turnHistoricalAttachmentIds).toEqual(new Set([historical.file_id]));
+      expect(client.turnSharedAttachmentFiles).toEqual([historical]);
+      expect(client.attachmentMemoryContext.attachments).toEqual([historical]);
+      expect(() => client.admitSteerAttachments([current], 'later-steer')).not.toThrow();
+    });
+
+    it('keeps committed resubmissions counted when a later duplicate steer fails', () => {
+      mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
+      const historical = makeTextFile('history', 'history.txt', 'history');
+      const current = makeTextFile('current', 'current.txt', 'current');
+      client.turnSharedAttachmentFiles = [historical];
+      client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        ['primary-agent', { endpoint: EModelEndpoint.openAI }],
+      ]);
+      client.admitSteerAttachments([historical], 'accepted-steer');
+      client.admittedSteerAttachments.delete('accepted-steer');
+      client.admitSteerAttachments([historical], 'failed-steer');
+
+      client.rollbackSteerAttachmentAdmission('failed-steer');
+
+      expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(false);
+      expect(client.turnSharedAttachmentFiles).toEqual([historical, historical]);
+      expect(() => client.admitSteerAttachments([current], 'later-steer')).toThrow(
+        expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }),
+      );
+    });
+
+    it.each([
+      ['first', 'second'],
+      ['second', 'first'],
+    ])(
+      'restores an overlapping historical exclusion after rolling back %s then %s',
+      (first, second) => {
+        const historical = makeTextFile('history', 'history.txt', 'history');
+        client.turnSharedAttachmentFiles = [historical];
+        client.turnHistoricalAttachmentIds = new Set([historical.file_id]);
+        client.admitSteerAttachments([historical], 'first');
+        client.admitSteerAttachments([historical], 'second');
+
+        client.rollbackSteerAttachmentAdmission(first);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(false);
+        client.rollbackSteerAttachmentAdmission(second);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(true);
+        expect(client.turnSharedAttachmentFiles).toEqual([historical]);
+        client.rollbackSteerAttachmentAdmission(second);
+        expect(client.turnHistoricalAttachmentIds.has(historical.file_id)).toBe(true);
+      },
+    );
+
     it('rejects combined historical and current bytes before either batch is encoded', async () => {
       mockAgent.endpoint = 'Moonshot';
       client.options.endpointType = EModelEndpoint.custom;
@@ -8623,6 +8946,29 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    it('passes the shared linked-instructions resolver, without recording usage, so a linked memory agent still resolves its instructions', async () => {
+      mockCheckAccess.mockResolvedValue(true);
+      mockInitializeAgent.mockResolvedValue({
+        ...mockAgent,
+        provider: EModelEndpoint.openAI,
+      });
+      mockCreateMemoryProcessor.mockResolvedValue([undefined, jest.fn()]);
+
+      client = new AgentClient(mockOptions);
+      client.conversationId = 'convo-123';
+      client.responseMessageId = 'response-123';
+
+      await client.useMemory();
+
+      expect(mockInitializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resolveLinkedInstructions: mockLinkedInstructionsResolver,
+          recordLinkedPromptUsage: false,
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('should bind memory processing to the current generation epoch', async () => {
       mockReq._resumableStreamId = 'convo-123';
       mockCheckAccess.mockResolvedValue(true);
@@ -9764,7 +10110,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
     ).not.toThrow();
   });
 
-  it('reapplies aggregate attachment limits to persistent history on resume', async () => {
+  it('does not reapply current attachment counts to persistent history on resume', async () => {
     const historicalFiles = Array.from({ length: 11 }, (_, index) => ({
       file_id: `resume-history-${index}`,
       filename: `history-${index}.txt`,
@@ -9796,6 +10142,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
         },
       }),
     });
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
     const context = makeContext(undefined);
     context.options.req.body.isTemporary = false;
     context.options.req.config.fileConfig = {
@@ -9804,11 +10152,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
-    ).rejects.toMatchObject({
-      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
-      limitType: 'count',
-    });
-    expect(mockCreateRun).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it('counts a restored request file only once when it is already in the checkpoint', async () => {
@@ -9878,7 +10223,7 @@ describe('AgentClient - resumeCompletion content protection', () => {
     ]);
   });
 
-  it('counts checkpoint files retained in model state after endpoint policy tightens', async () => {
+  it('preserves checkpoint files when the current file-count policy tightens', async () => {
     const checkpointFiles = [
       {
         file_id: 'retained-1',
@@ -9910,6 +10255,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
       }),
     });
     require('~/models').getFiles.mockResolvedValue(checkpointFiles);
+    const resume = jest.fn().mockResolvedValue(undefined);
+    mockCreateRun.mockResolvedValue({ resume, getCalibrationRatio: jest.fn(() => 0) });
     const context = makeContext(undefined);
     context.options.req.config.fileConfig = {
       endpoints: {
@@ -9919,11 +10266,8 @@ describe('AgentClient - resumeCompletion content protection', () => {
 
     await expect(
       AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} }),
-    ).rejects.toMatchObject({
-      code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
-      limitType: 'count',
-    });
-    expect(mockCreateRun).not.toHaveBeenCalled();
+    ).resolves.toBeUndefined();
+    expect(resume).toHaveBeenCalledTimes(1);
   });
 
   it('reapplies each secondary agent endpoint limit on resume', async () => {

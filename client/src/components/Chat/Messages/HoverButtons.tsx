@@ -256,7 +256,7 @@ const HoverButtons = ({
           title={
             isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_to_clipboard')
           }
-          icon={<MorphIcon icon={isCopied ? Check : Copy} size={19} />}
+          icon={<MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />}
           isLast={isLast}
           disabled={!canCopy}
           className={cn(

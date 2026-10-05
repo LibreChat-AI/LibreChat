@@ -8,6 +8,7 @@ import type {
   TPendingSteer,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
+import type { ScheduleMCPOutcome, ScheduledMCPIdentity } from 'librechat-data-provider';
 import type { RunStep, StandardGraph } from '@librechat/agents';
 import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
@@ -177,6 +178,13 @@ export interface SerializableJobData {
   userSubmittedPaths?: string[];
   /** Exact request-only message fields embedded at caller-authored paths. */
   userSubmittedMessageFieldPaths?: UserSubmittedMessageFieldPath[];
+  /** Provenance that the latest approval claim replaced. Until that resume's provider
+   * segment starts, its decision is not in the job's content, so an abort publishes
+   * these paths instead of the claimed ones. */
+  preResumeProvenance?: Pick<
+    SerializableJobData,
+    'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'
+  >;
 
   /**
    * Whether this run has activity labels enabled (per-endpoint
@@ -257,9 +265,13 @@ export interface SerializableJobData {
   scheduledFor?: string;
   scheduleConfigRevision?: number;
   scheduleManual?: boolean;
+  /** Original schedule root for a legacy completion, never occurrence bookkeeping. */
+  scheduleMCPCompletion?: ScheduledMCPIdentity;
   /** Terminal outcome evidence retained when the schedule row could not be updated. */
   scheduleOutcome?: 'success' | 'error' | 'interrupted' | 'skipped_balance';
   scheduleOutcomeError?: string;
+  /** Safe invocation denial retained until schedule settlement, never tool arguments. */
+  scheduleMCPFailure?: ScheduleMCPOutcome;
   preserveForScheduleReconcile?: boolean;
   /**
    * A terminal transition (currently approval expiry) still owes a durable host
@@ -475,8 +487,10 @@ export type JobMetadataPatch = Partial<
     | 'scheduledFor'
     | 'scheduleConfigRevision'
     | 'scheduleManual'
+    | 'scheduleMCPCompletion'
     | 'scheduleOutcome'
     | 'scheduleOutcomeError'
+    | 'scheduleMCPFailure'
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
@@ -901,8 +915,31 @@ export interface ResumeState {
  * the additional {@link IJobStoreV2} capabilities before accepting a custom
  * store at runtime.
  */
+/** Captured stale provider identity. Recovery requires positive host termination proof. */
+export interface ScheduleProviderOwner {
+  streamId: string;
+  createdAt: number;
+  providerExecutionId: string;
+  scheduleId: string;
+  scheduledFor: string;
+  userId: string;
+  tenantId: string | null;
+  lastActiveAt: number;
+}
+
+export interface ScheduleCleanupScope {
+  scheduleId?: string;
+  userId?: string;
+}
+
 export interface IJobStore {
   readonly detachedAgentEventActionStoreMode?: DetachedAgentEventActionStoreMode;
+  /** Receipt evidence survives loss of the generation worker; absent is volatile. */
+  readonly durableScheduleReceipts?: boolean;
+
+  /** Synchronous exact-epoch notification after a retained stale transition.
+   * Cancellation is not drain acknowledgement; provider owners still record drain. */
+  setStaleGenerationHandler?(handler?: (streamId: string, createdAt: number) => void): void;
 
   initialize(): Promise<void>;
 
@@ -949,6 +986,12 @@ export interface IJobStore {
    * retry the host adapter after a restart / on another replica, even though the job is
    * no longer in the requires_action index. */
   getTerminalHostActionJobs?(): Promise<SerializableJobData[]>;
+  /** Generation-scoped schedule settlement outbox, including already-bookkept runs. */
+  getScheduleReconcileJobs?(limit: number): Promise<SerializableJobData[]>;
+  /** Independent of active Mongo runs. Missing capability cannot certify cleanup. */
+  hasScheduleCleanupObligation?(scope: ScheduleCleanupScope): Promise<boolean>;
+  /** Used only after trusted host process-loss confirmation; status/epoch/segment/liveness CAS. */
+  recoverScheduleProviderOwnerLoss?(owner: ScheduleProviderOwner): Promise<boolean>;
   /** Enumerates detached Event Actor completion generations from a versioned
    * retry lane known only to capable consumers. Redis keeps this lane separate
    * from `getTerminalHostActionJobs` so a rolling-deployment replica that only

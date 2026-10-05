@@ -238,7 +238,7 @@ test.describe('chat list properties menu', () => {
     await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 2');
   });
 
-  test('a project chat is listed under its project, not in Chats, and stays reachable from the archive @scenario:project-chat-listed-under-project-only', async ({
+  test('a project chat is left to its project by default, is listed in Chats with its folder on request, and stays reachable from the archive @scenario:project-chat-listed-in-chats-and-project', async ({
     page,
   }) => {
     const projectName = `Menu project ${randomUUID().slice(0, 8)}`;
@@ -266,6 +266,13 @@ test.describe('chat list properties menu', () => {
         hasText: inProject,
       }),
     ).toBeVisible();
+
+    await trigger(page).click();
+    await page.getByRole('menuitemcheckbox', { name: 'Show project chats' }).click();
+    await closeMenus(page);
+    await expect(chatsRow(page, inProject).getByTestId('convo-project-badge')).toBeVisible();
+    await expect(chatsRow(page, unassigned)).toBeVisible();
+    await expect(trigger(page)).toHaveAttribute('aria-label', 'Filters active: 1');
 
     await trigger(page).click();
     await page.getByTestId('chat-filter-show').click();

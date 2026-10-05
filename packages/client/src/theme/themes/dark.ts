@@ -80,6 +80,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-medium-alt': '57 57 57', // #393939 (gray-650)
   'rgb-border-heavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-xheavy': '153 150 150', // #999696 (gray-400)
+  'rgb-drawer-edge': '153 150 150', // #999696 (gray-400, matching border-xheavy)
   'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
   'rgb-border-control': '33 33 33', // #212121 (gray-800), the stock field edge
   'rgb-border-field-focus': '236 236 236', // #ececec (gray-100, matching focus-control)

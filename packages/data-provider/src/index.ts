@@ -51,6 +51,16 @@ export * from './types/graph';
 export * from './types/insights';
 export * from './types/traces';
 export * from './types/transport';
+export type {
+  OutputTextProtectionPolicy,
+  OutputProtectionConfig,
+  OutputProtectionTarget,
+  OutputProtectionDestination,
+  OutputProtectionErrorCode,
+  OutputProtectionCategoryCount,
+  OutputProtectionResult,
+  OutputProtectionAudit,
+} from './types/protection';
 export * from './types/subagents';
 export * from './types/background';
 export * from './types/queuedTurns';
@@ -93,3 +103,5 @@ export * from './code/approval';
 export * from './code/workspace';
 
 export * from './types/scheduleConsent';
+
+export * from './approval';

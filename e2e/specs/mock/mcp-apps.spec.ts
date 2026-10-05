@@ -671,8 +671,19 @@ test.describe('MCP Apps full integration', () => {
     expect(linkViewCsp).toContain("connect-src 'none'");
     expect(linkViewCsp).toContain("frame-src 'none'");
 
+    const linkOuterFrame = page.locator('iframe[title="MCP App: show_link_app"]');
+    const linkButton = linkApp.getByTestId('open-link');
+    await app.getByTestId('call-tool').focus();
+    await expect(app.getByTestId('call-tool')).toBeFocused();
+    await outerFrame.scrollIntoViewIfNeeded();
+    await expect(linkOuterFrame).not.toBeInViewport();
+
+    // Settle both scroll levels before Chrome dispatches a click into the sibling sandbox.
+    await linkOuterFrame.scrollIntoViewIfNeeded();
+    await linkButton.scrollIntoViewIfNeeded();
+    await linkButton.boundingBox();
     const popupPromise = page.waitForEvent('popup', { timeout: 30_000 });
-    await linkApp.getByTestId('open-link').click();
+    await linkButton.click();
     const openedPage = await popupPromise;
     await openedPage.waitForLoadState('domcontentloaded');
     expect(new URL(openedPage.url()).origin).toBe(MCP_APP_LINK_ORIGIN);
@@ -684,7 +695,7 @@ test.describe('MCP Apps full integration', () => {
       (await readEvents(page)).filter((event) => event.method === 'resources/read:show_link_app'),
     ).toHaveLength(1);
 
-    const legacyGeneration = await sendMessage(page, `E2E_MCP_LEGACY:${label}`);
+    const legacyGeneration = await sendMessageAndWaitForCompletion(page, `E2E_MCP_LEGACY:${label}`);
     expect(legacyGeneration.ok()).toBeTruthy();
     const legacyFrameElement = page.locator(`iframe[title="${LEGACY_FRAME_TITLE}"]`);
     await expect(legacyFrameElement).toHaveCount(1);
@@ -692,6 +703,7 @@ test.describe('MCP Apps full integration', () => {
     await expect(legacyFrame.getByTestId('legacy-status')).toHaveText('legacy-ready');
     await expect(legacyFrameElement).toHaveCSS('height', '120px');
 
+    await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
     const legacyActionGeneration = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&

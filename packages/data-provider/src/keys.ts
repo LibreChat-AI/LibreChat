@@ -82,6 +82,8 @@ export enum QueryKeys {
   mcpServer = 'mcpServer',
   /* Active Jobs */
   activeJobs = 'activeJobs',
+  /** A running chat's sidebar row, for chats no loaded conversation list holds. */
+  runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   /* Skills */
@@ -122,6 +124,7 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',

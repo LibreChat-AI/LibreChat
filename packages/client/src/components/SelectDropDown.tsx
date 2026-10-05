@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React from 'react';
 import { JSX } from 'react/jsx-runtime';
 import {
   Label,
@@ -99,8 +99,6 @@ function SelectDropDown({
   const options = hasSearchRender ? filteredValues : values;
   const renderIcon = showOptionIcon && value != null && (value as OptionWithIcon).icon != null;
 
-  const buttonRef = useRef<HTMLButtonElement>(null);
-
   return (
     <div className={cn('flex items-center justify-center gap-2', containerClassName ?? '')}>
       <div className={cn('relative w-full', subContainerClassName ?? '')}>
@@ -108,14 +106,16 @@ function SelectDropDown({
           {({ open }) => (
             <>
               <ListboxButton
-                ref={buttonRef}
                 data-testid="select-dropdown-button"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (!open && buttonRef.current) {
-                      buttonRef.current.click();
-                    }
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') {
+                    return;
+                  }
+                  event.preventDefault();
+                  if (!open) {
+                    event.currentTarget.dispatchEvent(
+                      new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
+                    );
                   }
                 }}
                 className={cn(
@@ -202,7 +202,7 @@ function SelectDropDown({
                       key={'listbox-render-option'}
                       value={null}
                       className={cn(
-                        'group text-text-primary hover:bg-surface-hover relative flex h-[42px] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
+                        'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
                         optionsClass ?? '',
                       )}
                     >
@@ -231,7 +231,7 @@ function SelectDropDown({
                         value={option}
                         className={({ active }) =>
                           cn(
-                            'group text-text-primary hover:bg-surface-hover relative flex h-[42px] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
+                            'group text-text-primary hover:bg-surface-hover relative flex h-[2.625rem] cursor-pointer items-center overflow-hidden pr-9 pl-3 select-none',
                             active ? 'bg-surface-active text-text-primary' : '',
                             optionsClass ?? '',
                           )
