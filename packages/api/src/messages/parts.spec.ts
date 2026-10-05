@@ -130,7 +130,12 @@ const mount = (route: ReturnType<typeof handler>) => {
   return server;
 };
 
-const partUrl = (index: number | string, toolCallId?: string, convo = conversationId) =>
+/** `toolCallId` defaults to the seeded bash call; `null` leaves the parameter out. */
+const partUrl = (
+  index: number | string,
+  toolCallId: string | null = 'call_bash',
+  convo = conversationId,
+) =>
   `/api/messages/${convo}/${messageId}/parts/${index}${
     toolCallId == null ? '' : `?toolCallId=${encodeURIComponent(toolCallId)}`
   }`;
@@ -265,9 +270,9 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
 
   it('answers not found for a missing part, a non-tool part, or an unknown id', async () => {
     await seed();
-    expect((await request(app).get(partUrl(9))).status).toBe(404);
-    expect((await request(app).get(partUrl(250_000))).status).toBe(404);
-    expect((await request(app).get(partUrl(0))).status).toBe(404);
+    expect((await request(app).get(partUrl(9, 'call_missing'))).status).toBe(404);
+    expect((await request(app).get(partUrl(250_000, 'call_missing'))).status).toBe(404);
+    expect((await request(app).get(partUrl(0, 'call_missing'))).status).toBe(404);
     expect((await request(app).get(partUrl(1, 'call_missing'))).status).toBe(404);
   });
 
@@ -280,7 +285,7 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
 
   it('never returns a message through a different conversation id', async () => {
     await seed();
-    const response = await request(app).get(partUrl(1, undefined, otherConversationId));
+    const response = await request(app).get(partUrl(1, 'call_bash', otherConversationId));
     expect(response.status).toBe(404);
   });
 
@@ -295,6 +300,7 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
   it('rejects malformed coordinates before reading', async () => {
     const getMessages = jest.fn();
     const strict = mount(handler(getMessages));
+    expect((await request(strict).get(partUrl(1, null))).status).toBe(400);
     expect((await request(strict).get(partUrl('-1'))).status).toBe(400);
     expect((await request(strict).get(partUrl('1.5'))).status).toBe(400);
     expect((await request(strict).get(partUrl('99999999999999999999'))).status).toBe(400);

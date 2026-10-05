@@ -56,6 +56,7 @@ type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string
 /** The stored fields this module reads; everything else on the tool call passes through. */
 interface StoredToolCall extends ToolCallPreviewMarkers {
   type?: string;
+  id?: unknown;
   name?: string;
   executor?: string;
   progress?: unknown;
@@ -91,6 +92,10 @@ const isAgentToolCall = (toolCall: StoredToolCall): boolean =>
 
 const hasOutput = (toolCall: StoredToolCall): boolean =>
   typeof toolCall.output === 'string' && toolCall.output.length > 0;
+
+/** Only a call with an id can be fetched back by identity, so only such calls are previewed. */
+const hasIdentity = (toolCall: StoredToolCall): boolean =>
+  typeof toolCall.id === 'string' && toolCall.id !== '';
 
 /**
  * A call whose content no card still acts on: it has output, or its run step closed or reached
@@ -335,7 +340,7 @@ export function previewToolCall<T extends StoredToolCall>(
   toolCall: T,
   limits: ToolCallPreviewLimits,
 ): T {
-  if (!isAgentToolCall(toolCall) || !isSettled(toolCall)) {
+  if (!isAgentToolCall(toolCall) || !isSettled(toolCall) || !hasIdentity(toolCall)) {
     return toolCall;
   }
   if (typeof toolCall.name === 'string' && FULL_CONTENT_TOOLS.has(toolCall.name)) {

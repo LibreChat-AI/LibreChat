@@ -189,7 +189,9 @@ export function createToolCallPartHandler(
       res.status(404).json({ error: 'Tool call not found' });
       return;
     }
-    if (partIndex == null || toolCallId === null || stepId === null || agentId === null) {
+    /** Previews are only produced for calls with an id, so a request without one has no part
+     *  it could stably name: an index alone may point at another call once content shifted. */
+    if (partIndex == null || toolCallId == null || stepId === null || agentId === null) {
       res.status(400).json({ error: 'Invalid tool call part' });
       return;
     }

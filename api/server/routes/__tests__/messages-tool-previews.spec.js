@@ -252,7 +252,8 @@ describe('tool-call previews on the message routes', () => {
       GenerationJobManager.getJob.mockResolvedValue(null);
     });
 
-    const partUrl = () => `/api/messages/${liveConversationId}/live-response/parts/1`;
+    const partUrl = () =>
+      `/api/messages/${liveConversationId}/live-response/parts/1?toolCallId=call_bash`;
 
     it('serves the part to the job owner, as the conversation read does', async () => {
       GenerationJobManager.getJob.mockResolvedValue({
@@ -311,7 +312,9 @@ describe('tool-call previews on the message routes', () => {
       { userId: OWNER },
       { messageId: 'child-msg', conversationId: childId, content: assistantContent() },
     );
-    const response = await request(app).get(`/api/messages/${childId}/child-msg/parts/1`);
+    const response = await request(app).get(
+      `/api/messages/${childId}/child-msg/parts/1?toolCallId=call_bash`,
+    );
     expect(response.status).toBe(404);
   });
 

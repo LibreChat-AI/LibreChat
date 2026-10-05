@@ -186,6 +186,13 @@ describe('previewToolCall', () => {
     expect(sandbox.output?.endsWith(trailer)).toBe(false);
   });
 
+  it('leaves a call without an id whole, since it could not be fetched back by identity', () => {
+    const anonymous = toolPart({ id: '', output: 'o'.repeat(5_000) }).tool_call;
+    expect(previewToolCall(anonymous, limits)).toBe(anonymous);
+    const missing = { ...toolPart({ output: 'o'.repeat(5_000) }).tool_call, id: undefined };
+    expect(previewToolCall(missing, limits)).toBe(missing);
+  });
+
   it('returns the same object when nothing exceeds the bounds', () => {
     const toolCall = toolPart({ output: 'ok', args: '{}' }).tool_call;
     expect(previewToolCall(toolCall, limits)).toBe(toolCall);
