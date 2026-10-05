@@ -1322,7 +1322,7 @@ export const agentParamSettings: Record<string, SettingsConfiguration | undefine
   return acc;
 }, {});
 
-const reasoningSettingKeys = [
+export const reasoningSettingKeys = [
   'reasoning_effort',
   'effort',
   'thinkingLevel',
