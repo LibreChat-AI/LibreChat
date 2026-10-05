@@ -170,16 +170,6 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Input/CodeApprovalMenu.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/CodeWorkspaceMenu.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/ConversationStarters.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
