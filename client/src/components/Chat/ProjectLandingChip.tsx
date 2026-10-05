@@ -73,7 +73,7 @@ export default function ProjectLandingChip({ project }: { project: TChatProject 
         gutter={12}
         matchTriggerWidth={false}
         containerClassName="w-auto min-w-0 px-0"
-        className="border-border-medium text-text-primary hover:bg-surface-hover h-8 w-auto max-w-[14rem] min-w-[7.5rem] gap-1.5 rounded-full border bg-transparent px-2.5 text-xs font-medium"
+        className="text-text-secondary hover:bg-surface-hover hover:text-text-primary h-8 w-auto max-w-[14rem] min-w-[7.5rem] gap-1.5 rounded-full border-0 bg-transparent px-2.5 text-sm font-medium"
         popoverClassName="animate-popover-bottom min-w-[min(16rem,90vw)] rounded-2xl shadow-xl"
       />
       <TooltipAnchor

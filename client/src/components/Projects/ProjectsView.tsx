@@ -162,7 +162,7 @@ function ProjectCard({
 
 function ProjectGridSkeleton() {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3" aria-hidden="true">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] gap-3" aria-hidden="true">
       {Array.from({ length: 6 }, (_, index) => (
         <div
           key={index}
