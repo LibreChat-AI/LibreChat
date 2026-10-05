@@ -12,6 +12,7 @@ const pull = (overrides: Record<string, unknown> = {}) => ({
   additions: 12,
   deletions: 3,
   mergeable: true,
+  head: { sha },
   ...overrides,
 });
 const listed = (state = 'open') => [{ number: 7, state, head: { sha } }];
@@ -493,5 +494,48 @@ describe('matching the recorded head', () => {
     const { source, fetchFn } = sourceFor(routes('diverged'));
     await expect(findWith(source, '../../etc')).resolves.toMatchObject({ number: 7 });
     expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+});
+
+describe('check runs follow the current head of the pull request', () => {
+  const newer = 'd'.repeat(40);
+
+  it('reads checks for the head the detail reports, not the one the list saw', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull({ head: { sha: newer } })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(find(source)).resolves.toMatchObject({ number: 7 });
+    const urls = fetchFn.mock.calls.map(([url]) => String(url));
+    expect(urls.some((url) => url.includes(`/commits/${newer}/check-runs`))).toBe(true);
+    expect(urls.some((url) => url.includes(`/commits/${sha}/check-runs`))).toBe(false);
+  });
+
+  it('reads the detail before the checks, so they describe the same commit', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull()),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await find(source);
+    const urls = fetchFn.mock.calls.map(([url]) => String(url));
+    expect(urls.findIndex((url) => url.includes('/pulls/7'))).toBeLessThan(
+      urls.findIndex((url) => url.includes('/check-runs')),
+    );
+  });
+
+  it.each([
+    ['a missing head', { head: undefined }],
+    ['a head without a sha', { head: {} }],
+    ['a head that is not a commit id', { head: { sha: '../../x' } }],
+  ])('rejects a pull request detail with %s', async (_label, overrides) => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull(overrides)),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/check-runs'))).toBe(false);
   });
 });

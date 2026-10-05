@@ -3035,7 +3035,7 @@ export function createConversationMethods(
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const reserved = await withoutMeiliIndexing(
       Conversation.findOneAndUpdate(
-        { user, conversationId },
+        { user, conversationId, ...activeExpirationFilter<IConversation>() },
         { $inc: { laneGitSeq: 1 } },
         { new: true, timestamps: false },
       ),
@@ -3053,9 +3053,11 @@ export function createConversationMethods(
    * in, the write also matches only while the conversation is still attached to it, so a report
    * queued before a move or detach cannot bring the old workspace's lane back. A conversation
    * with no stored workspace (an agent default) accepts the report unless the caller requires a
-   * recorded one. Server-written only: generic saves and imports cannot set it. Resolves to
-   * whether the write applied; false means a newer report is already stored, the workspace no
-   * longer matches, or there is no such conversation for this owner.
+   * recorded one. Server-written only: generic saves and imports cannot set it. An expired
+   * temporary chat is treated as gone, here and in the reservation and the read, the way every
+   * other owner-scoped conversation access treats it. Resolves to whether the write applied; false
+   * means a newer report is already stored, the workspace no longer matches, or there is no such
+   * conversation for this owner.
    */
   async function setConvoLaneGit({
     user,
@@ -3113,6 +3115,7 @@ export function createConversationMethods(
         {
           user,
           conversationId,
+          ...activeExpirationFilter<IConversation>(),
           $and: [
             {
               $or: [
@@ -3137,7 +3140,11 @@ export function createConversationMethods(
     conversationId: string,
   ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    const stored = await Conversation.findOne({ user, conversationId })
+    const stored = await Conversation.findOne({
+      user,
+      conversationId,
+      ...activeExpirationFilter<IConversation>(),
+    })
       .select('laneGit')
       .lean<Pick<IConversation, 'laneGit'> | null>();
     if (stored?.laneGit == null) return null;

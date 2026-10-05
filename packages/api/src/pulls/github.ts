@@ -46,6 +46,8 @@ type GitHubPull = {
   additions: number;
   deletions: number;
   mergeable: boolean | null;
+  /** The head this detail describes; the check runs are read for this same commit. */
+  headSha: string;
 };
 
 type GitHubCheckRun = { status: string; conclusion: string | null };
@@ -78,7 +80,10 @@ function parsePull(value: unknown): GitHubPull {
     typeof value.draft !== 'boolean' ||
     !isCount(value.additions) ||
     !isCount(value.deletions) ||
-    (value.mergeable !== null && typeof value.mergeable !== 'boolean')
+    (value.mergeable !== null && typeof value.mergeable !== 'boolean') ||
+    !isRecord(value.head) ||
+    typeof value.head.sha !== 'string' ||
+    !COMMIT_ID.test(value.head.sha)
   ) {
     throw new PullRequestSourceError('UPSTREAM_ERROR');
   }
@@ -92,6 +97,7 @@ function parsePull(value: unknown): GitHubPull {
     additions: value.additions,
     deletions: value.deletions,
     mergeable: value.mergeable,
+    headSha: value.head.sha,
   };
 }
 
@@ -337,12 +343,16 @@ export function createGitHubPullRequestSource({
         ));
       if (chosen == null) return null;
 
-      const [pull, checks] = await Promise.all([
-        getJson(`${base}/pulls/${chosen.number}`, lookup),
-        readCheckRuns(`${base}/commits/${chosen.sha}/check-runs`, lookup),
-      ]);
-      if (pull == null) return null;
-      return toConversationPullRequest(parsePull(pull), checks.runs, checks.incomplete);
+      /**
+       * The detail comes first and its head decides which commit's checks are read. Listing,
+       * detail and checks are separate requests, so a push between them could otherwise pair
+       * today's line counts and mergeability with yesterday's checks.
+       */
+      const detail = await getJson(`${base}/pulls/${chosen.number}`, lookup);
+      if (detail == null) return null;
+      const pull = parsePull(detail);
+      const checks = await readCheckRuns(`${base}/commits/${pull.headSha}/check-runs`, lookup);
+      return toConversationPullRequest(pull, checks.runs, checks.incomplete);
     },
   };
 }

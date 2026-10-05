@@ -82,6 +82,7 @@ describe('createConversationPullRequestHandler', () => {
       token: 'ghp_secret',
       head: null,
       ttlMs: 30_000,
+      cacheMaxEntries: 500,
       limits: {
         requestTimeoutMs: 10_000,
         lookupTimeoutMs: 30_000,
@@ -103,11 +104,13 @@ describe('createConversationPullRequestHandler', () => {
         maxCheckRunPages: 4,
         maxCandidatePullRequests: 25,
         maxHeadComparisons: 6,
+        cacheMaxEntries: 77,
       },
     });
     await run();
     expect(lookup).toHaveBeenCalledWith(
       expect.objectContaining({
+        cacheMaxEntries: 77,
         limits: {
           requestTimeoutMs: 3_000,
           lookupTimeoutMs: 8_000,

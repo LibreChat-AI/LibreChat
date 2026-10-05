@@ -103,6 +103,7 @@ export function createConversationPullRequestHandler(deps: {
         head: laneGit.head,
         token,
         ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
+        cacheMaxEntries: settings.cacheMaxEntries ?? 500,
         limits: {
           requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
           lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,

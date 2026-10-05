@@ -9635,6 +9635,64 @@ describe('laneGit', () => {
     });
   });
 
+  describe('retention', () => {
+    const lane = { branch: 'feat/x', head, seq: 1 };
+    const seedExpiry = async (expiredAt: Date | null) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Retention',
+        endpoint: 'agents',
+        messages: [],
+        laneGit: lane,
+        laneGitSeq: 1,
+        expiredAt,
+      });
+      return conversationId;
+    };
+    const past = () => new Date(Date.now() - 60_000);
+    const future = () => new Date(Date.now() + 3_600_000);
+
+    it('does not serve the lane of an expired temporary chat', async () => {
+      const conversationId = await seedExpiry(past());
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    });
+
+    it('does not reserve a number for, or write to, an expired temporary chat', async () => {
+      const conversationId = await seedExpiry(past());
+      await expect(methods.reserveConvoLaneGitSeq('lane-user', conversationId)).resolves.toBeNull();
+      await expect(
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'later', head },
+          seq: 99,
+        }),
+      ).resolves.toBe(false);
+    });
+
+    it.each([
+      ['no expiry', null],
+      ['an expiry in the future', future()],
+    ])('still serves, reserves for and writes to a chat with %s', async (_label, expiredAt) => {
+      const conversationId = await seedExpiry(expiredAt);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toMatchObject({
+        branch: 'feat/x',
+      });
+      const seq = await methods.reserveConvoLaneGitSeq('lane-user', conversationId);
+      expect(seq).toBe(2);
+      await expect(
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'later', head },
+          seq: seq as number,
+        }),
+      ).resolves.toBe(true);
+    });
+  });
+
   it('keeps a detached or empty lane distinct from an unknown one', async () => {
     const conversationId = await seed();
     const laneGit = { branch: null, head: null };

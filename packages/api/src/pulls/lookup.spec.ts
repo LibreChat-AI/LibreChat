@@ -289,3 +289,40 @@ describe('lookup policy scoping of the history search', () => {
     },
   );
 });
+
+describe('cache capacity from the caller', () => {
+  const branches = ['a', 'b', 'c'];
+  const fill = async (
+    lookup: ReturnType<typeof createPullRequestLookup>,
+    cacheMaxEntries?: number,
+  ) => {
+    for (const branch of branches) await lookup({ ...input, branch, cacheMaxEntries });
+    await lookup({ ...input, branch: 'a', cacheMaxEntries });
+  };
+
+  it('evicts fresh entries once the configured capacity is exceeded', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    await fill(createPullRequestLookup({ source: { find } }), 2);
+    expect(find).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps them while the configured capacity is large enough', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    await fill(createPullRequestLookup({ source: { find } }), 10);
+    expect(find).toHaveBeenCalledTimes(3);
+  });
+
+  it('falls back to its own default capacity when the caller gives none', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    await fill(createPullRequestLookup({ source: { find } }));
+    expect(find).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not treat the capacity as part of the answer, so callers with different ones share an entry', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, cacheMaxEntries: 5 });
+    await lookup({ ...input, cacheMaxEntries: 50 });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+});

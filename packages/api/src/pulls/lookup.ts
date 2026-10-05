@@ -40,11 +40,16 @@ export function createPullRequestLookup({
   const cooldowns = new Map<string, number>();
   const rateLimited: PullRequestLookupResult = { ok: false, error: { code: 'RATE_LIMITED' } };
 
-  function remember(key: string, result: PullRequestLookupResult, ttlMs: number): void {
+  function remember(
+    key: string,
+    result: PullRequestLookupResult,
+    ttlMs: number,
+    capacity: number,
+  ): void {
     const lifetime = result.ok ? ttlMs : Math.min(ttlMs, FAILURE_TTL_MS);
     entries.delete(key);
     entries.set(key, { result, expiresAt: now() + lifetime });
-    while (entries.size > maxEntries) {
+    while (entries.size > capacity) {
       const oldest = entries.keys().next();
       if (oldest.done) break;
       entries.delete(oldest.value);
@@ -59,7 +64,7 @@ export function createPullRequestLookup({
     }
   }
 
-  return async ({ repo, branch, head, token, ttlMs, limits }) => {
+  return async ({ repo, branch, head, token, ttlMs, limits, cacheMaxEntries }) => {
     const scope = scopeOf(token);
     /** Everything that changes the answer or how long it may be reused is part of the key. */
     const policy = [
@@ -95,7 +100,7 @@ export function createPullRequestLookup({
         }
         result = { ok: false, error: { code } };
       }
-      remember(key, result, ttlMs);
+      remember(key, result, ttlMs, cacheMaxEntries ?? maxEntries);
       return result;
     })().finally(() => inflight.delete(key));
     inflight.set(key, run);

@@ -297,7 +297,7 @@ describe('createLaneGitRecorder ordering', () => {
     expect(setConvoLaneGit).toHaveBeenCalledTimes(2);
   });
 
-  it('skips a report identical to the last one it wrote', async () => {
+  it('does not skip a report that repeats the last one, since another writer may have changed the lane', async () => {
     const reserve = counter();
     const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const record = createLaneGitRecorder({
@@ -306,11 +306,34 @@ describe('createLaneGitRecorder ordering', () => {
       reserveConvoLaneGitSeq: reserve,
       setConvoLaneGit,
     });
-    await expect(record?.(laneGit)).resolves.toBe(true);
-    await expect(record?.(laneGit)).resolves.toBe(false);
-    await expect(record?.(laneGit)).resolves.toBe(false);
-    expect(reserve).toHaveBeenCalledTimes(1);
-    expect(setConvoLaneGit).toHaveBeenCalledTimes(1);
+    await record?.(laneGit);
+    await record?.(laneGit);
+    expect(reserve).toHaveBeenCalledTimes(2);
+    expect(setConvoLaneGit).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets a recorder restore its state after another recorder changed the same conversation', async () => {
+    const written: string[] = [];
+    const setConvoLaneGit = jest.fn(
+      async ({ laneGit: reported }: { laneGit: { branch: string | null } }) => {
+        written.push(String(reported.branch));
+        return true;
+      },
+    );
+    const reserve = counter();
+    const make = () =>
+      createLaneGitRecorder({
+        user: 'u1',
+        conversationId: 'order-shared',
+        reserveConvoLaneGitSeq: reserve,
+        setConvoLaneGit,
+      });
+    const first = make();
+    const second = make();
+    await first?.({ branch: 'x', head });
+    await second?.({ branch: 'y', head });
+    await first?.({ branch: 'x', head });
+    expect(written).toEqual(['x', 'y', 'x']);
   });
 
   it('writes again once the state changes, including back to an earlier one', async () => {
@@ -329,6 +352,57 @@ describe('createLaneGitRecorder ordering', () => {
       'b',
       'a',
     ]);
+  });
+
+  it('orders reservations by the visible conversation two subagent threads share', async () => {
+    const releases: Array<() => void> = [];
+    const reserve = jest.fn(
+      () => new Promise<number>((resolve) => releases.push(() => resolve(releases.length))),
+    );
+    const getConvoOwnership = jest
+      .fn()
+      .mockResolvedValue({ subagentThread: { rootConversationId: 'shared-root' } });
+    const make = (conversationId: string) =>
+      createLaneGitRecorder({
+        user: 'u1',
+        conversationId,
+        workspace: { environmentId: 'code-mac', workspaceId: 'primary' },
+        getConvoOwnership,
+        reserveConvoLaneGitSeq: reserve,
+        setConvoLaneGit: jest.fn().mockResolvedValue(true),
+      });
+    void make('child-a')?.({ branch: 'a', head });
+    void make('child-b')?.({ branch: 'b', head });
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(1);
+    releases[0]();
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(2);
+    releases[1]();
+  });
+
+  it('does not make threads of different visible conversations wait for each other', async () => {
+    const releases: Array<() => void> = [];
+    const reserve = jest.fn(
+      () => new Promise<number>((resolve) => releases.push(() => resolve(1))),
+    );
+    const getConvoOwnership = jest.fn(async (_user: string, id: string) => ({
+      subagentThread: { rootConversationId: id === 'child-a' ? 'root-a' : 'root-b' },
+    }));
+    const make = (conversationId: string) =>
+      createLaneGitRecorder({
+        user: 'u1',
+        conversationId,
+        workspace: { environmentId: 'code-mac', workspaceId: 'primary' },
+        getConvoOwnership,
+        reserveConvoLaneGitSeq: reserve,
+        setConvoLaneGit: jest.fn().mockResolvedValue(true),
+      });
+    void make('child-a')?.({ branch: 'a', head });
+    void make('child-b')?.({ branch: 'b', head });
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(2);
+    releases.forEach((release) => release());
   });
 });
 

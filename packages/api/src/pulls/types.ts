@@ -53,6 +53,10 @@ export type PullRequestLookupResult =
   | { ok: true; value: TConversationPullRequest | null }
   | { ok: false; error: { code: PullRequestErrorCode } };
 
-export type PullRequestLookupInput = PullRequestFindInput & { ttlMs: number };
+export type PullRequestLookupInput = PullRequestFindInput & {
+  ttlMs: number;
+  /** Entries the shared cache holds before it evicts the oldest; the lookup's own default if omitted. */
+  cacheMaxEntries?: number;
+};
 
 export type PullRequestLookup = (input: PullRequestLookupInput) => Promise<PullRequestLookupResult>;

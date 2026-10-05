@@ -938,6 +938,9 @@ endpoints:
   #     allowedRepositories: ["LibreChat-AI/LibreChat"]
   #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
   #     cacheTtlSeconds: 30
+  #     # Results the shared cache holds before it evicts the oldest (10 to 100000). Raise it on a busy
+  #     # multi-tenant server, or fresh results are evicted and GitHub is asked again.
+  #     cacheMaxEntries: 500
   #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)

@@ -38,11 +38,13 @@ type Placement = { conversationId: string; required: boolean };
 type Reservation = Placement & { seq: number };
 
 /**
- * The tail of each conversation's pending sequence reservations in this process. Numbers are
- * drawn one at a time in report order, so one process never takes a lower number for a later
- * report. Writes are not queued: each carries its number and the database ignores a lower one,
- * so a slow or reordered write cannot replace a newer state, here or on another replica. Entries
- * leave the map as soon as their chain drains.
+ * The tail of each visible conversation's pending sequence reservations in this process, keyed by
+ * the conversation the write lands on (the root of a subagent thread, not the thread). Two
+ * threads of one conversation therefore share a chain, and numbers are drawn one at a time in
+ * report order, so one process never takes a lower number for a later report. Writes are not
+ * queued: each carries its number and the database ignores a lower one, so a slow or reordered
+ * write cannot replace a newer state, here or on another replica. Entries leave the map as soon
+ * as their chain drains.
  */
 const reservationTails = new Map<string, Promise<unknown>>();
 
@@ -51,10 +53,12 @@ const reservationTails = new Map<string, Promise<unknown>>();
  * throws and is never awaited by the command: the branch is a header affordance, so a database
  * outage must not fail or delay the agent's tool call. Each report takes a sequence number from
  * the database when it arrives and is written with it, so the newest report wins whatever order
- * the writes land in. A report identical to the last one this recorder wrote is skipped. Resolves
- * to whether the write applied, which is false when a newer report is already stored, for a
- * conversation not saved yet, and for a skipped repeat. A repo that is not a plain `owner/name`
- * is dropped rather than stored.
+ * the writes land in. Every report is written, repeats included, because another recorder (a
+ * sibling subagent thread, another replica) may have changed the lane since this one last wrote,
+ * and the database already ignores a write that changes nothing the reader can see. Resolves to
+ * whether the write applied, which is false when a newer report is already stored and for a
+ * conversation not saved yet. A repo that is not a plain `owner/name` is dropped rather than
+ * stored.
  */
 export function createLaneGitRecorder({
   user,
@@ -75,7 +79,6 @@ export function createLaneGitRecorder({
 }): ((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined {
   if (!user || !conversationId) return undefined;
   const safeRepo = isSafeRepo(repo) ? repo : undefined;
-  const queueKey = `${user}\0${conversationId}`;
 
   /**
    * A subagent thread is a hidden child of the conversation the user sees, and its commands run on
@@ -133,24 +136,30 @@ export function createLaneGitRecorder({
     }
   };
 
-  /** The state this recorder last wrote, so a command that changed nothing costs no database work. */
-  let lastWritten: string | undefined;
-
   return (laneGit) => {
-    const state = JSON.stringify([laneGit.branch, laneGit.head]);
-    if (state === lastWritten) return Promise.resolve(false);
-
-    const previous = reservationTails.get(queueKey) ?? Promise.resolve();
-    const reservation = previous.then(() => reserve());
-    reservationTails.set(queueKey, reservation);
-    void reservation.then(() => {
-      if (reservationTails.get(queueKey) === reservation) reservationTails.delete(queueKey);
-    });
-    return reservation.then(async (reserved) => {
-      if (reserved == null) return false;
-      const applied = await write(laneGit, reserved);
-      if (applied) lastWritten = state;
-      return applied;
-    });
+    /**
+     * The chain is chosen after the target is resolved, so threads that share a visible
+     * conversation share it. Resolution is memoised and idempotent, so waiting on it here costs
+     * one lookup per recorder.
+     */
+    const run = async (): Promise<boolean> => {
+      let placed: Placement;
+      try {
+        placed = await resolveTarget();
+      } catch (error) {
+        logger.warn('[LaneGit] Failed to place a lane report', getSafeErrorMetadata(error));
+        return false;
+      }
+      const queueKey = `${user}\0${placed.conversationId}`;
+      const previous = reservationTails.get(queueKey) ?? Promise.resolve();
+      const reservation = previous.then(() => reserve());
+      reservationTails.set(queueKey, reservation);
+      void reservation.then(() => {
+        if (reservationTails.get(queueKey) === reservation) reservationTails.delete(queueKey);
+      });
+      const reserved = await reservation;
+      return reserved == null ? false : write(laneGit, reserved);
+    };
+    return run();
   };
 }

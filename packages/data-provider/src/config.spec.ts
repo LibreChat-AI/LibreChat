@@ -1133,6 +1133,7 @@ describe('agent pull request config', () => {
       maxCheckRunPages: 10,
       maxCandidatePullRequests: 10,
       maxHeadComparisons: 3,
+      cacheMaxEntries: 500,
     });
   });
 
@@ -1186,6 +1187,9 @@ describe('agent pull request config', () => {
     ['maxHeadComparisons', -1],
     ['maxHeadComparisons', 21],
     ['maxHeadComparisons', 1.5],
+    ['cacheMaxEntries', 9],
+    ['cacheMaxEntries', 100_001],
+    ['cacheMaxEntries', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1198,6 +1202,7 @@ describe('agent pull request config', () => {
         maxCheckRunPages: 50,
         maxCandidatePullRequests: 100,
         maxHeadComparisons: 20,
+        cacheMaxEntries: 100_000,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
