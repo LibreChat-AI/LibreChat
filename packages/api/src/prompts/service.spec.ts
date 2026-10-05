@@ -475,8 +475,24 @@ describe('createPromptService', () => {
 
       await expect(
         service.makePromptProduction({ promptId: draft._id, loadedRevision: draft }),
-      ).resolves.toEqual({ ok: true, value: { message: 'Prompt production made successfully' } });
+      ).resolves.toEqual({
+        ok: true,
+        value: { message: 'Prompt production made successfully' },
+        groupId: draft.groupId,
+      });
       expect(read).not.toHaveBeenCalled();
+    });
+
+    it('reads the revision and surfaces its group id when no revision was loaded', async () => {
+      const draft = await addRevision('Draft');
+      const read = jest.spyOn(db, 'getPrompt');
+
+      await expect(service.makePromptProduction({ promptId: draft._id })).resolves.toEqual({
+        ok: true,
+        value: { message: 'Prompt production made successfully' },
+        groupId: draft.groupId,
+      });
+      expect(read).toHaveBeenCalledTimes(1);
     });
 
     it('does not promote blocked content', async () => {
@@ -505,6 +521,20 @@ describe('createPromptService', () => {
         stage: 'write',
         cause: { message: 'Prompt not found' },
       });
+    });
+
+    it('promotes through the source and omits the group id when no revision is found', async () => {
+      const promptId = missingId();
+      jest.spyOn(db, 'getPrompt').mockResolvedValueOnce(null);
+      const promote = jest
+        .spyOn(db, 'makePromptProduction')
+        .mockResolvedValueOnce({ message: 'Prompt production made successfully' });
+
+      await expect(service.makePromptProduction({ promptId })).resolves.toEqual({
+        ok: true,
+        value: { message: 'Prompt production made successfully' },
+      });
+      expect(promote).toHaveBeenCalledWith(promptId);
     });
   });
 

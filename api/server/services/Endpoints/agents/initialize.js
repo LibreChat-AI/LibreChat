@@ -99,6 +99,7 @@ const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const AgentClient = require('~/server/controllers/agents/client');
 const { processAddedConvo } = require('./addedConvo');
+const { getLinkedInstructionsResolver } = require('./linkedInstructions');
 const subagentThreadTaskStore = require('./subagentThreadStore');
 const {
   preregisterBackgroundToolCompletion,
@@ -202,6 +203,10 @@ function createToolLoader(
  * @param {import('@librechat/api').MCPRuntimeRequestBody} [params.requestBody]
  * @param {import('@librechat/api').UpstreamTokenProvider} [params.upstreamTokenProvider]
  * @param {import('@librechat/api').UpstreamTokenProviderResolver} [params.upstreamTokenProviderResolver]
+ * @param {boolean} [params.isResume] Whether this initialization is replaying an
+ *   already-in-flight turn (a resumed stream), rather than starting a new one.
+ *   Resolution of every agent's `instructionsPrompt` link still runs, cache-first,
+ *   but usage is not recorded again for the same turn.
  */
 const initializeClientWithProvider = async ({
   req,
@@ -215,6 +220,7 @@ const initializeClientWithProvider = async ({
   toolTimingReplayEvents,
   upstreamTokenProvider,
   upstreamTokenProviderResolver,
+  isResume,
 }) => {
   if (!endpointOption) {
     throw new Error('Endpoint option not provided');
@@ -293,6 +299,12 @@ const initializeClientWithProvider = async ({
       : null;
   const backgroundToolsAvailable = enabledCapabilities.has(AgentCapabilities.run_in_background);
   const toolIntentsAvailable = enabledCapabilities.has(AgentCapabilities.tool_intents);
+  /** Resolves any agent's `instructionsPrompt` link this run encounters — primary,
+   *  handoff, subagent, or added-conversation agent. A resumed turn records no
+   *  usage at all, including for a lazy subagent spawned for the first time
+   *  during that resumed turn: only a fresh turn records usage. */
+  const resolveLinkedInstructions = getLinkedInstructionsResolver();
+  const recordLinkedPromptUsage = !isResume;
   const deferredToolsAvailable = enabledCapabilities.has(AgentCapabilities.deferred_tools);
   const programmaticToolsAvailable = enabledCapabilities.has(AgentCapabilities.programmatic_tools);
   const statefulSessionsAvailable = enabledCapabilities.has(
@@ -760,6 +772,8 @@ const initializeClientWithProvider = async ({
       skillAuthoringAvailable: primarySkillAuthoringAvailable,
       codeEnvAvailable,
       fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
       backgroundToolsAvailable,
       toolIntentsAvailable,
       statefulSessionsAvailable,
@@ -853,6 +867,8 @@ const initializeClientWithProvider = async ({
       defaultActiveOnShare,
       codeEnvAvailable,
       fileSearchAvailable,
+      resolveLinkedInstructions,
+      recordLinkedPromptUsage,
       backgroundToolsAvailable,
       toolIntentsAvailable,
       statefulSessionsAvailable,
@@ -940,6 +956,8 @@ const initializeClientWithProvider = async ({
     defaultActiveOnShare,
     codeEnvAvailable,
     fileSearchAvailable,
+    resolveLinkedInstructions,
+    recordLinkedPromptUsage,
     backgroundToolsAvailable,
     toolIntentsAvailable,
     statefulSessionsAvailable,
@@ -1355,6 +1373,8 @@ const initializeClientWithProvider = async ({
           }),
           codeEnvAvailable,
           fileSearchAvailable,
+          resolveLinkedInstructions,
+          recordLinkedPromptUsage,
           backgroundToolsAvailable,
           toolIntentsAvailable,
           statefulSessionsAvailable,

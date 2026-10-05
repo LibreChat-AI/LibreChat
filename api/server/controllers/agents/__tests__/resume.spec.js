@@ -1608,6 +1608,18 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient).toHaveBeenCalledTimes(1);
     });
 
+    it('passes isResume: true into initializeClient so recorded prompt-link usage is not doubled', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+      expect(mockInitializeClient.mock.calls[0][0]).toMatchObject({ isResume: true });
+    });
+
     it('does not read the checkpoint for a source unrelated to resume content', async () => {
       requestConfigOverrides = {
         filters: {

@@ -1583,14 +1583,6 @@
       "count": 3
     }
   },
-  "client/src/components/SidePanel/Agents/Instructions.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 5
-    }
-  },
   "client/src/components/SidePanel/Agents/MCPIcon.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1

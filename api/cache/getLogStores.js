@@ -74,6 +74,10 @@ const namespaces = {
     Time.THIRTY_SECONDS,
   ),
   [CacheKeys.PASSKEY_CHALLENGE]: standardCache(CacheKeys.PASSKEY_CHALLENGE, Time.FIVE_MINUTES),
+  [CacheKeys.AGENT_LINKED_INSTRUCTIONS]: standardCache(
+    CacheKeys.AGENT_LINKED_INSTRUCTIONS,
+    Time.FIVE_MINUTES,
+  ),
 };
 
 /**

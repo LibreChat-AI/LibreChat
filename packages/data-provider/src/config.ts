@@ -1455,6 +1455,7 @@ export const DEFAULT_AVATAR_REFRESH_COVERAGE_LIMIT = 1000;
 export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
+export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
 export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
 
@@ -1527,6 +1528,29 @@ export const agentsEndpointSchema = baseEndpointSchema
       repositoryInstructions: z
         .object({
           timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
+        })
+        .optional(),
+      /** Budget and cache configuration for resolving an agent's linked prompt-group
+       * instructions. Omitting the block applies the defaults below. */
+      linkedInstructions: z
+        .object({
+          timeoutMs: z.number().int().min(100).max(30_000).optional().default(2000),
+          native: z
+            .object({
+              /** Content cache TTL for a resolved native prompt link; `0` disables the cache. */
+              cacheTtlMs: z.number().int().min(0).max(3_600_000).optional().default(300_000),
+              /** Max wait for the cache clear a prompt write triggers before the write's
+               * response continues without it. */
+              cacheClearTimeoutMs: z
+                .number()
+                .int()
+                .min(1)
+                .max(30_000)
+                .optional()
+                .default(DEFAULT_CACHE_CLEAR_TIMEOUT_MS),
+            })
+            .optional()
+            .default({}),
         })
         .optional(),
       maxRecursionLimit: z.number().optional(),
@@ -4406,6 +4430,10 @@ export enum CacheKeys {
    * Key for cached prompt group access ID sets (accessible, public, owned).
    */
   PROMPT_GROUPS_ACCESS = 'PROMPT_GROUPS_ACCESS',
+  /**
+   * Key for cached resolved content of an agent's linked native prompt-group instructions.
+   */
+  AGENT_LINKED_INSTRUCTIONS = 'AGENT_LINKED_INSTRUCTIONS',
   /**
    * Key for per-conversation stateful code sandbox prewarm/warm state.
    */
