@@ -263,13 +263,14 @@ function SpanGlyph({
  *
  * Its own component so only a live card pays for it — the localization and MCP
  * lookups, and the throttle. `liveParts` is rebuilt on every streamed delta;
- * tool activity repaints at most twice a second and a finished reasoning
- * sentence holds the line for at least a second.
+ * tool activity repaints at most twice a second. When allowed, a finished
+ * reasoning sentence holds the line for at least a second.
  */
 function LivePhaseHeader({
   parts,
   animate,
   expanded,
+  hideReasoningText,
   lineId,
   comboId,
   detailId,
@@ -282,6 +283,8 @@ function LivePhaseHeader({
   /** The rows are on screen: title the span by its newest label rather than
    *  repeat a line the reader can see below. */
   expanded: boolean;
+  /** Keep raw reasoning out of the live status line when thoughts are hidden. */
+  hideReasoningText: boolean;
   lineId: string;
   comboId: string;
   detailId: string;
@@ -294,8 +297,16 @@ function LivePhaseHeader({
   const mcpServerNames = useMCPServerNames();
   const attachmentsById = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
   const activity = useMemo(
-    () => getLiveActivity(parts, localize, mcpServerNames, attachmentsById, expanded),
-    [parts, localize, mcpServerNames, attachmentsById, expanded],
+    () =>
+      getLiveActivity(
+        parts,
+        localize,
+        mcpServerNames,
+        attachmentsById,
+        expanded,
+        hideReasoningText,
+      ),
+    [parts, localize, mcpServerNames, attachmentsById, expanded, hideReasoningText],
   );
   /** A code card names its sandbox startup from events outside the content
    *  array. The row reads the same signal for its newest call, so the span
@@ -533,6 +544,7 @@ export default function ActivityPhaseGroup({
   liveParts,
   spanParts,
   onExpansionChange,
+  showThinking = false,
 }: {
   labelPart: ActivityPhasePart;
   children: ReactNode;
@@ -554,6 +566,8 @@ export default function ActivityPhaseGroup({
   /** The span's parts once settled, for the header's icon stack. */
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
+  /** Whether the reader has enabled visible reasoning. */
+  showThinking?: boolean;
 }) {
   const messageSurface = useContext(MessageSurfaceContext);
   const isLive = liveParts != null;
@@ -739,12 +753,9 @@ export default function ActivityPhaseGroup({
    *  right for the streaming-markdown cursor, wrong here — so `after:!static`
    *  puts that one pseudo-element back in flow for the slot to center; the
    *  `!` is what outranks the dot rule's three-class selector. */
-  /** The thought streaming at the tail of a collapsed live card, shown the
-   *  way an unfolded thought shows it: the trailing sentences in a short
-   *  fading window under the header (#14546). The fold had swallowed that
-   *  peek with the rows, leaving one throttled sentence on the header to
-   *  stand for a paragraph of live reasoning. It takes the cursor's place:
-   *  moving text is its own sign the run is alive. */
+  /** The thought streaming at the tail of a collapsed live card. When the
+   *  reader has enabled Show thinking, it gets the same fading preview as a
+   *  standalone reasoning row and takes the cursor's place. */
   const streamingThought = useMemo(() => {
     if (!isLive || isExpanded || liveParts == null) {
       return '';
@@ -756,7 +767,9 @@ export default function ActivityPhaseGroup({
     return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
   }, [isLive, isExpanded, liveParts]);
   const thoughtPeek =
-    streamingThought.trim() !== '' ? <StreamingThoughtPeek text={streamingThought} /> : null;
+    showThinking && streamingThought.trim() !== '' ? (
+      <StreamingThoughtPeek text={streamingThought} />
+    ) : null;
   const cursor =
     showCursor && thoughtPeek == null ? (
       <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
@@ -856,6 +869,7 @@ export default function ActivityPhaseGroup({
                 parts={liveParts}
                 animate={smoothStreaming}
                 expanded={isExpanded}
+                hideReasoningText={!showThinking}
                 lineId={lineId}
                 comboId={comboId}
                 detailId={detailId}
