@@ -76,9 +76,27 @@ describe('createConversationPullRequestHandler', () => {
       branch: 'feat/x',
       token: 'ghp_secret',
       ttlMs: 30_000,
+      limits: { requestTimeoutMs: 10_000, lookupTimeoutMs: 30_000, maxCheckRunPages: 10 },
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ pullRequest: pr });
+  });
+
+  it('passes the configured lookup bounds to GitHub', async () => {
+    const { run, lookup } = setup({
+      settings: {
+        ...enabled,
+        requestTimeoutSeconds: 3,
+        lookupTimeoutSeconds: 8,
+        maxCheckRunPages: 4,
+      },
+    });
+    await run();
+    expect(lookup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        limits: { requestTimeoutMs: 3_000, lookupTimeoutMs: 8_000, maxCheckRunPages: 4 },
+      }),
+    );
   });
 
   it('answers null without reading anything when the feature is off', async () => {

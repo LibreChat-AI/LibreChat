@@ -1125,7 +1125,13 @@ describe('agent pull request config', () => {
       version: '1.0',
       endpoints: { agents: { pullRequests: {} } },
     });
-    expect(empty.endpoints?.agents?.pullRequests).toEqual({ enabled: false, cacheTtlSeconds: 30 });
+    expect(empty.endpoints?.agents?.pullRequests).toEqual({
+      enabled: false,
+      cacheTtlSeconds: 30,
+      requestTimeoutSeconds: 10,
+      lookupTimeoutSeconds: 30,
+      maxCheckRunPages: 10,
+    });
   });
 
   it('accepts an enabled block with an environment variable reference', () => {
@@ -1143,6 +1149,24 @@ describe('agent pull request config', () => {
       expect(parse({ enabled: true, token }).success).toBe(false);
     },
   );
+
+  it.each([
+    ['requestTimeoutSeconds', 0],
+    ['requestTimeoutSeconds', 61],
+    ['lookupTimeoutSeconds', 0],
+    ['lookupTimeoutSeconds', 121],
+    ['maxCheckRunPages', 0],
+    ['maxCheckRunPages', 51],
+    ['maxCheckRunPages', 1.5],
+  ])('rejects %s of %s', (field, value) => {
+    expect(parse({ [field]: value }).success).toBe(false);
+  });
+
+  it('accepts the documented bounds', () => {
+    expect(
+      parse({ requestTimeoutSeconds: 60, lookupTimeoutSeconds: 120, maxCheckRunPages: 50 }).success,
+    ).toBe(true);
+  });
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
     expect(parse({ cacheTtlSeconds }).success).toBe(false);

@@ -273,3 +273,82 @@ describe('rate limit back-off hint', () => {
     expect(error.retryAfterMs).toBeUndefined();
   });
 });
+
+describe('lookup bounds', () => {
+  const run = (conclusion: string | null, status = 'completed') => ({ status, conclusion });
+  const everyRoute = (url: string, checks: () => Response) => {
+    if (url.includes('/pulls?state=open')) return json(listed());
+    if (url.includes('/pulls/7')) return json(pull());
+    if (url.includes('/check-runs')) return checks();
+    throw new Error(`unexpected ${url}`);
+  };
+  const aborts = (init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+
+  it('stops reading check runs at the configured page limit and calls the rollup incomplete', async () => {
+    const fetchFn = jest.fn(async (url: string) =>
+      everyRoute(url, () =>
+        json({ total_count: 6000, check_runs: Array.from({ length: 100 }, () => run('success')) }),
+      ),
+    );
+    const source = createGitHubPullRequestSource({ fetchFn });
+    const result = await source.find({
+      repo: 'o/r',
+      branch: 'feat/x',
+      token: 't',
+      limits: { maxCheckRunPages: 2 },
+    });
+    expect(result).toMatchObject({ checks: 'running' });
+    expect(fetchFn.mock.calls.filter(([url]) => String(url).includes('/check-runs'))).toHaveLength(
+      2,
+    );
+  });
+
+  it('gives up on one request that outlives the configured request timeout', async () => {
+    const fetchFn = jest.fn((_url: string, init?: RequestInit) => aborts(init));
+    const source = createGitHubPullRequestSource({ fetchFn });
+    const started = Date.now();
+    await expect(
+      source.find({
+        repo: 'o/r',
+        branch: 'feat/x',
+        token: 't',
+        limits: { requestTimeoutMs: 20, lookupTimeoutMs: 5_000 },
+      }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('bounds the whole lookup, not only each request', async () => {
+    let calls = 0;
+    const fetchFn = jest.fn((url: string, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1 && url.includes('/pulls?state=open')) return Promise.resolve(json(listed()));
+      return aborts(init);
+    });
+    const source = createGitHubPullRequestSource({ fetchFn });
+    const started = Date.now();
+    await expect(
+      source.find({
+        repo: 'o/r',
+        branch: 'feat/x',
+        token: 't',
+        limits: { requestTimeoutMs: 10_000, lookupTimeoutMs: 30 },
+      }),
+    ).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("keeps today's defaults when no limits are given", async () => {
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const fetchFn = jest.fn(async (url: string, init?: RequestInit) => {
+      seen.push(init?.signal);
+      return everyRoute(url, () => json({ total_count: 0, check_runs: [] }));
+    });
+    const source = createGitHubPullRequestSource({ fetchFn });
+    await expect(find(source)).resolves.toMatchObject({ number: 7 });
+    expect(seen.every((signal) => signal != null && !signal.aborted)).toBe(true);
+  });
+});

@@ -16,7 +16,12 @@ describe('createLaneGitRecorder', () => {
     const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const record = createLaneGitRecorder({ user: 'u1', conversationId: 'c1', setConvoLaneGit });
     await expect(record?.(laneGit)).resolves.toBe(true);
-    expect(setConvoLaneGit).toHaveBeenCalledWith({ user: 'u1', conversationId: 'c1', laneGit });
+    expect(setConvoLaneGit).toHaveBeenCalledWith({
+      user: 'u1',
+      conversationId: 'c1',
+      laneGit,
+      reportedAt: expect.any(Date),
+    });
   });
 
   it.each([
@@ -43,6 +48,7 @@ describe('createLaneGitRecorder', () => {
       user: 'u1',
       conversationId: 'c1',
       laneGit,
+      reportedAt: expect.any(Date),
       repo: 'LibreChat-AI/LibreChat',
     });
   });
@@ -62,6 +68,7 @@ describe('createLaneGitRecorder', () => {
         user: 'u1',
         conversationId: 'c1',
         laneGit,
+        reportedAt: expect.any(Date),
       });
     },
   );
@@ -208,6 +215,43 @@ describe('createLaneGitRecorder write order', () => {
     void make('u2')?.({ branch: 'b', head });
     await flush();
     expect(events).toEqual(['start:a', 'start:b']);
+  });
+
+  it('stamps each report when it arrives, not when its write finally runs', async () => {
+    const stamps: Array<{ branch: string | null; at: number }> = [];
+    const releases: Array<() => void> = [];
+    const setConvoLaneGit = jest.fn(
+      ({
+        laneGit: reported,
+        reportedAt,
+      }: {
+        laneGit: { branch: string | null };
+        reportedAt: Date;
+      }) =>
+        new Promise<boolean>((resolve) => {
+          stamps.push({ branch: reported.branch, at: reportedAt.getTime() });
+          releases.push(() => resolve(true));
+        }),
+    );
+    const times = [1_000, 2_000];
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-7',
+      setConvoLaneGit,
+      now: () => new Date(times.shift() ?? 0),
+    });
+    const first = record?.({ branch: 'a', head });
+    const second = record?.({ branch: 'b', head });
+    await flush();
+    releases[0]();
+    await first;
+    await flush();
+    releases[1]();
+    await second;
+    expect(stamps).toEqual([
+      { branch: 'a', at: 1_000 },
+      { branch: 'b', at: 2_000 },
+    ]);
   });
 
   it('still runs the next write after one fails', async () => {

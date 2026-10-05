@@ -8,10 +8,11 @@ import type { PullRequestSource } from './types';
 import { PullRequestSourceError } from './types';
 
 const GITHUB_API_BASE = 'https://api.github.com';
-const REQUEST_TIMEOUT_MS = 10_000;
+/** Defaults for the operator bounds in `endpoints.agents.pullRequests`. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_LOOKUP_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_CHECK_RUN_PAGES = 10;
 const CHECK_RUN_PAGE_SIZE = 100;
-/** Bounds the requests one lookup can make; past it the rollup is reported as still running. */
-const MAX_CHECK_RUN_PAGES = 10;
 const MAX_TITLE_LENGTH = 256;
 const REPO_PATTERN = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
 const FAILING_CONCLUSIONS = new Set([
@@ -195,17 +196,26 @@ export function createGitHubPullRequestSource({
   fetchFn = fetch,
   apiBase = GITHUB_API_BASE,
 }: { fetchFn?: PullRequestFetch; apiBase?: string } = {}): PullRequestSource {
-  async function getJson(pathname: string, token: string): Promise<unknown | null> {
+  /** One lookup's credential and deadlines, shared by every request it makes. */
+  type Lookup = {
+    token: string;
+    requestTimeoutMs: number;
+    /** Aborts when the whole lookup runs out of time. */
+    deadline: AbortSignal;
+    maxCheckRunPages: number;
+  };
+
+  async function getJson(pathname: string, lookup: Lookup): Promise<unknown | null> {
     let response: Response;
     try {
       response = await fetchFn(`${apiBase}${pathname}`, {
         headers: {
           Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${lookup.token}`,
           'X-GitHub-Api-Version': '2022-11-28',
           'User-Agent': 'LibreChat-Pull-Requests',
         },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.any([AbortSignal.timeout(lookup.requestTimeoutMs), lookup.deadline]),
       });
     } catch {
       throw new PullRequestSourceError('UPSTREAM_ERROR');
@@ -228,11 +238,14 @@ export function createGitHubPullRequestSource({
   /** Reads every page up to a bound, so a failure on a later page still shows. */
   async function readCheckRuns(
     pathname: string,
-    token: string,
+    lookup: Lookup,
   ): Promise<{ runs: GitHubCheckRun[]; incomplete: boolean }> {
     const runs: GitHubCheckRun[] = [];
-    for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
-      const body = await getJson(`${pathname}?per_page=${CHECK_RUN_PAGE_SIZE}&page=${page}`, token);
+    for (let page = 1; page <= lookup.maxCheckRunPages; page++) {
+      const body = await getJson(
+        `${pathname}?per_page=${CHECK_RUN_PAGE_SIZE}&page=${page}`,
+        lookup,
+      );
       if (body == null) return { runs, incomplete: false };
       const parsed = parseCheckRuns(body);
       runs.push(...parsed.runs);
@@ -246,7 +259,13 @@ export function createGitHubPullRequestSource({
   }
 
   return {
-    async find({ repo, branch, token }) {
+    async find({ repo, branch, token, limits }) {
+      const lookup: Lookup = {
+        token,
+        requestTimeoutMs: limits?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+        deadline: AbortSignal.timeout(limits?.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS),
+        maxCheckRunPages: limits?.maxCheckRunPages ?? DEFAULT_MAX_CHECK_RUN_PAGES,
+      };
       const match = REPO_PATTERN.exec(repo);
       if (match == null || branch.length === 0) return null;
       const [, owner, name] = match;
@@ -257,7 +276,7 @@ export function createGitHubPullRequestSource({
       const listPulls = async (state: 'open' | 'closed', perPage: number) => {
         const listed = await getJson(
           `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&head=${head}`,
-          token,
+          lookup,
         );
         if (listed == null) return undefined;
         if (!Array.isArray(listed)) throw new PullRequestSourceError('UPSTREAM_ERROR');
@@ -270,8 +289,8 @@ export function createGitHubPullRequestSource({
       if (chosen == null) return null;
 
       const [pull, checks] = await Promise.all([
-        getJson(`${base}/pulls/${chosen.number}`, token),
-        readCheckRuns(`${base}/commits/${chosen.sha}/check-runs`, token),
+        getJson(`${base}/pulls/${chosen.number}`, lookup),
+        readCheckRuns(`${base}/commits/${chosen.sha}/check-runs`, lookup),
       ]);
       if (pull == null) return null;
       return toConversationPullRequest(parsePull(pull), checks.runs, checks.incomplete);

@@ -54,6 +54,8 @@ const convoSchema: Schema<IConversation> = new Schema(
         branch: { type: String, default: null },
         head: { type: String, default: null },
         repo: { type: String, default: undefined },
+        /** When the worker reported this state; fences out an older report that lands later. */
+        reportedAt: { type: Date, default: undefined },
       },
       _id: false,
       default: undefined,

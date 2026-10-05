@@ -27,6 +27,8 @@ export interface IConversationLaneGit {
   head: string | null;
   /** `owner/name` of the lane's repository, as its worker registered it. */
   repo?: string;
+  /** When the state was reported; internal, never returned by `getConvoLaneGit`. */
+  reportedAt?: Date;
 }
 
 export interface ISubagentThreadLease {

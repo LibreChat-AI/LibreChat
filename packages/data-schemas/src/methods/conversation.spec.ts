@@ -1679,6 +1679,63 @@ describe('Conversation Operations', () => {
       });
     };
 
+    describe('stale lane state', () => {
+      const lane = { branch: 'feat/old', head: 'a'.repeat(40), repo: 'o/old' };
+      const stored = (conversationId: string) =>
+        methods.getConvoCodeEnvironmentDecision('user123', conversationId);
+
+      it('is cleared when the chat moves to another workspace', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toEqual(lane);
+        await moveFromStored(conversationId, [team]);
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toBeNull();
+      });
+
+      it('is cleared when the chat leaves attached execution', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        const decision = await stored(conversationId);
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: {
+            codeEnvironmentMode: decision?.codeEnvironmentMode,
+            codeWorkspaces: decision?.codeWorkspaces,
+            codeEnvironmentRevision: decision?.codeEnvironmentRevision,
+          },
+          codeEnvironmentMode: 'without_attached',
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toBeNull();
+      });
+
+      it('is kept when the move is refused', async () => {
+        const conversationId = await seedDecision({
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [mac],
+          laneGit: lane,
+        });
+        await methods.replaceConvoCodeEnvironmentDecision({
+          user: 'user123',
+          conversationId,
+          expected: {
+            codeEnvironmentMode: 'attached',
+            codeWorkspaces: [team],
+            codeEnvironmentRevision: 99,
+          },
+          codeEnvironmentMode: 'attached',
+          codeWorkspaces: [vm],
+        });
+        await expect(methods.getConvoLaneGit('user123', conversationId)).resolves.toEqual(lane);
+      });
+    });
+
     it('replaces the decision it read without disturbing timestamps', async () => {
       const conversationId = await seedDecision({
         codeEnvironmentMode: 'attached',
@@ -9389,11 +9446,48 @@ describe('laneGit', () => {
     await expect(methods.getConvoLaneGit('intruder', conversationId)).resolves.toBeNull();
   });
 
-  it('reports no change when the same state is recorded again', async () => {
+  const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second));
+
+  it('ignores a report older than the stored one, so a delayed write cannot win', async () => {
     const conversationId = await seed();
-    const input = { user: 'lane-user', conversationId, laneGit: { branch: 'main', head } };
-    await expect(methods.setConvoLaneGit(input)).resolves.toBe(true);
-    await expect(methods.setConvoLaneGit(input)).resolves.toBe(false);
+    const user = 'lane-user';
+    const newer = { branch: 'newer', head };
+    const older = { branch: 'older', head: 'b'.repeat(40) };
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: newer, reportedAt: at(10) }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: older, reportedAt: at(5) }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(newer);
+  });
+
+  it('applies a report newer than the stored one, and keeps the newest of a repeated state', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const a = { branch: 'a', head };
+    const b = { branch: 'b', head };
+    await methods.setConvoLaneGit({ user, conversationId, laneGit: a, reportedAt: at(1) });
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: b, reportedAt: at(2) }),
+    ).resolves.toBe(true);
+    await methods.setConvoLaneGit({ user, conversationId, laneGit: a, reportedAt: at(3) });
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit: b, reportedAt: at(2.5) }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(a);
+  });
+
+  it('does not expose the report time through the read', async () => {
+    const conversationId = await seed();
+    await methods.setConvoLaneGit({
+      user: 'lane-user',
+      conversationId,
+      laneGit: { branch: 'main', head },
+      reportedAt: at(1),
+    });
+    const stored = await methods.getConvoLaneGit('lane-user', conversationId);
+    expect(stored).not.toHaveProperty('reportedAt');
   });
 
   it('replaces the stored state when the branch or head changes', async () => {
@@ -9407,23 +9501,30 @@ describe('laneGit', () => {
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(next);
   });
 
-  it('stores the repository with the lane and treats a repository change as a change', async () => {
+  it('stores the repository with the lane and replaces it when the repository changes', async () => {
     const conversationId = await seed();
     const user = 'lane-user';
     const laneGit = { branch: 'main', head };
     await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r' }),
+      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r', reportedAt: at(1) }),
     ).resolves.toBe(true);
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
       ...laneGit,
       repo: 'o/r',
     });
     await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r' }),
-    ).resolves.toBe(false);
-    await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/other' }),
+      methods.setConvoLaneGit({
+        user,
+        conversationId,
+        laneGit,
+        repo: 'o/other',
+        reportedAt: at(2),
+      }),
     ).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      ...laneGit,
+      repo: 'o/other',
+    });
   });
 
   it('keeps a detached or empty lane distinct from an unknown one', async () => {

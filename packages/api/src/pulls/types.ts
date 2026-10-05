@@ -20,11 +20,22 @@ export class PullRequestSourceError extends Error {
   }
 }
 
+/** Operator bounds on one lookup; each defaults to the value the feature shipped with. */
+export type PullRequestLookupLimits = {
+  /** Longest one GitHub request may take. */
+  requestTimeoutMs?: number;
+  /** Longest the whole lookup, every request together, may take. */
+  lookupTimeoutMs?: number;
+  /** Most pages of check runs read before the rollup is reported as still running. */
+  maxCheckRunPages?: number;
+};
+
 export type PullRequestFindInput = {
   /** `owner/name`. */
   repo: string;
   branch: string;
   token: string;
+  limits?: PullRequestLookupLimits;
 };
 
 /** Finds the pull request for a branch. Null is a documented absence, not a failure. */

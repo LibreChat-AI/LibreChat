@@ -78,6 +78,11 @@ export function createConversationPullRequestHandler(deps: {
         branch: laneGit.branch,
         token,
         ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
+        limits: {
+          requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
+          lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,
+          maxCheckRunPages: settings.maxCheckRunPages ?? 10,
+        },
       });
       if (!result.ok) {
         res.status(503).json({

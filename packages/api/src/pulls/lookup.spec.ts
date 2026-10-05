@@ -183,7 +183,22 @@ describe('rate limit cooldown', () => {
     await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
   });
 
-  it('caps an absurd retry time so one bad header cannot silence the feature for a day', async () => {
+  it('honors a reset GitHub reports well beyond ten minutes', async () => {
+    let clock = 0;
+    const find = jest
+      .fn()
+      .mockRejectedValueOnce(limited(40 * 60_000))
+      .mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await lookup(input);
+    clock = 39 * 60_000;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual(rateLimited);
+    expect(find).toHaveBeenCalledTimes(1);
+    clock = 40 * 60_000 + 1;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
+  });
+
+  it('caps a hint past the hour GitHub resets within, so one bad header cannot silence the feature for a day', async () => {
     let clock = 0;
     const find = jest
       .fn()
@@ -191,7 +206,9 @@ describe('rate limit cooldown', () => {
       .mockResolvedValue(value);
     const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
     await lookup(input);
-    clock = 10 * 60_000 + 1;
+    clock = 60 * 60_000 - 1;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual(rateLimited);
+    clock = 60 * 60_000 + 1;
     await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
   });
 

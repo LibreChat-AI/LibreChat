@@ -8,8 +8,8 @@ import { getSafeErrorMetadata } from '~/utils';
 const FAILURE_TTL_MS = 10_000;
 /** Used when GitHub rate limits a credential without saying when to come back. */
 const MIN_COOLDOWN_MS = 10_000;
-/** One bad header must not silence the feature for hours. */
-const MAX_COOLDOWN_MS = 10 * 60_000;
+/** GitHub's primary limit resets within the hour; a larger hint is malformed and is capped. */
+const MAX_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_MAX_ENTRIES = 500;
 
 type Entry = { result: PullRequestLookupResult; expiresAt: number };
@@ -59,7 +59,7 @@ export function createPullRequestLookup({
     }
   }
 
-  return async ({ repo, branch, token, ttlMs }) => {
+  return async ({ repo, branch, token, ttlMs, limits }) => {
     const scope = scopeOf(token);
     const key = `${scope}\0${repo}#${branch}`;
     const cached = entries.get(key);
@@ -75,7 +75,7 @@ export function createPullRequestLookup({
     const run = (async (): Promise<PullRequestLookupResult> => {
       let result: PullRequestLookupResult;
       try {
-        result = { ok: true, value: await source.find({ repo, branch, token }) };
+        result = { ok: true, value: await source.find({ repo, branch, token, limits }) };
       } catch (error) {
         if (!(error instanceof PullRequestSourceError)) {
           logger.warn('[PullRequests] Lookup failed', getSafeErrorMetadata(error));

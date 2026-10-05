@@ -1853,6 +1853,12 @@ export const agentsEndpointSchema = baseEndpointSchema
           token: pullRequestTokenReferenceSchema.optional(),
           /** Seconds a looked-up pull request is reused before GitHub is asked again. */
           cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
+          /** Longest one GitHub request may take. Raise it behind a slow proxy. */
+          requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),
+          /** Longest a whole lookup, every request together, may hold the header request. */
+          lookupTimeoutSeconds: z.number().int().min(1).max(120).optional().default(30),
+          /** Pages of 100 check runs read before the rollup is reported as still running. */
+          maxCheckRunPages: z.number().int().min(1).max(50).optional().default(10),
         })
         .superRefine((value, ctx) => {
           if (value.enabled && !value.token) {

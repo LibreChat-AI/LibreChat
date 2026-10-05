@@ -334,11 +334,13 @@ export interface ConversationMethods {
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
+    /** When the worker reported this state; defaults to now. */
+    reportedAt?: Date;
   }): Promise<boolean>;
   getConvoLaneGit(
     user: string,
     conversationId: string,
-  ): Promise<NonNullable<IConversation['laneGit']> | null>;
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'reportedAt'> | null>;
   addConvoToolApprovalAllows(input: {
     user: string;
     conversationId: string;
@@ -3016,34 +3018,43 @@ export function createConversationMethods(
   }
 
   /**
-   * Record the branch and head a conversation's code lane last reported. Owner-scoped and
-   * conditional on a change, so a lane that keeps reporting the same state costs no write.
-   * Server-written only: generic saves and imports cannot set it. Resolves to whether the
-   * stored value changed; false means unchanged or no such conversation for this owner.
+   * Record the branch and head a conversation's code lane last reported. Owner-scoped and fenced
+   * by report time: the write matches only while the stored report is not newer than this one, so
+   * a delayed older report, from this process or another replica, can never replace a newer
+   * state. Server-written only: generic saves and imports cannot set it. Resolves to whether the
+   * write applied; false means a newer report is already stored or there is no such conversation
+   * for this owner.
    */
   async function setConvoLaneGit({
     user,
     conversationId,
     laneGit,
     repo,
+    reportedAt = new Date(),
   }: {
     user: string;
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
+    reportedAt?: Date;
   }): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const next = {
       branch: laneGit.branch,
       head: laneGit.head,
       ...(repo ? { repo } : {}),
+      reportedAt,
     };
     const result = await withoutMeiliIndexing(
       Conversation.updateOne(
         {
           user,
           conversationId,
-          $expr: { $ne: [{ $ifNull: ['$laneGit', null] }, { $literal: next }] },
+          $or: [
+            { 'laneGit.reportedAt': { $exists: false } },
+            { 'laneGit.reportedAt': null },
+            { 'laneGit.reportedAt': { $lte: reportedAt } },
+          ],
         },
         { $set: { laneGit: next } },
         { timestamps: false },
@@ -3056,12 +3067,14 @@ export function createConversationMethods(
   async function getConvoLaneGit(
     user: string,
     conversationId: string,
-  ): Promise<NonNullable<IConversation['laneGit']> | null> {
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'reportedAt'> | null> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ user, conversationId })
       .select('laneGit')
       .lean<Pick<IConversation, 'laneGit'> | null>();
-    return stored?.laneGit ?? null;
+    if (stored?.laneGit == null) return null;
+    const { branch, head, repo } = stored.laneGit;
+    return { branch, head, ...(repo ? { repo } : {}) };
   }
 
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
@@ -3115,11 +3128,16 @@ export function createConversationMethods(
           codeWorkspaces: expected.codeWorkspaces ?? { $in: [null] },
           codeEnvironmentRevision: expected.codeEnvironmentRevision ?? { $in: [null] },
         },
+        /** The reported lane belongs to the workspace being replaced, so it goes with it. */
         codeEnvironmentMode === 'attached'
-          ? { $set: { codeEnvironmentMode, codeWorkspaces }, $inc: { codeEnvironmentRevision: 1 } }
+          ? {
+              $set: { codeEnvironmentMode, codeWorkspaces },
+              $unset: { laneGit: 1 },
+              $inc: { codeEnvironmentRevision: 1 },
+            }
           : {
               $set: { codeEnvironmentMode },
-              $unset: { codeWorkspaces: 1 },
+              $unset: { codeWorkspaces: 1, laneGit: 1 },
               $inc: { codeEnvironmentRevision: 1 },
             },
         { new: true, timestamps: false },
