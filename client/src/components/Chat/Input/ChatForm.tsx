@@ -793,14 +793,14 @@ const ChatForm = memo(function ChatForm({
             <div
               data-testid="composer-context-rail"
               className={cn(
-                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
+                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl',
+                'border-border-light bg-surface-secondary border px-2 pt-2 pb-5',
                 isRTL && 'flex-row-reverse',
               )}
             >
               {project ? <ProjectLandingChip project={project} /> : null}
               {codeWorkspace.visible ? (
-                <div className="min-w-0 px-1 pt-1">
+                <div className="min-w-0">
                   <CodeWorkspaceMenu
                     setConversation={setConversation}
                     workspace={codeWorkspace}
