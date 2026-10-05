@@ -463,6 +463,14 @@ export interface SubagentCodeRouting<TContext> {
   isRouted(executionId: string | null | undefined): boolean;
   /** Whether an execution's own subagents (including graph members) inherit a per-call route. */
   routesChildren(executionId: string | null | undefined): boolean;
+  /**
+   * Awaits a placed child's initialization. A failed initialization gives back
+   * the machine its placement reserved unless another execution still holds it.
+   */
+  settle<T extends SubagentCodeAgent, TConfig>(
+    placement: SubagentCodePlacement<T>,
+    initialization: Promise<TConfig>,
+  ): Promise<TConfig>;
 }
 
 function throwIfCanceled(signal?: AbortSignal): void {
@@ -471,12 +479,27 @@ function throwIfCanceled(signal?: AbortSignal): void {
   }
 }
 
+type RouteClaim = {
+  environmentId: string | null;
+  routed: boolean;
+  /** Set once an execution on this route initialized; a committed claim is never released. */
+  committed: boolean;
+  /** Placements still initializing on this route. */
+  holders: number;
+};
+
 export function createSubagentCodeRouting<TContext>({
   getInheritedEnvironments,
+  sharedRunFiles,
   ...request
 }: SubagentCodeRequest & {
   /** Request-scoped parent inheritance (#16756), read when a default route is reserved. */
   getInheritedEnvironments?: () => ReadonlyMap<string, string> | undefined;
+  /**
+   * Run file sharing is active: shared children must run on managed code, so no
+   * attached machine is offered or accepted per call.
+   */
+  sharedRunFiles?: boolean;
 }): SubagentCodeRouting<TContext> {
   const routedContexts = new Map<string, { agentId: string; toolContext: TContext }>();
   const childRoutes = new Map<string, string>();
@@ -485,10 +508,73 @@ export function createSubagentCodeRouting<TContext>({
    * state such as the attached-machine permission policy is keyed by agent, so
    * no call may move a subagent off the machine an earlier call settled on.
    */
-  const routeByAgent = new Map<string, { environmentId: string | null; routed: boolean }>();
+  const routeByAgent = new Map<string, RouteClaim>();
+  /** Placements holding a claim until they attach or are given back. */
+  const holds = new WeakMap<object, { agentId: string; stopWatching: () => void }>();
   const conflicts = (agentId: string, environmentId: string | null): boolean => {
     const claimed = routeByAgent.get(agentId);
     return claimed != null && claimed.environmentId !== environmentId;
+  };
+  const release = (placement: object): void => {
+    const hold = holds.get(placement);
+    if (hold == null) {
+      return;
+    }
+    holds.delete(placement);
+    hold.stopWatching();
+    const claimed = routeByAgent.get(hold.agentId);
+    if (claimed == null || claimed.committed) {
+      return;
+    }
+    claimed.holders -= 1;
+    if (claimed.holders <= 0) {
+      routeByAgent.delete(hold.agentId);
+    }
+  };
+  /** Claims (or joins) a subagent's one route for a placement until it attaches or fails. */
+  const hold = <T extends SubagentCodeAgent>(
+    placement: SubagentCodePlacement<T>,
+    route: { environmentId: string | null; routed: boolean },
+    signal?: AbortSignal,
+  ): SubagentCodePlacement<T> => {
+    const agentId = placement.agent.id;
+    const claimed = routeByAgent.get(agentId);
+    if (claimed == null) {
+      routeByAgent.set(agentId, { ...route, committed: false, holders: 1 });
+    } else {
+      claimed.holders += 1;
+      claimed.routed = claimed.routed || route.routed;
+    }
+    const onAbort = (): void => release(placement);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    holds.set(placement, {
+      agentId,
+      stopWatching: () => signal?.removeEventListener('abort', onAbort),
+    });
+    return placement;
+  };
+  const commit = (placement: object): void => {
+    const held = holds.get(placement);
+    if (held == null) {
+      return;
+    }
+    holds.delete(placement);
+    held.stopWatching();
+    const claimed = routeByAgent.get(held.agentId);
+    if (claimed != null) {
+      claimed.committed = true;
+    }
+  };
+  /** Live targets this request may place a subagent on per call. */
+  const resolveTargets = async (params: SubagentCodeTargetParams): Promise<SubagentCodeTargets> => {
+    const resolution = await resolveSubagentCodeTargets(params);
+    if (sharedRunFiles !== true) {
+      return resolution;
+    }
+    return {
+      ...resolution,
+      targets: resolution.targets.filter((target) => target.context.environmentType !== 'attached'),
+    };
   };
   const paramsFor = (
     agent: SubagentCodeAgent,
@@ -525,14 +611,17 @@ export function createSubagentCodeRouting<TContext>({
   const routeTo = <T extends SubagentCodeAgent>(
     agent: T,
     target: SubagentCodeTarget,
-  ): SubagentCodePlacement<T> => {
-    routeByAgent.set(agent.id, { environmentId: target.environmentId, routed: true });
-    return {
-      agent: placeSubagentOnCodeTarget(agent, target),
-      target,
-      childEnvironmentId: target.environmentId,
-    };
-  };
+    signal?: AbortSignal,
+  ): SubagentCodePlacement<T> =>
+    hold(
+      {
+        agent: placeSubagentOnCodeTarget(agent, target),
+        target,
+        childEnvironmentId: target.environmentId,
+      },
+      { environmentId: target.environmentId, routed: true },
+      signal,
+    );
   /** The machine an omitted call should follow: this subagent's earlier per-call
    * route, else its routed parent's machine unless that would move it. */
   const inheritedRoute = (agentId: string, parentEnvironmentId?: string): string | undefined => {
@@ -550,7 +639,7 @@ export function createSubagentCodeRouting<TContext>({
       if (!isSubagentHostArgsSupported() || flags.statefulCodeSessions !== true) {
         return {};
       }
-      const { targets } = await resolveSubagentCodeTargets(paramsFor(agent, flags));
+      const { targets } = await resolveTargets(paramsFor(agent, flags));
       const subagentHostArgs = buildSubagentCodeHostArgs(targets);
       return subagentHostArgs == null
         ? {}
@@ -564,7 +653,7 @@ export function createSubagentCodeRouting<TContext>({
       const requested =
         hostArgs?.[SUBAGENT_MACHINE_ARG] != null || hostArgs?.[SUBAGENT_WORKSPACE_ARG] != null;
       if (requested) {
-        const resolution = await resolveSubagentCodeTargets(paramsFor(agent, flags));
+        const resolution = await resolveTargets(paramsFor(agent, flags));
         throwIfCanceled(context?.signal);
         const target = selectSubagentCodeTarget(hostArgs, resolution);
         if (target != null) {
@@ -576,7 +665,7 @@ export function createSubagentCodeRouting<TContext>({
               'unavailable',
             );
           }
-          return routeTo(agent, target);
+          return routeTo(agent, target, context?.signal);
         }
       }
       if (flags.statefulCodeSessions !== true) {
@@ -586,7 +675,7 @@ export function createSubagentCodeRouting<TContext>({
           : { agent, childEnvironmentId: parentEnvironmentId };
       }
       if (inheritedRoute(agent.id, parentEnvironmentId) != null) {
-        const { targets } = await resolveSubagentCodeTargets(paramsFor(agent, flags));
+        const { targets } = await resolveTargets(paramsFor(agent, flags));
         throwIfCanceled(context?.signal);
         /** Re-read after the await: a concurrent call may have settled this subagent meanwhile. */
         const inherited = inheritedRoute(agent.id, parentEnvironmentId);
@@ -595,7 +684,7 @@ export function createSubagentCodeRouting<TContext>({
             ? undefined
             : targets.find((candidate) => candidate.environmentId === inherited);
         if (target != null) {
-          return routeTo(agent, target);
+          return routeTo(agent, target, context?.signal);
         }
         if (routeByAgent.get(agent.id)?.routed === true) {
           throw createSubagentHostArgumentError(SUBAGENT_MACHINE_ARG, 'unavailable');
@@ -605,10 +694,12 @@ export function createSubagentCodeRouting<TContext>({
         throw new CodeWorkspaceSelectionError(unavailableReason);
       }
       /** Reserved now, not after initialization, so a concurrent call cannot claim another machine. */
-      if (!routeByAgent.has(agent.id)) {
-        routeByAgent.set(agent.id, { environmentId: defaultRouteOf(agent, flags), routed: false });
-      }
-      return { agent };
+      const claimed = routeByAgent.get(agent.id);
+      return hold(
+        { agent },
+        claimed ?? { environmentId: defaultRouteOf(agent, flags), routed: false },
+        context?.signal,
+      );
     },
     routesChildren(executionId) {
       return executionId != null && childRoutes.has(executionId);
@@ -621,10 +712,13 @@ export function createSubagentCodeRouting<TContext>({
       if (executionId && placement.childEnvironmentId != null) {
         childRoutes.set(executionId, placement.childEnvironmentId);
       }
+      commit(placement);
       if (placement.target == null && !routeByAgent.has(agentId)) {
         routeByAgent.set(agentId, {
           environmentId: codeExecutionContext?.environmentId ?? null,
           routed: false,
+          committed: true,
+          holders: 0,
         });
       }
       if (placement.target == null || !executionId) {
@@ -653,6 +747,14 @@ export function createSubagentCodeRouting<TContext>({
     },
     isRouted(executionId) {
       return executionId != null && routedContexts.has(executionId);
+    },
+    async settle(placement, initialization) {
+      try {
+        return await initialization;
+      } catch (error) {
+        release(placement);
+        throw error;
+      }
     },
   };
 }

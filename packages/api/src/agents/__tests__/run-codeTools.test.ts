@@ -610,6 +610,62 @@ describe('attached-machine policy for lazily initialized graph members', () => {
     codeEnvironmentSettings: { permissions: { commandExecution } },
   });
 
+  it('stops applying attached-machine policy to a routable child that resolved on managed code', async () => {
+    const choice = { ...attachedOn('buildbox', 'deny'), statefulSessions: true };
+    const resolve = jest
+      .fn()
+      .mockResolvedValue(
+        makeAgent({ id: 'child', codeExecutionContext: { environmentType: 'managed' } }),
+      );
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            { id: 'child', configId: 'child:1', resolve, codeExecutionChoices: [choice] },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    /** The attached-machine policy's own verdict, apart from the run's other approval hooks. */
+    const attachedVerdicts = async () => {
+      const verdicts: unknown[] = [];
+      for (const matcher of (runConfig.hooks as HookRegistry).getMatchers('PreToolUse')) {
+        for (const hook of matcher.hooks) {
+          const result = await hook(
+            {
+              hook_event_name: 'PreToolUse',
+              runId: 'run-1',
+              toolName: Constants.BASH_TOOL,
+              toolInput: { command: 'touch out.txt' },
+              toolUseId: 'call-1',
+              executingAgentId: 'child',
+            },
+            new AbortController().signal,
+          );
+          if (String(result.reason ?? '').includes('attached code environment')) {
+            verdicts.push(result.decision);
+          }
+        }
+      }
+      return verdicts;
+    };
+
+    expect(await attachedVerdicts()).toEqual(['ask']);
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await attachedVerdicts()).toEqual([]);
+  });
+
   it('applies the policy of the machine a routed child sent its graph member to', async () => {
     const definition = {
       type: 'review_team',

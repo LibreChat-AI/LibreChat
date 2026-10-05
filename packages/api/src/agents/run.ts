@@ -2870,6 +2870,11 @@ export async function createRun({
         settings: resolvedAgent.codeExecutionContext.codeEnvironmentSettings,
         skillAuthoringAvailable: resolvedAgent.skillAuthoringAvailable === true,
       });
+    } else {
+      /** A routable child counted as attached before its call chose a route; it resolved
+       *  off attached machines, and runs on that one route for the whole request. */
+      attachedCodeEnvironmentAgentIds.delete(resolvedAgent.id);
+      attachedCodeEnvironmentSettings.delete(resolvedAgent.id);
     }
     const discoveredAliases = collectRunMCPToolAliases([resolvedAgent]).filter(
       ({ name, aliasName }) => {

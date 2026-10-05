@@ -667,6 +667,26 @@ describe('collectAttachedCodeApprovalPolicies', () => {
     ).toContain('bash_tool');
   });
 
+  test('does not treat a missing default as asking when every per-call machine decides', () => {
+    const decides = {
+      environmentType: 'attached',
+      codeEnvironmentConfigSchema: fullAccessSettings.configSchema,
+      codeEnvironmentSettings: {
+        permissions: { fileWrite: 'allow' as const, commandExecution: 'deny' as const },
+      },
+    };
+    const agents = [{ id: 'reviewer', codeExecutionChoices: [decides, decides] }];
+
+    expect(
+      buildAttachedCodeEnvironmentAdmissionHooks(
+        collectAttachedCodeEnvironmentAgentIds(agents),
+        collectAttachedCodeEnvironmentPolicySettings(agents),
+        undefined,
+        collectAttachedCodeRoutePolicies(agents),
+      ),
+    ).toEqual([]);
+  });
+
   test('requires every machine a child may be routed to before granting full access', () => {
     const agents = [
       {

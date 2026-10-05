@@ -621,6 +621,73 @@ describe('subagent code routing', () => {
     ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
   });
 
+  it('gives back a machine whose initialization failed unless another call still holds it', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const failed = new Error('initialization failed');
+
+    const first = await routing.place({ agent: reviewer, flags, context: call() });
+    const second = await routing.place({ agent: reviewer, flags, context: call() });
+    await expect(routing.settle(first, Promise.reject(failed))).rejects.toBe(failed);
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
+    ).rejects.toMatchObject({ argument: 'machine' });
+
+    await expect(routing.settle(second, Promise.reject(failed))).rejects.toBe(failed);
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'buildbox' } });
+  });
+
+  it('gives back a machine when its call is canceled before the child attaches', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const controller = new AbortController();
+
+    await routing.place({
+      agent: reviewer,
+      flags,
+      context: { ...call({ machine: 'buildbox' }), signal: controller.signal },
+    });
+    controller.abort();
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
+  });
+
+  it('keeps a machine once a child on it has attached', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const controller = new AbortController();
+    const routedCall = { ...call({ machine: 'buildbox' }), signal: controller.signal };
+
+    const placement = await routing.place({ agent: reviewer, flags, context: routedCall });
+    routing.attach(new Map(), {
+      agentId: reviewer.id,
+      context: routedCall,
+      placement,
+      codeExecutionContext: placement.target?.context,
+      toolContext: 'buildbox',
+    });
+    controller.abort();
+    await expect(routing.settle(placement, Promise.reject(new Error('late')))).rejects.toThrow();
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).rejects.toMatchObject({ argument: 'machine' });
+  });
+
+  it('offers and accepts no attached machine while run files are shared', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>({ ...request, sharedRunFiles: true });
+
+    await expect(routing.describe(reviewer, flags)).resolves.toEqual({});
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
+    ).rejects.toMatchObject({ argument: 'machine', rejection: 'not_allowed' });
+  });
+
   it('attributes a workspace-only conflict to the workspace argument', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);
@@ -791,9 +858,17 @@ describe('subagent code routing', () => {
       ],
     };
 
-    expect(binding?.targets).toHaveLength(2);
+    const changedDefault = {
+      ...descriptor,
+      codeExecutionContext: { ...descriptor.codeExecutionContext!, bridgeWorkerId: 'w-replaced' },
+    };
+
+    expect(binding?.targets).toHaveLength(1);
     expect(() => assertCodeExecutionApprovalBinding(binding, [descriptor])).not.toThrow();
     expect(() => assertCodeExecutionApprovalBinding(binding, [changedChoice])).toThrow(
+      'The attached code environment changed',
+    );
+    expect(() => assertCodeExecutionApprovalBinding(binding, [changedDefault])).toThrow(
       'The attached code environment changed',
     );
     expect(

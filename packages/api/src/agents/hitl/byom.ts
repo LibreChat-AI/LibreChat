@@ -336,10 +336,8 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
   const askCommandAgents = new Set<string>();
   const skillAuthoringAgents = new Set<string>();
   for (const agentId of attachedAgentIds) {
-    const policies = [
-      settingsByAgentId.get(agentId),
-      ...(routePoliciesByAgentId.get(agentId) ?? []),
-    ];
+    const routePolicies = routePoliciesByAgentId.get(agentId) ?? [];
+    const policies = routePolicies.length > 0 ? routePolicies : [settingsByAgentId.get(agentId)];
     const asks = (category: PermissionCategory): boolean =>
       policies.some((policy) => permissionDecision(policy, category, mode) === 'ask');
     if (asks('fileWrite')) askFileAgents.add(agentId);

@@ -156,23 +156,23 @@ export function captureCodeExecutionApprovalBinding(
   };
   for (const agent of agents) {
     const agentId = agent?.id ?? null;
-    const context = agent?.codeExecutionContext;
-    if (context?.statefulSessions === true) {
-      addTarget({ agentId, targetHash: hashCodeExecutionTarget(agentId, context) });
+    const routeHashes = [agent?.codeExecutionContext, ...(agent?.codeExecutionChoices ?? [])]
+      .filter((context): context is CodeExecutionContext => context?.statefulSessions === true)
+      .map((context) => hashCodeExecutionTarget(agentId, context));
+    if (routeHashes.length === 0) {
+      continue;
     }
-    /** All of an agent's per-call choices fold into one target, so a graph with many
-     * routable children stays within the binding's target limit. */
-    const choiceHashes = (agent?.codeExecutionChoices ?? [])
-      .filter((choice) => choice.statefulSessions === true)
-      .map((choice) => hashCodeExecutionTarget(agentId, choice));
-    if (choiceHashes.length > 0) {
-      addTarget({
-        agentId,
-        targetHash: createHash('sha256')
-          .update(JSON.stringify(['choices', [...new Set(choiceHashes)].sort()]))
-          .digest('hex'),
-      });
-    }
+    /** An agent with per-call choices folds its default and every choice into one
+     * target, so each agent contributes at most one entry to the bounded binding. */
+    addTarget({
+      agentId,
+      targetHash:
+        (agent?.codeExecutionChoices?.length ?? 0) === 0
+          ? routeHashes[0]
+          : createHash('sha256')
+              .update(JSON.stringify(['choices', [...new Set(routeHashes)].sort()]))
+              .digest('hex'),
+    });
   }
   const targets = [...targetsByIdentity.values()];
   if (targets.length === 0) {

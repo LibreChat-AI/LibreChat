@@ -2848,6 +2848,41 @@ describe('initializeClient — subagent loading', () => {
       }
     });
 
+    it('gives back the machine of a failed initialization so a retry may name another', async () => {
+      const req = await setup();
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+        mockInitializeAgent.mockRejectedValueOnce(new Error('tools failed to load'));
+        mockInitializeAgent.mockImplementation(async (params) => ({
+          ...makeSubagentConfig(SUBAGENT_ID),
+          codeExecutionContext: {
+            environmentId: params.agent.code_environment_id,
+            environmentType: 'attached',
+          },
+        }));
+
+        await expect(
+          descriptor.resolve({ signal: new AbortController().signal, executionId: 'run-failed' }),
+        ).rejects.toThrow('tools failed to load');
+        const config = await descriptor.resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-retry',
+          hostArgs: { machine: SKYNET },
+        });
+
+        expect(config.codeExecutionContext.environmentId).toBe(SKYNET);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it("holds a graph member's default machine while it initializes", async () => {
       const req = await setup();
       const member = await createAgent({
