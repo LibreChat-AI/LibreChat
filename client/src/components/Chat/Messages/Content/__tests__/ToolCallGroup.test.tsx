@@ -1085,6 +1085,60 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.getByRole('button', { name: /^com_assistants_running_var/ })).toBeInTheDocument();
   });
 
+  const handleOutput = JSON.stringify({
+    background_task_id: 'task-1',
+    tool: 'bash_tool',
+    status: 'running',
+    message: 'Use check_background_task to follow it',
+  });
+  const detachedProps = (attachments: TAttachment[] = []) => ({
+    ...baseProps,
+    parts: [{ part: completed(makePart('code-1', handleOutput, 'bash_tool')), idx: 0 }],
+    lastContentIdx: 0,
+    groupAttachments: attachments,
+  });
+
+  it('does not keep a cancelled detached task open or live', () => {
+    const cancelled = completed(makePart('code-1', handleOutput, 'bash_tool'));
+    (cancelled as unknown as Record<string, Record<string, unknown>>)[
+      ContentTypes.TOOL_CALL
+    ].backgroundTask = { cancelled: true };
+    renderGroup({ ...baseProps, parts: [{ part: cancelled, idx: 0 }], lastContentIdx: 0 });
+
+    expect(screen.getByRole('button', { name: /^com_ui_cancelled/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('moves focus to the header when a focused detached task settles and the group collapses', () => {
+    const renderPart = (_p: TMessageContentParts, idx: number) => (
+      <button type="button" data-testid="row" key={idx}>
+        {'row'}
+      </button>
+    );
+    const settled = {
+      type: 'background_task_status',
+      status: 'finished',
+      toolCallId: 'code-1',
+      messageId: 'm1',
+    } as unknown as TAttachment;
+    const tree = (attachments: TAttachment[]) => (
+      <RecoilRoot>
+        <ToolCallGroup {...detachedProps(attachments)} renderPart={renderPart} />
+      </RecoilRoot>
+    );
+    const { rerender } = render(tree([]));
+    screen.getByTestId('row').focus();
+    expect(screen.getByTestId('row')).toHaveFocus();
+
+    rerender(tree([settled]));
+
+    expect(
+      screen.getByRole('button', { name: /^com_assistants_completed_function/ }),
+    ).toHaveFocus();
+  });
+
   it('does not call a failed lone code call "ran"', () => {
     const failed = {
       type: ContentTypes.TOOL_CALL,

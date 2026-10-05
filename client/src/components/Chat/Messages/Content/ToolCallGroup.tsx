@@ -152,6 +152,8 @@ export default function ToolCallGroup({
       toolMetadata.some(
         (m) =>
           m.background === 'running' &&
+          !m.cancelled &&
+          !m.failed &&
           parseToolName(m.name, mcpServerNames).friendlyKey === 'com_ui_tool_name_code',
       ),
     [toolMetadata, mcpServerNames],
@@ -364,6 +366,19 @@ export default function ToolCallGroup({
 
   useEffect(() => {
     if (autoCollapse && !userOverride) {
+      /** A row that held focus goes inert with the collapse, so focus moves to
+       *  the header first rather than falling to the document. */
+      const header = headerRef.current?.querySelector<HTMLElement>('button');
+      const active = document.activeElement;
+      if (
+        header != null &&
+        active != null &&
+        active !== header &&
+        rootRef.current?.contains(active) === true &&
+        !headerRef.current?.contains(active)
+      ) {
+        header.focus();
+      }
       setIsExpanded(false);
     }
   }, [autoCollapse, userOverride]);

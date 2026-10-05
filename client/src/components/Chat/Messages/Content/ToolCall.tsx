@@ -235,14 +235,16 @@ export default function ToolCall({
   const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
   const loneGroup = useContext(LoneGroupContext);
+  /** The cheap, identity and phase checks run first: a streaming call re-renders
+   *  on every argument delta, and the panel check parses its payload. */
   const bare =
-    (soleTool || loneGroup) &&
-    hasInfo &&
-    (hasToolParams(args) || hasRenderableOutput(output)) &&
     phase === 'completed' &&
+    (soleTool || loneGroup) &&
     !isMCPToolCall &&
     !isActionCall &&
-    intent == null;
+    intent == null &&
+    hasInfo &&
+    (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
