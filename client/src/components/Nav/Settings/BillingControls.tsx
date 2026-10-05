@@ -1,3 +1,4 @@
+import { Skeleton } from '@librechat/client';
 import AutoRefillSettings from '../SettingsTabs/Balance/AutoRefillSettings';
 import useBalanceSummary from '~/hooks/useBalanceSummary';
 import { formatBalanceAmount } from '~/utils';
@@ -13,6 +14,23 @@ export function AutoRefill() {
   const localize = useLocalize();
   const { state, currency, balance } = useBalanceSummary();
 
+  /** Settings search can show this row without the balance row beside it, so it carries its
+   *  own loading and failure states rather than relying on the summary's */
+  if (state.status === 'loading') {
+    return (
+      <div className="space-y-2" aria-busy="true" data-testid="auto-refill-loading">
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+    );
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="text-text-destructive text-sm" role="alert">
+        {localize('com_nav_balance_auto_refill_error')}
+      </div>
+    );
+  }
   if (state.status !== 'success' || balance == null) {
     return null;
   }

@@ -29,6 +29,15 @@ export interface BalanceView {
   balance?: TBalanceResponse;
 }
 
+/** How the deployment shows balance figures, for surfaces that only format an amount. */
+export function useBalanceDisplay(): { display: BalanceDisplay; currency?: CurrencyConfig } {
+  const { data: startupConfig } = useGetStartupConfig();
+  return {
+    display: toDisplay(startupConfig?.balance?.display),
+    currency: startupConfig?.interface?.currency,
+  };
+}
+
 /**
  * The user's balance as every surface presents it. A stale reading wins over a
  * failed refetch, so a transient error never blanks a figure the user already saw.
@@ -36,6 +45,7 @@ export interface BalanceView {
 export default function useBalanceSummary(): BalanceView {
   const { isAuthenticated } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
+  const { display, currency } = useBalanceDisplay();
   const config = startupConfig?.balance;
   const enabled = config?.enabled === true;
   const query = useGetUserBalance({
@@ -43,7 +53,6 @@ export default function useBalanceSummary(): BalanceView {
     staleTime: BALANCE_STALE_MS,
   });
   const { data, isError } = query;
-  const display = toDisplay(config?.display);
   const startBalance = config?.startBalance;
 
   const state = useMemo<BalanceState>(() => {
@@ -59,7 +68,7 @@ export default function useBalanceSummary(): BalanceView {
   return {
     enabled,
     state,
-    currency: startupConfig?.interface?.currency,
+    currency,
     balance: state.status === 'success' ? data : undefined,
   };
 }

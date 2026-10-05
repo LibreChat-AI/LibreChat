@@ -8,13 +8,14 @@ import TokenUsage from './index';
 const mockStartupConfig = jest.fn();
 const mockBalance = jest.fn();
 const mockTokenUsage = jest.fn();
+const mockBalanceQuery = jest.fn();
 
 jest.mock('~/data-provider', () => ({
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
   useGetUserBalance: (config?: { enabled?: boolean }) =>
     config?.enabled === false
       ? { data: undefined, isError: false, isFetched: false }
-      : { data: mockBalance(), isError: false, isFetched: true },
+      : (mockBalanceQuery() ?? { data: mockBalance(), isError: false, isFetched: true }),
   useGetLangfuseSessionLinkQuery: () => ({ data: undefined }),
 }));
 
@@ -81,6 +82,7 @@ describe('TokenUsage gauge', () => {
     jest.useFakeTimers().setSystemTime(NOW);
     mockBalance.mockReturnValue(balance);
     mockTokenUsage.mockReturnValue(usage(0));
+    mockBalanceQuery.mockReset();
   });
   afterEach(() => {
     jest.useRealTimers();
@@ -182,6 +184,26 @@ describe('TokenUsage gauge', () => {
     expect(settings.container).toHaveTextContent('Auto-Refill is disabled.');
     expect(settings.container).not.toHaveTextContent('Error loading auto-refill settings.');
   });
+
+  it.each([
+    ['loading', { data: undefined, isError: false, isFetched: false }, 'auto-refill-loading'],
+    ['failed', { data: undefined, isError: true, isFetched: true }, 'alert'],
+  ] as const)(
+    'shows the auto-refill row %s on its own when settings search hides the balance row',
+    (_state, query, marker) => {
+      mockStartupConfig.mockReturnValue(config());
+      mockBalanceQuery.mockReturnValue(query);
+      const settings = render(<AutoRefill />);
+      const node =
+        marker === 'alert'
+          ? within(settings.container).getByRole('alert')
+          : within(settings.container).getByTestId(marker);
+      expect(node).toBeInTheDocument();
+      if (marker === 'alert') {
+        expect(node).toHaveTextContent('Error loading auto-refill settings.');
+      }
+    },
+  );
 
   it.each(['credits', 'currency', 'percent'] as const)(
     'shows the same %s reading in the gauge and in settings',

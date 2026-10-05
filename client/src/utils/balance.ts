@@ -99,7 +99,9 @@ export function formatBalanceAmount(
   if (display === 'currency') {
     return formatCost(credits / CREDITS_PER_USD, currency);
   }
-  return new Intl.NumberFormat().format(Math.round(credits));
+  /** Whole credits, except below one, where a rounded "0" would hide a real amount */
+  const fraction = Math.abs(credits) < 1 ? 2 : 0;
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: fraction }).format(credits);
 }
 
 const MINUTE_MS = 60_000;
