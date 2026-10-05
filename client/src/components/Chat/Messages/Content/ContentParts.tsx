@@ -1107,6 +1107,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           hasContent={segment.hasContent}
           attachments={phaseAttachments}
           hasPendingApproval={hasPendingApproval}
+          showThinking={showThinking}
           onExpansionChange={
             live &&
             reasoningDisclosures != null &&
