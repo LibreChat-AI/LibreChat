@@ -1,7 +1,7 @@
 import * as Ariakit from '@ariakit/react';
+import { TooltipAnchor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, Constants } from 'librechat-data-provider';
-import { TooltipAnchor } from '@librechat/client';
 import { Check, ChevronDown, FilePen, FileQuestionMark, FileTerminal } from 'lucide-react';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
