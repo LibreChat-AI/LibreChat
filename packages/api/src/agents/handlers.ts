@@ -55,6 +55,7 @@ import type {
 } from './backgroundCompletion';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
+import type { InterruptibleToolBatchRequest } from './steering/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
@@ -5673,6 +5674,8 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         resolve,
         reject,
       } = data;
+      const onArtifactDeliveryStart = (data as InterruptibleToolBatchRequest)
+        .onArtifactDeliveryStart;
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
@@ -7042,6 +7045,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                      *  ORIGINAL tool-call identity by the completion harvest. */
                     if (toolEndCallback && !(isCodeTask && pending.harvestStarted === true)) {
                       try {
+                        onArtifactDeliveryStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7378,6 +7382,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback && handlerResult.errorMessage == null) {
                         try {
+                          onArtifactDeliveryStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7401,6 +7406,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     if (toolEndCallback && handlerResult.artifact) {
                       try {
+                        onArtifactDeliveryStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7670,6 +7676,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback) {
                         try {
+                          onArtifactDeliveryStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7692,6 +7699,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
 
                     if (toolEndCallback) {
+                      onArtifactDeliveryStart?.(tc.id);
                       await toolEndCallback(
                         {
                           input: tc.args,

@@ -79,17 +79,14 @@ async function expectModelContinuation(page: Page, label: string, steerText: str
  * a real interrupt rather than relabelling a chip.
  */
 test.describe('escalating waiting messages to an interrupt', () => {
-  /* The composer ships with Enter queueing during a run; escalation rides the
-     steer route, so pin the during-run default to steering. */
+  /** Pin Steer so the alternate shortcut queues. */
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
       localStorage.setItem('duringRunAction', JSON.stringify('steer'));
     });
   });
 
-  /** `steerInterruptsByDefault` is a localStorage preference; the toggle test
-   *  flips it, and a mid-test failure must not leak preempt-by-default into
-   *  the rest of the serial suite. */
+  /** Reset the mode changed by the selector case. */
   test.afterEach(async ({ page }) => {
     await page.evaluate(() => window.localStorage.removeItem('duringRunAction'));
   });
@@ -260,7 +257,7 @@ test.describe('escalating waiting messages to an interrupt', () => {
   }
 
   test('the Interrupt default makes plain Enter preempt', async ({ page }) => {
-    test.setTimeout(150000);
+    test.setTimeout(45000);
     const label = uniqueLabel('toggle');
     const queueText = `Queued while toggling ${label}`;
     const steerText = `Enter now interrupts ${label}`;
@@ -289,8 +286,7 @@ test.describe('escalating waiting messages to an interrupt', () => {
     await expect(mode).toContainText('Interrupt');
     await page.keyboard.press('Escape');
 
-    // The toggle is live for the SAME run: plain Enter now routes the default
-    // steer through the preempt path (the 202 carries the armed flag).
+    // The selected default applies to the current run.
     await typeDuringRun(page, steerText);
     const [steerResponse] = await Promise.all([
       page.waitForResponse(isSteerRequest, { timeout: 15000 }),
@@ -322,7 +318,9 @@ test.describe('escalating waiting messages to an interrupt', () => {
     await memory.click();
     await page.keyboard.press('Escape');
     await sendMessage(page, `E2E_INTERRUPT_TOOL_REPLY:${label}`);
-    await expect(messagesView(page).getByText('slow_echo', { exact: false }).first()).toBeVisible();
+    await expect(
+      messagesView(page).getByText(`E2E interrupt tools running ${label}`),
+    ).toBeVisible();
     await typeDuringRun(page, steerText);
     const [response] = await Promise.all([
       page.waitForResponse(isSteerRequest),
@@ -330,6 +328,9 @@ test.describe('escalating waiting messages to an interrupt', () => {
     ]);
     expect(response.status()).toBe(202);
     await expect(messagesView(page).getByText(`[steers-seen=1] ${steerText}`)).toBeVisible();
+    await messagesView(page)
+      .getByRole('button', { name: /^Ran 2 actions/ })
+      .click();
     await expect(messagesView(page).getByText(/Cancellation was requested/)).toBeVisible();
     await expect(messageTurns(page)).toHaveCount(4);
     await page.waitForTimeout(5500);

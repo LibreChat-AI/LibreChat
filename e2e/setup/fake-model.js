@@ -1764,12 +1764,6 @@ function activityProseReplyResponses(label, toolNames) {
   };
 }
 
-/**
- * A phase whose middle batch holds a failed call beside a slow one: `slow_echo`
- * called without its required `text` fails schema validation before the tool
- * runs, and a second `slow_echo` keeps the batch live for `delay` ms so a spec
- * can watch the fold while it streams.
- */
 function interruptToolReplyResponses(label, toolNames) {
   const remember = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
   const slow = Array.from(toolNames).find((name) => name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX));
@@ -1781,7 +1775,7 @@ function interruptToolReplyResponses(label, toolNames) {
       invocation += 1;
       if (invocation === 1) {
         return {
-          response: '',
+          response: `E2E interrupt tools running ${label}`,
           toolCalls: [
             {
               id: `call_interrupt_fast_${label}`,
@@ -1803,6 +1797,12 @@ function interruptToolReplyResponses(label, toolNames) {
   };
 }
 
+/**
+ * A phase whose middle batch holds a failed call beside a slow one: `slow_echo`
+ * called without its required `text` fails schema validation before the tool
+ * runs, and a second `slow_echo` keeps the batch live for `delay` ms so a spec
+ * can watch the fold while it streams.
+ */
 function activityFailedReplyResponses(label, toolNames) {
   const rememberTool = Array.from(toolNames).find((name) =>
     name.startsWith(STEER_TOOL_NAME_PREFIX),

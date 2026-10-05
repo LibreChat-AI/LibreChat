@@ -176,6 +176,52 @@ describe('interruptToolHandler', () => {
     expect(state.listeners.size).toBe(0);
   });
 
+  it('waits for admitted artifact validation and preserves the successful result', async () => {
+    const state = control();
+    let release: (() => void) | undefined;
+    let start: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      start = resolve;
+    });
+    const publications: string[] = [];
+    const tool = new DynamicStructuredTool({
+      name: 'search',
+      description: 'Search',
+      schema: z.object({}),
+      responseFormat: 'content_and_artifact',
+      func: async () => ['completed output', { files: [] }],
+    });
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      toolEndCallback: async () => {
+        start?.();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        publications.push('file');
+      },
+    });
+    const input = batch({ toolCalls: [{ id: 'one', name: 'search', args: {} }] });
+    const pending = interruptToolHandler(handler, state.preemption).handle(
+      'on_tool_execute',
+      input,
+    );
+    await ready;
+    state.interrupt();
+    expect(input.resolve).not.toHaveBeenCalled();
+    release?.();
+    await pending;
+    expect(publications).toEqual(['file']);
+    expect(input.resolve).toHaveBeenCalledWith([
+      expect.objectContaining({
+        toolCallId: 'one',
+        status: 'success',
+        content: 'completed output',
+      }),
+    ]);
+    expect(state.listeners.size).toBe(0);
+  });
+
   it('cancels a real tool invocation and suppresses artifacts from a tool that ignores cancellation', async () => {
     const state = control();
     let finish: (() => void) | undefined;

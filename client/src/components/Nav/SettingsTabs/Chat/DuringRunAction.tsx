@@ -24,6 +24,8 @@ export default function DuringRunAction() {
         onChange={(value) => {
           if (value === 'steer' || value === 'interrupt' || value === 'queue') setAction(value);
         }}
+        className="z-50"
+        sizeClasses="z-50"
         testId="duringRunAction"
         aria-labelledby={labelId}
       />

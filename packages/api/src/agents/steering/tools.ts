@@ -5,6 +5,11 @@ import type {
   EventHandler,
 } from '@librechat/agents';
 
+/** Host-only admission channel; artifacts may still be validating after execution finishes. */
+export interface InterruptibleToolBatchRequest extends ToolExecuteBatchRequest {
+  onArtifactDeliveryStart?: (toolCallId: string) => void;
+}
+
 const INTERRUPTED =
   'Interrupted by a user message. Cancellation was requested; external effects may already have occurred. Do not repeat this operation automatically.';
 
@@ -33,6 +38,8 @@ export function interruptToolHandler(
       const signal =
         data.signal == null ? controller.signal : AbortSignal.any([data.signal, controller.signal]);
       const completed = new Map<string, ToolExecuteResult>();
+      const delivering = new Set<string>();
+      let interrupted = false;
       let settled = false;
       let unsubscribe: (() => void) | undefined;
       let onAbort: (() => void) | undefined;
@@ -53,14 +60,17 @@ export function interruptToolHandler(
           data.reject(error);
           reject(error);
         };
-        const interrupt = () => {
-          if (settled || data.signal?.aborted || !preemption.shouldPreempt()) return;
-          // Claim settlement before abort listeners can publish a competing result.
-          const results = data.toolCalls.map(
-            (call) => completed.get(call.id) ?? interruptedToolResult(call.id),
+        const finishInterrupt = () => {
+          if (!interrupted || delivering.size > 0) return;
+          finish(
+            data.toolCalls.map((call) => completed.get(call.id) ?? interruptedToolResult(call.id)),
           );
-          finish(results);
+        };
+        const interrupt = () => {
+          if (settled || interrupted || data.signal?.aborted || !preemption.shouldPreempt()) return;
+          interrupted = true;
           controller.abort(new SteerToolInterrupt());
+          finishInterrupt();
         };
         onAbort = () =>
           fail(
@@ -76,15 +86,20 @@ export function interruptToolHandler(
         unsubscribe = preemption.subscribe?.(interrupt);
         interrupt();
         if (settled) return;
-        const request: ToolExecuteBatchRequest = {
+        const request: InterruptibleToolBatchRequest = {
           ...data,
           signal,
-          resolve: finish,
+          resolve: (results) => (interrupted ? finishInterrupt() : finish(results)),
           reject: fail,
+          onArtifactDeliveryStart: (toolCallId) => {
+            if (!settled && !interrupted) delivering.add(toolCallId);
+          },
           onResult: (result) => {
-            if (settled) return;
+            if (settled || (interrupted && !delivering.has(result.toolCallId))) return;
             completed.set(result.toolCallId, result);
+            delivering.delete(result.toolCallId);
             data.onResult?.(result);
+            finishInterrupt();
           },
         };
         try {
