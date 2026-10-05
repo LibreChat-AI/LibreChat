@@ -1,3 +1,6 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const mongoose = require('mongoose');
 const express = require('express');
 const request = require('supertest');
@@ -20,6 +23,7 @@ const {
   PrincipalType,
   ResourceType,
   actionDelimiter,
+  InstructionsPromptErrorCode,
 } = require('librechat-data-provider');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 
@@ -97,6 +101,7 @@ const {
   revertAgentVersion: revertAgentVersionHandler,
   updateAgent: updateAgentHandler,
   getListAgents: getListAgentsHandler,
+  uploadAgentAvatar: uploadAgentAvatarHandler,
 } = require('./v1');
 
 const {
@@ -117,6 +122,8 @@ const {
 } = require('@librechat/api');
 const { grantPermission } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const db = require('~/models');
 
 /**
@@ -5392,6 +5399,2108 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
       const persisted = await Agent.findOne({ id: agentId }).lean();
       expect(persisted.name).toBe('Current Router');
+    });
+  });
+
+  describe('instructionsPrompt access control', () => {
+    /** Grants PROMPTGROUP VIEW for every id in `visibleGroupIds`; every other id (and
+     *  every other resource type) resolves with no permission, matching the file's
+     *  default `getResourcePermissionsMap` behavior. */
+    const mockGroupVisibility = (visibleGroupIds) => {
+      getResourcePermissionsMap.mockImplementation(async ({ resourceIds }) => {
+        const map = new Map();
+        for (const id of resourceIds) {
+          if (visibleGroupIds.has(id.toString())) {
+            map.set(id.toString(), PermissionBits.VIEW);
+          }
+        }
+        return map;
+      });
+    };
+
+    const createPromptGroupFixture = async (name = 'Fixture Group') => {
+      const { group, prompt } = await db.createPromptGroup({
+        prompt: { prompt: 'You are a helpful assistant.', type: 'text' },
+        group: { name },
+        author: mockReq.user.id,
+        authorName: 'Fixture Author',
+      });
+      return { groupId: group._id.toString(), promptId: prompt._id.toString() };
+    };
+
+    afterEach(() => {
+      getResourcePermissionsMap.mockReset().mockResolvedValue(new Map());
+    });
+
+    describe('prompt-management capability', () => {
+      test.each(['ADMIN', 'PROMPT_MANAGER_TEST'])(
+        'allows %s to link, revise, and view prompts without group ACLs',
+        async (role) => {
+          mockReq.user.role = role;
+          mockReq.user.idOnTheSource = null;
+          await db.grantCapability({
+            principalType: PrincipalType.ROLE,
+            principalId: role,
+            capability: SystemCapabilities.MANAGE_PROMPTS,
+          });
+          if (role !== 'ADMIN') {
+            await mongoose.models.Role.findOneAndUpdate(
+              { name: role },
+              { $set: { [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: true } },
+              { upsert: true },
+            );
+          }
+          const { groupId, promptId } = await createPromptGroupFixture();
+          const productionLink = { source: 'native', groupId, selection: { type: 'production' } };
+          mockReq.body = {
+            name: 'Manager Linked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            instructionsPrompt: productionLink,
+          };
+          await createAgentHandler(mockReq, mockRes);
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const created = mockRes.json.mock.calls[0][0];
+          expect(created.instructionsPrompt).toEqual(productionLink);
+          mockRes.json.mockClear();
+          mockRes.status.mockClear();
+          mockReq.params = { id: created.id };
+          const exactLink = { source: 'native', groupId, selection: { type: 'exact', promptId } };
+          mockReq.body = { instructionsPrompt: exactLink };
+          await updateAgentHandler(mockReq, mockRes);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const updated = mockRes.json.mock.calls[0][0];
+          expect(updated.instructionsPrompt).toEqual(exactLink);
+          expect(
+            updated.versions.every((version) => version.instructionsPrompt?.restricted !== true),
+          ).toBe(true);
+          mockRes.json.mockClear();
+          await getAgentVersionsHandler(mockReq, mockRes);
+          const versions = mockRes.json.mock.calls[0][0];
+          expect(versions.some((version) => version.instructionsPrompt?.groupId === groupId)).toBe(
+            true,
+          );
+          expect(versions.every((version) => version.instructionsPrompt?.restricted !== true)).toBe(
+            true,
+          );
+          expect(getResourcePermissionsMap).not.toHaveBeenCalled();
+        },
+      );
+    });
+
+    describe('createAgentHandler', () => {
+      test('persists the agent when the linked prompt group is viewable', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set([groupId]));
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+
+        mockReq.body = {
+          name: 'Prompt-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt,
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual(instructionsPrompt);
+        const persisted = await Agent.findOne({ id: response.id }).lean();
+        expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test('returns 403 instructions_prompt_forbidden for a group the creator cannot VIEW', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockReq.body = {
+          name: 'Attacker Prompt Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a selection that does not resolve', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Dangling Prompt Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 400 instructions_prompt_unavailable when the linked content violates the agent-instructions content policy (but not the prompts policy)', async () => {
+        const { group } = await db.createPromptGroup({
+          prompt: { prompt: 'Use sk-private-token for requests', type: 'text' },
+          group: { name: 'Sensitive Content Group' },
+          author: mockReq.user.id,
+          authorName: 'Fixture Author',
+        });
+        const groupId = group._id.toString();
+        mockGroupVisibility(new Set([groupId]));
+        // Only the agent-instructions policy is active; the prompts-library policy is
+        // not, so `resolvePrompt` itself must succeed before this gate applies.
+        mockReq.config = {
+          filters: {
+            agentInstructions: {
+              pii: {
+                starterPatterns: ['sk_prefix'],
+              },
+            },
+          },
+        };
+        mockReq.body = {
+          name: 'Blocked Prompt Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('excludes the submitted (now-dead) inline instructions from the save-time scan when a safe link is set', async () => {
+        const { groupId } = await createPromptGroupFixture('Create Scan Safe Group');
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.body = {
+          name: 'Linked At Creation',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructions: 'Use sk-private-token for requests',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt.groupId).toBe(groupId);
+      });
+    });
+
+    describe('updateAgentHandler', () => {
+      test('preserves a link the editor cannot VIEW when the edit is unrelated', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Renamable Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+        // No VIEW grant for `groupId`: the editor cannot see the linked group.
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { name: 'Renamed Agent' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.name).toBe('Renamed Agent');
+        expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test("changes to a new link the editor can VIEW, regardless of the previous link's visibility", async () => {
+        const { groupId: restrictedGroupId } = await createPromptGroupFixture('Restricted Group');
+        const { groupId: nextGroupId } = await createPromptGroupFixture('Next Group');
+        mockGroupVisibility(new Set([nextGroupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Restricted Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId: restrictedGroupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: nextGroupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(nextGroupId);
+      });
+
+      test('removes the link (via $unset) when the update sets it to null', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Removable Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { instructionsPrompt: null };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toBeUndefined();
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('removes the link (via $unset) when the update sets it to null, even without VIEW', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set());
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Removable Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { instructionsPrompt: null };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toBeUndefined();
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a selection that does not resolve', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'No Link Yet Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      describe('a linked group that has been deleted', () => {
+        test('allows the owner to remove a link to a deleted group (update null) even without VIEW', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Group');
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Agent With Deleted Link',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId,
+              selection: { type: 'production' },
+            },
+          });
+          // The group is deleted (its ACL entries go with it): the owner no
+          // longer has VIEW on it. `mockGroupVisibility` is never called with
+          // `groupId`, so it stays out of visibility either way.
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.instructionsPrompt).toBeUndefined();
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+        });
+
+        test('allows the owner to replace a link to a deleted group with an accessible one', async () => {
+          const { groupId: deletedGroupId } = await createPromptGroupFixture('Doomed Group 2');
+          const { groupId: nextGroupId } = await createPromptGroupFixture('Replacement Group');
+          mockGroupVisibility(new Set([nextGroupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Agent With Deleted Link',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId: deletedGroupId,
+              selection: { type: 'production' },
+            },
+          });
+          await db.deletePromptGroup({ _id: deletedGroupId });
+
+          mockReq.params = { id: agent.id };
+          mockReq.body = {
+            instructionsPrompt: {
+              source: 'native',
+              groupId: nextGroupId,
+              selection: { type: 'production' },
+            },
+          };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(nextGroupId);
+        });
+      });
+
+      test('redacts an inaccessible link inside versions[] in the PATCH response, without touching the persisted snapshot', async () => {
+        const { groupId: restrictedGroupId } = await createPromptGroupFixture(
+          'Restricted History Group',
+        );
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Agent With History',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId: restrictedGroupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+        // No VIEW grant for `restrictedGroupId`.
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { name: 'Agent With History Renamed' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const response = mockRes.json.mock.calls[0][0];
+        // The agent carries no current link at all, so the redacted snapshot's link
+        // cannot match it.
+        expect(response.versions[0].instructionsPrompt).toEqual({
+          source: 'native',
+          restricted: true,
+          matchesCurrent: false,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.versions[0].instructionsPrompt.groupId).toBe(restrictedGroupId);
+      });
+
+      test('keeps a viewable link inside versions[] intact in the PATCH response', async () => {
+        const { groupId } = await createPromptGroupFixture('Visible History Group');
+        mockGroupVisibility(new Set([groupId]));
+        const versionInstructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Agent With Visible History',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: versionInstructionsPrompt,
+            },
+          ],
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { name: 'Agent With Visible History Renamed' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.versions[0].instructionsPrompt).toEqual(versionInstructionsPrompt);
+      });
+
+      describe('save-time content scan when a link governs the agent', () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const blockedFilters = {
+          agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } },
+        };
+
+        test('excludes the stored (now-dead) inline instructions from the scan when switching to a safe link', async () => {
+          const { groupId } = await createPromptGroupFixture('Scan Safe Group');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Switching Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = {
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          // The inline text is stored as submitted; only the scan ignored it.
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects switching back to Inline while the stored inline text is blocked', async () => {
+          const { groupId } = await createPromptGroupFixture('Scan Safe Group Two');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Switching Back Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: blockedInstructions, instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects blocked inline text on an agent with no link at all', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: blockedInstructions };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructions).toBeUndefined();
+        });
+
+        test('allows a safe partial edit of an unlinked agent even when its stored instructions would fail content policy (regression guard)', async () => {
+          // An agent that was never linked has no `previous` link to remove, so an
+          // unrelated edit must scan only what the payload sends — never fall back
+          // to stored `instructions` the write doesn't touch. Mirrors
+          // e2e/specs/mock/content-filters.persisted.spec.ts's "safe partial edits
+          // work" scenario.
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Agent With Stored Blocked Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { name: 'Renamed Unlinked Agent' };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.name).toBe('Renamed Unlinked Agent');
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('rejects removing a link over stored disallowed inline text the update never resends', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Blocked Group');
+          mockGroupVisibility(new Set([groupId]));
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked With Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          // Only the link is touched; `instructions` is not resent, so the stored
+          // text — never scanned while the link stayed valid — must fall in.
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          // The write never applied: the link and stored text are untouched.
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('allows removing a link over stored allowed inline text', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Allowed Group');
+          mockGroupVisibility(new Set([groupId]));
+          const allowedInstructions = 'Be helpful and concise.';
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked With Allowed Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: allowedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+          expect(persisted.instructions).toBe(allowedInstructions);
+        });
+
+        test('allows removing a link while sending new allowed instructions over stored disallowed text', async () => {
+          const { groupId } = await createPromptGroupFixture('Removal Scan Replace Group');
+          mockGroupVisibility(new Set([groupId]));
+          const newInstructions = 'Be helpful and concise.';
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked, Replacing Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+          mockReq.body = { instructions: newInstructions, instructionsPrompt: null };
+
+          await updateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const persisted = await Agent.findOne({ id: agent.id }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+          expect(persisted.instructions).toBe(newInstructions);
+        });
+      });
+    });
+
+    describe('getAgentHandler', () => {
+      test('EDIT branch presents a restricted stub for a link the editor cannot VIEW', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Restricted View Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentHandler(mockReq, mockRes, true);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+      });
+
+      test('EDIT branch keeps a visible link intact', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set([groupId]));
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Visible Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentHandler(mockReq, mockRes, true);
+
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test('VIEW-only branch never includes instructionsPrompt', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'View Only Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentHandler(mockReq, mockRes);
+
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response).not.toHaveProperty('instructionsPrompt');
+      });
+    });
+
+    describe('duplicateAgentHandler', () => {
+      test('copies the link verbatim, with no extra ACL check on the write', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        // No VIEW grant: duplication must succeed regardless.
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const newAgentId = mockRes.json.mock.calls[0][0].agent.id;
+        const persisted = await Agent.findOne({ id: newAgentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test("presents a restricted stub in the response when the duplicator can't VIEW the group", async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent Two',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        const newAgentId = response.agent.id;
+        const persisted = await Agent.findOne({ id: newAgentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      test('fails closed (201 with a restricted stub, never a 500) when the post-duplicate ACL lookup fails, and creates exactly one duplicate', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent Three',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+        expect(await Agent.countDocuments({})).toBe(1);
+
+        // The duplicate has already been persisted (with its cloned actions and
+        // grants) by the time `presentForEditor` runs; a failure here must not
+        // surface as a 500 — a client retry on that 500 would create another
+        // duplicate against a write that already succeeded.
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error('acl outage');
+        });
+
+        mockReq.params = { id: (await Agent.findOne({ name: 'Source Agent Three' })).id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        expect(mockRes.status).not.toHaveBeenCalledWith(500);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        expect(await Agent.countDocuments({})).toBe(2);
+      });
+
+      describe('save-time content scan when a link governs the source agent', () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const blockedFilters = {
+          agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } },
+        };
+
+        test('excludes the copied (dead) inline instructions from the scan when the source is linked', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Scan Safe Group');
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Linked Source With Dead Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+            instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const newAgentId = mockRes.json.mock.calls[0][0].agent.id;
+          const persisted = await Agent.findOne({ id: newAgentId }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+          expect(persisted.instructions).toBe(blockedInstructions);
+        });
+
+        test('still rejects duplicating an unlinked agent whose inline text is blocked', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Source With Blocked Text',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructions: blockedInstructions,
+          });
+
+          mockReq.config = { filters: blockedFilters };
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(400);
+          expect(await Agent.countDocuments({})).toBe(1);
+        });
+      });
+
+      describe('no PROMPTS USE or VIEW check on a duplicate', () => {
+        /** `getRoleByName` auto-creates a missing system role from defaults (which
+         *  grant PROMPTS USE), so a role document must already exist to override it.
+         *  Reset after each test so later tests see the auto-created default again. */
+        const setPromptsUse = (allowed) =>
+          mongoose.models.Role.findOneAndUpdate(
+            { name: 'USER' },
+            {
+              $set: {
+                name: 'USER',
+                [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: allowed,
+              },
+            },
+            { upsert: true },
+          );
+
+        afterEach(async () => {
+          await mongoose.models.Role.deleteMany({ name: 'USER' });
+        });
+
+        test('copies the link when the duplicator lacks PROMPTS USE', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Gate Group');
+          const instructionsPrompt = {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          };
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Source Agent For Gated Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt,
+          });
+          await setPromptsUse(false);
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const newAgentId = mockRes.json.mock.calls[0][0].agent.id;
+          const persisted = await Agent.findOne({ id: newAgentId }).lean();
+          expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+        });
+
+        test('allows duplicating an unlinked agent without PROMPTS USE', async () => {
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Unlinked Source For Gated Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+          });
+          await setPromptsUse(false);
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          expect(await Agent.countDocuments({})).toBe(2);
+        });
+
+        test('presents a restricted stub (201) when the duplicator has no VIEW on the group', async () => {
+          const { groupId } = await createPromptGroupFixture('Duplicate Gate Use Only Group');
+          const instructionsPrompt = {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          };
+          const agent = await Agent.create({
+            id: `agent_${nanoid()}`,
+            author: mockReq.user.id,
+            name: 'Source Agent For Use-Only Duplicate',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt,
+          });
+          // Default role grants PROMPTS USE; no VIEW grant for `groupId`.
+
+          mockReq.params = { id: agent.id };
+
+          await duplicateAgentHandler(mockReq, mockRes);
+
+          expect(mockRes.status).toHaveBeenCalledWith(201);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.agent.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+          const persisted = await Agent.findOne({ id: response.agent.id }).lean();
+          expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+        });
+      });
+    });
+
+    describe('revertAgentVersionHandler', () => {
+      test('removes the link when reverting to a version that predates it and the editor can VIEW the current link', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        mockGroupVisibility(new Set([groupId]));
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Prompt-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+          versions: [
+            {
+              name: 'Pre-Link Agent',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Pre-Link Agent');
+        expect(response.instructionsPrompt).toBeUndefined();
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('returns 404 for an out-of-range version_index on a linked agent instead of a 500', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Prompt-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+          versions: [
+            {
+              name: 'Pre-Link Agent',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 99 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(404);
+        expect(mockRes.json).toHaveBeenCalledWith({ error: 'Version 99 not found' });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual({
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        });
+      });
+
+      test('removes the current link via revert even though the editor cannot VIEW it (no VIEW check on a revert)', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        // No VIEW grant for `groupId`: the editor cannot see the currently linked group.
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Prompt-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'production' },
+          },
+          versions: [
+            {
+              name: 'Pre-Link Agent',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.name).toBe('Pre-Link Agent');
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('sets a snapshot link to a group the editor cannot VIEW via revert, with no VIEW or USE check', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        // No VIEW grant for `groupId`, and no PROMPTS USE check runs for a revert either.
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Pre-Link Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Pre-Link Snapshot');
+        // Not visible, so presented as a restricted stub in the response.
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('reverts successfully when the snapshot link is accessible, even though it no longer resolves', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        // No prompt group document exists for `groupId`: the snapshot's selection cannot
+        // resolve. A revert still applies — a stale revision continues without
+        // instructions at runtime rather than rejecting the write.
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Dangling Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Dangling Snapshot');
+        expect(response.instructionsPrompt).toEqual({
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('reverts successfully when the snapshot link equals the current link, even without VIEW', async () => {
+        const { groupId } = await createPromptGroupFixture();
+        // No VIEW grant for `groupId`, but the snapshot's link is identical to the
+        // current one, so this is not a change the access check needs to gate.
+        const agentId = `agent_${nanoid()}`;
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Prompt-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+          versions: [
+            {
+              name: 'Same-Link Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt,
+            },
+          ],
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Same-Link Snapshot');
+        // Not visible, so still presented as a restricted stub in the response.
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+
+      describe('a linked group that has been deleted', () => {
+        test('allows a revert that moves away from a deleted-group link, even without VIEW', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Current Link');
+          const agentId = `agent_${nanoid()}`;
+          await Agent.create({
+            id: agentId,
+            author: mockReq.user.id,
+            name: 'Current Deleted-Link Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            instructionsPrompt: {
+              source: 'native',
+              groupId,
+              selection: { type: 'production' },
+            },
+            versions: [
+              {
+                name: 'Pre-Link Agent',
+                provider: 'openai',
+                model: 'gpt-4',
+                tools: [],
+              },
+            ],
+          });
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agentId };
+          mockReq.body = { version_index: 0 };
+
+          await revertAgentVersionHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.name).toBe('Pre-Link Agent');
+          expect(response.instructionsPrompt).toBeUndefined();
+          const persisted = await Agent.findOne({ id: agentId }).lean();
+          expect(persisted.instructionsPrompt).toBeUndefined();
+        });
+
+        test('allows a revert onto a version linking a deleted group', async () => {
+          const { groupId } = await createPromptGroupFixture('Doomed Snapshot Link');
+          const agentId = `agent_${nanoid()}`;
+          await Agent.create({
+            id: agentId,
+            author: mockReq.user.id,
+            name: 'Current Unlinked Agent',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            versions: [
+              {
+                name: 'Deleted-Link Snapshot',
+                provider: 'openai',
+                model: 'gpt-4',
+                tools: [],
+                instructionsPrompt: {
+                  source: 'native',
+                  groupId,
+                  selection: { type: 'production' },
+                },
+              },
+            ],
+          });
+          await db.deletePromptGroup({ _id: groupId });
+
+          mockReq.params = { id: agentId };
+          mockReq.body = { version_index: 0 };
+
+          await revertAgentVersionHandler(mockReq, mockRes);
+
+          expect(mockRes.status).not.toHaveBeenCalledWith(400);
+          expect(mockRes.status).not.toHaveBeenCalledWith(403);
+          const response = mockRes.json.mock.calls[0][0];
+          expect(response.name).toBe('Deleted-Link Snapshot');
+          // The group's ACL entries went with it, so it reads as not-visible and is
+          // stubbed the same as any other hidden group — redaction has no separate
+          // existence check.
+          expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+          const persisted = await Agent.findOne({ id: agentId }).lean();
+          expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        });
+      });
+
+      test("excludes the reverted snapshot's dead inline instructions from the scan when the snapshot's own link is valid", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Scan Safe Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Linked Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructions: blockedInstructions,
+              instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.instructions).toBe(blockedInstructions);
+      });
+
+      test('rejects a revert that removes the current link, landing on a snapshot whose own stored inline text is blocked', async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Removal Scan Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Pre-Link Snapshot With Dead Text',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructions: blockedInstructions,
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // The revert never applied: the current link and the snapshot are untouched.
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.versions[0].instructions).toBe(blockedInstructions);
+      });
+
+      test("rejects a revert that removes the current link, landing on a snapshot that omits instructions, by scanning the agent's current stored text", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Fallback Scan Group');
+        mockGroupVisibility(new Set([groupId]));
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent With Dead Text',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: blockedInstructions,
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Unlinked Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response).toEqual(
+          expect.objectContaining({
+            error: 'content_filter_block',
+            source: 'agent_instruction',
+            field: 'instructions',
+          }),
+        );
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // The revert never applied: the current link and stored text are untouched.
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+        expect(persisted.instructions).toBe(blockedInstructions);
+      });
+
+      test("allows a revert that removes the current link, landing on a snapshot that omits instructions, when the agent's current stored text is allowed", async () => {
+        const { groupId } = await createPromptGroupFixture('Revert Fallback Allowed Group');
+        mockGroupVisibility(new Set([groupId]));
+        const allowedInstructions = 'Current allowed instructions';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent With Allowed Text',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: allowedInstructions,
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+          versions: [
+            {
+              name: 'Unlinked Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+        expect(persisted.instructions).toBe(allowedInstructions);
+      });
+
+      test('leaves a never-linked revert unaffected by the fallback: no link to remove, so the base behavior (scan only what the snapshot sends) still applies', async () => {
+        const blockedInstructions = 'Use sk-private-token for requests';
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Never-Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructions: blockedInstructions,
+          versions: [
+            {
+              name: 'Snapshot Without Instructions',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+            },
+          ],
+        });
+
+        mockReq.config = {
+          filters: { agentInstructions: { pii: { starterPatterns: ['sk_prefix'] } } },
+        };
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        // Unaffected by the fallback: no link to remove, so the stored text was
+        // never a candidate for the scan.
+        expect(persisted.instructions).toBe(blockedInstructions);
+      });
+    });
+
+    describe('getAgentVersionsHandler', () => {
+      test('redacts an inaccessible link in a version snapshot', async () => {
+        const { groupId } = await createPromptGroupFixture('Versions Endpoint Restricted Group');
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Versioned Prompt Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentVersionsHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const versions = mockRes.json.mock.calls[0][0];
+        // The agent carries no current link at all, so the redacted snapshot's link
+        // cannot match it.
+        expect(versions[0].instructionsPrompt).toEqual({
+          source: 'native',
+          restricted: true,
+          matchesCurrent: false,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.versions[0].instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('keeps a viewable link in a version snapshot intact', async () => {
+        const { groupId } = await createPromptGroupFixture('Versions Endpoint Visible Group');
+        mockGroupVisibility(new Set([groupId]));
+        const versionInstructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Versioned Prompt Agent Visible',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: versionInstructionsPrompt,
+            },
+          ],
+        });
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentVersionsHandler(mockReq, mockRes);
+
+        const versions = mockRes.json.mock.calls[0][0];
+        expect(versions[0].instructionsPrompt).toEqual(versionInstructionsPrompt);
+      });
+
+      test("flags a redacted version stub as matchesCurrent against the agent's own hidden current link", async () => {
+        const { groupId } = await createPromptGroupFixture('Hidden Current Group');
+        const { groupId: otherGroupId } = await createPromptGroupFixture('Hidden Other Group');
+        const currentInstructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Hidden Current Link Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: currentInstructionsPrompt,
+          versions: [
+            {
+              name: 'Same Link Version',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: { ...currentInstructionsPrompt },
+            },
+            {
+              name: 'Different Link Version',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId: otherGroupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+        // No VIEW grant for either `groupId` or `otherGroupId`: both the current link
+        // and every version's link are hidden from this editor.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentVersionsHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const versions = mockRes.json.mock.calls[0][0];
+        expect(versions[0].instructionsPrompt).toEqual({
+          source: 'native',
+          restricted: true,
+          matchesCurrent: true,
+        });
+        expect(versions[1].instructionsPrompt).toEqual({
+          source: 'native',
+          restricted: true,
+          matchesCurrent: false,
+        });
+      });
+    });
+
+    describe('uploadAgentAvatarHandler', () => {
+      const createTempAvatarFile = () => {
+        const filePath = path.join(os.tmpdir(), `avatar-${nanoid()}.png`);
+        fs.writeFileSync(filePath, 'fake-image-bytes');
+        return filePath;
+      };
+
+      beforeEach(() => {
+        mockReq.config = {};
+        getStrategyFunctions.mockReturnValue({
+          processAvatar: jest.fn().mockResolvedValue('https://cdn.example/avatar.png'),
+          deleteFile: jest.fn(),
+        });
+        resizeAvatar.mockResolvedValue(Buffer.from('resized'));
+      });
+
+      test('redacts an inaccessible link inside versions[] in the avatar-upload response', async () => {
+        const { groupId } = await createPromptGroupFixture('Avatar History Restricted Group');
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Avatar Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: {
+                source: 'native',
+                groupId,
+                selection: { type: 'production' },
+              },
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { agent_id: agent.id };
+        mockReq.file = { path: createTempAvatarFile(), originalname: 'avatar.png' };
+
+        await uploadAgentAvatarHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        // The agent carries no current link at all, so the redacted snapshot's link
+        // cannot match it.
+        expect(response.versions[0].instructionsPrompt).toEqual({
+          source: 'native',
+          restricted: true,
+          matchesCurrent: false,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.versions[0].instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('keeps a viewable top-level link intact in the avatar-upload response', async () => {
+        const { groupId } = await createPromptGroupFixture('Avatar Visible Group');
+        mockGroupVisibility(new Set([groupId]));
+        const instructionsPrompt = {
+          source: 'native',
+          groupId,
+          selection: { type: 'production' },
+        };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Avatar Agent Visible',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt,
+        });
+
+        mockReq.params = { agent_id: agent.id };
+        mockReq.file = { path: createTempAvatarFile(), originalname: 'avatar.png' };
+
+        await uploadAgentAvatarHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual(instructionsPrompt);
+      });
+    });
+
+    describe('role gate (PROMPTS USE)', () => {
+      /** `getRoleByName` auto-creates a missing system role from defaults (which grant
+       *  PROMPTS USE), so a role document must already exist to override it. Resets
+       *  after each test so later tests see the auto-created default again. */
+      const setPromptsUse = (allowed) =>
+        mongoose.models.Role.findOneAndUpdate(
+          { name: 'USER' },
+          {
+            $set: {
+              name: 'USER',
+              [`permissions.${PermissionTypes.PROMPTS}.${Permissions.USE}`]: allowed,
+            },
+          },
+          { upsert: true },
+        );
+
+      afterEach(async () => {
+        await mongoose.models.Role.deleteMany({ name: 'USER' });
+      });
+
+      test('returns 403 instructions_prompt_forbidden for a new link when the role lacks PROMPTS USE', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate New Link Group');
+        mockGroupVisibility(new Set([groupId]));
+        await setPromptsUse(false);
+
+        mockReq.body = {
+          name: 'No Prompts Permission Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 403 instructions_prompt_forbidden when changing to a different link and the role lacks PROMPTS USE', async () => {
+        const { groupId: currentGroupId } =
+          await createPromptGroupFixture('Role Gate Current Group');
+        const { groupId: nextGroupId } = await createPromptGroupFixture('Role Gate Next Group');
+        mockGroupVisibility(new Set([currentGroupId, nextGroupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Currently Linked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId: currentGroupId,
+            selection: { type: 'production' },
+          },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: nextGroupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(403);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.FORBIDDEN,
+        });
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(currentGroupId);
+      });
+
+      test('still allows removing a link when the role lacks PROMPTS USE', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate Removal Group');
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Linked Agent For Removal',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { instructionsPrompt: null };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+      });
+
+      test('still allows an unrelated edit that leaves an inaccessible-role link untouched', async () => {
+        const { groupId } = await createPromptGroupFixture('Role Gate Unrelated Edit Group');
+        mockGroupVisibility(new Set([groupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Linked Agent For Unrelated Edit',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+        await setPromptsUse(false);
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = { name: 'Renamed Without Prompts Permission' };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.name).toBe('Renamed Without Prompts Permission');
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+    });
+
+    describe('unexpected validation failures (500)', () => {
+      /** Every case below forces the ACL lookup `checkInstructionsPromptWrite` calls
+       *  (via `validateLinkWrite`, for create/update) to throw, and asserts the
+       *  handler sends only the fixed, safe body: never the thrown message, and
+       *  nothing is created or persisted. Duplicate and revert never call
+       *  `validateLinkWrite` — they restore/copy the link as-is — so there is no
+       *  equivalent 500 case for them here; `presentForEditor`'s own fail-closed
+       *  behavior (stub, never 500) is covered under `duplicateAgentHandler` above. */
+      const outageMessage = 'outage detail that must never reach the client';
+
+      test('createAgentHandler returns the fixed 500 when the ACL lookup throws and creates nothing', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.body = {
+          name: 'Validation Failure Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        expect(await Agent.countDocuments({})).toBe(0);
+      });
+
+      test('updateAgentHandler returns the fixed 500 when the ACL lookup throws and persists nothing', async () => {
+        const { groupId: currentGroupId } = await createPromptGroupFixture(
+          'Validation Failure Current Group',
+        );
+        const { groupId: nextGroupId } = await createPromptGroupFixture(
+          'Validation Failure Next Group',
+        );
+        mockGroupVisibility(new Set([currentGroupId, nextGroupId]));
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Agent Pending Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: {
+            source: 'native',
+            groupId: currentGroupId,
+            selection: { type: 'production' },
+          },
+        });
+
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.params = { id: agent.id };
+        mockReq.body = {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: nextGroupId,
+            selection: { type: 'production' },
+          },
+        };
+
+        await updateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(500);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: 'Unable to validate the linked prompt',
+          code: InstructionsPromptErrorCode.VALIDATION_FAILED,
+        });
+        expect(mockRes.json).not.toHaveBeenCalledWith(
+          expect.objectContaining({ error: expect.stringContaining(outageMessage) }),
+        );
+        const persisted = await Agent.findOne({ id: agent.id }).lean();
+        expect(persisted.instructionsPrompt.groupId).toBe(currentGroupId);
+      });
+
+      test('revert restores the snapshot link when the ACL lookup fails and presents it fail-closed', async () => {
+        const { groupId } = await createPromptGroupFixture('Validation Failure Revert Group');
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent For Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Pre-Link Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+            },
+          ],
+        });
+
+        getResourcePermissionsMap.mockImplementation(async () => {
+          throw new Error(outageMessage);
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        // The thrown ACL lookup surfaces only in `presentForEditor`'s own
+        // fail-closed stubbing, not as a 500 — the revert itself proceeds and
+        // persists the snapshot's link, which the response presents as restricted.
+        expect(mockRes.status).not.toHaveBeenCalledWith(500);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual({ source: 'native', restricted: true });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.name).toBe('Pre-Link Snapshot');
+        expect(persisted.instructionsPrompt.groupId).toBe(groupId);
+      });
+
+      test('duplicateAgentHandler never calls getRoleByName for the link (no PROMPTS USE check on a duplicate)', async () => {
+        const { groupId } = await createPromptGroupFixture('Validation Failure Duplicate Group');
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Source Agent For Validation Failure',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        });
+
+        const getRoleByNameSpy = jest.spyOn(db, 'getRoleByName');
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        // Nothing calls the role lookup for a duplicate.
+        expect(getRoleByNameSpy).not.toHaveBeenCalled();
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        expect(await Agent.countDocuments({})).toBe(2);
+
+        getRoleByNameSpy.mockRestore();
+      });
     });
   });
 });

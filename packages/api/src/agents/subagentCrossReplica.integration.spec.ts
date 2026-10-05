@@ -22,6 +22,7 @@ import {
   SubagentTaskOwnerUnavailableError,
 } from './subagentTaskRouting';
 import { buildSubagentThreadTaskConfig, SubagentThreadTaskStore } from './subagentThreads';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { __resetShutdownStateForTests } from '../app/shutdown';
 import { createAgentTriggerService } from './triggers/service';
 import { SubagentActivityStream } from './subagentActivity';
@@ -432,6 +433,90 @@ describeWithRedis('subagent cross-replica orchestration', () => {
     expect(parentMessages.filter((message) => message.isCreatedByUser)).toHaveLength(2);
     expect(parentMessages.filter((message) => !message.isCreatedByUser)).toHaveLength(3);
 
+    await requesterStore.destroyTaskControlTransport();
+  });
+
+  it('serves a running child progress tree to a poll on another replica over Redis', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const tenantId = 'tenant-progress';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, tenantId, parentConversationId);
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const requesterStore = new SubagentThreadTaskStore(methods);
+    taskStores.push(ownerStore, requesterStore);
+    const namespace = `subagent-progress-${randomUUID()}`;
+    await ownerStore.configureTaskControlTransport(
+      await createRoutingTransport('progress-owner', namespace),
+    );
+    await requesterStore.configureTaskControlTransport(
+      await createRoutingTransport('progress-requester', namespace),
+    );
+    const config = buildSubagentThreadTaskConfig(ownerStore, {
+      userId,
+      tenantId,
+      parentConversationId,
+    });
+    let finish = (_value: { content: string }): void => undefined;
+    let reported = false;
+    const started = accepted(
+      config.store.start(
+        taskRequest(config.scopeId, 'review the change', 'reviewer', async (runtime) => {
+          const base = {
+            runId: 'root-run',
+            subagentRunId: runtime.taskId,
+            subagentType: 'reviewer',
+            subagentAgentId: 'agent-reviewer',
+            timestamp: new Date().toISOString(),
+          };
+          runtime.reportProgress({
+            ...base,
+            phase: 'run_step',
+            data: {
+              id: 'step-1',
+              stepDetails: {
+                type: 'tool_calls',
+                tool_calls: [
+                  {
+                    id: 'call-1',
+                    name: 'bash_tool',
+                    args: { intent: 'Running the suite', env: 'KEY=1' },
+                  },
+                ],
+              },
+            },
+          });
+          reported = true;
+          return new Promise<{ content: string }>((resolve) => (finish = resolve));
+        }),
+      ),
+    );
+    await waitUntil(() => (reported ? true : undefined));
+
+    const routed = await waitUntil(async () => {
+      const claim = await requesterStore.claimTask(config.scopeId, started.task.taskId);
+      return claim.status === 'running' && snapshotActivity(claim.task) != null ? claim : undefined;
+    });
+    const tree = routed.status === 'running' ? snapshotActivity(routed.task) : undefined;
+    expect(tree?.root.turns[0].children[0]).toMatchObject({
+      kind: 'tool',
+      name: 'bash_tool',
+      label: 'Running the suite',
+      status: 'running',
+    });
+    expect(JSON.stringify(tree)).not.toContain('KEY=1');
+    const [listed] = await requesterStore.listTasks(config.scopeId);
+    expect(snapshotActivitySummary(listed)).toMatchObject({ turns: 1, tools: 1 });
+
+    const otherTenant = buildSubagentThreadTaskConfig(requesterStore, {
+      userId,
+      tenantId: 'tenant-other',
+      parentConversationId,
+    });
+    await expect(
+      requesterStore.claimTask(otherTenant.scopeId, started.task.taskId),
+    ).resolves.toEqual({ status: 'not_found' });
+
+    finish({ content: 'Review complete.' });
     await requesterStore.destroyTaskControlTransport();
   });
 });

@@ -55,6 +55,7 @@ import type {
 } from './backgroundCompletion';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
 import type { SkillFileRecord, PrimeSkillFilesResult } from './skillFiles';
+import type { InterruptibleToolBatchRequest } from './steering/tools';
 import type { ArtifactDeliveryFailure } from '~/files/code';
 import type { BackgroundToolResultState } from './harvest';
 import type { SandboxTextReader } from '~/files/code/text';
@@ -112,6 +113,12 @@ import {
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
 import {
+  noteToolApprovalDispatch,
+  bindToolApprovalInvocation,
+  finishToolApprovalDispatch,
+  getToolApprovalExecutionScope,
+} from '~/tools/approval';
+import {
   BACKGROUND_TASK_ABORT_GRACE_MS,
   BACKGROUND_TASK_SHUTDOWN_MESSAGE,
   BACKGROUND_TOOL_PRODUCER_HEARTBEAT_MS,
@@ -143,6 +150,7 @@ import {
 import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
+import { SteerToolInterrupt, interruptedToolResult } from './steering/tools';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -5618,6 +5626,23 @@ function createSkillFilesHandoff(
   };
 }
 
+function getToolFailureFeedback(content: ToolExecuteResult['content']): string {
+  if (typeof content === 'string') return content;
+  const messages: string[] = [];
+  for (const part of content) {
+    if (
+      part != null &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'text' &&
+      'text' in part &&
+      typeof part.text === 'string'
+    )
+      messages.push(part.text);
+  }
+  return messages.join('\n') || 'Tool execution failed.';
+}
+
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
     scheduledMCPExecution,
@@ -5649,6 +5674,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         resolve,
         reject,
       } = data;
+      const onResultAdmissionStart = (data as InterruptibleToolBatchRequest).onResultAdmissionStart;
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
@@ -6476,6 +6502,13 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     );
                   }
                 };
+                const approvalDispatch = {
+                  agentId,
+                  toolCallId: tc.id,
+                  executionScope: getToolApprovalExecutionScope(executionContext),
+                  background: true,
+                };
+                noteToolApprovalDispatch(approvalDispatch);
                 let invokePromise: Promise<{ content?: unknown; artifact?: unknown }>;
                 try {
                   invokePromise = Promise.resolve(
@@ -6498,7 +6531,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             }
                           : {}),
                       },
-                      metadata,
+                      metadata: bindToolApprovalInvocation(
+                        { ...metadata, executingAgentId: agentId },
+                        approvalDispatch,
+                      ),
                     } as Record<string, unknown>),
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {
@@ -6507,6 +6543,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                    * through the same terminal-evidence path as an async one. */
                   invokePromise = Promise.reject(error);
                 }
+                invokePromise = invokePromise.finally(() =>
+                  finishToolApprovalDispatch(approvalDispatch),
+                );
                 const persistDetachedTerminal = async (
                   input:
                     | { status: 'succeeded'; result: unknown }
@@ -6933,6 +6972,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                   if (filteredArguments != null) {
                     return reportResult(filteredArguments);
                   }
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   const pollContent = await runCheckBackgroundTask({
                     userId: backgroundUserId,
                     conversationId: backgroundConversationId,
@@ -7005,6 +7048,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                      *  ORIGINAL tool-call identity by the completion harvest. */
                     if (toolEndCallback && !(isCodeTask && pending.harvestStarted === true)) {
                       try {
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7190,6 +7234,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     persistBackgroundCodeResult == null
                   )
                 ) {
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   return reportResult(await dispatchBackgroundToolCall(tc));
                 }
 
@@ -7204,6 +7252,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     isFileAuthoringCall &&
                     typeof (tc.args as { path?: unknown }).path === 'string' &&
                     !(tc.args as { path: string }).path.startsWith(SKILL_FILE_PREFIX);
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return interruptedToolResult(tc.id);
+                  }
                   let sandboxReadSucceeded = false;
                   if (
                     tc.name === Constants.SKILL_TOOL ||
@@ -7323,6 +7374,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       };
                     }
 
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
                     const filteredOutput = filteredToolOutputResult(tc, req, {
                       content: handlerResult.content,
                       artifact: handlerResult.artifact,
@@ -7335,6 +7389,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback && handlerResult.errorMessage == null) {
                         try {
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7358,6 +7413,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     if (toolEndCallback && handlerResult.artifact) {
                       try {
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7547,7 +7603,11 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                                 eligiblePtcToolMap.keys(),
                                 ptcReq,
                               ),
-                              emit: emitPtcProgress,
+                              emit: (event) => {
+                                if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                                  emitPtcProgress(event);
+                                }
+                              },
                             })
                           : eligiblePtcToolMap;
                       }
@@ -7579,7 +7639,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     const result = await tool.invoke(normalizedArgs, {
                       toolCall: toolCallConfig,
                       configurable: mergedConfigurable,
-                      metadata,
+                      metadata: { ...metadata, executingAgentId: agentId },
                       /** The run's cancellation signal. Without it a foreground
                        *  tool call keeps running after Stop: an MCP call never
                        *  sends `notifications/cancelled`, and every other
@@ -7588,6 +7648,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        *  intentionally use their own controller instead. */
                       ...(runSignal != null && { signal: runSignal }),
                     } as Record<string, unknown>);
+
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
 
                     /* Only sandbox-bound calls carry a runtime session hint, so
                      * this refreshes the prewarm module's warm window without
@@ -7623,6 +7687,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback) {
                         try {
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7645,6 +7710,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
 
                     if (toolEndCallback) {
+                      onResultAdmissionStart?.(tc.id);
                       await toolEndCallback(
                         {
                           input: tc.args,
@@ -7674,7 +7740,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       toolCallId: tc.id,
                       content: cleanedContent,
                       artifact: result.artifact,
-                      status: 'success' as const,
+                      status: result.status === 'error' ? ('error' as const) : ('success' as const),
+                      ...(result.status === 'error' && {
+                        errorMessage: getToolFailureFeedback(cleanedContent),
+                      }),
                     };
                   } catch (toolError) {
                     if (toolError instanceof ContentFilterError) {

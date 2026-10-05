@@ -39,6 +39,11 @@ export const CODE_ENVIRONMENT_MOVE_VERSION = 1 as const;
 export const CODE_ENVIRONMENT_TRANSITION_VERSION = 2 as const;
 /** Additive capability for replacing a missing workspace without disabling moves in V1 clients. */
 export const CODE_WORKSPACE_RECOVERY_VERSION = 1 as const;
+/**
+ * API/client protocol for subagents that follow their parent's machine. A composer mirrors the
+ * routing only when this is advertised, so it never omits a workspace an older API still needs.
+ */
+export const CODE_WORKSPACE_INHERITANCE_VERSION = 1 as const;
 export const CODE_WORKSPACE_OPERATIONS = [
   'read_file',
   'search_text',
@@ -238,20 +243,42 @@ export function canonicalizeCodeWorkspaceSelections(
     .sort((left, right) => left.environmentId.localeCompare(right.environmentId));
 }
 
+/** Whether an agent may run on `candidate`: its own default, or a machine its author allowlisted
+ * where per-chat machine choice applies to it. */
+function isAllowedCodeEnvironment(
+  candidate: string,
+  environmentId: string | null | undefined,
+  environmentIds: readonly string[] | undefined,
+  allowSelection: boolean | undefined,
+): boolean {
+  return (
+    candidate === environmentId ||
+    (allowSelection === true && environmentIds?.includes(candidate) === true)
+  );
+}
+
 /** Resolves an agent's default or its chat-owned machine choice. Callers still authorize the
- * resolved ID against their principal-scoped environment list and verify live capabilities. */
+ * resolved ID against their principal-scoped environment list and verify live capabilities.
+ *
+ * Precedence: an explicit owner of a selection, then the machine inherited from the parent that
+ * spawned this subagent (see `resolveCodeWorkspaceInheritance`), then the agent's own default,
+ * then a single legacy selection. Inheritance is a separate input rather than an added owner: an
+ * owner on a legacy selection would stop it serving as every other agent's fallback. */
 export function resolveCodeEnvironmentSelection({
   environmentId,
   environmentIds,
   agentId,
   allowSelection,
   selections,
+  inheritedEnvironmentId,
 }: {
   environmentId?: string | null;
   environmentIds?: readonly string[];
   agentId?: string | null;
   allowSelection?: boolean;
   selections?: unknown;
+  /** The parent's machine; applies only when the conversation selected it and this agent may use it. */
+  inheritedEnvironmentId?: string | null;
 }): { valid: true; environmentId?: string | null } | { valid: false } {
   if (selections == null) return { valid: true, environmentId };
   if (!isCodeWorkspaceSelections(selections)) return { valid: false };
@@ -269,6 +296,18 @@ export function resolveCodeEnvironmentSelection({
       ? { valid: true, environmentId: owned.environmentId }
       : { valid: false };
   }
+  if (
+    inheritedEnvironmentId != null &&
+    isAllowedCodeEnvironment(
+      inheritedEnvironmentId,
+      environmentId,
+      environmentIds,
+      allowSelection,
+    ) &&
+    selections.some((selection) => selection.environmentId === inheritedEnvironmentId)
+  ) {
+    return { valid: true, environmentId: inheritedEnvironmentId };
+  }
   if (!allowSelection) return { valid: true, environmentId };
   const allowed = new Set(environmentIds ?? []);
   if (environmentId) allowed.add(environmentId);
@@ -280,4 +319,246 @@ export function resolveCodeEnvironmentSelection({
   const legacy = matches.filter((selection) => selection.agentIds == null);
   if (legacy.length !== 1) return { valid: false };
   return { valid: true, environmentId: legacy[0].environmentId };
+}
+
+/** One agent of a run's graph, reduced to the fields machine routing reads. */
+export interface CodeWorkspaceRoutingAgent {
+  /** Saved agent ID, the key conversation ownership is recorded under. */
+  id: string;
+  /** Runs code on a stateful machine. An agent that does not passes its parent's machine on. */
+  routesCode: boolean;
+  /** Effective default machine: the agent's own, or the deployment default. */
+  environmentId?: string | null;
+  environmentIds?: readonly string[];
+  /** Both the deployment ceiling and this agent's allowlist admit a per-chat machine choice. */
+  allowSelection: boolean;
+  /** Subagents this agent may spawn: explicit subagents and the members of its subagent graphs. */
+  subagentIds?: readonly string[];
+  /** Machine already resolved for this agent, such as an initialized root; `null` for none. */
+  resolvedEnvironmentId?: string | null;
+}
+
+/**
+ * Subagents default to the attached machine, and so the workspace, their parent runs on. A
+ * subagent inherits only when every one of these holds:
+ * - no selection names it as an explicit owner, so a choice made for it still wins;
+ * - the parent's machine is its own default or on its author's allowlist where per-chat choice
+ *   applies to it;
+ * - `isAttachedEnvironment` admits that machine, which callers scope to the principal;
+ * - the conversation's decision already selected a workspace on that machine.
+ *
+ * Inheritance is derived from the sealed decision and the agents' current configuration, the same
+ * inputs every other route reads, so the same decision and graph always route the same way. A run
+ * resolves one route per saved agent, so a subagent considers every agent that can spawn it, at any
+ * depth: it inherits only when they all run on the same machine, and otherwise keeps its own route.
+ * A subagent that does not run code passes its parent's machine on to its own subagents. Subagents
+ * that spawn each other follow the machine of every parent outside that group only when it routes
+ * each of them there.
+ *
+ * @returns Saved agent ID to inherited environment ID, for subagents whose route changes.
+ */
+export function resolveCodeWorkspaceInheritance({
+  selections,
+  rootIds,
+  agents,
+  isAttachedEnvironment,
+}: {
+  selections: unknown;
+  rootIds: readonly string[];
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>;
+  isAttachedEnvironment: (environmentId: string) => boolean;
+}): Map<string, string> {
+  const inherited = new Map<string, string>();
+  if (!isCodeWorkspaceSelections(selections) || selections.length === 0) return inherited;
+  const selected = new Set(selections.map(({ environmentId }) => environmentId));
+  const owned = new Set(selections.flatMap(({ agentIds }) => agentIds ?? []));
+  const routes = new Map<string, string | undefined>();
+
+  const routeOf = (
+    agent: CodeWorkspaceRoutingAgent,
+    parentRoute: string | undefined,
+  ): string | undefined => {
+    if (!agent.routesCode) return parentRoute;
+    const resolved =
+      agent.resolvedEnvironmentId !== undefined
+        ? agent.resolvedEnvironmentId
+        : resolveRoutedEnvironmentId(agent, selections, inherited.get(agent.id));
+    return resolved != null && isAttachedEnvironment(resolved) ? resolved : undefined;
+  };
+  const inherits = (agent: CodeWorkspaceRoutingAgent, candidate: string): boolean =>
+    agent.routesCode &&
+    agent.resolvedEnvironmentId === undefined &&
+    candidate !== agent.environmentId &&
+    !owned.has(agent.id) &&
+    selected.has(candidate) &&
+    isAllowedCodeEnvironment(
+      candidate,
+      agent.environmentId,
+      agent.environmentIds,
+      agent.allowSelection,
+    ) &&
+    isAttachedEnvironment(candidate);
+
+  const roots = new Set(rootIds.filter((id) => agents.has(id)));
+  const parents = collectSpawningParents(roots, agents);
+  roots.forEach((id) =>
+    routes.set(id, routeOf(agents.get(id) as CodeWorkspaceRoutingAgent, undefined)),
+  );
+  const resolve = (id: string, candidate: string | undefined): void => {
+    const agent = agents.get(id) as CodeWorkspaceRoutingAgent;
+    if (candidate != null && inherits(agent, candidate)) {
+      inherited.set(id, candidate);
+    }
+    routes.set(id, routeOf(agent, candidate));
+  };
+
+  /** A group follows the single machine every outside parent runs on when that routes each member
+   *  there too; otherwise its members keep their own routes. */
+  const resolveGroup = (members: string[]): void => {
+    const group = new Set(members);
+    const outside = new Set<string | undefined>();
+    for (const id of members) {
+      parents.get(id)?.forEach((parentId) => {
+        if (!group.has(parentId)) outside.add(routes.get(parentId));
+      });
+    }
+    const candidate = outside.size === 1 ? Array.from(outside)[0] : undefined;
+    members.forEach((id) => resolve(id, candidate));
+    if (candidate != null && members.some((id) => routes.get(id) !== candidate)) {
+      members.forEach((id) => {
+        inherited.delete(id);
+        resolve(id, undefined);
+      });
+    }
+  };
+
+  let pending = Array.from(parents.keys());
+  while (pending.length > 0) {
+    const ready = pending.filter((id) =>
+      Array.from(parents.get(id) ?? []).every((parentId) => routes.has(parentId)),
+    );
+    if (ready.length > 0) {
+      for (const id of ready) {
+        const candidates = new Set(
+          Array.from(parents.get(id) ?? []).map((parentId) => routes.get(parentId)),
+        );
+        resolve(id, candidates.size === 1 ? Array.from(candidates)[0] : undefined);
+      }
+    } else {
+      /** Every remaining agent waits on another, so some of them spawn each other. Each group of
+       *  mutually spawning agents whose outside parents are all resolved settles on its own. */
+      const groups = findSettledSpawnGroups(pending, parents, routes);
+      for (const members of groups.length > 0 ? groups : [pending]) {
+        resolveGroup(members);
+      }
+    }
+    pending = pending.filter((id) => !routes.has(id));
+  }
+  return inherited;
+}
+
+/**
+ * Every agent that can spawn each subagent reachable from the roots. A run never spawns an agent
+ * beneath itself, so `parent → child` counts only when some spawn path reaches the parent without
+ * passing through the child.
+ */
+function collectSpawningParents(
+  roots: ReadonlySet<string>,
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>,
+): Map<string, Set<string>> {
+  const parents = new Map<string, Set<string>>();
+  const reachable = reachableFrom(roots, agents);
+  reachable.forEach((parentId) => {
+    for (const childId of agents.get(parentId)?.subagentIds ?? []) {
+      if (roots.has(childId) || !agents.has(childId)) continue;
+      if (!reachableFrom(roots, agents, childId).has(parentId)) continue;
+      const childParents = parents.get(childId) ?? new Set<string>();
+      childParents.add(parentId);
+      parents.set(childId, childParents);
+    }
+  });
+  return parents;
+}
+
+function reachableFrom(
+  roots: ReadonlySet<string>,
+  agents: ReadonlyMap<string, CodeWorkspaceRoutingAgent>,
+  avoid?: string,
+): Set<string> {
+  const visited = new Set<string>(roots);
+  const queue = Array.from(roots);
+  for (let index = 0; index < queue.length; index++) {
+    for (const childId of agents.get(queue[index])?.subagentIds ?? []) {
+      if (childId === avoid || visited.has(childId) || !agents.has(childId)) continue;
+      visited.add(childId);
+      queue.push(childId);
+    }
+  }
+  return visited;
+}
+
+/**
+ * Groups of agents that spawn each other (strongly connected among the waiting agents) whose every
+ * parent outside the group already has a route.
+ */
+function findSettledSpawnGroups(
+  pending: readonly string[],
+  parents: ReadonlyMap<string, ReadonlySet<string>>,
+  routes: ReadonlyMap<string, string | undefined>,
+): string[][] {
+  const waiting = new Set(pending);
+  const ancestors = new Map(pending.map((id) => [id, waitingAncestors(id, waiting, parents)]));
+  const grouped = new Set<string>();
+  const groups: string[][] = [];
+  for (const id of pending) {
+    if (grouped.has(id)) continue;
+    const members = pending.filter(
+      (other) =>
+        other === id ||
+        (ancestors.get(id)?.has(other) === true && ancestors.get(other)?.has(id) === true),
+    );
+    members.forEach((member) => grouped.add(member));
+    const group = new Set(members);
+    const settled = members.every((member) =>
+      Array.from(parents.get(member) ?? []).every(
+        (parentId) => group.has(parentId) || routes.has(parentId),
+      ),
+    );
+    if (settled && (members.length > 1 || ancestors.get(id)?.has(id) === true)) {
+      groups.push(members);
+    }
+  }
+  return groups;
+}
+
+function waitingAncestors(
+  id: string,
+  waiting: ReadonlySet<string>,
+  parents: ReadonlyMap<string, ReadonlySet<string>>,
+): Set<string> {
+  const seen = new Set<string>();
+  const stack = Array.from(parents.get(id) ?? []);
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    if (!waiting.has(current) || seen.has(current)) continue;
+    seen.add(current);
+    stack.push(...Array.from(parents.get(current) ?? []));
+  }
+  return seen;
+}
+
+function resolveRoutedEnvironmentId(
+  agent: CodeWorkspaceRoutingAgent,
+  selections: CodeWorkspaceSelection[],
+  inheritedEnvironmentId: string | undefined,
+): string | null | undefined {
+  const resolution = resolveCodeEnvironmentSelection({
+    agentId: agent.id,
+    environmentId: agent.environmentId,
+    environmentIds: agent.environmentIds,
+    allowSelection: agent.allowSelection,
+    selections,
+    inheritedEnvironmentId,
+  });
+  return resolution.valid ? resolution.environmentId : undefined;
 }

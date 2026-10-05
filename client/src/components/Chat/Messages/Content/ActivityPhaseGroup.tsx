@@ -20,7 +20,14 @@ import {
   LIVE_ACTIVITY_THROTTLE_MS,
   LIVE_REASONING_HOLD_MS,
 } from './live';
-import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
+import {
+  FoldRail,
+  RailGlyph,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+} from './rail';
 import { FailedRevealContext, FailedRevealPill, useFailedRevealTrigger } from './reveal';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -625,6 +632,7 @@ export default function ActivityPhaseGroup({
     isExpanded,
     hasPendingApproval,
   );
+  useFoldPath(rootRef, shouldRenderBody);
   const { value: revealValue, requestReveal } = useFailedRevealTrigger(
     isExpanded && shouldRenderBody,
   );
@@ -811,7 +819,12 @@ export default function ActivityPhaseGroup({
      *  groups it stands for, so it carries the same geometry: 16px glyph, 8px
      *  gap, no inset. Boxing it was what put its text on a third left edge and
      *  forced every folded row 13px sideways as the box materialized. */
-    <div className="mt-1 mb-2 w-full" ref={rootRef} data-testid="activity-phase-card">
+    <div
+      className="mt-1 mb-2 w-full"
+      ref={rootRef}
+      data-testid="activity-phase-card"
+      data-fold-root=""
+    >
       <span className="sr-only" role="status" data-testid="activity-phase-announcer">
         {announcement}
       </span>
@@ -895,7 +908,11 @@ export default function ActivityPhaseGroup({
         data-testid="activity-phase-panel"
       >
         {shouldRenderBody && (
-          <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
+          <div
+            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
+            ref={expandRef}
+            data-fold-panel=""
+          >
             <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
             <FoldHeaderContext.Provider value={railScope}>
               <FailedRevealContext.Provider value={revealValue}>

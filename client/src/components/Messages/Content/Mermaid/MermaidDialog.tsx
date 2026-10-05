@@ -84,9 +84,9 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
       <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
         <OGDialogContent
           showCloseButton={false}
-          className="border-border-light bg-surface-dialog h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] gap-0 overflow-hidden p-0"
+          className="border-border-light bg-surface-dialog flex h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
         >
-          <OGDialogTitle className="border-border-light bg-surface-secondary text-text-secondary flex h-10 items-center justify-between border-b px-4 font-sans text-xs">
+          <OGDialogTitle className="border-border-light bg-surface-secondary text-text-secondary flex h-10 shrink-0 items-center justify-between border-b px-4 font-sans text-xs">
             <span>{localize('com_ui_mermaid')}</span>
             <div className="flex gap-1 sm:gap-2">
               <MermaidExport
@@ -116,7 +116,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
                 className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
-                <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+                <MorphIcon icon={isCopied ? Check : Copy} size="1.125rem" />
                 <span className="hidden sm:inline">{localize('com_ui_copy_code')}</span>
               </Button>
               <OGDialogClose
@@ -129,18 +129,19 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
             </div>
           </OGDialogTitle>
           {showCode && (
-            <div className="border-border-light bg-surface-secondary border-b p-4">
-              <pre className="text-text-secondary max-h-[150px] overflow-auto text-xs whitespace-pre-wrap">
+            <div className="border-border-light bg-surface-secondary shrink-0 border-b p-4">
+              {/* Capped against the viewport as well as in rem, so a scaled-up code
+                  block cannot claim the height the diagram below it needs. */}
+              <pre className="text-text-secondary max-h-[min(9.375rem,25vh)] overflow-auto text-xs whitespace-pre-wrap">
                 {codeContent}
               </pre>
             </div>
           )}
           <div
             className={cn(
-              'bg-surface-primary-alt relative flex-1 overflow-hidden p-4',
+              'bg-surface-primary-alt relative min-h-0 flex-1 overflow-hidden p-4',
               isPanning ? 'cursor-grabbing' : 'cursor-grab',
             )}
-            style={{ height: showCode ? 'calc(85vh - 200px)' : 'calc(85vh - 50px)' }}
             onWheel={handleWheel}
             onMouseDown={handleMouseDown}
           >

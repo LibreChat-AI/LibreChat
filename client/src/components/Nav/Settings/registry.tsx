@@ -33,6 +33,7 @@ import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
 import BackupCodesItem from '../SettingsTabs/Account/BackupCodesItem';
 import { EngineSTTSetting, EngineTTSSetting } from './SpeechControls';
+import UiScaleSelector from '../SettingsTabs/General/UiScaleSelector';
 import FontSizeSelector from '../SettingsTabs/Chat/FontSizeSelector';
 import ChatTitleInTab from '../SettingsTabs/General/ChatTitleInTab';
 import AdvancedPrompts from '../SettingsTabs/Chat/AdvancedPrompts';
@@ -98,6 +99,14 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_font_size',
     keywords: ['text', 'zoom'],
     Component: FontSizeSelector,
+  },
+  {
+    id: 'uiScale',
+    tab: GENERAL,
+    section: 'appearance',
+    labelKey: 'com_nav_ui_scale',
+    keywords: ['zoom', 'scale', 'size', 'interface', 'display'],
+    Component: UiScaleSelector,
   },
   {
     id: 'chatDirection',
@@ -276,19 +285,6 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_during_run_action',
     keywords: ['steer', 'queue', 'interrupt', 'generating'],
     Component: DuringRunAction,
-  },
-  {
-    id: 'steerInterruptsByDefault',
-    tab: CHAT,
-    section: 'sending',
-    labelKey: 'com_ui_steer_interrupts_default',
-    keywords: ['steer', 'interrupt', 'preempt', 'generating', 'stop'],
-    Component: toggleControl({
-      stateAtom: store.steerInterruptsByDefault,
-      localizationKey: 'com_ui_steer_interrupts_default',
-      switchId: 'steerInterruptsByDefault',
-      hoverCardText: 'com_ui_steer_interrupts_default_info',
-    }),
   },
   {
     id: 'saveDrafts',

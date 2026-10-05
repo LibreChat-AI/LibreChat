@@ -229,7 +229,8 @@ const MermaidExport = memo(function MermaidExport({
         setIsOpen={setIsOpen}
         items={dropdownItems}
         portalElement={portalElement}
-        className="absolute top-0 right-0 mt-2 min-w-52 motion-reduce:!transition-none"
+        className="absolute top-0 right-0 mt-2 motion-reduce:!transition-none"
+        minWidth="13rem"
         trigger={
           <TooltipAnchor
             portalElement={portalElement}

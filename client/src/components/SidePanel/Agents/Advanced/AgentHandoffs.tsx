@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Waypoints, ChevronDown } from 'lucide-react';
 import { Button, Label, Input, Textarea } from '@librechat/client';
 import type { ControllerRenderProps } from 'react-hook-form';
@@ -11,6 +11,7 @@ import {
   AgentSelectInline,
   useSelectableAgents,
 } from './AgentList';
+import { isHandoffEdge } from '../Tools/items/orchestration';
 import OrchestrationPattern from './OrchestrationPattern';
 import { useLocalize } from '~/hooks';
 import { CountPill } from './ui';
@@ -31,9 +32,11 @@ const getTargetAgentId = (to: string | string[]): string => (Array.isArray(to) ?
 
 const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) => {
   const localize = useLocalize();
-  const [newAgentId, setNewAgentId] = useState('');
   const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set());
-  const edges = useMemo(() => field.value ?? [], [field.value]);
+  const edges = useMemo(() => (field.value ?? []).filter(isHandoffEdge), [field.value]);
+  const setEdges = (next: GraphEdge[]) => {
+    field.onChange([...(field.value ?? []).filter((edge) => !isHandoffEdge(edge)), ...next]);
+  };
 
   const { options, getAgent } = useSelectableAgents({ currentAgentId });
   const selectedAgentIds = useMemo(
@@ -60,20 +63,15 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
     [options, selectedAgentIds, edges],
   );
 
-  useEffect(() => {
-    if (!newAgentId) {
+  const addHandoff = (agentId: string) => {
+    if (!agentId || edges.length >= MAX_HANDOFFS || selectedAgentIds.has(agentId)) {
       return;
     }
-
-    if (edges.length < MAX_HANDOFFS && !selectedAgentIds.has(newAgentId)) {
-      const newEdge: GraphEdge = { from: currentAgentId, to: newAgentId, edgeType: 'handoff' };
-      field.onChange([...edges, newEdge]);
-    }
-    setNewAgentId('');
-  }, [newAgentId, edges, field, currentAgentId, selectedAgentIds]);
+    setEdges([...edges, { from: currentAgentId, to: agentId, edgeType: 'handoff' }]);
+  };
 
   const removeHandoffAt = (index: number) => {
-    field.onChange(edges.filter((_, i) => i !== index));
+    setEdges(edges.filter((_, i) => i !== index));
     setExpandedIndices(
       (prev) =>
         new Set(
@@ -94,13 +92,13 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
 
     const updated = [...edges];
     updated[index] = { ...updated[index], to: agentId };
-    field.onChange(updated);
+    setEdges(updated);
   };
 
   const updateHandoffDetailsAt = (index: number, updates: Partial<GraphEdge>) => {
     const updated = [...edges];
     updated[index] = { ...updated[index], ...updates };
-    field.onChange(updated);
+    setEdges(updated);
   };
 
   const toggleExpanded = (index: number) => {
@@ -247,7 +245,7 @@ const AgentHandoffs: React.FC<AgentHandoffsProps> = ({ field, currentAgentId }) 
             {edges.length > 0 && <Connector />}
             <AddAgentSelect
               options={addAgentOptions}
-              onSelect={setNewAgentId}
+              onSelect={addHandoff}
               placeholder={localize('com_ui_agent_handoff_add')}
               ariaLabel={localize('com_ui_agent_var', { 0: localize('com_ui_add') })}
             />

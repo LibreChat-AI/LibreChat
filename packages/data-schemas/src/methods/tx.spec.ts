@@ -2783,11 +2783,11 @@ describe('Claude Model Tests', () => {
     );
   });
 
-  it('should pin Claude Sonnet 5 to introductory $2 / $10 per MTok (through 2026-08-31)', () => {
+  it('should pin Claude Sonnet 5 to its standard $2 / $10 per MTok', () => {
     expect(tokenValues['claude-sonnet-5']).toEqual({ prompt: 2, completion: 10 });
   });
 
-  it('should apply introductory cache rates ($2.50 / $0.20) for Claude Sonnet 5', () => {
+  it('should apply standard cache rates ($2.50 / $0.20) for Claude Sonnet 5', () => {
     expect(cacheTokenValues['claude-sonnet-5']).toEqual({ write: 2.5, read: 0.2 });
   });
 
@@ -2820,6 +2820,33 @@ describe('Claude Model Tests', () => {
     expect(getCacheMultiplier({ model: 'claude-sonnet-5', cacheType: 'read' })).toBe(
       cacheTokenValues['claude-sonnet-5'].read,
     );
+  });
+});
+
+describe('Mistral Large Pricing', () => {
+  it('should price Mistral Large 3 at $0.50 / $1.50 per MTok', () => {
+    const modelVariations = [
+      'mistral-large-2512',
+      'mistral-large-3',
+      'mistral-large-latest',
+      'mistralai/mistral-large-2512',
+    ];
+
+    modelVariations.forEach((model) => {
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(0.5);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(1.5);
+    });
+  });
+
+  it('should keep Mistral Large 2.1 (2411) at $2 / $6 per MTok', () => {
+    expect(getValueKey('mistral-large-2411')).toBe('mistral-large-2411');
+    expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'prompt' })).toBe(2);
+    expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'completion' })).toBe(6);
+  });
+
+  it('should keep legacy Mistral Large 2402 / 2407 rates', () => {
+    expect(getMultiplier({ model: 'mistral-large-2402', tokenType: 'prompt' })).toBe(4);
+    expect(getMultiplier({ model: 'mistral-large-2407', tokenType: 'prompt' })).toBe(3);
   });
 });
 

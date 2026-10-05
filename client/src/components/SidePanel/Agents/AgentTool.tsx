@@ -121,7 +121,7 @@ export default function AgentTool({
       <OGDialogTemplate
         showCloseButton={false}
         title={localize('com_ui_delete_tool')}
-        className="max-w-[450px]"
+        className="max-w-[28.125rem]"
         main={
           <>
             <div className="text-text-secondary flex w-full flex-col items-start gap-2 text-sm">

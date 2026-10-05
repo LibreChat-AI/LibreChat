@@ -20,7 +20,7 @@ export default function Anthropic({
       showLabel={false}
       className={cn(
         cardStyle,
-        'z-50 flex h-[40px] w-48 min-w-48 flex-none items-center justify-center px-4 ring-0 hover:cursor-pointer',
+        'z-50 flex h-[2.5rem] w-48 min-w-48 flex-none items-center justify-center px-4 ring-0 hover:cursor-pointer',
       )}
     />
   );

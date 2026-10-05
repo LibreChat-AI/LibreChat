@@ -168,7 +168,7 @@ export type AddedChatContract = {
 };
 
 /** Composer action while a run is in flight: fold the text into the run, or queue a new turn. */
-export type DuringRunAction = 'steer' | 'queue';
+export type DuringRunAction = 'steer' | 'interrupt' | 'queue';
 
 /**
  * App-global preferences the chat reads but does not own. The host supplies them, so the chat
@@ -180,8 +180,6 @@ export type ChatSettings = {
   /** Default composer action while a run is in flight. */
   duringRunDefaultAction: DuringRunAction;
   setDuringRunDefaultAction: (action: DuringRunAction) => void;
-  /** Whether a steer interrupts the running step instead of waiting for the next one. */
-  steerInterruptsByDefault: boolean;
   /** Closes the artifacts panel, called when the active conversation changes. */
   resetVisibleArtifacts: () => void;
   /** Whether composer text and attachments are kept as drafts across navigation. */

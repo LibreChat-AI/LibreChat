@@ -148,6 +148,7 @@ endpoints:
     # existing file-authoring, steering, background-tool, or MCP specs.
     toolApproval:
       enabled: true
+      agentModes: true
       mode: bypass
       # The probe below is an `ask` rule and a hook match, so it is never offered
       # "Always allow"; the remembered-approval scenarios assert exactly that.

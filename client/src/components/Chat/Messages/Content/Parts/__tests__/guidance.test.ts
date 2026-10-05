@@ -65,6 +65,16 @@ describe('background task host guidance', () => {
         'Automatic completion delivery is enabled for this subagent task. Continue independent work if available; otherwise end this turn and the host will resume you when the task finishes. Do not repeatedly poll an unchanged running task. Use check_background_task only for explicit status or control, or as a fallback if automatic delivery is unavailable.',
       ),
     ).toBe('com_ui_background_tasks_subagent_wakeup_guidance');
+    expect(
+      backgroundTaskMessageKey(
+        'This subagent resumes you automatically when it finishes, so there is no need to check again. If you do, wait next_check_s and pass since: activity.cursor.',
+      ),
+    ).toBe('com_ui_background_tasks_subagent_wakeup_guidance');
+    expect(
+      backgroundTaskMessageKey(
+        'Results are not pushed for this subagent. Check again after next_check_s, passing since: activity.cursor to get only new activity.',
+      ),
+    ).toBe('com_ui_background_tasks_subagent_poll_guidance');
   });
 
   it.each([

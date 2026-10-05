@@ -249,7 +249,7 @@ export default function FileAuthoringCall({
                 <pre
                   ref={previewPaneRef}
                   onScroll={onPreviewPaneScroll}
-                  className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                  className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
                 >
                   <code className={`hljs language-${previewLang} !whitespace-pre`}>
                     {highlighted ?? preview}
@@ -259,7 +259,7 @@ export default function FileAuthoringCall({
               {showOutputSection && (
                 <pre
                   className={cn(
-                    'border-border-light max-h-[300px] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
+                    'border-border-light max-h-[18.75rem] overflow-auto border-t px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap',
                     phase === 'failed' ? 'text-status-error' : 'text-text-secondary',
                   )}
                 >

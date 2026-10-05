@@ -63,6 +63,7 @@ jest.mock('@librechat/client', () => ({
     </div>
   ),
   useToastContext: () => ({ showToast: jest.fn() }),
+  useRemScale: () => 1,
 }));
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
