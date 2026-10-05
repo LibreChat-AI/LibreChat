@@ -926,8 +926,9 @@ endpoints:
   #   # a code worker built from LibreChat-AI/code-interpreter#311 or later that reports its
   #   # branch, with CODEAPI_BRIDGE_LANE_GIT=true set on the Code API; without both, every chat
   #   # simply shows no pull request. It also needs a GitHub token held on the server. Use a
-  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests"
-  #   # and "Checks" permissions: without "Checks" every matched pull request fails to load.
+  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests",
+  #   # "Checks" and "Contents" permissions. Without "Checks" every matched pull request fails to
+  #   # load, and without "Contents" a chat whose branch has moved on since its last command does.
   #   pullRequests:
   #     enabled: false
   #     # Environment variable reference only, never the token itself.
@@ -941,6 +942,8 @@ endpoints:
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
   #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
+  #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.

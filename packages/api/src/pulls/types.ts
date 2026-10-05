@@ -28,6 +28,10 @@ export type PullRequestLookupLimits = {
   lookupTimeoutMs?: number;
   /** Most pages of check runs read before the rollup is reported as still running. */
   maxCheckRunPages?: number;
+  /** Most pull requests listed per state when searching a branch's history for the match. */
+  maxCandidatePullRequests?: number;
+  /** Most candidates compared with the recorded commit before the search gives up. */
+  maxHeadComparisons?: number;
 };
 
 export type PullRequestFindInput = {

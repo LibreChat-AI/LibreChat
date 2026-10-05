@@ -136,6 +136,7 @@ const {
   getRoleByName,
   setConvoLaneGit,
   getConvoOwnership,
+  reserveConvoLaneGitSeq,
 } = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
@@ -2401,6 +2402,7 @@ async function loadToolsForExecution({
                   workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
                 },
                 getConvoOwnership,
+                reserveConvoLaneGitSeq,
                 setConvoLaneGit,
               }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,

@@ -173,7 +173,7 @@ const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
 const conversationPullRequestHandler = createConversationPullRequestHandler({
   getConvoLaneGit: db.getConvoLaneGit,
   getAppConfig,
-  lookup: createPullRequestLookup({ source: createGitHubPullRequestSource() }),
+  lookup: createPullRequestLookup({ source: createGitHubPullRequestSource({ fetchFn: fetch }) }),
   env: process.env,
 });
 router.use(requireJwtAuth);

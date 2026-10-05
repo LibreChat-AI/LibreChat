@@ -13,10 +13,14 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_LOOKUP_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CHECK_RUN_PAGES = 10;
 const CHECK_RUN_PAGE_SIZE = 100;
-/** Bounds the extra requests spent matching a pull request to the recorded commit. */
-const MAX_HEAD_COMPARISONS = 3;
-/** Comparison results meaning the pull request and the recorded commit share a line of history. */
-const SAME_LINE_STATUSES = new Set(['ahead', 'behind', 'identical']);
+const DEFAULT_MAX_CANDIDATE_PULL_REQUESTS = 10;
+const DEFAULT_MAX_HEAD_COMPARISONS = 3;
+/**
+ * Comparing `recorded...candidate`: `ahead` means the candidate builds on the recorded commit and
+ * `identical` that it is the recorded commit. `behind` means the candidate does not contain it
+ * (the recorded commit is newer), and `diverged` that the histories split, so neither matches.
+ */
+const CONTAINS_RECORDED_STATUSES = new Set(['ahead', 'identical']);
 const COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const MAX_TITLE_LENGTH = 256;
 const REPO_PATTERN = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
@@ -200,9 +204,13 @@ function retryAfterMs(response: Response): number | undefined {
 const isPathSegment = (value: string): boolean => value !== '.' && value !== '..';
 
 export function createGitHubPullRequestSource({
-  fetchFn = fetch,
+  fetchFn,
   apiBase = GITHUB_API_BASE,
-}: { fetchFn?: PullRequestFetch; apiBase?: string } = {}): PullRequestSource {
+}: {
+  /** The deployment's HTTP client, so proxying and instrumentation are decided by the caller. */
+  fetchFn: PullRequestFetch;
+  apiBase?: string;
+}): PullRequestSource {
   /** One lookup's credential and deadlines, shared by every request it makes. */
   type Lookup = {
     token: string;
@@ -210,6 +218,8 @@ export function createGitHubPullRequestSource({
     /** Aborts when the whole lookup runs out of time. */
     deadline: AbortSignal;
     maxCheckRunPages: number;
+    maxCandidatePullRequests: number;
+    maxHeadComparisons: number;
   };
 
   async function getJson(pathname: string, lookup: Lookup): Promise<unknown | null> {
@@ -272,6 +282,9 @@ export function createGitHubPullRequestSource({
         requestTimeoutMs: limits?.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
         deadline: AbortSignal.timeout(limits?.lookupTimeoutMs ?? DEFAULT_LOOKUP_TIMEOUT_MS),
         maxCheckRunPages: limits?.maxCheckRunPages ?? DEFAULT_MAX_CHECK_RUN_PAGES,
+        maxCandidatePullRequests:
+          limits?.maxCandidatePullRequests ?? DEFAULT_MAX_CANDIDATE_PULL_REQUESTS,
+        maxHeadComparisons: limits?.maxHeadComparisons ?? DEFAULT_MAX_HEAD_COMPARISONS,
       };
       const match = REPO_PATTERN.exec(repo);
       if (match == null || branch.length === 0) return null;
@@ -294,19 +307,19 @@ export function createGitHubPullRequestSource({
       let comparisons = 0;
       /**
        * A branch name can be deleted and reused, so with a recorded commit a pull request counts
-       * only when it carries that commit or builds on it. A commit GitHub no longer knows is no
-       * match, and the number of comparisons per lookup is bounded.
+       * only when its head is that commit or builds on it. A commit GitHub no longer knows is no
+       * match, and both the candidates listed and the comparisons made are bounded by config.
        */
       const matches = async (candidate: ListItem): Promise<boolean> => {
         if (recorded == null || candidate.sha === recorded) return true;
-        if (comparisons >= MAX_HEAD_COMPARISONS) return false;
+        if (comparisons >= lookup.maxHeadComparisons) return false;
         comparisons += 1;
         const comparison = await getJson(`${base}/compare/${recorded}...${candidate.sha}`, lookup);
         if (comparison == null) return false;
         if (!isRecord(comparison) || typeof comparison.status !== 'string') {
           throw new PullRequestSourceError('UPSTREAM_ERROR');
         }
-        return SAME_LINE_STATUSES.has(comparison.status);
+        return CONTAINS_RECORDED_STATUSES.has(comparison.status);
       };
       const choose = async (candidates: ListItem[]): Promise<ListItem | null> => {
         for (const candidate of candidates) {
@@ -315,11 +328,13 @@ export function createGitHubPullRequestSource({
         return null;
       };
       /** Open first on its own, so closed history on a reused branch name cannot hide it. */
-      const open = await listPulls('open', 10);
+      const open = await listPulls('open', lookup.maxCandidatePullRequests);
       if (open === undefined) return null;
       const chosen =
         (await choose(open)) ??
-        (await choose((await listPulls('closed', recorded == null ? 1 : 10)) ?? []));
+        (await choose(
+          (await listPulls('closed', recorded == null ? 1 : lookup.maxCandidatePullRequests)) ?? [],
+        ));
       if (chosen == null) return null;
 
       const [pull, checks] = await Promise.all([

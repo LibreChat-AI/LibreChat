@@ -329,20 +329,21 @@ export interface ConversationMethods {
     IConversation,
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
+  reserveConvoLaneGitSeq(user: string, conversationId: string): Promise<number | null>;
   setConvoLaneGit(input: {
     user: string;
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
-    /** When the worker reported this state; defaults to now. */
-    reportedAt?: Date;
+    /** Reserved with `reserveConvoLaneGitSeq` when the command settled. */
+    seq: number;
     /** The workspace the command ran in; the write applies only while the chat is still on it. */
     workspace?: { environmentId: string; workspaceId: string; required?: boolean };
   }): Promise<boolean>;
   getConvoLaneGit(
     user: string,
     conversationId: string,
-  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'reportedAt'> | null>;
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null>;
   addConvoToolApprovalAllows(input: {
     user: string;
     conversationId: string;
@@ -2467,6 +2468,7 @@ export function createConversationMethods(
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
       delete update.laneGit;
+      delete update.laneGitSeq;
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2493,6 +2495,7 @@ export function createConversationMethods(
       delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
       delete unsetFields.laneGit;
+      delete unsetFields.laneGitSeq;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -3020,30 +3023,53 @@ export function createConversationMethods(
   }
 
   /**
+   * Reserve the next lane report sequence number for an owner's conversation. The counter lives in
+   * the database, so every replica draws from one order that no process clock can skew, and the
+   * number is taken when a command settles, before its write is attempted. Resolves to null when
+   * the conversation does not exist yet for this owner.
+   */
+  async function reserveConvoLaneGitSeq(
+    user: string,
+    conversationId: string,
+  ): Promise<number | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const reserved = await withoutMeiliIndexing(
+      Conversation.findOneAndUpdate(
+        { user, conversationId },
+        { $inc: { laneGitSeq: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('laneGitSeq')
+      .lean<Pick<IConversation, 'laneGitSeq'> | null>();
+    return reserved?.laneGitSeq ?? null;
+  }
+
+  /**
    * Record the branch and head a conversation's code lane last reported. Owner-scoped and fenced
-   * by report time: the write matches only while the stored report is not newer than this one, so
-   * a delayed older report, from this process or another replica, can never replace a newer
-   * state. When the caller names the workspace the command ran in, the write also matches only
-   * while the conversation is still attached to it, so a report queued before a move or detach
-   * cannot bring the old workspace's lane back. A conversation with no stored workspace (an agent
-   * default) accepts the report unless the caller requires a recorded one. Server-written only:
-   * generic saves and imports cannot set it. Resolves to whether the write applied; false means a
-   * newer report is already stored, the workspace no longer matches, or there is no such
-   * conversation for this owner.
+   * by the sequence number reserved when the command settled: the write matches only while the
+   * stored report carries a lower one, so a delayed older report, from this process or another
+   * replica, can never replace a newer state. When the caller names the workspace the command ran
+   * in, the write also matches only while the conversation is still attached to it, so a report
+   * queued before a move or detach cannot bring the old workspace's lane back. A conversation
+   * with no stored workspace (an agent default) accepts the report unless the caller requires a
+   * recorded one. Server-written only: generic saves and imports cannot set it. Resolves to
+   * whether the write applied; false means a newer report is already stored, the workspace no
+   * longer matches, or there is no such conversation for this owner.
    */
   async function setConvoLaneGit({
     user,
     conversationId,
     laneGit,
     repo,
-    reportedAt = new Date(),
+    seq,
     workspace,
   }: {
     user: string;
     conversationId: string;
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
-    reportedAt?: Date;
+    seq: number;
     workspace?: { environmentId: string; workspaceId: string; required?: boolean };
   }): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
@@ -3051,7 +3077,7 @@ export function createConversationMethods(
       branch: laneGit.branch,
       head: laneGit.head,
       ...(repo ? { repo } : {}),
-      reportedAt,
+      seq,
     };
     const workspaceFence =
       workspace == null
@@ -3090,9 +3116,9 @@ export function createConversationMethods(
           $and: [
             {
               $or: [
-                { 'laneGit.reportedAt': { $exists: false } },
-                { 'laneGit.reportedAt': null },
-                { 'laneGit.reportedAt': { $lte: reportedAt } },
+                { 'laneGit.seq': { $exists: false } },
+                { 'laneGit.seq': null },
+                { 'laneGit.seq': { $lt: seq } },
               ],
             },
             ...workspaceFence,
@@ -3109,7 +3135,7 @@ export function createConversationMethods(
   async function getConvoLaneGit(
     user: string,
     conversationId: string,
-  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'reportedAt'> | null> {
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ user, conversationId })
       .select('laneGit')
@@ -3272,6 +3298,7 @@ export function createConversationMethods(
         delete sanitized.initial_agent_id;
         delete sanitized.toolApprovalAllows;
         delete sanitized.laneGit;
+        delete sanitized.laneGitSeq;
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -4354,6 +4381,7 @@ export function createConversationMethods(
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
     addConvoToolApprovalAllows,
+    reserveConvoLaneGitSeq,
     setConvoLaneGit,
     getConvoLaneGit,
     readAdmittedConvoCodeEnvironmentDecision,

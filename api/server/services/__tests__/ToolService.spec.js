@@ -26,6 +26,7 @@ const mockLaneGitRecorder = jest.fn();
 const mockCreateLaneGitRecorder = jest.fn(() => mockLaneGitRecorder);
 const mockSetConvoLaneGit = jest.fn();
 const mockGetConvoOwnership = jest.fn();
+const mockReserveConvoLaneGitSeq = jest.fn();
 const attachedWorkspaceOperations = [
   'read_file',
   'search_text',
@@ -178,6 +179,7 @@ jest.mock('~/models', () => ({
   getRoleByName: (...args) => mockGetRoleByName(...args),
   setConvoLaneGit: (...args) => mockSetConvoLaneGit(...args),
   getConvoOwnership: (...args) => mockGetConvoOwnership(...args),
+  reserveConvoLaneGitSeq: (...args) => mockReserveConvoLaneGitSeq(...args),
 }));
 jest.mock('~/config', () => ({
   getFlowStateManager: jest.fn(() => mockFlowManager),
@@ -3295,6 +3297,7 @@ describe('ToolService - Action Capability Gating', () => {
           conversationId: 'resolved-convo',
           workspace: { environmentId: 'personal-machine', workspaceId: 'project-a' },
           getConvoOwnership: expect.any(Function),
+          reserveConvoLaneGitSeq: expect.any(Function),
           setConvoLaneGit: expect.any(Function),
         }),
       );

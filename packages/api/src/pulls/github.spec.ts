@@ -378,13 +378,27 @@ describe('matching the recorded head', () => {
     expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
   });
 
-  it.each(['ahead', 'behind', 'identical'])(
-    'accepts a pull request on the same line of commits (%s)',
+  it.each(['ahead', 'identical'])(
+    'accepts a pull request that is, or builds on, the recorded commit (%s)',
     async (status) => {
       const { source } = sourceFor(routes(status));
       await expect(findWith(source, recorded)).resolves.toMatchObject({ number: 7 });
     },
   );
+
+  it('rejects a pull request whose head is older than the recorded commit (behind)', async () => {
+    const { source } = sourceFor({ ...routes('behind'), '/pulls?state=closed': () => json([]) });
+    await expect(findWith(source, recorded)).resolves.toBeNull();
+  });
+
+  it('asks GitHub to compare the recorded commit to the candidate, in that order', async () => {
+    const { source, fetchFn } = sourceFor(routes('ahead'));
+    await findWith(source, recorded);
+    const url = String(
+      fetchFn.mock.calls.map(([u]) => String(u)).find((u) => u.includes('/compare/')),
+    );
+    expect(url).toContain(`/compare/${recorded}...${sha}`);
+  });
 
   it('rejects a pull request whose commits diverged from the recorded head', async () => {
     const { source } = sourceFor({ ...routes('diverged'), '/pulls?state=closed': () => json([]) });
@@ -412,6 +426,45 @@ describe('matching the recorded head', () => {
       number: 7,
       state: 'merged',
     });
+  });
+
+  it('compares as many candidates as configured, no more', async () => {
+    const many = Array.from({ length: 10 }, (_, index) => ({
+      number: index + 1,
+      state: 'open',
+      head: { sha },
+    }));
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json(many),
+      '/pulls?state=closed': () => json(many),
+      '/compare/': compare('diverged'),
+    });
+    await expect(
+      source.find({
+        repo: 'o/r',
+        branch: 'feat/x',
+        head: recorded,
+        token: 't',
+        limits: { maxHeadComparisons: 5 },
+      }),
+    ).resolves.toBeNull();
+    expect(fetchFn.mock.calls.filter(([u]) => String(u).includes('/compare/'))).toHaveLength(5);
+  });
+
+  it('lists as many candidate pull requests as configured', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
+    await source.find({
+      repo: 'o/r',
+      branch: 'feat/x',
+      head: recorded,
+      token: 't',
+      limits: { maxCandidatePullRequests: 40 },
+    });
+    const urls = fetchFn.mock.calls.map(([u]) => String(u));
+    expect(urls.every((u) => u.includes('per_page=40'))).toBe(true);
   });
 
   it('limits how many candidates it compares', async () => {

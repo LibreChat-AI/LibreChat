@@ -1131,6 +1131,8 @@ describe('agent pull request config', () => {
       requestTimeoutSeconds: 10,
       lookupTimeoutSeconds: 30,
       maxCheckRunPages: 10,
+      maxCandidatePullRequests: 10,
+      maxHeadComparisons: 3,
     });
   });
 
@@ -1179,14 +1181,26 @@ describe('agent pull request config', () => {
     ['maxCheckRunPages', 0],
     ['maxCheckRunPages', 51],
     ['maxCheckRunPages', 1.5],
+    ['maxCandidatePullRequests', 0],
+    ['maxCandidatePullRequests', 101],
+    ['maxHeadComparisons', -1],
+    ['maxHeadComparisons', 21],
+    ['maxHeadComparisons', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
 
   it('accepts the documented bounds', () => {
     expect(
-      parse({ requestTimeoutSeconds: 60, lookupTimeoutSeconds: 120, maxCheckRunPages: 50 }).success,
+      parse({
+        requestTimeoutSeconds: 60,
+        lookupTimeoutSeconds: 120,
+        maxCheckRunPages: 50,
+        maxCandidatePullRequests: 100,
+        maxHeadComparisons: 20,
+      }).success,
     ).toBe(true);
+    expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
   });
 
   it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {

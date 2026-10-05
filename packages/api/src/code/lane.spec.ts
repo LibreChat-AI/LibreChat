@@ -11,16 +11,35 @@ jest.mock('@librechat/data-schemas', () => ({
 const head = 'a'.repeat(40);
 const laneGit = { branch: 'feat/pr-chip', head };
 
+/** A reserver that hands out 1, 2, 3 ... like the database counter does. */
+const counter = () => {
+  let next = 0;
+  return jest.fn(async () => ++next);
+};
+
 describe('createLaneGitRecorder', () => {
-  it('writes the reported state for the owner and conversation', async () => {
+  const make = (overrides: Record<string, unknown> = {}) => {
     const setConvoLaneGit = jest.fn().mockResolvedValue(true);
-    const record = createLaneGitRecorder({ user: 'u1', conversationId: 'c1', setConvoLaneGit });
+    const reserveConvoLaneGitSeq = counter();
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'c1',
+      reserveConvoLaneGitSeq,
+      setConvoLaneGit,
+      ...overrides,
+    });
+    return { record, setConvoLaneGit, reserveConvoLaneGitSeq };
+  };
+
+  it('writes the reported state with a reserved sequence number', async () => {
+    const { record, setConvoLaneGit, reserveConvoLaneGitSeq } = make();
     await expect(record?.(laneGit)).resolves.toBe(true);
+    expect(reserveConvoLaneGitSeq).toHaveBeenCalledWith('u1', 'c1');
     expect(setConvoLaneGit).toHaveBeenCalledWith({
       user: 'u1',
       conversationId: 'c1',
       laneGit,
-      reportedAt: expect.any(Date),
+      seq: 1,
     });
   });
 
@@ -30,55 +49,51 @@ describe('createLaneGitRecorder', () => {
     ['a missing conversation', { user: 'u1', conversationId: undefined }],
     ['an empty conversation', { user: 'u1', conversationId: '' }],
   ])('does not record with %s', (_label, ids) => {
-    const setConvoLaneGit = jest.fn();
-    expect(createLaneGitRecorder({ ...ids, setConvoLaneGit })).toBeUndefined();
+    const { record, setConvoLaneGit } = make(ids);
+    expect(record).toBeUndefined();
     expect(setConvoLaneGit).not.toHaveBeenCalled();
   });
 
   it('stores a plain owner/name repository with the lane', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
-    const record = createLaneGitRecorder({
-      user: 'u1',
-      conversationId: 'c1',
-      repo: 'LibreChat-AI/LibreChat',
-      setConvoLaneGit,
-    });
+    const { record, setConvoLaneGit } = make({ repo: 'LibreChat-AI/LibreChat' });
     await record?.(laneGit);
-    expect(setConvoLaneGit).toHaveBeenCalledWith({
-      user: 'u1',
-      conversationId: 'c1',
-      laneGit,
-      reportedAt: expect.any(Date),
-      repo: 'LibreChat-AI/LibreChat',
-    });
+    expect(setConvoLaneGit).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'LibreChat-AI/LibreChat' }),
+    );
   });
 
   it.each(['../x', 'o/..', 'a b/c', 'owner', 'o/r/extra', 'x'.repeat(300)])(
     'drops the unsafe repository %s but still records the lane',
     async (repo) => {
-      const setConvoLaneGit = jest.fn().mockResolvedValue(true);
-      const record = createLaneGitRecorder({
-        user: 'u1',
-        conversationId: 'c1',
-        repo,
-        setConvoLaneGit,
-      });
+      const { record, setConvoLaneGit } = make({ repo });
       await record?.(laneGit);
-      expect(setConvoLaneGit).toHaveBeenCalledWith({
-        user: 'u1',
-        conversationId: 'c1',
-        laneGit,
-        reportedAt: expect.any(Date),
-      });
+      expect(setConvoLaneGit).toHaveBeenCalledTimes(1);
+      expect(setConvoLaneGit.mock.calls[0][0]).not.toHaveProperty('repo');
     },
   );
 
-  it('swallows a database failure and logs only safe metadata', async () => {
+  it('swallows a write failure and logs only safe metadata', async () => {
     const setConvoLaneGit = jest.fn().mockRejectedValue(new Error('mongodb://user:secret@host'));
-    const record = createLaneGitRecorder({ user: 'u1', conversationId: 'c1', setConvoLaneGit });
+    const { record } = make({ setConvoLaneGit });
     await expect(record?.(laneGit)).resolves.toBe(false);
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
+  });
+
+  it('swallows a reservation failure and writes nothing', async () => {
+    const reserveConvoLaneGitSeq = jest.fn().mockRejectedValue(new Error('mongodb://u:secret@h'));
+    const { record, setConvoLaneGit } = make({ reserveConvoLaneGitSeq });
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    expect(setConvoLaneGit).not.toHaveBeenCalled();
+    expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
+  });
+
+  it('writes nothing when the conversation is not saved yet', async () => {
+    const { record, setConvoLaneGit } = make({
+      reserveConvoLaneGitSeq: jest.fn().mockResolvedValue(null),
+    });
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    expect(setConvoLaneGit).not.toHaveBeenCalled();
   });
 });
 
@@ -140,151 +155,202 @@ describe('attached bash tool lane reporting', () => {
   });
 });
 
-describe('createLaneGitRecorder write order', () => {
+describe('createLaneGitRecorder ordering', () => {
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-  function controlledWriter() {
-    const events: string[] = [];
-    const releases: Array<(ok?: boolean) => void> = [];
-    const fail: Array<() => void> = [];
-    const setConvoLaneGit = jest.fn(
-      ({ laneGit: reported }: { laneGit: { branch: string | null } }) =>
-        new Promise<boolean>((resolve, reject) => {
-          events.push(`start:${reported.branch}`);
-          releases.push((ok = true) => {
-            events.push(`end:${reported.branch}`);
-            resolve(ok);
-          });
-          fail.push(() => reject(new Error('db down')));
-        }),
-    );
-    return { events, releases, fail, setConvoLaneGit };
-  }
-
-  it('starts a later write only after the earlier one has finished', async () => {
-    const { events, releases, setConvoLaneGit } = controlledWriter();
+  it('takes sequence numbers in report order and writes each with its own', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const record = createLaneGitRecorder({
       user: 'u1',
       conversationId: 'order-1',
+      reserveConvoLaneGitSeq: counter(),
       setConvoLaneGit,
     });
-    const first = record?.({ branch: 'a', head });
-    const second = record?.({ branch: 'b', head });
-    await flush();
-    expect(events).toEqual(['start:a']);
-    releases[0]();
-    await first;
-    await flush();
-    expect(events).toEqual(['start:a', 'end:a', 'start:b']);
-    releases[1]();
-    await second;
-    expect(events).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
-  });
-
-  it('orders writes across recorders built for the same conversation', async () => {
-    const { events, releases, setConvoLaneGit } = controlledWriter();
-    const make = () =>
-      createLaneGitRecorder({ user: 'u1', conversationId: 'order-2', setConvoLaneGit });
-    const first = make()?.({ branch: 'a', head });
-    const second = make()?.({ branch: 'b', head });
-    await flush();
-    expect(events).toEqual(['start:a']);
-    releases[0]();
-    await first;
-    await flush();
-    releases[1]();
-    await second;
-    expect(events).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
-  });
-
-  it('does not make one conversation wait for another', async () => {
-    const { events, setConvoLaneGit } = controlledWriter();
-    const one = createLaneGitRecorder({ user: 'u1', conversationId: 'order-3', setConvoLaneGit });
-    const other = createLaneGitRecorder({ user: 'u1', conversationId: 'order-4', setConvoLaneGit });
-    void one?.({ branch: 'a', head });
-    void other?.({ branch: 'b', head });
-    await flush();
-    expect(events).toEqual(['start:a', 'start:b']);
-  });
-
-  it('does not make one user wait for another on the same conversation id', async () => {
-    const { events, setConvoLaneGit } = controlledWriter();
-    const make = (user: string) =>
-      createLaneGitRecorder({ user, conversationId: 'order-5', setConvoLaneGit });
-    void make('u1')?.({ branch: 'a', head });
-    void make('u2')?.({ branch: 'b', head });
-    await flush();
-    expect(events).toEqual(['start:a', 'start:b']);
-  });
-
-  it('stamps each report when it arrives, not when its write finally runs', async () => {
-    const stamps: Array<{ branch: string | null; at: number }> = [];
-    const releases: Array<() => void> = [];
-    const setConvoLaneGit = jest.fn(
-      ({
-        laneGit: reported,
-        reportedAt,
-      }: {
-        laneGit: { branch: string | null };
-        reportedAt: Date;
-      }) =>
-        new Promise<boolean>((resolve) => {
-          stamps.push({ branch: reported.branch, at: reportedAt.getTime() });
-          releases.push(() => resolve(true));
-        }),
-    );
-    const times = [1_000, 2_000];
-    const record = createLaneGitRecorder({
-      user: 'u1',
-      conversationId: 'order-7',
-      setConvoLaneGit,
-      now: () => new Date(times.shift() ?? 0),
-    });
-    const first = record?.({ branch: 'a', head });
-    const second = record?.({ branch: 'b', head });
-    await flush();
-    releases[0]();
-    await first;
-    await flush();
-    releases[1]();
-    await second;
-    expect(stamps).toEqual([
-      { branch: 'a', at: 1_000 },
-      { branch: 'b', at: 2_000 },
+    await Promise.all([record?.({ branch: 'a', head }), record?.({ branch: 'b', head })]);
+    const writes = setConvoLaneGit.mock.calls.map(([call]) => [call.laneGit.branch, call.seq]);
+    expect(writes.sort()).toEqual([
+      ['a', 1],
+      ['b', 2],
     ]);
   });
 
-  it('still runs the next write after one fails', async () => {
-    const { events, releases, fail, setConvoLaneGit } = controlledWriter();
+  it('gives a later report the higher number even when the first reservation is slow', async () => {
+    let issued = 0;
+    const releases: Array<() => void> = [];
+    /** The first reservation takes longer than any later one, as a slow replica round trip can. */
+    const reserve = jest.fn(
+      () =>
+        new Promise<number>((resolve) => {
+          const slow = issued === 0;
+          issued += 1;
+          const number = issued;
+          if (slow) releases.push(() => resolve(number));
+          else resolve(number);
+        }),
+    );
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-slow',
+      reserveConvoLaneGitSeq: reserve,
+      setConvoLaneGit,
+    });
+    const first = record?.({ branch: 'first', head });
+    const second = record?.({ branch: 'second', head });
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(1);
+    releases[0]();
+    await Promise.all([first, second]);
+    const bySeq = setConvoLaneGit.mock.calls
+      .map(([call]) => [call.seq, call.laneGit.branch])
+      .sort();
+    expect(bySeq).toEqual([
+      [1, 'first'],
+      [2, 'second'],
+    ]);
+  });
+
+  it('does not wait for one write to finish before reserving the next report', async () => {
+    const reserve = counter();
+    const releases: Array<() => void> = [];
+    const setConvoLaneGit = jest.fn(
+      () => new Promise<boolean>((resolve) => releases.push(() => resolve(true))),
+    );
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-2',
+      reserveConvoLaneGitSeq: reserve,
+      setConvoLaneGit,
+    });
+    void record?.({ branch: 'a', head });
+    void record?.({ branch: 'b', head });
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(2);
+    expect(setConvoLaneGit).toHaveBeenCalledTimes(2);
+    releases.forEach((release) => release());
+  });
+
+  it('orders reservations across recorders built for the same conversation', async () => {
+    const reserve = counter();
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const make = () =>
+      createLaneGitRecorder({
+        user: 'u1',
+        conversationId: 'order-3',
+        reserveConvoLaneGitSeq: reserve,
+        setConvoLaneGit,
+      });
+    await Promise.all([make()?.({ branch: 'a', head }), make()?.({ branch: 'b', head })]);
+    const bySeq = setConvoLaneGit.mock.calls
+      .map(([call]) => [call.seq, call.laneGit.branch])
+      .sort();
+    expect(bySeq).toEqual([
+      [1, 'a'],
+      [2, 'b'],
+    ]);
+  });
+
+  it('does not make one conversation or one user wait for another', async () => {
+    const releases: Array<() => void> = [];
+    const reserve = jest.fn(
+      () => new Promise<number>((resolve) => releases.push(() => resolve(1))),
+    );
+    const make = (user: string, conversationId: string) =>
+      createLaneGitRecorder({
+        user,
+        conversationId,
+        reserveConvoLaneGitSeq: reserve,
+        setConvoLaneGit: jest.fn().mockResolvedValue(true),
+      });
+    void make('u1', 'order-4')?.({ branch: 'a', head });
+    void make('u1', 'order-5')?.({ branch: 'b', head });
+    void make('u2', 'order-4')?.({ branch: 'c', head });
+    await flush();
+    expect(reserve).toHaveBeenCalledTimes(3);
+    releases.forEach((release) => release());
+  });
+
+  it('keeps reserving after one reservation fails', async () => {
+    const reserve = jest.fn().mockRejectedValueOnce(new Error('db down')).mockResolvedValue(7);
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const record = createLaneGitRecorder({
       user: 'u1',
       conversationId: 'order-6',
+      reserveConvoLaneGitSeq: reserve,
       setConvoLaneGit,
     });
-    const first = record?.({ branch: 'a', head });
-    const second = record?.({ branch: 'b', head });
-    await flush();
-    fail[0]();
-    await expect(first).resolves.toBe(false);
-    await flush();
-    expect(events).toEqual(['start:a', 'start:b']);
-    releases[1]();
-    await expect(second).resolves.toBe(true);
+    await expect(record?.({ branch: 'a', head })).resolves.toBe(false);
+    await expect(record?.({ branch: 'b', head })).resolves.toBe(true);
+    expect(setConvoLaneGit.mock.calls[0][0]).toMatchObject({ seq: 7 });
+  });
+
+  it('reports a write the database rejected as not applied, so a stale report is not remembered', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-7',
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
+    });
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    await expect(record?.(laneGit)).resolves.toBe(true);
+    expect(setConvoLaneGit).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a report identical to the last one it wrote', async () => {
+    const reserve = counter();
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-8',
+      reserveConvoLaneGitSeq: reserve,
+      setConvoLaneGit,
+    });
+    await expect(record?.(laneGit)).resolves.toBe(true);
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    await expect(record?.(laneGit)).resolves.toBe(false);
+    expect(reserve).toHaveBeenCalledTimes(1);
+    expect(setConvoLaneGit).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes again once the state changes, including back to an earlier one', async () => {
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-9',
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
+    });
+    await record?.({ branch: 'a', head });
+    await record?.({ branch: 'b', head });
+    await record?.({ branch: 'a', head });
+    expect(setConvoLaneGit.mock.calls.map(([call]) => call.laneGit.branch)).toEqual([
+      'a',
+      'b',
+      'a',
+    ]);
   });
 });
 
 describe('createLaneGitRecorder target conversation', () => {
   const workspace = { environmentId: 'code-mac', workspaceId: 'primary' };
-  const written = (setConvoLaneGit: jest.Mock) => setConvoLaneGit.mock.calls.map(([call]) => call);
-
-  it('passes the workspace it ran in, so a stale writer can be fenced', async () => {
+  const build = (overrides: Record<string, unknown> = {}) => {
     const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const reserveConvoLaneGitSeq = counter();
     const record = createLaneGitRecorder({
       user: 'u1',
       conversationId: 'target-1',
       workspace,
+      reserveConvoLaneGitSeq,
       setConvoLaneGit,
+      ...overrides,
     });
+    return { record, setConvoLaneGit, reserveConvoLaneGitSeq };
+  };
+  const written = (setConvoLaneGit: jest.Mock) => setConvoLaneGit.mock.calls.map(([call]) => call);
+
+  it('passes the workspace it ran in, so a stale writer can be fenced', async () => {
+    const { record, setConvoLaneGit } = build();
     await record?.(laneGit);
     expect(written(setConvoLaneGit)[0]).toMatchObject({
       conversationId: 'target-1',
@@ -294,19 +360,16 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('records a subagent thread on the visible conversation, and requires its workspace to match', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const getConvoOwnership = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root', parentConversationId: 'mid' },
     });
-    const record = createLaneGitRecorder({
-      user: 'u1',
+    const { record, setConvoLaneGit, reserveConvoLaneGitSeq } = build({
       conversationId: 'child-thread',
-      workspace,
       getConvoOwnership,
-      setConvoLaneGit,
     });
     await record?.(laneGit);
     expect(getConvoOwnership).toHaveBeenCalledWith('u1', 'child-thread');
+    expect(reserveConvoLaneGitSeq).toHaveBeenCalledWith('u1', 'visible-root');
     expect(written(setConvoLaneGit)[0]).toMatchObject({
       conversationId: 'visible-root',
       workspace: { ...workspace, required: true },
@@ -314,31 +377,17 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('records an ordinary conversation on itself', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const getConvoOwnership = jest.fn().mockResolvedValue({ user: 'u1' });
-    const record = createLaneGitRecorder({
-      user: 'u1',
-      conversationId: 'plain',
-      workspace,
-      getConvoOwnership,
-      setConvoLaneGit,
-    });
+    const { record, setConvoLaneGit } = build({ conversationId: 'plain', getConvoOwnership });
     await record?.(laneGit);
     expect(written(setConvoLaneGit)[0].conversationId).toBe('plain');
   });
 
   it('looks the conversation up once however many reports follow', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const getConvoOwnership = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root' },
     });
-    const record = createLaneGitRecorder({
-      user: 'u1',
-      conversationId: 'child-2',
-      workspace,
-      getConvoOwnership,
-      setConvoLaneGit,
-    });
+    const { record, setConvoLaneGit } = build({ conversationId: 'child-2', getConvoOwnership });
     await record?.({ branch: 'a', head });
     await record?.({ branch: 'b', head });
     expect(getConvoOwnership).toHaveBeenCalledTimes(1);
@@ -349,18 +398,11 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('skips a report it cannot place rather than guess, and tries again on the next', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const getConvoOwnership = jest
       .fn()
       .mockRejectedValueOnce(new Error('mongodb://user:secret@host'))
       .mockResolvedValue({ subagentThread: { rootConversationId: 'visible-root' } });
-    const record = createLaneGitRecorder({
-      user: 'u1',
-      conversationId: 'child-3',
-      workspace,
-      getConvoOwnership,
-      setConvoLaneGit,
-    });
+    const { record, setConvoLaneGit } = build({ conversationId: 'child-3', getConvoOwnership });
     await expect(record?.({ branch: 'a', head })).resolves.toBe(false);
     expect(setConvoLaneGit).not.toHaveBeenCalled();
     expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
@@ -369,15 +411,13 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('does not write a subagent lane to the parent without a workspace to verify it against', async () => {
-    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const getConvoOwnership = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root' },
     });
-    const record = createLaneGitRecorder({
-      user: 'u1',
+    const { record, setConvoLaneGit } = build({
       conversationId: 'child-4',
+      workspace: undefined,
       getConvoOwnership,
-      setConvoLaneGit,
     });
     await expect(record?.(laneGit)).resolves.toBe(false);
     expect(setConvoLaneGit).not.toHaveBeenCalled();

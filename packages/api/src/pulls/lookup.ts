@@ -67,6 +67,8 @@ export function createPullRequestLookup({
       limits?.requestTimeoutMs,
       limits?.lookupTimeoutMs,
       limits?.maxCheckRunPages,
+      limits?.maxCandidatePullRequests,
+      limits?.maxHeadComparisons,
     ].join(',');
     const key = `${scope}\0${repo}#${branch}\0${head ?? ''}\0${policy}`;
     const cached = entries.get(key);

@@ -57,11 +57,19 @@ export function createConversationPullRequestHandler(deps: {
       return;
     }
     try {
-      const appConfig = await deps.getAppConfig({
-        ...getAppConfigOptionsFromUser(req.user),
-        skipRuntimeAugmentation: true,
-        failClosed: true,
-      });
+      /**
+       * Config and the owner-scoped lane are independent, so they load together. The lane is only
+       * used when the resolved config turns the feature on, which keeps a disabled deployment's
+       * answer the same as before.
+       */
+      const [appConfig, laneGit] = await Promise.all([
+        deps.getAppConfig({
+          ...getAppConfigOptionsFromUser(req.user),
+          skipRuntimeAugmentation: true,
+          failClosed: true,
+        }),
+        deps.getConvoLaneGit(userId, conversationId),
+      ]);
       const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
         ?.pullRequests;
       if (settings?.enabled !== true) {
@@ -69,7 +77,6 @@ export function createConversationPullRequestHandler(deps: {
         return;
       }
 
-      const laneGit = await deps.getConvoLaneGit(userId, conversationId);
       if (laneGit?.branch == null || laneGit.repo == null) {
         res.status(200).json(NONE);
         return;
@@ -100,6 +107,8 @@ export function createConversationPullRequestHandler(deps: {
           requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
           lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,
           maxCheckRunPages: settings.maxCheckRunPages ?? 10,
+          maxCandidatePullRequests: settings.maxCandidatePullRequests ?? 10,
+          maxHeadComparisons: settings.maxHeadComparisons ?? 3,
         },
       });
       if (!result.ok) {

@@ -54,13 +54,16 @@ const convoSchema: Schema<IConversation> = new Schema(
         branch: { type: String, default: null },
         head: { type: String, default: null },
         repo: { type: String, default: undefined },
-        /** When the worker reported this state; fences out an older report that lands later. */
-        reportedAt: { type: Date, default: undefined },
+        /** Sequence number reserved when the command settled; fences out an older report. */
+        seq: { type: Number, default: undefined },
       },
       _id: false,
       default: undefined,
       select: false,
     },
+    /** Counter that issues `laneGit.seq`, shared by every replica. Server-written only, through
+     *  `reserveConvoLaneGitSeq`, and excluded from ordinary conversation reads. */
+    laneGitSeq: { type: Number, default: undefined, select: false },
     agent_id: {
       type: String,
     },

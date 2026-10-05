@@ -9423,81 +9423,113 @@ describe('laneGit', () => {
     return conversationId;
   };
   const head = 'a'.repeat(40);
+  /** A write with a sequence number drawn from the database, as the recorder draws one. */
+  const record = async (
+    input: Omit<Parameters<typeof methods.setConvoLaneGit>[0], 'seq'> & { seq?: number },
+  ) => {
+    const seq =
+      input.seq ?? (await methods.reserveConvoLaneGitSeq(input.user, input.conversationId));
+    if (seq == null) return false;
+    return methods.setConvoLaneGit({ ...input, seq });
+  };
 
   it('stores the reported branch and head for the owner and reads them back', async () => {
     const conversationId = await seed();
     const laneGit = { branch: 'feat/pr-chip', head };
-    await expect(
-      methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit }),
-    ).resolves.toBe(true);
+    await expect(record({ user: 'lane-user', conversationId, laneGit })).resolves.toBe(true);
     await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
   });
 
   it('does not write for another owner or an unknown conversation', async () => {
     const conversationId = await seed();
     const laneGit = { branch: 'main', head };
-    await expect(
-      methods.setConvoLaneGit({ user: 'intruder', conversationId, laneGit }),
-    ).resolves.toBe(false);
-    await expect(
-      methods.setConvoLaneGit({ user: 'lane-user', conversationId: uuidv4(), laneGit }),
-    ).resolves.toBe(false);
+    await expect(record({ user: 'intruder', conversationId, laneGit })).resolves.toBe(false);
+    await expect(record({ user: 'lane-user', conversationId: uuidv4(), laneGit })).resolves.toBe(
+      false,
+    );
     await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
     await expect(methods.getConvoLaneGit('intruder', conversationId)).resolves.toBeNull();
   });
 
-  const at = (second: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, second));
-
-  it('ignores a report older than the stored one, so a delayed write cannot win', async () => {
+  it('ignores a report with a lower sequence number, so a delayed write cannot win', async () => {
     const conversationId = await seed();
     const user = 'lane-user';
+    const first = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    const second = await methods.reserveConvoLaneGitSeq(user, conversationId);
     const newer = { branch: 'newer', head };
     const older = { branch: 'older', head: 'b'.repeat(40) };
     await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit: newer, reportedAt: at(10) }),
+      methods.setConvoLaneGit({ user, conversationId, laneGit: newer, seq: second as number }),
     ).resolves.toBe(true);
     await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit: older, reportedAt: at(5) }),
+      methods.setConvoLaneGit({ user, conversationId, laneGit: older, seq: first as number }),
     ).resolves.toBe(false);
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(newer);
   });
 
-  it('applies a report newer than the stored one, and keeps the newest of a repeated state', async () => {
+  it('issues increasing numbers per conversation and none for an unknown one', async () => {
     const conversationId = await seed();
-    const user = 'lane-user';
-    const a = { branch: 'a', head };
-    const b = { branch: 'b', head };
-    await methods.setConvoLaneGit({ user, conversationId, laneGit: a, reportedAt: at(1) });
-    await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit: b, reportedAt: at(2) }),
-    ).resolves.toBe(true);
-    await methods.setConvoLaneGit({ user, conversationId, laneGit: a, reportedAt: at(3) });
-    await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit: b, reportedAt: at(2.5) }),
-    ).resolves.toBe(false);
-    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(a);
+    const other = await seed();
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(1);
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(2);
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', other)).toBe(1);
+    expect(await methods.reserveConvoLaneGitSeq('intruder', conversationId)).toBeNull();
+    expect(await methods.reserveConvoLaneGitSeq('lane-user', uuidv4())).toBeNull();
   });
 
-  it('does not expose the report time through the read', async () => {
+  it('issues distinct numbers to reservations made at the same time', async () => {
     const conversationId = await seed();
-    await methods.setConvoLaneGit({
-      user: 'lane-user',
-      conversationId,
-      laneGit: { branch: 'main', head },
-      reportedAt: at(1),
+    const numbers = await Promise.all(
+      Array.from({ length: 12 }, () => methods.reserveConvoLaneGitSeq('lane-user', conversationId)),
+    );
+    expect(new Set(numbers).size).toBe(12);
+    expect(Math.min(...(numbers as number[]))).toBe(1);
+    expect(Math.max(...(numbers as number[]))).toBe(12);
+  });
+
+  it('is not skewed by the clocks of the processes that report', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const early = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    const later = await methods.reserveConvoLaneGitSeq(user, conversationId);
+    /** An older report from a replica whose clock runs far ahead still carries the lower number. */
+    await expect(
+      methods.setConvoLaneGit({
+        user,
+        conversationId,
+        laneGit: { branch: 'later', head },
+        seq: later as number,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      methods.setConvoLaneGit({
+        user,
+        conversationId,
+        laneGit: { branch: 'early-but-future-clock', head },
+        seq: early as number,
+      }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      branch: 'later',
+      head,
     });
+  });
+
+  it('does not expose the sequence number or the counter through the read', async () => {
+    const conversationId = await seed();
+    await record({ user: 'lane-user', conversationId, laneGit: { branch: 'main', head } });
     const stored = await methods.getConvoLaneGit('lane-user', conversationId);
-    expect(stored).not.toHaveProperty('reportedAt');
+    expect(stored).not.toHaveProperty('seq');
+    const read = await Conversation.findOne({ conversationId }).lean();
+    expect(read).not.toHaveProperty('laneGitSeq');
   });
 
   it('replaces the stored state when the branch or head changes', async () => {
     const conversationId = await seed();
     const user = 'lane-user';
-    await methods.setConvoLaneGit({ user, conversationId, laneGit: { branch: 'main', head } });
+    await record({ user, conversationId, laneGit: { branch: 'main', head } });
     const next = { branch: 'feat/x', head: 'b'.repeat(40) };
-    await expect(methods.setConvoLaneGit({ user, conversationId, laneGit: next })).resolves.toBe(
-      true,
-    );
+    await expect(record({ user, conversationId, laneGit: next })).resolves.toBe(true);
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(next);
   });
 
@@ -9505,22 +9537,12 @@ describe('laneGit', () => {
     const conversationId = await seed();
     const user = 'lane-user';
     const laneGit = { branch: 'main', head };
-    await expect(
-      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r', reportedAt: at(1) }),
-    ).resolves.toBe(true);
+    await expect(record({ user, conversationId, laneGit, repo: 'o/r' })).resolves.toBe(true);
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
       ...laneGit,
       repo: 'o/r',
     });
-    await expect(
-      methods.setConvoLaneGit({
-        user,
-        conversationId,
-        laneGit,
-        repo: 'o/other',
-        reportedAt: at(2),
-      }),
-    ).resolves.toBe(true);
+    await expect(record({ user, conversationId, laneGit, repo: 'o/other' })).resolves.toBe(true);
     await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
       ...laneGit,
       repo: 'o/other',
@@ -9543,7 +9565,7 @@ describe('laneGit', () => {
       return conversationId;
     };
     const write = (conversationId: string, workspace: Record<string, unknown>) =>
-      methods.setConvoLaneGit({
+      record({
         user: 'lane-user',
         conversationId,
         laneGit: { branch: 'feat/x', head },
@@ -9576,7 +9598,7 @@ describe('laneGit', () => {
       const conversationId = await seedRaw({
         codeEnvironmentMode: 'attached',
         codeWorkspaces: [mac],
-        laneGit: { branch: 'old', head, repo: 'o/old', reportedAt: new Date(0) },
+        laneGit: { branch: 'old', head, repo: 'o/old', seq: 1 },
       });
       const stored = await methods.getConvoCodeEnvironmentDecision('lane-user', conversationId);
       await methods.replaceConvoCodeEnvironmentDecision({
@@ -9616,9 +9638,7 @@ describe('laneGit', () => {
   it('keeps a detached or empty lane distinct from an unknown one', async () => {
     const conversationId = await seed();
     const laneGit = { branch: null, head: null };
-    await expect(
-      methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit }),
-    ).resolves.toBe(true);
+    await expect(record({ user: 'lane-user', conversationId, laneGit })).resolves.toBe(true);
     await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
   });
 
@@ -9626,7 +9646,7 @@ describe('laneGit', () => {
     const kept = { branch: 'kept', head };
     const seedWithLane = async () => {
       const conversationId = await seed();
-      await methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit: kept });
+      await record({ user: 'lane-user', conversationId, laneGit: kept });
       return conversationId;
     };
 
@@ -9656,6 +9676,25 @@ describe('laneGit', () => {
         },
       ]);
       await expect(methods.getConvoLaneGit('lane-user', imported)).resolves.toBeNull();
+    });
+
+    it('keeps the sequence counter out of generic saves, unset fields and imports', async () => {
+      const conversationId = await seedWithLane();
+      const before = await methods.reserveConvoLaneGitSeq('lane-user', conversationId);
+      await saveConvo({ userId: 'lane-user' }, { conversationId, laneGitSeq: 0 });
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId },
+        { unsetFields: { laneGitSeq: 1 } },
+      );
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        { conversationId: imported, user: 'lane-user', title: 'Imported', laneGitSeq: 99 },
+      ]);
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(
+        (before as number) + 1,
+      );
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', imported)).toBe(1);
     });
 
     it('is excluded from ordinary conversation reads', async () => {

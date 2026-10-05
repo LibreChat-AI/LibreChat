@@ -10,11 +10,14 @@ export type LaneGitWriter = (input: {
   conversationId: string;
   laneGit: WorkspaceLaneGit;
   repo?: string;
-  /** When the command settled; the database ignores a report older than the one it holds. */
-  reportedAt: Date;
+  /** Reserved when the command settled; the database ignores a report below the one it holds. */
+  seq: number;
   /** The database ignores the report once the conversation is no longer on this workspace. */
   workspace?: LaneWorkspace;
 }) => Promise<boolean>;
+
+/** Draws the next report sequence number from the database, so every replica shares one order. */
+export type LaneSeqReserver = (user: string, conversationId: string) => Promise<number | null>;
 
 /** Reads what the recorder needs to place a conversation: whether it is a subagent thread. */
 export type LaneOwnershipReader = (
@@ -31,21 +34,26 @@ const isSafeRepo = (repo: string | undefined): repo is string =>
   REPO_PATTERN.test(repo) &&
   repo.split('/').every((segment) => segment !== '.' && segment !== '..');
 
+type Placement = { conversationId: string; required: boolean };
+type Reservation = Placement & { seq: number };
+
 /**
- * The tail of each conversation's pending writes in this process. It keeps one process from
- * racing its own writes; correctness across replicas comes from `reportedAt`, which the database
- * fences on, so an older report is ignored wherever it lands. Entries leave the map as soon as
- * their chain drains, so it only holds conversations with a write in flight.
+ * The tail of each conversation's pending sequence reservations in this process. Numbers are
+ * drawn one at a time in report order, so one process never takes a lower number for a later
+ * report. Writes are not queued: each carries its number and the database ignores a lower one,
+ * so a slow or reordered write cannot replace a newer state, here or on another replica. Entries
+ * leave the map as soon as their chain drains.
  */
-const pendingWrites = new Map<string, Promise<unknown>>();
+const reservationTails = new Map<string, Promise<unknown>>();
 
 /**
  * Records the lane state a finished command reported, for the owner's conversation. It never
  * throws and is never awaited by the command: the branch is a header affordance, so a database
- * outage must not fail or delay the agent's tool call. Writes for one conversation run in the
- * order they were reported, and each carries the time it was reported so the database can ignore
- * a stale one. Resolves to whether the write applied, which is false when a newer report is
- * already stored and for a conversation not saved yet. A repo that is not a plain `owner/name`
+ * outage must not fail or delay the agent's tool call. Each report takes a sequence number from
+ * the database when it arrives and is written with it, so the newest report wins whatever order
+ * the writes land in. A report identical to the last one this recorder wrote is skipped. Resolves
+ * to whether the write applied, which is false when a newer report is already stored, for a
+ * conversation not saved yet, and for a skipped repeat. A repo that is not a plain `owner/name`
  * is dropped rather than stored.
  */
 export function createLaneGitRecorder({
@@ -54,16 +62,16 @@ export function createLaneGitRecorder({
   repo,
   workspace,
   getConvoOwnership,
+  reserveConvoLaneGitSeq,
   setConvoLaneGit,
-  now = () => new Date(),
 }: {
   user: string | undefined;
   conversationId: string | undefined;
   repo?: string;
   workspace?: { environmentId: string; workspaceId: string };
   getConvoOwnership?: LaneOwnershipReader;
+  reserveConvoLaneGitSeq: LaneSeqReserver;
   setConvoLaneGit: LaneGitWriter;
-  now?: () => Date;
 }): ((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined {
   if (!user || !conversationId) return undefined;
   const safeRepo = isSafeRepo(repo) ? repo : undefined;
@@ -75,10 +83,10 @@ export function createLaneGitRecorder({
    * root's recorded workspace, since nothing else ties the child to it. The lookup is made once;
    * a failed one is retried on the next report.
    */
-  let target: Promise<{ conversationId: string; required: boolean }> | undefined;
-  const resolveTarget = (): Promise<{ conversationId: string; required: boolean }> => {
+  let target: Promise<Placement> | undefined;
+  const resolveTarget = (): Promise<Placement> => {
     if (target == null) {
-      const resolving = (async () => {
+      const resolving = (async (): Promise<Placement> => {
         if (getConvoOwnership == null) return { conversationId, required: false };
         const owned = await getConvoOwnership(user, conversationId);
         const root = owned?.subagentThread?.rootConversationId;
@@ -94,18 +102,29 @@ export function createLaneGitRecorder({
     return target;
   };
 
-  const write = async (laneGit: WorkspaceLaneGit, reportedAt: Date): Promise<boolean> => {
+  /** Never rejects, so a failed reservation cannot stall the ones queued behind it. */
+  const reserve = async (): Promise<Reservation | null> => {
     try {
       const placed = await resolveTarget();
-      if (placed.required && workspace == null) return false;
+      if (placed.required && workspace == null) return null;
+      const seq = await reserveConvoLaneGitSeq(user, placed.conversationId);
+      return seq == null ? null : { ...placed, seq };
+    } catch (error) {
+      logger.warn('[LaneGit] Failed to reserve a lane report', getSafeErrorMetadata(error));
+      return null;
+    }
+  };
+
+  const write = async (laneGit: WorkspaceLaneGit, reserved: Reservation): Promise<boolean> => {
+    try {
       return await setConvoLaneGit({
         user,
-        conversationId: placed.conversationId,
+        conversationId: reserved.conversationId,
         laneGit,
         ...(safeRepo ? { repo: safeRepo } : {}),
-        reportedAt,
+        seq: reserved.seq,
         ...(workspace
-          ? { workspace: { ...workspace, ...(placed.required ? { required: true } : {}) } }
+          ? { workspace: { ...workspace, ...(reserved.required ? { required: true } : {}) } }
           : {}),
       });
     } catch (error) {
@@ -114,16 +133,24 @@ export function createLaneGitRecorder({
     }
   };
 
+  /** The state this recorder last wrote, so a command that changed nothing costs no database work. */
+  let lastWritten: string | undefined;
+
   return (laneGit) => {
-    /** Stamped when the command settles, not when its write finally runs. */
-    const reportedAt = now();
-    const previous = pendingWrites.get(queueKey) ?? Promise.resolve();
-    /** `write` never rejects, so a failed write cannot stall the writes queued behind it. */
-    const next = previous.then(() => write(laneGit, reportedAt));
-    pendingWrites.set(queueKey, next);
-    void next.then(() => {
-      if (pendingWrites.get(queueKey) === next) pendingWrites.delete(queueKey);
+    const state = JSON.stringify([laneGit.branch, laneGit.head]);
+    if (state === lastWritten) return Promise.resolve(false);
+
+    const previous = reservationTails.get(queueKey) ?? Promise.resolve();
+    const reservation = previous.then(() => reserve());
+    reservationTails.set(queueKey, reservation);
+    void reservation.then(() => {
+      if (reservationTails.get(queueKey) === reservation) reservationTails.delete(queueKey);
     });
-    return next;
+    return reservation.then(async (reserved) => {
+      if (reserved == null) return false;
+      const applied = await write(laneGit, reserved);
+      if (applied) lastWritten = state;
+      return applied;
+    });
   };
 }

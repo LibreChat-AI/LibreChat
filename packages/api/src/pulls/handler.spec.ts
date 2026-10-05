@@ -82,7 +82,13 @@ describe('createConversationPullRequestHandler', () => {
       token: 'ghp_secret',
       head: null,
       ttlMs: 30_000,
-      limits: { requestTimeoutMs: 10_000, lookupTimeoutMs: 30_000, maxCheckRunPages: 10 },
+      limits: {
+        requestTimeoutMs: 10_000,
+        lookupTimeoutMs: 30_000,
+        maxCheckRunPages: 10,
+        maxCandidatePullRequests: 10,
+        maxHeadComparisons: 3,
+      },
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ pullRequest: pr });
@@ -95,12 +101,20 @@ describe('createConversationPullRequestHandler', () => {
         requestTimeoutSeconds: 3,
         lookupTimeoutSeconds: 8,
         maxCheckRunPages: 4,
+        maxCandidatePullRequests: 25,
+        maxHeadComparisons: 6,
       },
     });
     await run();
     expect(lookup).toHaveBeenCalledWith(
       expect.objectContaining({
-        limits: { requestTimeoutMs: 3_000, lookupTimeoutMs: 8_000, maxCheckRunPages: 4 },
+        limits: {
+          requestTimeoutMs: 3_000,
+          lookupTimeoutMs: 8_000,
+          maxCheckRunPages: 4,
+          maxCandidatePullRequests: 25,
+          maxHeadComparisons: 6,
+        },
       }),
     );
   });
@@ -155,13 +169,45 @@ describe('createConversationPullRequestHandler', () => {
     });
   });
 
-  it('answers null without reading anything when the feature is off', async () => {
+  it('answers null, and never touches GitHub, when the feature is off', async () => {
     for (const settings of [null, { enabled: false }]) {
-      const { run, res, getConvoLaneGit } = setup({ settings });
+      const { run, res, lookup } = setup({ settings });
       await run();
-      expect(getConvoLaneGit).not.toHaveBeenCalled();
+      expect(lookup).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({ pullRequest: null });
     }
+  });
+
+  it('starts the config and the owner-scoped lane reads together, not one after the other', async () => {
+    const order: string[] = [];
+    let releaseConfig: (config: unknown) => void = () => undefined;
+    const getAppConfig = jest.fn(
+      () =>
+        new Promise((resolve) => {
+          order.push('config:start');
+          releaseConfig = resolve;
+        }),
+    );
+    const getConvoLaneGit = jest.fn(async () => {
+      order.push('lane:start');
+      return { branch: 'feat/x', head: null, repo: 'o/r' };
+    });
+    const handler = createConversationPullRequestHandler({
+      getConvoLaneGit,
+      getAppConfig: getAppConfig as never,
+      lookup: jest.fn().mockResolvedValue({ ok: true, value: pr }),
+      env: { GH_TOKEN: 'ghp_secret' },
+    });
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const done = handler(
+      { user: { id: 'u1' }, params: { conversationId: 'c1' } } as unknown as ServerRequest,
+      res as unknown as Response,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['config:start', 'lane:start']);
+    releaseConfig(configWith(enabled));
+    await done;
+    expect(res.json).toHaveBeenCalledWith({ pullRequest: pr });
   });
 
   it.each([

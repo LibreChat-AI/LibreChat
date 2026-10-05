@@ -1874,6 +1874,11 @@ export const agentsEndpointSchema = baseEndpointSchema
           lookupTimeoutSeconds: z.number().int().min(1).max(120).optional().default(30),
           /** Pages of 100 check runs read before the rollup is reported as still running. */
           maxCheckRunPages: z.number().int().min(1).max(50).optional().default(10),
+          /** Pull requests listed per state when matching a branch's history to the commit a chat
+           *  last ran at. Raise it for branch names that are reused many times. */
+          maxCandidatePullRequests: z.number().int().min(1).max(100).optional().default(10),
+          /** Candidates compared with that commit before the search gives up. Each is one request. */
+          maxHeadComparisons: z.number().int().min(0).max(20).optional().default(3),
         })
         .superRefine((value, ctx) => {
           if (value.enabled && !value.token) {

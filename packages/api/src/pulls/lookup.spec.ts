@@ -276,3 +276,16 @@ describe('lookup policy scoping', () => {
     expect(find).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('lookup policy scoping of the history search', () => {
+  it.each([['maxCandidatePullRequests'], ['maxHeadComparisons']])(
+    'does not share a result between callers with different %s',
+    async (field) => {
+      const find = jest.fn().mockResolvedValue(value);
+      const lookup = createPullRequestLookup({ source: { find } });
+      await lookup({ ...input, limits: { [field]: 3 } });
+      await lookup({ ...input, limits: { [field]: 30 } });
+      expect(find).toHaveBeenCalledTimes(2);
+    },
+  );
+});
