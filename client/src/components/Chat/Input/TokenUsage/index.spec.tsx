@@ -55,7 +55,7 @@ const config = ({
   contextUsage,
 }: {
   balanceEnabled?: boolean;
-  display?: 'credits' | 'currency' | 'percent';
+  display?: string;
   contextUsage?: boolean;
 } = {}) => ({
   balance: { enabled: balanceEnabled, startBalance: 20_000, display },
@@ -121,6 +121,14 @@ describe('TokenUsage gauge', () => {
     );
     const card = await openCard();
     expect(within(card).getByTestId('balance-value')).toHaveTextContent('38% used');
+  });
+
+  it('reads an unknown display mode from an unvalidated override as credits', async () => {
+    mockStartupConfig.mockReturnValue(config({ display: 'dollars' }));
+    renderGauge();
+    const card = await openCard();
+    expect(within(card).getByRole('heading', { name: 'Balance' })).toBeInTheDocument();
+    expect(within(card).getByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
   });
 
   it('mounts nothing when both context usage and balance are off', () => {
