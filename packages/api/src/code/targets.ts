@@ -408,6 +408,8 @@ export interface SubagentCodeCallContext {
   /** This child execution; its own subagents name it as their `parentRunId`. */
   executionId?: string;
   parentRunId?: string;
+  /** The agent that dispatched this call; read when its run was never placed (a self-spawn). */
+  parentAgentId?: string;
   hostArgs?: SubagentHostArgValues;
   /** Cancels this call; a canceled call never claims a machine. */
   signal?: AbortSignal;
@@ -658,6 +660,19 @@ export function createSubagentCodeRouting<TContext>({
       { environmentId: target.environmentId, routed: true },
       context,
     );
+  /**
+   * The machine a call's parent runs on per call: its execution's recorded route, else
+   * the routed claim of the parent agent, since an agent keeps one machine per request
+   * even in runs that were never placed (an `allowSelf` spawn reuses its inputs).
+   */
+  const parentRouteOf = (context?: SubagentCodeCallContext | null): string | undefined => {
+    const recorded = context?.parentRunId ? childRoutes.get(context.parentRunId) : undefined;
+    if (recorded != null || !context?.parentAgentId) {
+      return recorded;
+    }
+    const claimed = routeByAgent.get(context.parentAgentId);
+    return claimed?.routed === true ? (claimed.environmentId ?? undefined) : undefined;
+  };
   /** The machine an omitted call should follow: this subagent's earlier per-call
    * route, else its routed parent's machine unless that would move it. */
   const inheritedRoute = (agentId: string, parentEnvironmentId?: string): string | undefined => {
@@ -683,9 +698,7 @@ export function createSubagentCodeRouting<TContext>({
     },
     async place({ agent, flags, context, unavailableReason }) {
       const hostArgs = getSubagentHostArgValues(context);
-      const parentEnvironmentId = context?.parentRunId
-        ? childRoutes.get(context.parentRunId)
-        : undefined;
+      const parentEnvironmentId = parentRouteOf(context);
       const requested =
         hostArgs?.[SUBAGENT_MACHINE_ARG] != null || hostArgs?.[SUBAGENT_WORKSPACE_ARG] != null;
       if (requested) {

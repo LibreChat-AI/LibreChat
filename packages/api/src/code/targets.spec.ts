@@ -886,6 +886,39 @@ describe('subagent code routing', () => {
     expect(explicit.target?.environmentId).toBe('laptop');
   });
 
+  it('passes a routed parent machine on from a self-spawned run it never placed', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const parentCall = call({ machine: 'buildbox' });
+    const placement = await routing.place({ agent: reviewer, flags, context: parentCall });
+    routing.attach(new Map(), {
+      agentId: reviewer.id,
+      context: parentCall,
+      placement,
+      codeExecutionContext: placement.target?.context,
+      toolContext: 'buildbox',
+    });
+    const tester = {
+      id: 'agent_tester',
+      code_environment_id: 'laptop',
+      code_environment_ids: ['buildbox'],
+    };
+
+    const fromSelfRun = await routing.place({
+      agent: tester,
+      flags,
+      context: { ...call(undefined, 'self-run-never-placed'), parentAgentId: reviewer.id },
+    });
+    const fromUnroutedAgent = await routing.place({
+      agent: { ...tester, id: 'agent_docs' },
+      flags,
+      context: { ...call(undefined, 'other-run'), parentAgentId: 'agent_unrouted' },
+    });
+
+    expect(fromSelfRun.target?.environmentId).toBe('buildbox');
+    expect(fromUnroutedAgent.target).toBeUndefined();
+  });
+
   it('rejects a revoked allowlist entry and a principal that lost the machine', async () => {
     serveWorkers(allOnline);
 

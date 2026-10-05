@@ -1255,7 +1255,10 @@ const initializeClientWithProvider = async ({
         codeExecutionAvailable: lazyCodeEnvAvailable,
         memoryAvailable,
       }),
-      subagentCodeRouting.describe(agent, { statefulCodeSessions, statefulCodeEnvironment }),
+      waitForAbort(
+        subagentCodeRouting.describe(agent, { statefulCodeSessions, statefulCodeEnvironment }),
+        signal,
+      ),
     ]);
     return copyToolApprovalAdmissionMetadata(
       {
@@ -1748,7 +1751,8 @@ const initializeClientWithProvider = async ({
   };
 
   /** A graph member spawned by a per-call-routed parent follows that parent's machine when it
-   *  may, unless it already initialized on its own route this request. */
+   *  may, unless it already initialized on its own route this request. Its config belongs to
+   *  the parent's execution, so it is never shared through the graph-member cache. */
   const loadRoutedGraphMember = async (memberId, parentRunId, graphSignal) => {
     throwIfAborted(graphSignal);
     const cached = graphMemberConfigsById.get(memberId);
@@ -1770,9 +1774,6 @@ const initializeClientWithProvider = async ({
         codeFlags: getSubagentCodeFlags(agent),
         viewAccessChecked: true,
       });
-      if (!subagentCodeRouting.isRouted(executionId)) {
-        graphMemberConfigsById.set(memberId, config);
-      }
       return config;
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal: graphSignal })) {
