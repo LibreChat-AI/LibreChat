@@ -13,7 +13,11 @@ import Graphs from '../Graphs';
 
 let mockAgentsConfig: Partial<TAgentsEndpoint> = {
   maxSubagents: 2,
-  capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+  capabilities: [
+    AgentCapabilities.subagents,
+    AgentCapabilities.subagent_graphs,
+    AgentCapabilities.execute_code,
+  ],
 };
 let mockAgentsMap: TAgentsMap = {};
 let mockSetValue: UseFormReturn<AgentForm>['setValue'];
@@ -144,7 +148,11 @@ beforeEach(() => {
   mockAgentsMap = {};
   mockAgentsConfig = {
     maxSubagents: 2,
-    capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+    capabilities: [
+      AgentCapabilities.subagents,
+      AgentCapabilities.subagent_graphs,
+      AgentCapabilities.execute_code,
+    ],
   };
 });
 
@@ -418,4 +426,32 @@ test('saved but capability-disabled graph members do not enable the warning', ()
     />,
   );
   expect(screen.queryByRole('note')).toBeNull();
+});
+
+test.each(
+  ['parent', 'descendant'].flatMap((source) =>
+    [false, true].flatMap((executeCode) =>
+      [undefined, false, true].map((endpointEnabled) => ({ source, executeCode, endpointEnabled })),
+    ),
+  ),
+)('gates implicit approval on executable code: %j', ({ source, executeCode, endpointEnabled }) => {
+  useAttachedWarnings(endpointEnabled);
+  if (!executeCode) {
+    mockAgentsConfig.capabilities = mockAgentsConfig.capabilities?.filter(
+      (capability) => capability !== AgentCapabilities.execute_code,
+    );
+  }
+  render(
+    <Harness
+      subagents={{ ...initialSubagents, enabled: source === 'descendant', agent_ids: ['attached'] }}
+      defaults={{
+        edges: [],
+        execute_code: source === 'parent',
+        stateful_code_sessions: source === 'parent',
+      }}
+    />,
+  );
+  expect(screen.queryByRole('note') != null).toBe(
+    endpointEnabled === true || (endpointEnabled !== false && executeCode),
+  );
 });

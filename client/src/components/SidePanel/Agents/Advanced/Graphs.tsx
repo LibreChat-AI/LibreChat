@@ -110,7 +110,8 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     getValues,
   ]);
   const attachedCode =
-    agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) &&
+    agentsConfig?.capabilities.includes(AgentCapabilities.execute_code) &&
+    agentsConfig.capabilities.includes(AgentCapabilities.stateful_code_sessions) &&
     reachable.agents.some(
       (agent) =>
         agent.stateful_code_sessions === true &&
