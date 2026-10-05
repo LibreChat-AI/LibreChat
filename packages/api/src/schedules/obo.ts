@@ -700,7 +700,6 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
       if (!result?.access_token || !result.expires_at || result.expires_at <= Date.now())
         throw missingGrant();
       if (!result.credential_set_id) throw missingGrant();
-      await snapshot(result.credential_set_id);
     } catch (error) {
       if (
         (error instanceof ReauthenticationRequiredError && error.reason !== 'binding') ||
@@ -736,8 +735,19 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         true,
       );
     }
-    // Provider work and peer adoption cannot retain an earlier operator/role allow decision.
     if (credentialBinding(await authorizeRead()) !== binding) throw missingGrant();
+    // No authority/provider I/O may follow the last teardown-fenced generation observation.
+    try {
+      await snapshot(result.credential_set_id);
+    } catch (error) {
+      if (error instanceof OboTokenResolutionError) throw error;
+      throw new OboTokenResolutionError(
+        'session_refresh_failed',
+        'Temporary scheduled OBO credential-store failure.',
+        true,
+        error,
+      );
+    }
     return result;
   };
 

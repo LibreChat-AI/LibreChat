@@ -42,6 +42,7 @@ const {
   createAuthIdentityContext,
   isOAuthServer,
   isAbortError,
+  getSafeErrorMetadata,
   isDirectOpenIDBearerRecoveryEnabled,
   bindScheduledMCPBearerInvocation,
   createMCPPermissionDeniedError,
@@ -1436,7 +1437,7 @@ function createToolInstance({
       } else {
         logger.error(
           `[MCP][${serverName}][${toolName}][User: ${userId}] Error calling MCP tool:`,
-          error,
+          getSafeErrorMetadata(error),
         );
       }
 
@@ -1574,7 +1575,10 @@ async function getMCPSetupData(userId, options = {}) {
     // that require user context (e.g., those with {{LIBRECHAT_USER_ID}} placeholders).
     appConnections = await mcpManager.getLoadedAppConnections(capabilityProfile);
   } catch (error) {
-    logger.error(`[MCP][User: ${userId}] Error getting app connections:`, error);
+    logger.error(
+      `[MCP][User: ${userId}] Error getting app connections:`,
+      getSafeErrorMetadata(error),
+    );
   }
   const userConnections = mcpManager.getUserConnections(userId, capabilityProfile) || new Map();
   const oauthServers = new Set(
@@ -1649,7 +1653,10 @@ async function checkOAuthFlowStatus(userId, serverName, tenantId = getTenantId()
 
     return { hasActiveFlow: false, hasFailedFlow: false };
   } catch (error) {
-    logger.error(`[MCP Connection Status] Error checking OAuth flows for ${serverName}:`, error);
+    logger.error(
+      `[MCP Connection Status] Error checking OAuth flows for ${serverName}:`,
+      getSafeErrorMetadata(error),
+    );
     return { hasActiveFlow: false, hasFailedFlow: false };
   }
 }

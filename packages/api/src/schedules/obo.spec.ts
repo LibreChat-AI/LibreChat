@@ -321,6 +321,52 @@ describe('separately authorized scheduled OBO grants', () => {
     expect(tokenStore.getAll()).toEqual([]);
   });
 
+  it.each(['revoke', 'purge'] as const)(
+    'fences verified manual bearer delivery after %s completes during final authorization',
+    async (operation) => {
+      const { service, row, tokenStore, authorizeInvocation } = harness();
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      const provider = (await service.resolve(user, {
+        context: { ...context, manual: true },
+        target,
+      }))!;
+      authorizeInvocation
+        .mockReset()
+        .mockResolvedValueOnce(true)
+        .mockImplementationOnce(async () => {
+          if (operation === 'revoke') await service.revoke(user.id, row.id, 'Files');
+          else await service.purge(user.id, row.id);
+          expect(tokenStore.getAll()).toEqual([]);
+          return true;
+        });
+      await expect(provider()).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
+      expect(tokenStore.getAll()).toEqual([]);
+    },
+  );
+
+  it('keeps final-delivery fence outages retryable without delivering a manual bearer', async () => {
+    const { service, row, flow, tokenStore, authorizeInvocation } = harness();
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    const provider = (await service.resolve(user, {
+      context: { ...context, manual: true },
+      target,
+    }))!;
+    authorizeInvocation
+      .mockReset()
+      .mockResolvedValueOnce(true)
+      .mockImplementationOnce(async () => {
+        jest.spyOn(flow, 'acquireLease').mockResolvedValueOnce(null);
+        return true;
+      });
+    await expect(provider()).rejects.toMatchObject({
+      reason: 'session_refresh_failed',
+      retryable: true,
+    });
+    expect(tokenStore.getAll().length).toBeGreaterThan(0);
+    await service.revoke(user.id, row.id, 'Files');
+    expect(tokenStore.getAll()).toEqual([]);
+  });
+
   it('refuses even a cached bearer after authority is withdrawn, while preserving revoke and cleanup', async () => {
     const { service, row, tokenStore, requestGrant, setInvocationAllowed } = harness();
     await service.enroll(user.id, row.id, 'Files', 'assertion');
