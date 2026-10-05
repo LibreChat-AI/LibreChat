@@ -15,6 +15,8 @@ interface DropdownProps {
   iconClassName?: string;
   itemClassName?: string;
   sameWidth?: boolean;
+  /** Preferred CSS minimum width, capped to the space available to the menu. */
+  minWidth?: string;
   anchor?: { x: string; y: string };
   gutter?: number;
   modal?: boolean;
@@ -77,6 +79,7 @@ const Menu: React.FC<MenuProps> = ({
   modal,
   portal,
   sameWidth,
+  minWidth,
   gutter = 8,
   finalFocus,
   unmountOnHide,
@@ -97,7 +100,14 @@ const Menu: React.FC<MenuProps> = ({
       finalFocus={finalFocus}
       unmountOnHide={unmountOnHide}
       preserveTabOrder={preserveTabOrder}
-      style={{ zIndex, ...style }}
+      style={{
+        zIndex,
+        minWidth:
+          minWidth == null
+            ? undefined
+            : `min(${minWidth}, calc(100vw - 1rem), var(--popover-available-width, 100vw))`,
+        ...style,
+      }}
       /* Portaled menus land beside modal OGDialog layers, which set
          `pointer-events: none` on body and re-enable it only on their own
          content. Without `pointer-events-auto` the menu inherits `none` and its

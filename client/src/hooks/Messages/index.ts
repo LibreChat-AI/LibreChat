@@ -21,12 +21,17 @@ export {
 } from './useProgressiveRowMount';
 export type { RowMountWindow } from './useProgressiveRowMount';
 export { default as useMessageActions } from './useMessageActions';
+export { default as useMessagesRetention } from './useMessagesRetention';
 export { useLatestMessage, useLatestMessageId } from './useLatestMessage';
 export { default as useMemoizedChatContext } from './useMemoizedChatContext';
 export { default as useMessageProcess } from './useMessageProcess';
 export { default as useMessageHelpers } from './useMessageHelpers';
 export { default as useCopyToClipboard } from './useCopyToClipboard';
-export { hasCopyableText, useCopyMessageToClipboard } from './useCopyToClipboard';
+export {
+  hasCopyableText,
+  getMessageClipboardSource,
+  useCopyMessageToClipboard,
+} from './useCopyToClipboard';
 export { default as useContentMetadata } from './useContentMetadata';
 export { default as useMessageScrolling } from './useMessageScrolling';
 export { default as useScrollbarGutter, useScrollbarGutterSeed } from './useScrollbarGutter';

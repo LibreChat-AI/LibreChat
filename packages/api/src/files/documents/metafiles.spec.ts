@@ -1,12 +1,12 @@
 import JSZip from 'jszip';
 import { convertMetafileToSvg } from 'emf-converter';
-import { buildEmf, buildWmf, buildEmfWithRecords } from './__tests__/emf.helper';
 import {
   extractPptxMetafileSvgs,
   metafileKey,
   METAFILE_KEY_JS,
   withinRecordBudget,
 } from './metafiles';
+import { buildEmf, buildWmf, buildEmfWithRecords } from './__tests__/emf.helper';
 
 const buildZip = async (files: Record<string, Buffer | string>): Promise<Buffer> => {
   const zip = new JSZip();

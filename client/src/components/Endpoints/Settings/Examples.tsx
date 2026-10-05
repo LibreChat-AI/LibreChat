@@ -44,7 +44,7 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
                   placeholder="Set example input. Example is ignored if empty."
                   className={cn(
                     defaultTextProps,
-                    'flex max-h-[138px] min-h-[75px] w-full resize-none px-3 py-2',
+                    'flex max-h-[8.625rem] min-h-[4.6875rem] w-full resize-none px-3 py-2',
                   )}
                 />
               </div>
@@ -71,7 +71,7 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
                   placeholder={'Set example output. Example is ignored if empty.'}
                   className={cn(
                     defaultTextProps,
-                    'flex max-h-[300px] min-h-[75px] w-full resize-none px-3 py-2',
+                    'flex max-h-[18.75rem] min-h-[4.6875rem] w-full resize-none px-3 py-2',
                   )}
                 />
               </div>
@@ -85,14 +85,14 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
           className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 mr-2 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={removeExample}
         >
-          <Minus className="w-[16px]" aria-hidden="true" />
+          <Minus className="w-[1rem]" aria-hidden="true" />
         </Button>
         <Button
           type="button"
           className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={addExample}
         >
-          <Plus className="w-[16px]" aria-hidden="true" />
+          <Plus className="w-[1rem]" aria-hidden="true" />
         </Button>
       </div>
     </>

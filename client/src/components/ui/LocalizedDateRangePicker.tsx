@@ -160,7 +160,7 @@ export default function LocalizedDateRangePicker({
         <Popover.Content
           align="end"
           sideOffset={6}
-          className="border-border-light bg-surface-primary text-text-primary z-50 w-[320px] max-w-[calc(100vw-2rem)] rounded-lg border p-4 shadow-lg"
+          className="border-border-light bg-surface-primary text-text-primary z-50 w-[20rem] max-w-[calc(100vw-2rem)] rounded-lg border p-4 shadow-lg"
         >
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

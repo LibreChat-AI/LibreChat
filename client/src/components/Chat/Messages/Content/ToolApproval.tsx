@@ -100,6 +100,14 @@ export default function ToolApproval({
   const invalidJsonId = useId();
   const allowAlwaysHintId = useId();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const rememberScope = approval.remember_scope;
+  const rememberUnavailable = approval.remember_unavailable;
+  const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
+    connection: 'com_ui_tool_approval_connection_unavailable',
+    disabled: 'com_ui_tool_approval_remember_disabled',
+    storage: 'com_ui_tool_approval_storage_unavailable',
+    background: 'com_ui_tool_approval_background_unavailable',
+  };
   const conversationId = useContext(ChatContext)?.conversation?.conversationId;
   const composerPresents = useComposerPresentsApproval(conversationId, actionId);
   const deferToComposer = surface === 'thread' && composerPresents;
@@ -271,6 +279,20 @@ export default function ToolApproval({
       data-tool-call-id={toolCallId}
     >
       {descriptionNode}
+      {rememberUnavailable && (
+        <p className="text-text-warning text-xs" role="status">
+          {localize(unavailableLabels[rememberUnavailable])}
+        </p>
+      )}
+      {rememberScope && (
+        <p className="text-text-secondary text-xs">
+          {localize(
+            rememberScope === 'chat'
+              ? 'com_ui_tool_approval_remember_chat'
+              : 'com_ui_tool_approval_remember_always',
+          )}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {allowedDecisions.map((decision) => {
           const Icon = DECISION_ICON[decision];

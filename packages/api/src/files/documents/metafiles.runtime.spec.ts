@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import { JSDOM } from 'jsdom';
-import { pptxToHtml } from './html';
 import { buildEmf } from './__tests__/emf.helper';
+import { pptxToHtml } from './html';
 
 const PNG = 'data:image/png;base64,iVBORw0KGgo=';
 

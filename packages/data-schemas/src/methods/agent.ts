@@ -2662,6 +2662,7 @@ export function createAgentMethods(
       'code_environment_ids',
       'repositoryInstructions',
       'git_identity',
+      'instructionsPrompt',
       'skills_scope',
       'skill_authoring_enabled',
     ]) {

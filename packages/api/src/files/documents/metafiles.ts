@@ -1,7 +1,7 @@
 import yauzl from 'yauzl';
 import { logger } from '@librechat/data-schemas';
-import { convertMetafileToSvg } from 'emf-converter';
 import { megabyte } from 'librechat-data-provider';
+import { convertMetafileToSvg } from 'emf-converter';
 
 /* Browsers cannot decode EMF/WMF, so pptx-preview's `<img>` for them is
  * broken. We convert on the server and let the iframe swap them in. */

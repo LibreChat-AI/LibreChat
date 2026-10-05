@@ -1,7 +1,7 @@
 import yauzl from 'yauzl';
 import { excelMimeTypes, megabyte } from 'librechat-data-provider';
-import { tryLibreOfficePreview } from './libreoffice';
 import { METAFILE_KEY_JS, extractPptxMetafileSvgs } from './metafiles';
+import { tryLibreOfficePreview } from './libreoffice';
 import { assertSafeZipSize } from './zipSafety';
 
 /**

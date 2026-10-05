@@ -15,13 +15,20 @@ import {
   getActivityLabelText,
 } from '~/utils';
 import {
+  FoldRail,
+  RailGlyph,
+  useFoldPath,
+  useRailHover,
+  revealFoldHeader,
+  FoldHeaderContext,
+} from './rail';
+import {
   FailedRevealContext,
   FailedRevealPill,
   useFailedReveal,
   useFailedRevealTrigger,
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { FoldRail, RailGlyph, FoldHeaderContext, revealFoldHeader, useRailHover } from './rail';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
@@ -312,6 +319,7 @@ export default function ToolCallGroup({
   );
   const [userOverride, setUserOverride] = useState(initialState != null);
   const [shouldRenderBody, setShouldRenderBody] = useState(isExpanded);
+  useFoldPath(rootRef, shouldRenderBody);
   const previousIsExpandedRef = useRef(isExpanded);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const notifyLayoutChange = useCallback(() => {
@@ -554,7 +562,7 @@ export default function ToolCallGroup({
   }, [hasActiveToolCall, userOverride, suppressAutoExpand]);
 
   return (
-    <div className="mt-1 mb-2" ref={rootRef}>
+    <div className="mt-1 mb-2" ref={rootRef} data-fold-root="">
       <div className="flex w-full items-center gap-2" ref={headerRef}>
         <button
           type="button"
@@ -636,7 +644,11 @@ export default function ToolCallGroup({
         data-testid="tool-call-group-panel"
       >
         {shouldRenderBody && (
-          <div className={cn('overflow-hidden', FOLD_RAIL_CLASSES)} ref={expandRef}>
+          <div
+            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
+            ref={expandRef}
+            data-fold-panel=""
+          >
             <FoldRail
               hover={railHover}
               expanded={isExpanded && (phaseHeader?.expanded ?? true)}

@@ -567,6 +567,11 @@ export const callTool = <T extends m.ToolId>({
   );
 };
 
+export const resetToolApprovalGrants = (params: {
+  agentId: string;
+  toolName?: string;
+}): Promise<{ reset: true }> => request.post(endpoints.resetToolApprovalGrants(), params);
+
 export const getToolCalls = (params: q.GetToolCallParams): Promise<q.ToolCallResults> => {
   return request.get(
     endpoints.agents({

@@ -905,6 +905,7 @@ export function areMessageFieldsEqual(
     prevMsg.createdAt === nextMsg.createdAt &&
     prevMsg.depth === nextMsg.depth &&
     prevMsg.isCreatedByUser === nextMsg.isCreatedByUser &&
+    prevMsg.isUserSubmitted === nextMsg.isUserSubmitted &&
     (prevMsg.children?.length ?? 0) === (nextMsg.children?.length ?? 0) &&
     prevMsg.content === nextMsg.content &&
     prevMsg.model === nextMsg.model &&

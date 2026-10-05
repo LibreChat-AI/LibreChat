@@ -38,7 +38,9 @@ import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery'
 import { claimQueuedIntent, releaseQueuedIntent } from '~/utils/queueIntent';
 import useUpdateFiles from '~/hooks/Files/useUpdateFiles';
 import ChatSettingsProvider from '~/routes/ChatSettings';
+import { duringRunActionAtom } from '~/store/duringRun';
 import { applyPendingAction } from '~/utils/approval';
+import English from '~/locales/en/translation.json';
 import useQueueDrain from '../useQueueDrain';
 import store from '~/store';
 
@@ -204,6 +206,7 @@ beforeEach(() => resetQueueFamilies());
 
 describe('useSteering', () => {
   beforeEach(() => {
+    getDefaultStore().set(duringRunActionAtom, 'steer');
     getDefaultStore().set(recoveryDispositionsFamily(CONVO_ID), {});
     jest.clearAllMocks();
     mockApprovalMode = undefined;
@@ -479,8 +482,8 @@ describe('useSteering', () => {
     });
 
     it('honors the queue preference while keeping the steer override available', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'queue');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'queue');
       });
       expect(result.current.effectiveAction).toBe('queue');
       // The per-send menu can still override to steer: availability is
@@ -490,8 +493,8 @@ describe('useSteering', () => {
 
     it('degrades to queue without a real conversation id', () => {
       // Explicitly request steer so this verifies the missing-id fallback to queue.
-      const { result } = setup({ conversationId: Constants.NEW_CONVO as string }, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setup({ conversationId: Constants.NEW_CONVO as string }, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       expect(result.current.effectiveAction).toBe('queue');
     });
@@ -515,8 +518,8 @@ describe('useSteering', () => {
         } as unknown as TMessage,
       ];
       // Explicitly request steer so this verifies the pause fallback to queue.
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       expect(result.current.pausedOnApproval).toBe(true);
       expect(result.current.effectiveAction).toBe('queue');
@@ -2184,8 +2187,8 @@ describe('useSteering', () => {
 
   describe('submitDuringRun', () => {
     it('routes to the steer POST with an optimistic sending chip', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       let consumed = false;
       act(() => {
@@ -2203,8 +2206,8 @@ describe('useSteering', () => {
     });
 
     it('routes to the client queue when the preference is queue', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'queue');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'queue');
       });
       act(() => {
         result.current.submitDuringRun('after the run');
@@ -2214,8 +2217,8 @@ describe('useSteering', () => {
 
     it('ignores empty submissions', () => {
       // Explicitly request steer so blank-text validation exercises the steer path.
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       let consumed = true;
       act(() => {
@@ -2339,7 +2342,7 @@ describe('useSteering', () => {
      * a real conversationId. Without this fallback the always-visible button
      * would be dead for the whole first turn.
      */
-    it('falls back to interruptAndSend before a conversation exists', () => {
+    it('refuses Interrupt before a conversation exists without aborting it', () => {
       const { result, stopGenerating } = setup({
         conversationId: Constants.NEW_CONVO as string,
       });
@@ -2347,9 +2350,9 @@ describe('useSteering', () => {
       act(() => {
         consumed = result.current.interruptSteer('turn one interrupt');
       });
-      expect(consumed).toBe(true);
+      expect(consumed).toBe(false);
       expect(mockMutate).not.toHaveBeenCalled();
-      expect(stopGenerating).toHaveBeenCalled();
+      expect(stopGenerating).not.toHaveBeenCalled();
     });
 
     it('refuses empty text without touching the run', () => {
@@ -2403,8 +2406,8 @@ describe('useSteering', () => {
      * non-preempting, or they become indistinguishable from Interrupt & steer.
      */
     it('leaves the explicit Steer action non-preempting even with the preference on', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.steerInterruptsByDefault, true);
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'interrupt');
       });
       act(() => {
         result.current.steerFromComposer('explicit steer row');
@@ -2419,8 +2422,8 @@ describe('useSteering', () => {
        thread's pending block renders; its own spec covers the preempt carry. */
 
     it('an ordinary steer does not preempt by default', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       act(() => {
         result.current.submitDuringRun('just steer');
@@ -2431,10 +2434,10 @@ describe('useSteering', () => {
       );
     });
 
-    it('steerInterruptsByDefault makes the default Enter route preempt', () => {
-      const { result } = setup({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
-        set(store.steerInterruptsByDefault, true);
+    it('the Interrupt default makes Enter preempt', () => {
+      const { result } = setup({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
+        getDefaultStore().set(duringRunActionAtom, 'interrupt');
       });
       act(() => {
         result.current.submitDuringRun('enter should interrupt');
@@ -2467,6 +2470,10 @@ describe('useSteering', () => {
         expect.objectContaining({ preempt: true }),
         expect.anything(),
       );
+      expect(mockShowToast).toHaveBeenCalledWith({
+        message: English.com_ui_steer_preempt_unsupported,
+        status: 'warning',
+      });
     });
 
     it('serializes rapid steer POSTs in submission order', () => {
@@ -3474,8 +3481,8 @@ describe('useSteering', () => {
     });
 
     it('sendQueuedNow steers whenever steering is available, even under the queue preference', () => {
-      const { result } = setupWithState({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'queue');
+      const { result } = setupWithState({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'queue');
       });
       act(() => {
         result.current.steering.enqueue('send me now');
@@ -3774,8 +3781,8 @@ describe('useSteering', () => {
     }
 
     it('steers with the composer attachments as one unit', () => {
-      const { result, setFiles } = setupWithFiles({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result, setFiles } = setupWithFiles({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       let consumed = false;
       act(() => {
@@ -3931,8 +3938,8 @@ describe('useSteering', () => {
       // Seed 'steer' so this covers steerFromComposer's own filesLoading
       // guard; the queue-path guard is covered separately (queueFromComposer
       // is exercised directly with filesLoading in the composer-draft tests).
-      const { result } = setupWithFiles({ filesLoading: true }, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setupWithFiles({ filesLoading: true }, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       let consumed = true;
       act(() => {
@@ -4051,8 +4058,8 @@ describe('useSteering', () => {
     });
 
     it('does not mark usage on the steer path (the 202 already marked)', () => {
-      const { result } = setupWithFiles({}, ({ set }) => {
-        set(store.duringRunDefaultAction, 'steer');
+      const { result } = setupWithFiles({}, () => {
+        getDefaultStore().set(duringRunActionAtom, 'steer');
       });
       act(() => {
         result.current.steering.submitDuringRun('steer with media');

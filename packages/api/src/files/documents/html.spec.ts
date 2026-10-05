@@ -13,9 +13,9 @@ import {
   sanitizeOfficeHtml,
   wordDocToHtml,
 } from './html';
+import { buildEmf } from './__tests__/emf.helper';
 import { ZipBombError } from './zipSafety';
 import * as metafiles from './metafiles';
-import { buildEmf } from './__tests__/emf.helper';
 
 const fixturesDir = __dirname;
 const readFixture = (name: string): Buffer => fs.readFileSync(path.join(fixturesDir, name));

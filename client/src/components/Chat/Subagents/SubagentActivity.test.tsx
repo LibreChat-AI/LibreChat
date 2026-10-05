@@ -225,7 +225,7 @@ it('keeps a host notice inside the floating-header clearance', () => {
       notice={<div role="status">{String(19)}</div>}
     />,
   );
-  const inset = container.querySelector('[class*="pt-[52px]"]');
+  const inset = container.querySelector('[class~="pt-13"]');
   expect(inset).toContainElement(screen.getByRole('status'));
 });
 
