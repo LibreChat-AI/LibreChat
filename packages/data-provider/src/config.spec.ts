@@ -1114,6 +1114,41 @@ describe('attached code environment user config schema', () => {
   });
 });
 
+describe('agent pull request config', () => {
+  const parse = (pullRequests?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { pullRequests } } });
+
+  it('is off by default and absent when not configured', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.pullRequests).toBeUndefined();
+    const empty = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { pullRequests: {} } },
+    });
+    expect(empty.endpoints?.agents?.pullRequests).toEqual({ enabled: false, cacheTtlSeconds: 30 });
+  });
+
+  it('accepts an enabled block with an environment variable reference', () => {
+    const result = parse({ enabled: true, token: '${GITHUB_PULL_REQUEST_TOKEN}' });
+    expect(result.success).toBe(true);
+  });
+
+  it('requires a token reference when enabled', () => {
+    expect(parse({ enabled: true }).success).toBe(false);
+  });
+
+  it.each(['ghp_abcdef', '${bad name}', '$GITHUB_TOKEN', '${}'])(
+    'rejects %s as a token because only a reference is allowed',
+    (token) => {
+      expect(parse({ enabled: true, token }).success).toBe(false);
+    },
+  );
+
+  it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
+    expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
 describe('agent background completion batch config', () => {
   it('defaults and bounds automatic completion coalescing', () => {
     const defaults = configSchema.parse({

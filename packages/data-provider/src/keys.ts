@@ -109,6 +109,7 @@ export enum QueryKeys {
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
   backgroundTasks = 'backgroundTasks',
+  conversationPullRequest = 'conversationPullRequest',
   codeEnvironments = 'codeEnvironments',
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */

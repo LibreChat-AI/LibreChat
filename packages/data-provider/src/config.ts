@@ -498,6 +498,13 @@ const skillSyncTenantIdSchema = z
     message: 'must not be the reserved system tenant id',
   });
 
+const pullRequestTokenReferenceSchema = z
+  .string()
+  .trim()
+  .regex(/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/, {
+    message: 'must be an environment variable reference like ${GITHUB_PULL_REQUEST_TOKEN}',
+  });
+
 export const skillSyncGitHubSourceSchema = z
   .object({
     id: skillSyncIdentifierSchema,
@@ -1834,6 +1841,27 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .default(60_000),
             })
             .optional(),
+        })
+        .optional(),
+      /** Header pull request chip: finds the pull request for the branch a conversation's code
+       *  workspace reports, using a server-held GitHub token. Off unless an administrator opts in. */
+      pullRequests: z
+        .object({
+          enabled: z.boolean().optional().default(false),
+          /** Environment variable reference holding a read-only GitHub token, e.g.
+           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. */
+          token: pullRequestTokenReferenceSchema.optional(),
+          /** Seconds a looked-up pull request is reused before GitHub is asked again. */
+          cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
+        })
+        .superRefine((value, ctx) => {
+          if (value.enabled && !value.token) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['token'],
+              message: 'A token reference is required when pull requests are enabled',
+            });
+          }
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are
