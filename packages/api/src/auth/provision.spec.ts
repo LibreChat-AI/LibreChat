@@ -130,6 +130,32 @@ describe('createUserOnce', () => {
     expect(result).toEqual(expect.objectContaining({ created: false, error: null }));
   });
 
+  it('reads the tenant config and the start balance together', async () => {
+    const tenantId = 'tenant-a';
+    const appConfig = appConfigWith(undefined, { enabled: true, startBalance: 500 });
+    await tenantStorage.run({ tenantId }, () => firstLogin(lookupByEmail, { appConfig }));
+    let configResolved = false;
+    let balanceReadBeforeConfig = false;
+    getAppConfig.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      configResolved = true;
+      return baseConfig;
+    });
+
+    const result = await tenantStorage.run({ tenantId }, () =>
+      firstLogin(lookupByEmail, {
+        appConfig,
+        findBalanceByUser: (userId) => {
+          balanceReadBeforeConfig = !configResolved;
+          return findBalanceByUser(userId);
+        },
+      }),
+    );
+
+    expect(result).toEqual(expect.objectContaining({ created: false, error: null }));
+    expect(balanceReadBeforeConfig).toBe(true);
+  });
+
   it("continues under the recovered tenant account's config when it admits the email", async () => {
     const tenantId = 'tenant-a';
     await tenantStorage.run({ tenantId }, () => User.create(newUser));

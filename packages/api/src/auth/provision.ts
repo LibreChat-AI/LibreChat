@@ -97,9 +97,11 @@ export async function createUserOnce({
   }
 
   const userId = resolution.user._id.toString();
-  const accountConfig = resolution.user.tenantId
-    ? await resolveAppConfigForUser(getAppConfig, resolution.user)
-    : appConfig;
+  const requiresBalance = hasStartBalance(getBalanceConfig(appConfig));
+  const [accountConfig, balance] = await Promise.all([
+    resolution.user.tenantId ? resolveAppConfigForUser(getAppConfig, resolution.user) : appConfig,
+    requiresBalance ? findBalanceByUser(userId) : null,
+  ]);
   if (!isEmailDomainAllowed(email, accountConfig?.registration?.allowedDomains)) {
     logger.error(
       `[${strategyName}] Authentication blocked - email domain not allowed for recovered user ${userId}`,
@@ -107,7 +109,7 @@ export async function createUserOnce({
     return { user: null, error: EMAIL_DOMAIN_NOT_ALLOWED, created: false };
   }
 
-  if (hasStartBalance(getBalanceConfig(appConfig)) && !(await findBalanceByUser(userId))) {
+  if (requiresBalance && !balance) {
     logger.warn(
       `[${strategyName}] Concurrent first login found user ${userId} before its start balance; failing this login`,
     );
