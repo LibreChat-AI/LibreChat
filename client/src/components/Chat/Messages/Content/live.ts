@@ -292,6 +292,7 @@ function newestLine(
   serverNames: readonly string[],
   span: SpanSummary,
   preferLabels: boolean,
+  hideReasoningText: boolean,
 ): Pick<
   LiveActivity,
   'text' | 'source' | 'pendingToolCallId' | 'comboCount' | 'isBackgroundTaskCheck'
@@ -302,17 +303,14 @@ function newestLine(
       continue;
     }
     if (part.type === ContentTypes.THINK) {
-      /** Reached before any call or label, this thought IS the tail — the
-       *  model is reasoning about its next step. Its multi-line peek stays
-       *  inside the fold, so the header previews it one sentence at a time.
-       *  Unless the fold is open: the text is on screen then, and a header
-       *  repeating a line of it under the reader's eyes is noise, so the
-       *  header keeps to the thought's label. */
+      /** A live thought normally contributes its latest finished sentence.
+       *  When thoughts are hidden, leave raw reasoning out of the status line
+       *  and fall back to a generated label or an earlier activity. */
       const reasoning = typeof part.think === 'string' ? part.think : (part.think?.value ?? '');
       const label = part.reasoning_label?.trim();
-      if (preferLabels) {
-        /** Only a generated label will do: the generic thinking line is what
-         *  the grouped thought row itself says. */
+      if (preferLabels || hideReasoningText) {
+        /** A generated label is safe to show; raw reasoning stays hidden when
+         *  the reader has turned off Show thinking. */
         if (label) {
           return { text: label, source: `think:${position}`, comboCount: 1 };
         }
@@ -371,7 +369,7 @@ function newestLine(
     }
   }
   /** An open card with no label yet is titled by a line no row uses. */
-  if (preferLabels && parts.some((part) => part != null)) {
+  if ((preferLabels || hideReasoningText) && parts.some((part) => part != null)) {
     return { text: localize('com_ui_running'), source: 'running', comboCount: 1 };
   }
   return { text: '', source: '', comboCount: 1 };
@@ -399,10 +397,12 @@ export function getLiveActivity(
    *  of those is the text of a row. For a header whose rows are on screen,
    *  where quoting any of them back is repetition. */
   preferLabels = false,
+  /** Exclude raw thought text while preserving generated labels and earlier activity. */
+  hideReasoningText = false,
 ): LiveActivity {
   const span = summarizeSpan(parts, attachmentsById);
   return {
-    ...newestLine(parts, localize, serverNames, span, preferLabels),
+    ...newestLine(parts, localize, serverNames, span, preferLabels, hideReasoningText),
     outcome: { failed: span.failed, cancelled: span.cancelled },
     total: span.total,
     iconNames: getSpanIconNames(parts),
