@@ -21,7 +21,12 @@ import {
   MAX_SUBAGENTS,
   MAX_GRAPH_SUBAGENT_MEMBERS,
 } from 'librechat-data-provider';
-import type { AgentSubagentGraph, AgentSubagentGraphEdge, Agent } from 'librechat-data-provider';
+import type {
+  AgentSubagentGraph,
+  AgentSubagentGraphEdge,
+  TConfig,
+  Agent,
+} from 'librechat-data-provider';
 import type { AgentForm, OptionWithIcon } from '~/common';
 import {
   collectReachableAgents,
@@ -109,6 +114,9 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     agentsConfig?.capabilities,
     getValues,
   ]);
+  const statefulCodeSessions = agentsConfig?.statefulCodeSessions as
+    | TConfig['statefulCodeSessions']
+    | undefined;
   const attachedCode =
     agentsConfig?.capabilities.includes(AgentCapabilities.execute_code) &&
     agentsConfig.capabilities.includes(AgentCapabilities.stateful_code_sessions) &&
@@ -116,12 +124,11 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
       (agent) =>
         agent.stateful_code_sessions === true &&
         agent.tools?.includes(Tools.execute_code) &&
-        findExecutionEnvironment(agent, agentsConfig?.statefulCodeSessions?.environments)?.type ===
-          'attached',
+        findExecutionEnvironment(agent, statefulCodeSessions?.environments)?.type === 'attached',
     );
   const approvalEnabled =
     agentsConfig?.toolApproval?.enabled === true ||
-    (agentsConfig?.toolApproval?.enabled !== false && attachedCode);
+    (statefulCodeSessions?.approvalsEnabled === true && attachedCode);
   const write = (next: AgentSubagentGraph[], active?: boolean) => {
     const value = getValues('subagents');
     setValue(

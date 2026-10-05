@@ -4,6 +4,7 @@ import { EModelEndpoint, AgentCapabilities, Tools } from 'librechat-data-provide
 import type {
   AgentSubagentsConfig,
   TAgentsEndpoint,
+  TConfig,
   TAgentsMap,
   Agent,
 } from 'librechat-data-provider';
@@ -11,7 +12,8 @@ import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import Graphs from '../Graphs';
 
-let mockAgentsConfig: Partial<TAgentsEndpoint> = {
+let mockAgentsConfig: Partial<Omit<TAgentsEndpoint, 'statefulCodeSessions'>> &
+  Pick<TConfig, 'statefulCodeSessions'> = {
   maxSubagents: 2,
   capabilities: [
     AgentCapabilities.subagents,
@@ -215,16 +217,15 @@ test.each([undefined, false, true])(
         ...(mockAgentsConfig.capabilities ?? []),
         AgentCapabilities.stateful_code_sessions,
       ],
-      toolApproval: enabled == null ? undefined : { enabled },
+      toolApproval: { enabled: enabled === true },
       statefulCodeSessions: {
         allowedEnvironments: ['user', 'agent-user', 'conversation'],
+        approvalsEnabled: enabled !== false,
         environments: [
           {
             id: 'attached',
             type: 'attached',
             name: 'Machine',
-            owner: 'principal',
-            baseURL: 'https://example.invalid',
             default: true,
           },
         ],
@@ -259,16 +260,12 @@ test('managed code does not show an implicit attached approval warning', () => {
           id: 'managed',
           type: 'managed',
           name: 'Managed',
-          owner: 'deployment',
-          baseURL: 'https://example.invalid',
           default: true,
         },
         {
           id: 'attached',
           type: 'attached',
           name: 'Machine',
-          owner: 'principal',
-          baseURL: 'https://example.invalid',
         },
       ],
     },
@@ -303,16 +300,15 @@ const useAttachedWarnings = (enabled?: boolean) => {
       ...(mockAgentsConfig.capabilities ?? []),
       AgentCapabilities.stateful_code_sessions,
     ],
-    toolApproval: enabled == null ? undefined : { enabled },
+    toolApproval: { enabled: enabled === true },
     statefulCodeSessions: {
       allowedEnvironments: ['user', 'agent-user', 'conversation'],
+      approvalsEnabled: enabled !== false,
       environments: [
         {
           id: 'attached',
           type: 'attached',
           name: 'Machine',
-          owner: 'principal',
-          baseURL: 'https://example.invalid',
           default: true,
         },
       ],
@@ -454,4 +450,24 @@ test.each(
   expect(screen.queryByRole('note') != null).toBe(
     endpointEnabled === true || (endpointEnabled !== false && executeCode),
   );
+});
+
+test.each([undefined, false])(
+  'missing or disabled public attached approval metadata never implies authorization: %s',
+  (approvalsEnabled) => {
+    useAttachedWarnings();
+    mockAgentsConfig.statefulCodeSessions = {
+      ...mockAgentsConfig.statefulCodeSessions!,
+      approvalsEnabled,
+    };
+    render(<Harness defaults={{ execute_code: true, stateful_code_sessions: true }} />);
+    expect(screen.queryByRole('note')).toBeNull();
+  },
+);
+
+test('explicit public endpoint approval enablement warns without attached metadata', () => {
+  mockAgentsConfig.toolApproval = { enabled: true };
+  mockAgentsConfig.capabilities = [AgentCapabilities.subagent_graphs];
+  render(<Harness defaults={{ edges: [] }} />);
+  expect(screen.getByRole('note')).toHaveTextContent('com_ui_agent_graphs_approvals');
 });
