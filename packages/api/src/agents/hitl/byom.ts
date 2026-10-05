@@ -1,6 +1,7 @@
 import { Constants } from '@librechat/agents';
 import {
   CODE_APPROVAL_MODES,
+  CodeApprovalModeError,
   getAllowedCodeApprovalModes,
   resolveCodeApprovalMode,
   resolveCodePermissionDecision,
@@ -234,6 +235,16 @@ function permissionDecision(
   return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
 }
 
+function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
+  return CODE_APPROVAL_MODES.some((mode) => mode === value);
+}
+
+/**
+ * Validates a requested approval mode against every attached target the turn can run on.
+ * A turn with no attached target has nothing for the mode to govern, so any known mode is
+ * accepted there and resolves to `ask`: a target discovered later still starts gated, and a
+ * stale preference from another workspace never fails a turn that cannot use it.
+ */
 export function resolveAttachedCodeApprovalMode(
   requested: unknown,
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
@@ -248,6 +259,11 @@ export function resolveAttachedCodeApprovalMode(
       allowedModes: [],
       enabled: false,
     });
+  }
+  if (settingsByAgentId.size === 0) {
+    if (requested == null) return undefined;
+    if (!isCodeApprovalMode(requested)) throw new CodeApprovalModeError();
+    return 'ask';
   }
   let resolved: CodeApprovalMode | undefined;
   let rejection: Error | undefined;
@@ -266,13 +282,46 @@ export function resolveAttachedCodeApprovalMode(
     }
   }
   if (resolved == null && rejection != null) throw rejection;
-  return (
-    resolved ??
-    resolveCodeApprovalMode(requested, {
-      environment: 'attached',
-      allowedModes: CODE_APPROVAL_MODES,
-    })
-  );
+  return resolved;
+}
+
+type StoredCodeApprovalConversation = {
+  conversationId?: string | null;
+  codeApprovalMode?: string | null;
+};
+
+/**
+ * The approval mode a turn records on its conversation. A turn with attached targets records the
+ * mode it validated. A turn without one makes no approval decision, so it keeps the mode the
+ * conversation already stores (seeding it from the request only when none is stored): leaving a
+ * workspace for a turn and returning keeps the reader's pick, which is validated again against
+ * the targets of whichever later turn uses it. Omitting the key would `$unset` the stored mode.
+ */
+export function resolvePersistedCodeApprovalMode({
+  requested,
+  conversationId,
+  conversation,
+  settingsByAgentId,
+  approvalsEnabled = true,
+}: {
+  requested: unknown;
+  conversationId?: string | null;
+  conversation?: StoredCodeApprovalConversation | null;
+  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>;
+  approvalsEnabled?: boolean;
+}): CodeApprovalMode | undefined {
+  const effective = resolveAttachedCodeApprovalMode(requested, settingsByAgentId, approvalsEnabled);
+  if (!approvalsEnabled || settingsByAgentId.size > 0) {
+    return effective;
+  }
+  const stored =
+    conversation != null && conversation.conversationId === conversationId
+      ? conversation.codeApprovalMode
+      : undefined;
+  if (isCodeApprovalMode(stored)) {
+    return stored;
+  }
+  return isCodeApprovalMode(requested) ? requested : undefined;
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {

@@ -8,6 +8,7 @@ import {
   isStatefulCodeEnvironmentToolName,
   markNativeCodeToolApprovalRequests,
   resolveAttachedCodeApprovalMode,
+  resolvePersistedCodeApprovalMode,
 } from './byom';
 import { canAgentGraphPause } from './admission';
 
@@ -707,3 +708,136 @@ for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] a
     },
   );
 }
+
+describe('approval mode without attached targets', () => {
+  const restrictedSettings: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: { permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } } },
+  };
+  const attachedContext = (settings: AttachedCodeEnvironmentPolicySettings) => ({
+    environmentType: 'attached',
+    codeEnvironmentConfigSchema: settings.configSchema,
+    codeEnvironmentSettings: settings.settings,
+  });
+
+  test.each(['ask', 'acceptEdits', 'fullAccess'] as const)(
+    'accepts a remembered %s mode for a turn that has nothing attached, resolving it to ask',
+    (requested) => {
+      const settings = collectAttachedCodeEnvironmentPolicySettings([
+        { id: 'terra', codeExecutionContext: { environmentType: 'managed' } },
+      ]);
+      expect(settings.size).toBe(0);
+      expect(resolveAttachedCodeApprovalMode(requested, settings)).toBe('ask');
+    },
+  );
+
+  test('still rejects values that are not approval modes and treats an absent mode as none', () => {
+    for (const requested of ['unrestricted', 'FULLACCESS', 1, {}]) {
+      expect(() => resolveAttachedCodeApprovalMode(requested, new Map())).toThrow('not permitted');
+    }
+    expect(resolveAttachedCodeApprovalMode(undefined, new Map())).toBeUndefined();
+    expect(resolveAttachedCodeApprovalMode(null, new Map())).toBeUndefined();
+  });
+
+  test('keeps strict validation once any attached target exists', () => {
+    const unconfigured = new Map([['attached-agent', {}]]);
+    expect(resolveAttachedCodeApprovalMode('ask', unconfigured)).toBe('ask');
+    expect(() => resolveAttachedCodeApprovalMode('acceptEdits', unconfigured)).toThrow(
+      'not permitted',
+    );
+    expect(() => resolveAttachedCodeApprovalMode('fullAccess', unconfigured)).toThrow(
+      'not permitted',
+    );
+  });
+
+  test('validates against a subagent machine when the parent runs without a workspace', () => {
+    const parent = (child: Parameters<typeof collectAttachedCodeEnvironmentPolicySettings>[0][0]) =>
+      collectAttachedCodeEnvironmentPolicySettings([
+        { id: 'parent', lazySubagentConfigs: [child] },
+      ]);
+    const restricted = parent({
+      id: 'child',
+      codeExecutionContext: attachedContext(restrictedSettings),
+    });
+    expect([...restricted.keys()]).toEqual(['child']);
+    expect(() => resolveAttachedCodeApprovalMode('fullAccess', restricted)).toThrow(
+      'not permitted',
+    );
+    const permissive = parent({
+      id: 'child',
+      codeExecutionContext: attachedContext(fullAccessSettings),
+    });
+    expect(resolveAttachedCodeApprovalMode('fullAccess', permissive)).toBe('fullAccess');
+    const graphMember = collectAttachedCodeEnvironmentPolicySettings([
+      {
+        id: 'parent',
+        subagentGraphConfigs: [
+          {
+            memberConfigs: [
+              { id: 'member', codeExecutionContext: attachedContext(restrictedSettings) },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(() => resolveAttachedCodeApprovalMode('fullAccess', graphMember)).toThrow(
+      'not permitted',
+    );
+  });
+
+  test('leaves the approvals-disabled contract unchanged', () => {
+    expect(() => resolveAttachedCodeApprovalMode('fullAccess', new Map(), false)).toThrow(
+      'not permitted',
+    );
+    expect(
+      resolvePersistedCodeApprovalMode({
+        requested: 'ask',
+        conversationId: 'convo-1',
+        conversation: { conversationId: 'convo-1', codeApprovalMode: 'fullAccess' },
+        settingsByAgentId: new Map(),
+        approvalsEnabled: false,
+      }),
+    ).toBeUndefined();
+  });
+
+  describe('persisted mode', () => {
+    const persist = (
+      requested: unknown,
+      stored?: string,
+      settingsByAgentId: Map<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
+      storedConversationId = 'convo-1',
+    ) =>
+      resolvePersistedCodeApprovalMode({
+        requested,
+        conversationId: 'convo-1',
+        conversation:
+          stored == null
+            ? null
+            : { conversationId: storedConversationId, codeApprovalMode: stored },
+        settingsByAgentId,
+      });
+
+    test('keeps the stored mode through a turn with nothing attached', () => {
+      expect(persist('ask', 'fullAccess')).toBe('fullAccess');
+      expect(persist('fullAccess', 'acceptEdits')).toBe('acceptEdits');
+      expect(persist(undefined, 'acceptEdits')).toBe('acceptEdits');
+    });
+
+    test('seeds a valid requested mode only when nothing valid is stored for this chat', () => {
+      expect(persist('fullAccess')).toBe('fullAccess');
+      expect(persist('ask')).toBe('ask');
+      expect(persist(undefined)).toBeUndefined();
+      expect(persist('acceptEdits', 'fullAccess', new Map(), 'other-convo')).toBe('acceptEdits');
+      expect(persist('acceptEdits', 'unrestricted')).toBe('acceptEdits');
+      expect(() => persist('unrestricted', 'fullAccess')).toThrow('not permitted');
+    });
+
+    test('records exactly the validated mode once a target is attached', () => {
+      const permissive = new Map([['attached-agent', fullAccessSettings]]);
+      expect(persist('acceptEdits', 'fullAccess', permissive)).toBe('acceptEdits');
+      expect(persist(undefined, 'fullAccess', permissive)).toBeUndefined();
+      expect(() =>
+        persist('fullAccess', 'fullAccess', new Map([['attached-agent', restrictedSettings]])),
+      ).toThrow('not permitted');
+    });
+  });
+});

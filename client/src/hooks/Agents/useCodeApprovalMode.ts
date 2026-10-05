@@ -10,13 +10,14 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
-  TAgentsMap,
   TConfig,
+  TAgentsMap,
+  TConversation,
+  CodeApprovalMode,
   TPublicCodeEnvironment,
   CodeWorkspaceSelection,
   CodeWorkspaceRoutingAgent,
 } from 'librechat-data-provider';
-import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
 import useGetAgentsConfig from './useGetAgentsConfig';
@@ -71,12 +72,18 @@ export default function useCodeApprovalMode(
       conversation?.codeWorkspaces,
     ],
   );
+  /** A chat that runs without attached workspaces opts every agent out of its attached machine
+   *  on the server, so no attached mode applies to it, whatever the agents' defaults are. */
+  const withoutAttached = conversation?.codeEnvironmentMode === 'without_attached';
   const attachedEnvironments = useMemo(
     () =>
-      codeEnvironments.filter(
-        (environment): environment is TPublicCodeEnvironment => environment?.type === 'attached',
-      ),
-    [codeEnvironments],
+      withoutAttached
+        ? []
+        : codeEnvironments.filter(
+            (environment): environment is TPublicCodeEnvironment =>
+              environment?.type === 'attached',
+          ),
+    [codeEnvironments, withoutAttached],
   );
   const supported =
     (conversation?.endpointType ?? conversation?.endpoint) === EModelEndpoint.agents &&
@@ -115,8 +122,9 @@ export default function useCodeApprovalMode(
   /**
    * Fail closed while agent/environment metadata is incomplete. An affirmative
    * server capability means `ask` is safe to submit even before an attached
-   * environment is discoverable; the server ignores it when no BYOM tool is
-   * active. Never preserve `acceptEdits` until current policy authorizes it.
+   * environment is discoverable; a turn with no attached target accepts it and
+   * keeps the conversation's stored mode. Never preserve `acceptEdits` until
+   * current policy authorizes it.
    */
   let selected: CodeApprovalMode | undefined;
   if (supported) {

@@ -70,6 +70,22 @@ describe('useCodeApprovalMode', () => {
     });
   });
 
+  test('offers no attached mode once the chat runs without a workspace, and submits ask', () => {
+    const { result, rerender } = renderHook(
+      ({ codeEnvironmentMode }: Pick<TConversation, 'codeEnvironmentMode'>) =>
+        useCodeApprovalMode({ ...conversation, codeEnvironmentMode }),
+      { initialProps: { codeEnvironmentMode: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ codeEnvironmentMode: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
   test('uses the chosen machine policy without inheriting full access from the default', () => {
     mockUseAgentToolPermissions.mockReturnValue({
       agent: {

@@ -99,6 +99,76 @@ describe('AgentClient code approval persistence', () => {
     });
   });
 
+  /** Reproduces the "no workspace" failure: no agent has an attached execution context, yet the
+   *  request still carries the mode the reader picked for a workspace. */
+  const noWorkspaceClient = ({ requested, stored, agent = { id: 'terra' } }) => {
+    const client = Object.create(AgentClient.prototype);
+    client.agentConfigs = new Map();
+    client.conversationId = 'convo-1';
+    client.options = {
+      endpoint: EModelEndpoint.agents,
+      agent,
+      req: {
+        body: { conversationId: 'convo-1', codeApprovalMode: requested },
+        _codeEnvironmentDecision: { mode: 'without_attached' },
+        resolvedConversation: {
+          conversationId: 'convo-1',
+          codeEnvironmentMode: 'without_attached',
+          ...(stored != null && { codeApprovalMode: stored }),
+        },
+        config: { endpoints: { [EModelEndpoint.agents]: {} } },
+      },
+    };
+    return client;
+  };
+
+  it.each(['fullAccess', 'acceptEdits'])(
+    'saves a turn without a workspace that still carries a remembered %s mode',
+    (requested) => {
+      const saveOptions = noWorkspaceClient({ requested, stored: requested }).getSaveOptions();
+      expect(saveOptions.codeApprovalMode).toBe(requested);
+    },
+  );
+
+  it('keeps the stored mode when a current client sends the gated ask without a workspace', () => {
+    expect(
+      noWorkspaceClient({ requested: 'ask', stored: 'fullAccess' }).getSaveOptions(),
+    ).toMatchObject({ codeApprovalMode: 'fullAccess' });
+    expect(
+      noWorkspaceClient({ requested: undefined, stored: 'acceptEdits' }).getSaveOptions(),
+    ).toMatchObject({ codeApprovalMode: 'acceptEdits' });
+  });
+
+  it('still rejects a value that is not an approval mode without a workspace', () => {
+    expect(() =>
+      noWorkspaceClient({ requested: 'unrestricted', stored: 'fullAccess' }).getSaveOptions(),
+    ).toThrow('not permitted');
+  });
+
+  it('validates the mode against a subagent machine when the parent has no workspace', () => {
+    const agent = {
+      id: 'terra',
+      lazySubagentConfigs: [
+        {
+          id: 'builder',
+          codeExecutionContext: {
+            environmentId: 'builder-vm',
+            environmentType: 'attached',
+            codeEnvironmentConfigSchema: {
+              permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } },
+            },
+          },
+        },
+      ],
+    };
+    expect(() =>
+      noWorkspaceClient({ requested: 'fullAccess', stored: 'fullAccess', agent }).getSaveOptions(),
+    ).toThrow('not permitted');
+    expect(
+      noWorkspaceClient({ requested: 'ask', stored: 'fullAccess', agent }).getSaveOptions(),
+    ).toMatchObject({ codeApprovalMode: 'ask' });
+  });
+
   it('never writes its run-start decision over a stored one a move replaced', () => {
     const client = Object.create(AgentClient.prototype);
     client.agentConfigs = new Map();

@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { ConversationMethods, MessageMethods } from '@librechat/data-schemas';
+import type { AttachedCodeEnvironmentPolicySettings } from '~/agents/hitl/byom';
 import type { TurnConversationRequest } from './save';
 import {
   runAfterSeed,
@@ -11,6 +12,7 @@ import {
   getConversationWriteContext,
   recoverTurnMessageReference,
 } from './save';
+import { resolvePersistedCodeApprovalMode } from '~/agents/hitl/byom';
 
 type Store = Pick<ConversationMethods, 'getConvo' | 'saveConvo' | 'appendConvoMessageReference'> &
   Pick<MessageMethods, 'saveMessage'>;
@@ -179,6 +181,79 @@ describe('seedTurnConversation', () => {
     await seedTurnConversation(store, seedFields({ body: {} }, randomUUID()));
 
     expect(saveConvo).not.toHaveBeenCalled();
+  });
+});
+
+describe('code approval mode across workspace choices', () => {
+  const permissive: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: {
+      permissions: {
+        fileWrite: { allowed: ['allow', 'ask'], default: 'ask' },
+        commandExecution: { allowed: ['allow', 'ask'], default: 'ask' },
+      },
+    },
+  };
+  const restricted: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: { permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } } },
+  };
+
+  /** One turn's save as `AgentClient.getSaveOptions` and `BaseClient` perform it: the stored row
+   *  is read at admission, and a key the options omit is `$unset` from that row. */
+  const saveTurn = async (
+    userId: string,
+    conversationId: string,
+    requested: unknown,
+    targets: Array<[string, AttachedCodeEnvironmentPolicySettings]>,
+  ) => {
+    const req = createRequest(userId);
+    req.resolvedConversation = await store.getConvo(userId, conversationId);
+    const codeApprovalMode = resolvePersistedCodeApprovalMode({
+      requested,
+      conversationId,
+      conversation: req.resolvedConversation,
+      settingsByAgentId: new Map(targets),
+    });
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      endpointOptions: {
+        ...endpointOptions,
+        ...(codeApprovalMode != null && { codeApprovalMode }),
+      },
+      context: 'save.spec approval mode',
+      ctx: getConversationWriteContext(req),
+    });
+    return (await store.getConvo(userId, conversationId))?.codeApprovalMode;
+  };
+
+  it('keeps the pick through a turn without a workspace and revalidates it on return', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    /** A current client sends the gated `ask`; an older one still sends the remembered pick. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('fullAccess');
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBe('fullAccess');
+    await expect(saveTurn(userId, conversationId, 'unrestricted', [])).rejects.toThrow(
+      'not permitted',
+    );
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    await expect(
+      saveTurn(userId, conversationId, 'fullAccess', [['terra', restricted]]),
+    ).rejects.toThrow('not permitted');
+    expect(await saveTurn(userId, conversationId, 'ask', attached)).toBe('ask');
+    expect(await saveTurn(userId, conversationId, undefined, attached)).toBeUndefined();
+  });
+
+  it('records the first turn of a new chat without a workspace as it was sent', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('ask');
+    expect(await saveTurn(userId, randomUUID(), undefined, [])).toBeUndefined();
   });
 });
 
