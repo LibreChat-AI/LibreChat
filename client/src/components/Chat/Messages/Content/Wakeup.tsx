@@ -164,7 +164,7 @@ const Wakeup = memo(function Wakeup({
   );
 
   return (
-    <div className={cn('max-w-full', isExpanded && 'w-[36rem]')}>
+    <div className={cn('max-w-full', shouldRenderBody && 'w-[36rem]')}>
       <Button
         variant="ghost"
         type="button"
