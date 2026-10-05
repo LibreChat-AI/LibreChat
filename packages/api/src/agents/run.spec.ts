@@ -1,7 +1,8 @@
-import { Providers } from '@librechat/agents';
+import { Providers, GraphEvents } from '@librechat/agents';
 import { ReasoningResponseKey } from 'librechat-data-provider';
 import { ToolMessage, AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
+  createRun,
   extractDiscoveredToolsFromHistory,
   getRunDiscoveredTools,
   getReasoningKey,
@@ -10,6 +11,22 @@ import {
   anyAgentReplaysReasoningContent,
   collectRunMCPToolAliases,
 } from './run';
+import { InternalToolsStreamHandler } from './internalTools';
+
+// Only `Run.create` is mocked so `createRun` never talks to a live provider;
+// `Providers`, `GraphEvents`, and `ChatModelStreamHandler` (which
+// `InternalToolsStreamHandler` extends) stay real, per the `memory.spec.ts`
+// precedent for testing anything that flows through `Run.create`.
+jest.mock('@librechat/agents', () => {
+  const actual = jest.requireActual('@librechat/agents');
+  return {
+    ...actual,
+    Run: { create: jest.fn(() => ({ processStream: jest.fn(() => Promise.resolve('success')) })) },
+  };
+});
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { Run: MockedRun } = require('@librechat/agents');
 
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
@@ -469,5 +486,231 @@ describe('collectRunMCPToolAliases', () => {
     };
 
     expect(collectRunMCPToolAliases([root] as never)).toEqual([graphAlias]);
+  });
+});
+
+describe('createRun - internal tools wiring', () => {
+  const internalBaseURL = 'https://internal.example.com/v1';
+
+  type TestRunAgent = Parameters<typeof createRun>[0]['agents'][number];
+
+  const createTestRunAgent = (overrides: Record<string, unknown> = {}): TestRunAgent =>
+    ({
+      id: 'agent-1',
+      name: 'Test Agent',
+      provider: Providers.OPENAI,
+      model: 'gpt-4o-mini',
+      model_parameters: { model: 'gpt-4o-mini' },
+      tools: [],
+      ...overrides,
+    }) as unknown as TestRunAgent;
+
+  const lastRunConfig = () => (MockedRun.create as jest.Mock).mock.calls[0][0];
+
+  beforeEach(() => {
+    (MockedRun.create as jest.Mock).mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.INTERNAL_TOOL_TYPE;
+    delete process.env.INTERNAL_BASE_URL;
+  });
+
+  it('wraps fetch and swaps in InternalToolsStreamHandler when the agent targets the internal base URL with useResponsesApi', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    const agentInput = runConfig.graphConfig.agents[0];
+    expect(typeof agentInput.clientOptions.configuration.fetch).toBe('function');
+    expect(agentInput.clientOptions.configuration.fetch).not.toBe(globalThis.fetch);
+    expect(runConfig.customHandlers[GraphEvents.CHAT_MODEL_STREAM]).toBeInstanceOf(
+      InternalToolsStreamHandler,
+    );
+  });
+
+  it('normalizes trailing slashes when comparing the configured baseURL against MY_API_INTERNAL_BASE_URL', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = `${internalBaseURL}/`;
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: `${internalBaseURL}///` },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.customHandlers[GraphEvents.CHAT_MODEL_STREAM]).toBeInstanceOf(
+      InternalToolsStreamHandler,
+    );
+  });
+
+  it('wraps the agent-provided custom fetch as the base fetch instead of clobbering it', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const customFetch = jest.fn(async () => new Response('{}', { status: 200 }));
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL, fetch: customFetch },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    const wrappedFetch = runConfig.graphConfig.agents[0].clientOptions.configuration.fetch;
+    await wrappedFetch(`${internalBaseURL}/responses`, { method: 'POST', body: '{"input":[]}' });
+    expect(customFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves fetch and customHandlers untouched when MY_API_INTERNAL_TOOL_TYPE is unset', async () => {
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.graphConfig.agents[0].clientOptions.configuration.fetch).toBeUndefined();
+    expect(runConfig.customHandlers).toBeUndefined();
+  });
+
+  it('leaves fetch and customHandlers untouched when MY_API_INTERNAL_BASE_URL is unset', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.graphConfig.agents[0].clientOptions.configuration.fetch).toBeUndefined();
+    expect(runConfig.customHandlers).toBeUndefined();
+  });
+
+  it('leaves fetch untouched when the agent baseURL does not match MY_API_INTERNAL_BASE_URL', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: 'https://api.openai.com/v1' },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.graphConfig.agents[0].clientOptions.configuration.fetch).toBeUndefined();
+    expect(runConfig.customHandlers).toBeUndefined();
+  });
+
+  it('leaves fetch untouched when useResponsesApi is not true, even if the baseURL matches', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({ agents: [agent], signal: new AbortController().signal });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.graphConfig.agents[0].clientOptions.configuration.fetch).toBeUndefined();
+    expect(runConfig.customHandlers).toBeUndefined();
+  });
+
+  it('enables internal tools for the whole run when only one of multiple agents matches', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const externalAgent = createTestRunAgent({
+      id: 'agent-external',
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        configuration: { baseURL: 'https://api.openai.com/v1' },
+      },
+    });
+    const internalAgent = createTestRunAgent({
+      id: 'agent-internal',
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({
+      agents: [externalAgent, internalAgent],
+      signal: new AbortController().signal,
+    });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.graphConfig.agents[0].clientOptions.configuration?.fetch).toBeUndefined();
+    expect(typeof runConfig.graphConfig.agents[1].clientOptions.configuration.fetch).toBe(
+      'function',
+    );
+    expect(runConfig.customHandlers[GraphEvents.CHAT_MODEL_STREAM]).toBeInstanceOf(
+      InternalToolsStreamHandler,
+    );
+  });
+
+  it('preserves other custom handlers when swapping in InternalToolsStreamHandler', async () => {
+    process.env.INTERNAL_TOOL_TYPE = 'implementor_slug:function_call';
+    process.env.INTERNAL_BASE_URL = internalBaseURL;
+
+    const otherHandler = { handle: jest.fn() };
+    const agent = createTestRunAgent({
+      model_parameters: {
+        model: 'gpt-4o-mini',
+        useResponsesApi: true,
+        configuration: { baseURL: internalBaseURL },
+      },
+    });
+
+    await createRun({
+      agents: [agent],
+      signal: new AbortController().signal,
+      customHandlers: { [GraphEvents.TOOL_END]: otherHandler } as never,
+    });
+
+    const runConfig = lastRunConfig();
+    expect(runConfig.customHandlers[GraphEvents.TOOL_END]).toBe(otherHandler);
+    expect(runConfig.customHandlers[GraphEvents.CHAT_MODEL_STREAM]).toBeInstanceOf(
+      InternalToolsStreamHandler,
+    );
   });
 });
