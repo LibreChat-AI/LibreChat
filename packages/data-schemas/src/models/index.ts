@@ -17,6 +17,7 @@ import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createMediaSettlementModel } from './mediaSettlement';
 import { createMediaNativePartModel } from './mediaNativePart';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
@@ -74,6 +75,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   MediaSettlement: ReturnType<typeof createMediaSettlementModel>;
   MediaNativePart: ReturnType<typeof createMediaNativePartModel>;
   MediaPreset: ReturnType<typeof createMediaPresetModel>;
+  ToolApprovalGrant: ReturnType<typeof createToolApprovalGrantModel>;
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
   Passkey: ReturnType<typeof createPasskeyModel>;
@@ -134,6 +136,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     MediaNativePart: createMediaNativePartModel(mongoose),
     MediaPreset: createMediaPresetModel(mongoose),
     User: createUserModel(mongoose),
+    ToolApprovalGrant: createToolApprovalGrantModel(mongoose),
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
     Passkey: createPasskeyModel(mongoose),

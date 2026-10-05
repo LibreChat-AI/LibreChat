@@ -67,7 +67,8 @@ export default function ProjectsSortMenu({ sortBy, onSortChange }: ProjectsSortM
       menuId={sortMenuId}
       isOpen={isOpen}
       setIsOpen={setIsOpen}
-      className="z-[125] min-w-56"
+      className="z-[125]"
+      minWidth="14rem"
       trigger={
         <Ariakit.MenuButton
           aria-label={localize('com_ui_sort_projects_by')}

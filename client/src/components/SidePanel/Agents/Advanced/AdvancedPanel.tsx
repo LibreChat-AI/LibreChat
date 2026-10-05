@@ -1,20 +1,21 @@
 import { useState } from 'react';
-import { useFormContext } from 'react-hook-form';
 import { ChevronLeft, Check, Copy } from 'lucide-react';
+import { Controller, useFormContext } from 'react-hook-form';
 import { Button, TooltipAnchor, labelVariants, useToastContext } from '@librechat/client';
 import type { AgentForm } from '~/common';
 import { useAgentPanelContext } from '~/Providers';
-import OrchestrationHub from './OrchestrationHub';
 import MaxAgentSteps from './MaxAgentSteps';
 import { groupHeadingClass } from './ui';
+import AgentChain from './AgentChain';
 import { useLocalize } from '~/hooks';
 import { Panel } from '~/common';
 
 export default function AdvancedPanel() {
   const localize = useLocalize();
   const { showToast } = useToastContext();
-  const { watch } = useFormContext<AgentForm>();
+  const { watch, control } = useFormContext<AgentForm>();
   const currentAgentId = watch('id');
+  const chainIds = watch('agent_ids');
   const [copied, setCopied] = useState(false);
 
   const { setActivePanel } = useAgentPanelContext();
@@ -58,7 +59,14 @@ export default function AdvancedPanel() {
           <MaxAgentSteps />
         </section>
 
-        <OrchestrationHub currentAgentId={currentAgentId} />
+        {(chainIds?.length ?? 0) > 0 && (
+          <Controller
+            name="agent_ids"
+            control={control}
+            defaultValue={[]}
+            render={({ field }) => <AgentChain field={field} currentAgentId={currentAgentId} />}
+          />
+        )}
 
         {currentAgentId && (
           <div className="border-border-light flex items-center justify-between gap-2 border-t pt-3">
@@ -74,7 +82,9 @@ export default function AdvancedPanel() {
                   aria-label={localize('com_ui_agent_id_copy')}
                   className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary h-auto gap-1.5 rounded-lg px-2 py-1 focus-visible:ring-2"
                 >
-                  <code className="max-w-[150px] truncate font-mono text-xs">{currentAgentId}</code>
+                  <code className="max-w-[9.375rem] truncate font-mono text-xs">
+                    {currentAgentId}
+                  </code>
                   <span className="t-icon-swap" data-state={copied ? 'b' : 'a'} aria-hidden="true">
                     <span className="t-icon" data-icon="a">
                       <Copy className="h-3.5 w-3.5" aria-hidden="true" />

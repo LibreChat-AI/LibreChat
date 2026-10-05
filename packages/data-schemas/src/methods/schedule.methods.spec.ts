@@ -3073,7 +3073,7 @@ describe('scheduled MCP tool failure receipt', () => {
     expect(after.enabled).toBe(false);
     expect(after.disabledReason).toBe('mcp_configuration_missing');
     expect(after.lastRun?.mcp).toEqual(run!.mcp);
-    expect(await methods.recordMCPToolAuthFailure(input)).toBe(false);
+    expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
   });
 });
 
@@ -3167,7 +3167,7 @@ describe.each([
         autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
       });
       expect((await getSchedule(schedule.id)).failureCount).toBe(1);
-      expect(await methods.recordMCPToolAuthFailure(input)).toBe(false);
+      expect(await methods.recordMCPToolAuthFailure(input)).toBe(true);
     },
   );
 
@@ -3543,4 +3543,261 @@ it('does not apply a late MCP disable after a newer successful occurrence', asyn
     autoDisableAfterFailures: 5,
   });
   expect((await getSchedule(schedule.id)).enabled).toBe(true);
+});
+
+describe('scheduled resource bearer denial receipts', () => {
+  it.each(['requires_action', 'error'] as const)(
+    'does not terminalize a fresh resumed generation through a stale denied-pause snapshot status=%s',
+    async (status) => {
+      const schedule = await methods.createSchedule(scheduleData());
+      const scheduledFor = new Date('2026-10-03T02:00:00.000Z');
+      await methods.reserveStartedRun(
+        runData(schedule, { scheduledFor, conversationId: 'resume-denial', capacitySlot: 1 }),
+      );
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status: 'requires_action',
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      });
+      await methods.markRunResumeClaimed(schedule.id, scheduledFor, 4);
+      const before = await ScheduleRun.findOne({ scheduleId: schedule.id, scheduledFor }).lean();
+      await methods.recordMCPToolAuthFailure({
+        scheduleId: schedule.id,
+        scheduledFor,
+        conversationId: 'resume-denial',
+        server: 'Files',
+        outcome: {
+          server: 'Files',
+          status: 'mcp_reauth_required',
+          reason: 'consent_revoked',
+          detail: 'unattended_auth_required',
+          recovery: 'authorize',
+          automaticReplay: false,
+        },
+      });
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor,
+        status,
+        resumeClaimStaleBefore: new Date(Date.now() - 10 * 60_000),
+        autoDisableAfterFailures: Number.MAX_SAFE_INTEGER,
+      });
+      const after = await ScheduleRun.findOne({ scheduleId: schedule.id, scheduledFor }).lean();
+      expect(after?.status).toBe('started');
+      expect(after?.capacitySlot).toBe(4);
+      expect(after?.resumeClaimedAt).toEqual(before?.resumeClaimedAt);
+      expect(after?.mcp).toEqual(
+        expect.arrayContaining([expect.objectContaining({ reason: 'consent_revoked' })]),
+      );
+    },
+  );
+
+  const outcome = {
+    server: 'Files',
+    agentId: 'child',
+    status: 'mcp_reauth_required' as const,
+    reason: 'consent_revoked' as const,
+    recovery: 'authorize' as const,
+    automaticReplay: false as const,
+    detail: 'unattended_auth_required' as const,
+  };
+  it('leaves a denied pause active until the generation-aware owner drains it', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-10-03T03:00:00.000Z');
+    await methods.reserveStartedRun(
+      runData(schedule, { scheduledFor, conversationId: 'denied-pause', capacitySlot: 2 }),
+    );
+    await methods.recordMCPToolAuthFailure({
+      scheduleId: schedule.id,
+      scheduledFor,
+      conversationId: 'denied-pause',
+      server: 'Files',
+      outcome,
+    });
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'requires_action',
+      autoDisableAfterFailures: 5,
+    });
+    const run = await ScheduleRun.findOne({ scheduleId: schedule.id, scheduledFor }).lean();
+    expect(run?.status).toBe('started');
+    expect(run?.capacitySlot).toBe(2);
+    expect(run?.mcp).toEqual([outcome]);
+  });
+
+  it.each(['success', 'interrupted', 'skipped_balance'] as const)(
+    'retains denial status and recovery instead of %s settlement',
+    async (status) => {
+      const schedule = await methods.createSchedule(scheduleData());
+      const occurrence = new Date('2026-10-03T01:00:00.000Z');
+      await ScheduleRun.create(
+        runData(schedule, {
+          scheduledFor: occurrence,
+          conversationId: 'denied-conversation',
+          configRevision: 0,
+        }),
+      );
+      await expect(
+        methods.recordMCPToolAuthFailure({
+          scheduleId: schedule.id,
+          scheduledFor: occurrence,
+          conversationId: 'denied-conversation',
+          server: 'Files',
+          outcome,
+        }),
+      ).resolves.toBe(true);
+      await methods.recordRunOutcome({
+        scheduleId: schedule.id,
+        scheduledFor: occurrence,
+        status,
+        autoDisableAfterFailures: 5,
+      });
+      const run = await ScheduleRun.findOne({
+        scheduleId: schedule.id,
+        scheduledFor: occurrence,
+      }).lean();
+      expect(run).toMatchObject({ status: 'error', mcp: [outcome] });
+      const updated = await methods.getScheduleById(schedule.id);
+      expect(updated?.lastRun).toMatchObject({ status: 'error', mcp: [outcome] });
+      expect(updated?.enabled).toBe(false);
+      expect(updated?.disabledReason).toBe('mcp_reauth_required');
+    },
+  );
+  it('does not erase terminal receipts belonging to a live, non-deleting schedule', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-10-03T05:00:00.000Z');
+    await methods.reserveStartedRun(
+      runData(schedule, { scheduledFor, conversationId: 'live-history' }),
+    );
+    await methods.recordMCPToolAuthFailure({
+      scheduleId: schedule.id,
+      scheduledFor,
+      conversationId: 'live-history',
+      server: 'Files',
+      outcome,
+    });
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'success',
+      autoDisableAfterFailures: 5,
+    });
+    const before = await getRun(schedule.id, scheduledFor);
+    await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(false);
+    expect(await getRun(schedule.id, scheduledFor)).toEqual(before);
+  });
+
+  it('acknowledges only matching receipts already admitted before terminal bookkeeping', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const scheduledFor = new Date('2026-10-03T04:00:00.000Z');
+    const receipt = {
+      scheduleId: schedule.id,
+      scheduledFor,
+      conversationId: 'acknowledged',
+      server: 'Files',
+      outcome,
+    };
+    await methods.reserveStartedRun(
+      runData(schedule, { scheduledFor, conversationId: receipt.conversationId }),
+    );
+    await expect(methods.recordMCPToolAuthFailure(receipt)).resolves.toBe(true);
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor,
+      status: 'success',
+      autoDisableAfterFailures: 5,
+    });
+    const before = await getRun(schedule.id, scheduledFor);
+    await expect(methods.recordMCPToolAuthFailure(receipt)).resolves.toBe(true);
+    for (const changed of [
+      { ...receipt, conversationId: 'another' },
+      { ...receipt, tenantId: 'another' },
+      { ...receipt, scheduledFor: new Date(scheduledFor.getTime() + 1) },
+      { ...receipt, outcome: { ...outcome, reason: 'consent_expired' as const } },
+      { ...receipt, outcomes: [outcome, { ...outcome, server: 'new-server' }] },
+      { ...receipt, outcomes: [] },
+    ])
+      await expect(methods.recordMCPToolAuthFailure(changed)).resolves.toBe(false);
+    expect(await getRun(schedule.id, scheduledFor)).toEqual(before);
+  });
+
+  it('merges incoming diagnosis with an already-durable receipt using classic operators', async () => {
+    const schedule = await methods.createSchedule(scheduleData());
+    const occurrence = new Date('2026-10-03T02:00:00.000Z');
+    await ScheduleRun.create(
+      runData(schedule, { scheduledFor: occurrence, conversationId: 'union', configRevision: 0 }),
+    );
+    await methods.recordMCPToolAuthFailure({
+      scheduleId: schedule.id,
+      scheduledFor: occurrence,
+      conversationId: 'union',
+      server: 'Files',
+      outcome,
+    });
+    const stronger = {
+      ...outcome,
+      server: 'Warehouse',
+      status: 'mcp_permission_denied' as const,
+      reason: 'tool_policy_denied' as const,
+      recovery: 'restore_permission' as const,
+    };
+    await methods.recordRunOutcome({
+      scheduleId: schedule.id,
+      scheduledFor: occurrence,
+      status: 'error',
+      mcp: [stronger],
+      autoDisableAfterFailures: 5,
+    });
+    const updated = await methods.getScheduleById(schedule.id);
+    expect(updated?.lastRun?.mcp).toEqual(expect.arrayContaining([outcome, stronger]));
+    expect(updated?.disabledReason).toBe('mcp_permission_denied');
+  });
+  it('does not settle success after a concurrently admitted receipt wins', async () => {
+    for (let i = 0; i < 4; i++) {
+      const schedule = await methods.createSchedule(scheduleData());
+      const occurrence = new Date('2026-10-03T03:00:00.000Z');
+      await ScheduleRun.create(
+        runData(schedule, {
+          scheduledFor: occurrence,
+          conversationId: 'racing',
+          configRevision: 0,
+        }),
+      );
+      const [admitted] = await Promise.all([
+        methods.recordMCPToolAuthFailure({
+          scheduleId: schedule.id,
+          scheduledFor: occurrence,
+          conversationId: 'racing',
+          server: 'Files',
+          outcome,
+        }),
+        methods.recordRunOutcome({
+          scheduleId: schedule.id,
+          scheduledFor: occurrence,
+          status: 'success',
+          autoDisableAfterFailures: 5,
+        }),
+      ]);
+      const run = await ScheduleRun.findOne({
+        scheduleId: schedule.id,
+        scheduledFor: occurrence,
+      }).lean();
+      if (admitted) expect(run?.status).toBe('error');
+      else expect(run?.mcp ?? []).toEqual([]);
+    }
+  });
+});
+
+it('acknowledges peer-erased schedules without deleting orphan history or live schedules', async () => {
+  const schedule = await methods.createSchedule(scheduleData());
+  const scheduledFor = new Date('2026-10-04T15:00:00Z');
+  await methods.insertScheduleRun(runData(schedule, { scheduledFor, status: 'success' }));
+  await Schedule.deleteOne({ id: schedule.id });
+  await expect(methods.eraseScheduleIfDrained(schedule.id)).resolves.toBe(true);
+  expect(await ScheduleRun.findOne({ scheduleId: schedule.id }).lean()).not.toBeNull();
+  const live = await methods.createSchedule(scheduleData({ id: 'live-after-erasure' }));
+  await expect(methods.eraseScheduleIfDrained(live.id)).resolves.toBe(false);
+  expect(await Schedule.findOne({ id: live.id }).lean()).not.toBeNull();
 });

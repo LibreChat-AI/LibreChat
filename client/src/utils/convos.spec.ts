@@ -22,6 +22,8 @@ import {
   upsertConvoInAllQueries,
   updateConvoInAllQueries,
   findConvoInAllQueries,
+  findManualConvoTitleInAllQueries,
+  trackConvoQueryAuthority,
   isConvoInAggregateCaches,
   isConversationUnseen,
   applyServerReplyStamp,
@@ -1333,6 +1335,129 @@ describe('Conversation Utilities', () => {
         const data = queryClient.getQueryData<InfiniteData<any>>(['allConversations']);
         expect(data!.pages[0].conversations[0].lastSeenAt).toBeUndefined();
         expect(data!.pages[0].conversations[0].lastResponseAt).toBe('2026-08-16T10:00:00.000Z');
+      });
+
+      it.each([
+        'allConversations',
+        'archivedConversations',
+        'pinnedConversations',
+        'runningConversation',
+      ])(
+        'reads the highest manual title revision from %s without changing reply selection',
+        (root) => {
+          const old = {
+            ...convoA,
+            title: 'Old owned title',
+            titleSetByUser: true,
+            titleRevision: 1,
+            lastResponseAt: '2026-08-16T10:05:00.000Z',
+          };
+          const freshTitle = {
+            ...old,
+            title: 'New Chat',
+            titleRevision: 2,
+            lastResponseAt: '2026-08-16T10:00:00.000Z',
+          };
+          queryClient.clear();
+          queryClient.setQueryData(['conversation', 'a'], old);
+          const key =
+            root === 'runningConversation' ? [root, 'a'] : [root, { tag: 'older-snapshot' }];
+          let data;
+          if (root === 'runningConversation') {
+            data = freshTitle;
+          } else if (root === 'pinnedConversations') {
+            data = { conversations: [freshTitle] };
+          } else {
+            data = { pages: [{ conversations: [freshTitle] }], pageParams: [] };
+          }
+          queryClient.setQueryData(key, data, { updatedAt: Date.now() - 10 * 60_000 });
+          expect(findConvoInAllQueries(queryClient, 'a')?.title).toBe(old.title);
+          expect(findManualConvoTitleInAllQueries(queryClient, 'a')).toEqual({
+            title: 'New Chat',
+            titleSetByUser: true,
+            titleRevision: 2,
+          });
+          expect(findManualConvoTitleInAllQueries(queryClient, 'missing')).toBeUndefined();
+        },
+      );
+
+      it('compares repeated rows within a paginated variant and a pinned cache', () => {
+        queryClient.clear();
+        const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
+        queryClient.setQueryData(['allConversations'], {
+          pages: [
+            { conversations: [old] },
+            { conversations: [{ ...old, title: 'Page rename', titleRevision: 2 }] },
+          ],
+          pageParams: [],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
+        queryClient.setQueryData(['pinnedConversations'], {
+          conversations: [old, { ...old, title: 'Pinned rename', titleRevision: 3 }],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(3);
+      });
+
+      it('uses durable revisions independently of server request ordering', async () => {
+        queryClient.clear();
+        const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
+        trackConvoQueryAuthority(queryClient);
+        let release!: (value: InfiniteData<ConversationCursorData>) => void;
+        const list = queryClient.fetchQuery(
+          ['allConversations'],
+          () =>
+            new Promise<InfiniteData<ConversationCursorData>>((resolve) => {
+              release = resolve;
+            }),
+        );
+        await queryClient.fetchQuery(['conversation', 'a'], async () => old);
+        release({
+          pages: [
+            {
+              conversations: [{ ...old, title: 'New owned title', titleRevision: 2 }],
+              nextCursor: null,
+            },
+          ],
+          pageParams: [],
+        });
+        await list;
+        expect(findConvoInAllQueries(queryClient, 'a')?.titleRevision).toBe(1);
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
+      });
+
+      it('prefers an authoritative incoming title on equal revision and preserves later cache revisions', () => {
+        queryClient.clear();
+        queryClient.setQueryData(['conversation', 'a'], {
+          ...convoA,
+          title: 'Cached',
+          titleSetByUser: true,
+          titleRevision: 2,
+        });
+        expect(
+          findManualConvoTitleInAllQueries(queryClient, 'a', {
+            title: 'Incoming',
+            titleSetByUser: true,
+            titleRevision: 2,
+          })?.title,
+        ).toBe('Incoming');
+        expect(
+          findManualConvoTitleInAllQueries(queryClient, 'a', {
+            title: 'Stale',
+            titleSetByUser: true,
+            titleRevision: 1,
+          })?.title,
+        ).toBe('Cached');
+        queryClient.setQueryData(['allConversations', { tag: 'unrelated' }], {
+          pages: [
+            {
+              conversations: [
+                { ...convoB, title: 'Unrelated', titleSetByUser: true, titleRevision: 99 },
+              ],
+            },
+          ],
+          pageParams: [],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
       });
 
       it('findConvoInAllQueries reads from whichever cached list query holds the conversation', () => {

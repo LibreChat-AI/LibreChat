@@ -1,3 +1,5 @@
+import type { ScheduledMCPFailure } from '~/schedules/authorization/contract';
+import { failureFixtures } from '~/schedules/authorization/failures';
 /**
  * MCP-specific error classes
  */
@@ -13,6 +15,7 @@ import { isOwnedAbortError } from '~/utils/errors';
 export function isMCPInitializationError(error: unknown, signal?: AbortSignal): boolean {
   return (
     isOwnedAbortError(error, signal) ||
+    error instanceof ScheduledMCPBearerError ||
     error instanceof MCPAuthenticationRejectedError ||
     error instanceof MCPAuthenticationRefreshError ||
     error instanceof OboTokenResolutionError ||
@@ -474,4 +477,53 @@ export function getMCPErrorResponse(error: unknown): MCPErrorResponse | null {
   }
 
   return null;
+}
+
+export class ScheduledMCPBearerError extends Error {
+  readonly failure: ScheduledMCPFailure;
+  readonly outcomes: Array<
+    ScheduledMCPFailure & { server: string; detail: 'unattended_auth_required'; agentId?: string }
+  >;
+
+  readonly code: ScheduledMCPFailure['status'];
+  readonly retryable: boolean;
+
+  constructor(reason: ScheduledMCPFailure['reason'], server: string, agentId?: string) {
+    const failure = failureFixtures[reason];
+    super('Scheduled MCP resource credential unavailable.');
+    this.name = 'ScheduledMCPBearerError';
+    this.failure = failure;
+    this.outcomes = [
+      { server, ...failure, detail: 'unattended_auth_required', ...(agentId && { agentId }) },
+    ];
+    this.code = failure.status;
+    this.retryable = failure.status === 'mcp_unavailable';
+  }
+}
+
+/** A resource 403 needs permission recovery, not renewed consent. Never infer status from tool text. */
+export function createScheduledMCPTransportError(
+  error: unknown,
+  serverName: string,
+  agentId?: string,
+): ScheduledMCPBearerError {
+  // This wrapper's statusCode is normalized; only its cause carries the resource HTTP status.
+  const cause = error instanceof MCPAuthenticationRejectedError ? error.cause : error;
+  if (cause instanceof ScheduledMCPBearerError) return cause;
+  let forbidden = false;
+  if (isMCPTransportAuthenticationError(cause)) {
+    const transport = cause as OAuthErrorLike;
+    const status =
+      transport.status ??
+      transport.statusCode ??
+      (cause instanceof StreamableHTTPError || cause instanceof SseError
+        ? transport.code
+        : undefined);
+    forbidden = status === 403;
+  }
+  return new ScheduledMCPBearerError(
+    forbidden ? 'resource_permission_denied' : 'credential_rejected',
+    serverName,
+    agentId,
+  );
 }

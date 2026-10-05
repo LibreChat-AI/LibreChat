@@ -2,8 +2,8 @@ import { useState, useId, useRef, memo, useCallback, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
+import { DropdownPopup, Spinner, useToastContext } from '@librechat/client';
 import { QueryKeys, PermissionTypes, Permissions } from 'librechat-data-provider';
-import { DropdownPopup, Spinner, useToastContext, useMediaQuery } from '@librechat/client';
 import {
   Ellipsis,
   Share2,
@@ -30,6 +30,7 @@ import {
 } from '~/data-provider';
 import { useHasAccess, useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { NotificationSeverity } from '~/common';
 import { cn, rowActionClasses } from '~/utils';
 import ProjectButton from './ProjectButton';
@@ -56,10 +57,13 @@ function ConvoOptions({
   isUnseen = false,
   retainView,
   renameHandler,
+  canRename = true,
   isPopoverActive,
   setIsPopoverActive,
   isActiveConvo,
   isShiftHeld = false,
+  isGenerating = false,
+  contextMenuPosition,
 }: {
   conversationId: string | null;
   chatProjectId?: string | null;
@@ -70,14 +74,17 @@ function ConvoOptions({
   isUnseen?: boolean;
   retainView: () => void;
   renameHandler: (e: MouseEvent) => void;
+  canRename?: boolean;
   isPopoverActive: boolean;
   setIsPopoverActive: (open: boolean) => void;
   isActiveConvo: boolean;
   isShiftHeld?: boolean;
+  isGenerating?: boolean;
+  contextMenuPosition?: { x: number; y: number };
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const { index, setConversation } = useChatContext();
   const { data: startupConfig } = useGetStartupConfig();
   const { navigateToConvo } = useNavigateToConvo(index);
@@ -354,6 +361,7 @@ function ConvoOptions({
       {
         label: localize('com_ui_rename'),
         onClick: renameHandler,
+        disabled: !canRename,
         icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
       },
       {
@@ -414,6 +422,7 @@ function ConvoOptions({
       shareHandler,
       startupConfig,
       renameHandler,
+      canRename,
       deleteHandler,
       isArchiveLoading,
       isArchived,
@@ -431,7 +440,7 @@ function ConvoOptions({
   );
 
   const buttonClassName = rowActionClasses({
-    visible: isActiveConvo === true || isPopoverActive || isSmallScreen,
+    visible: isActiveConvo === true || isPopoverActive || isSmallScreen || isGenerating,
   });
 
   if (isShiftHeld && isActiveConvo && !isPopoverActive && !showShareDialog && !showDeleteDialog) {
@@ -473,8 +482,13 @@ function ConvoOptions({
          * `document.body` outside it.
          */
         portal={true}
+        getAnchorRect={
+          contextMenuPosition ? () => ({ ...contextMenuPosition, width: 0, height: 0 }) : undefined
+        }
         menuId={menuId}
         focusLoop={true}
+        finalFocus={menuButtonRef}
+        autoFocusOnShow={true}
         className="z-[125]"
         unmountOnHide={true}
         isOpen={isPopoverActive}
@@ -544,12 +558,15 @@ export default memo(ConvoOptions, (prevProps, nextProps) => {
   return (
     prevProps.conversationId === nextProps.conversationId &&
     prevProps.title === nextProps.title &&
+    prevProps.canRename === nextProps.canRename &&
     prevProps.chatProjectId === nextProps.chatProjectId &&
     prevProps.isPinned === nextProps.isPinned &&
     prevProps.isArchived === nextProps.isArchived &&
     prevProps.isUnseen === nextProps.isUnseen &&
     prevProps.isPopoverActive === nextProps.isPopoverActive &&
     prevProps.isActiveConvo === nextProps.isActiveConvo &&
-    prevProps.isShiftHeld === nextProps.isShiftHeld
+    prevProps.isShiftHeld === nextProps.isShiftHeld &&
+    prevProps.isGenerating === nextProps.isGenerating &&
+    prevProps.contextMenuPosition === nextProps.contextMenuPosition
   );
 });

@@ -31,6 +31,7 @@ import useUpdateTagsInConvo from '~/hooks/Conversations/useUpdateTagsInConvo';
 import { chatFilterTagsAtom } from '~/components/Conversations/chatFilters';
 import { updateConversationTag } from '~/utils/conversationTags';
 import { isTemporaryConversation } from '~/utils/conversation';
+import { markTitleGenerationProcessed } from './SSE/queries';
 import { useConversationTagsQuery } from './queries';
 
 export const useUpdateConversationMutation = (
@@ -46,16 +47,35 @@ export const useUpdateConversationMutation = (
     (payload: t.TUpdateConversationRequest) => dataService.updateConversation(payload),
     {
       onSuccess: (updatedConvo, payload) => {
+        if (typeof updatedConvo.title !== 'string') {
+          throw new Error('Conversation rename did not return a title');
+        }
         const targetId = payload.conversationId || id;
+        void queryClient.cancelQueries(
+          { queryKey: [QueryKeys.conversation, targetId], exact: true },
+          { revert: false },
+        );
+        markTitleGenerationProcessed(targetId);
         /* A rename carries only a title, so only the title is taken from its
          * response. Writing the whole conversation would also restore its
          * pre-request copy of every other field, undoing a concurrent change
          * whose response happened to land first: an assignment moving the chat
          * to another project would silently revert here. */
-        const applyRename = (previous?: t.TConversation): t.TConversation =>
-          previous
-            ? { ...previous, title: updatedConvo.title, updatedAt: updatedConvo.updatedAt }
-            : updatedConvo;
+        const applyRename = (previous?: t.TConversation): t.TConversation => {
+          if (
+            previous &&
+            (previous.titleRevision ?? 0) > (updatedConvo.titleRevision ?? Infinity)
+          ) {
+            return previous;
+          }
+          return {
+            ...(previous ?? updatedConvo),
+            title: updatedConvo.title,
+            titleSetByUser: updatedConvo.titleSetByUser,
+            titleRevision: updatedConvo.titleRevision,
+            updatedAt: updatedConvo.updatedAt,
+          };
+        };
         queryClient.setQueryData<t.TConversation>([QueryKeys.conversation, targetId], applyRename);
         updateConvoInAllQueries(queryClient, targetId, applyRename);
         /* A title-keyset cursor encodes the old ordering; patching loaded rows

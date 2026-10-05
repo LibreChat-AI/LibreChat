@@ -25,10 +25,11 @@ import {
   persistRedirectToSession,
 } from '~/utils/redirect';
 import { useRegisterPasskeyMutation } from '~/data-provider';
+import { importWithRecovery } from '~/lib/assets/lazy';
 import useLocalize from '~/hooks/useLocalize';
 
 async function loadWebAuthn() {
-  return import('@simplewebauthn/browser');
+  return importWithRecovery(() => import('@simplewebauthn/browser'));
 }
 
 /** Thrown by the browser when the user dismisses or times out the native prompt. */

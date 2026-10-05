@@ -1,3 +1,4 @@
+jest.mock('../ResetApprovals', () => () => null);
 import React from 'react';
 import * as t from 'librechat-data-provider';
 import { render, screen, fireEvent } from '@testing-library/react';

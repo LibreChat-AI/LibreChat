@@ -38,15 +38,17 @@ jest.mock('~/models', () => {
 
 jest.mock('~/server/middleware', () => ({
   requireJwtAuth: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => {
+  configMiddleware: jest.fn((req, res, next) => {
     req.config = mockAppConfig;
     next();
-  },
+  }),
   promptUsageLimiter: (req, res, next) => next(),
   canAccessPromptViaGroup: jest.requireActual('~/server/middleware').canAccessPromptViaGroup,
   canAccessPromptGroupResource:
     jest.requireActual('~/server/middleware').canAccessPromptGroupResource,
 }));
+
+const { configMiddleware } = require('~/server/middleware');
 
 let app;
 let mongoServer;
@@ -735,6 +737,54 @@ describe('Prompt Routes - ACL Permissions', () => {
       // Verify prompt still exists
       const prompt = await Prompt.findById(authorPrompt._id);
       expect(prompt).toBeTruthy();
+    });
+
+    it('should run configMiddleware so the handler receives the configured value', async () => {
+      configMiddleware.mockClear();
+
+      await request(app)
+        .delete(`/api/prompts/${testPrompt._id}`)
+        .query({ groupId: testGroup._id.toString() })
+        .expect(200);
+
+      expect(configMiddleware).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('DELETE /api/prompts/groups/:groupId - Delete Prompt Group', () => {
+    let testGroup;
+
+    beforeEach(async () => {
+      testGroup = await PromptGroup.create({
+        name: 'Delete Group Test Group',
+        category: 'testing',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+        productionId: new ObjectId(),
+      });
+
+      await grantPermission({
+        principalType: PrincipalType.USER,
+        principalId: testUsers.owner._id,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId: testGroup._id,
+        accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+        grantedBy: testUsers.owner._id,
+      });
+    });
+
+    afterEach(async () => {
+      await Prompt.deleteMany({});
+      await PromptGroup.deleteMany({});
+      await AclEntry.deleteMany({});
+    });
+
+    it('should run configMiddleware so the handler receives the configured value', async () => {
+      configMiddleware.mockClear();
+
+      await request(app).delete(`/api/prompts/groups/${testGroup._id}`).expect(200);
+
+      expect(configMiddleware).toHaveBeenCalledTimes(1);
     });
   });
 

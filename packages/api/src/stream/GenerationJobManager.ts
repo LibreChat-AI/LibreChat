@@ -9,7 +9,7 @@ import {
   ApprovalEvents,
   SteerEvents,
   parseTextParts,
-  hasToolCallErrorPrefix,
+  isFailedToolOutput,
   reconcileContextUsageFromEvent,
 } from 'librechat-data-provider';
 import type {
@@ -130,13 +130,7 @@ function completedToolExecutionStatus(call: Agents.ToolCall): ToolExecutionStatu
   if (call.inputValidationError === true) {
     return 'error';
   }
-  const output = call.output;
-  return typeof output === 'string' &&
-    (hasToolCallErrorPrefix(output) ||
-      /^Error processing tool(?::|$)/i.test(output) ||
-      /^Error:[\s\S]*\n Please fix your mistakes\.$/i.test(output))
-    ? 'error'
-    : 'success';
+  return typeof call.output === 'string' && isFailedToolOutput(call.output) ? 'error' : 'success';
 }
 
 /** Bounded completed-request replay horizon. It exceeds the default 24-hour
@@ -988,6 +982,20 @@ class GenerationJobManagerClass {
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = options?.eventTransport ?? new InMemoryEventTransport();
     this._cleanupOnComplete = options?.cleanupOnComplete ?? true;
+    this.bindStaleGenerationHandler();
+  }
+
+  private bindStaleGenerationHandler(): void {
+    const store = this.jobStore;
+    store.setStaleGenerationHandler?.((streamId, createdAt) => {
+      if (this.jobStore !== store) return;
+      const runtime = this.runtimeState.get(streamId);
+      if (runtime?.createdAt !== createdAt) return;
+      this.releaseAbortSubscription(runtime);
+      runtime.abortController.abort();
+      this.releaseJobOwnership(streamId, createdAt);
+      // Keep buffers, subscribers and the open provider segment until its actual drain.
+    });
   }
 
   /**
@@ -1081,7 +1089,9 @@ class GenerationJobManagerClass {
     this.releaseOpenProviderExecutions();
     setGenerationJobsInFlight(previousStore, 0);
 
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     this.jobStore = services.jobStore;
+    this.bindStaleGenerationHandler();
     this._approvals = this.createApprovalLifecycle(this.jobStore);
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = services.eventTransport;
@@ -9400,10 +9410,11 @@ class GenerationJobManagerClass {
         const currentJob = await this.jobStore.getJob(streamId);
         if (
           currentJob?.createdAt === observedRuntime.createdAt &&
-          currentJob.terminalHostActionPending === true
+          (currentJob.terminalHostActionPending === true ||
+            currentJob.terminalPersistencePending === true ||
+            currentJob.providerDrained === false)
         ) {
-          // The callback retry still owns this generation's evidence. Retain
-          // runtime buffers until it acknowledges and clears the durable marker.
+          // Persistence, provider drain and host acknowledgement still own this evidence.
           continue;
         }
         const isRetainedTerminal =
@@ -9752,6 +9763,7 @@ class GenerationJobManagerClass {
     await this.drainSubscriberCleanups();
     await this.awaitGenerationSettlements(Math.max(0, settlementDeadline - Date.now()));
     await this.finalizeOwnedJobsForShutdown();
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     await this.jobStore.destroy();
     this.eventTransport.destroy();
     /** Whatever the bounded wait left behind must not outlive this store: a later

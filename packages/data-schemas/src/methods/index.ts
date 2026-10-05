@@ -1,3 +1,4 @@
+import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { MediaConsumerConfig, MediaFileConsumerMethods } from '~/types/mediaConsumers';
 import type { MediaAccountingMethods } from '~/types/mediaAccounting';
 import type { ScheduleMCPConsentStorage } from './scheduleConsent';
@@ -5,6 +6,7 @@ import type { MediaRecoveryMethods } from '~/types/mediaRecovery';
 import type { MediaPresetMethods } from '~/types/mediaPreset';
 import type { MediaNativeMethods } from '~/types/mediaNative';
 import type { MediaTitleMethods } from '~/types/mediaTitle';
+import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { createScheduleMCPConsentStorage } from './scheduleConsent';
 export { createScheduleMCPConsentStorage } from './scheduleConsent';
 export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './scheduleConsent';
@@ -278,7 +280,8 @@ export {
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = NativeMessageMethods &
+export type AllMethods = ToolApprovalGrantStorage &
+  NativeMessageMethods &
   MediaNativeMethods &
   MediaFileConsumerMethods &
   MediaRecoveryMethods &
@@ -542,6 +545,7 @@ export function createMethods(
     }),
     ...createMediaPresetMethods(mongoose, mediaMethods),
     ...createUserMethods(mongoose, { getCache: deps.getCache }),
+    ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),

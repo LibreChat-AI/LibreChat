@@ -22,7 +22,8 @@ const classMap = {
 };
 
 const styleMap = {
-  'menu-item': { width: '20px', height: '20px' },
+  /** 1.25rem is 20px at the 16px baseline, and follows the UI scale. */
+  'menu-item': { width: '1.25rem', height: '1.25rem' },
   default: { width: '100%', height: '100%' },
 };
 
@@ -50,7 +51,7 @@ const ConvoIconURL: React.FC<ConvoIconURLProps> = ({
   }
 
   return (
-    <div className="shadow-stroke relative flex h-full items-center justify-center rounded-full bg-surface-primary text-text-primary">
+    <div className="shadow-stroke bg-surface-primary text-text-primary relative flex h-full items-center justify-center rounded-full">
       <ProviderIcon provider={provider} size={41} className="h-2/3 w-2/3" />
     </div>
   );

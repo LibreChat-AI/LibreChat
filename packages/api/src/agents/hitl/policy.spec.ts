@@ -1,3 +1,4 @@
+import { createToolPolicyHook } from '@librechat/agents';
 import { ReasoningEffort } from 'librechat-data-provider';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import {
@@ -23,6 +24,7 @@ import {
   exemptAskUserQuestionFromApproval,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
+  isToolBlockedByApprovalPolicy,
 } from './policy';
 
 describe('isToolApprovalPauseCapable', () => {
@@ -1193,4 +1195,31 @@ describe('collectAliasMatcherNames', () => {
     expect(regex.test('c_mcp_acme')).toBe(true);
     expect(regex.test('xc_mcp_acme')).toBe(false);
   });
+});
+
+test.each([
+  { mode: 'dontAsk' as const },
+  { mode: 'dontAsk' as const, allow: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], deny: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['other*'] },
+  { mode: 'bypass' as const },
+  { mode: 'default' as const },
+])('concrete fallback denial matches the SDK baseline: %j', async (config) => {
+  const policy = { enabled: true, ...config };
+  const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+  const result = await hook(
+    {
+      hook_event_name: 'PreToolUse',
+      runId: 'test',
+      toolName: 'query_mcp_db',
+      toolInput: {},
+      toolUseId: 'call',
+    },
+    new AbortController().signal,
+  );
+  expect(isToolBlockedByApprovalPolicy(policy, 'query_mcp_db')).toBe(result.decision === 'deny');
+  if (result.decision === 'deny')
+    expect(isToolApprovalPauseCapable(policy, true, ['query_mcp_db'])).toBe(false);
 });

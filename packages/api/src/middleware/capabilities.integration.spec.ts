@@ -1,4 +1,7 @@
+import express from 'express';
+import request from 'supertest';
 import mongoose, { Types } from 'mongoose';
+import { tenantStorage } from '@librechat/data-schemas';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import {
@@ -14,6 +17,7 @@ import {
   capabilityStore,
   capabilityContextMiddleware,
 } from './capabilities';
+import { createResetToolApprovalController } from '~/agents/hitl/controller';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -220,6 +224,51 @@ describe('capabilities integration (real MongoDB)', () => {
         SystemCapabilities.ACCESS_ADMIN,
       );
       expect(tenantResult).toBe(true);
+    });
+
+    it('personal approval reset honors manage:agents only in its tenant, without a VIEW ACL', async () => {
+      await methods.grantCapability({
+        principalType: PrincipalType.USER,
+        principalId: regularUser.id,
+        capability: SystemCapabilities.MANAGE_AGENTS,
+        tenantId: 'tenant-a',
+      });
+      let tenantId = 'tenant-a';
+      const acl = jest.fn(async () => false);
+      const reset = jest.fn(methods.resetToolApprovalGrants);
+      const controller = createResetToolApprovalController({
+        getAgent: async () => ({ id: 'shared-agent' }),
+        hasCapability,
+        canAccessAgent: acl,
+        storage: { ...methods, resetToolApprovalGrants: reset },
+      });
+      const app = express();
+      app.use(express.json());
+      app.post('/reset', (req, res) =>
+        tenantStorage.run({ tenantId }, () =>
+          controller(Object.assign(req, { user: { ...regularUser, tenantId } }), res),
+        ),
+      );
+      await request(app)
+        .post('/reset')
+        .send({ agentId: 'shared-agent' })
+        .expect(200, { reset: true });
+      expect(acl).not.toHaveBeenCalled();
+      expect(reset).toHaveBeenCalledWith(regularUser.id, 'shared-agent', undefined);
+      expect(
+        await mongoose.models.ToolApprovalGrant.countDocuments({
+          user: regularUser.id,
+          tenantId: 'tenant-a',
+          agentId: 'shared-agent',
+        }),
+      ).toBe(1);
+      tenantId = 'tenant-b';
+      await request(app).post('/reset').send({ agentId: 'shared-agent' }).expect(403);
+      expect(acl).toHaveBeenCalled();
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ tenantId: 'tenant-b' })).toBe(
+        0,
+      );
     });
 
     it('hasConfigCapability falls back to section-specific grant', async () => {

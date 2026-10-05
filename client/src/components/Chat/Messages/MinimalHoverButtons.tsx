@@ -54,7 +54,7 @@ export default function MinimalHoverButtons({ message, searchResults, variant }:
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >
-            <MorphIcon icon={isCopied ? Check : Copy} size={19} />
+            <MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />
           </Button>
         }
       />

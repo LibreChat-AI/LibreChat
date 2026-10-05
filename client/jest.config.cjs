@@ -7,7 +7,7 @@ module.exports = {
   testEnvironmentOptions: {
     url: 'http://localhost:3080',
   },
-  collectCoverage: true,
+  collectCoverage: process.env.COVERAGE === 'true',
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',
     '!<rootDir>/node_modules/',

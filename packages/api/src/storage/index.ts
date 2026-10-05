@@ -9,3 +9,4 @@ export * from './path';
 export * from './read';
 export * from './write';
 export * from './deletion';
+export * from './local';

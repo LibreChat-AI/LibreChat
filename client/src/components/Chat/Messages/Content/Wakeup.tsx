@@ -2,7 +2,6 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { Users } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
-import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
 import type { TranslationKeys } from '~/hooks';
 import SystemEventHeader, {
@@ -10,15 +9,11 @@ import SystemEventHeader, {
   systemEventHeaderClasses,
 } from '~/components/Chat/Messages/ui/SystemEvent';
 import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
-import { durableSubagentSelection } from '~/components/Chat/Subagents/eventSelection';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
+import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
-import { useShareContext } from '~/Providers/ShareContext';
 import BackgroundTaskCard from './BackgroundTaskCard';
 import { cn, getToolDisplayLabel } from '~/utils';
-import { useMessageContext } from '~/Providers';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
 import store from '~/store';
@@ -40,49 +35,20 @@ function WakeupTaskCard({
   conversationId?: string | null;
 }) {
   const localize = useLocalize();
-  const { isSharedConvo } = useShareContext();
-  const { messageId } = useMessageContext();
-  const { byThreadId } = useParentSubagents();
-  const openPanel = useOpenSubagentPanel();
-  const child = task.threadId == null ? undefined : byThreadId.get(task.threadId);
-  const selection = useMemo<ActiveSubagentPanel | null>(() => {
-    /** Share pages have no authenticated durable-thread panel; a conversation
-     *  selection there would be written and silently ignored. */
-    if (
-      isSharedConvo === true ||
-      task.threadId == null ||
-      conversationId == null ||
-      conversationId === ''
-    ) {
-      return null;
-    }
-    if (child != null) {
-      return durableSubagentSelection(conversationId, child, task.taskId);
-    }
-    /** The bounded discovery index can omit older children; the wake-up payload
-     *  already carries the exact durable identities, so link to the authorized
-     *  thread query directly instead of requiring index membership. */
-    return {
-      host: 'conversation',
-      parentConversationId: conversationId,
-      parentMessageId: messageId,
-      toolCallId: `wakeup:${task.threadId}`,
-      partIndex: 0,
-      subagentType: task.subagentType ?? '',
-      initialProgress: task.status === 'completed' ? 1 : 0,
-      isSubmitting: false,
-      durable: { threadId: task.threadId, taskId: task.taskId },
-    };
-  }, [child, conversationId, isSharedConvo, messageId, task]);
+  const durableTask = useMemo(
+    () => ({
+      threadId: task.threadId,
+      taskId: task.taskId,
+      subagentType: task.subagentType,
+      settled: task.status === 'completed',
+    }),
+    [task.status, task.subagentType, task.taskId, task.threadId],
+  );
+  const { selection, open: openActivity } = useSubagentTaskPanel(durableTask, conversationId);
   const status = threadStatus(task.status);
   const StatusIcon = subagentStatusIcon(status);
   const title = task.subagentType ?? '';
   const hasResult = task.result.trim() !== '';
-
-  const openActivity = useCallback(() => {
-    if (selection == null || openPanel == null) return;
-    openPanel(selection);
-  }, [openPanel, selection]);
 
   return (
     <div className="border-border-light bg-surface-secondary/40 my-1.5 rounded-lg border p-3">
@@ -94,7 +60,7 @@ function WakeupTaskCard({
         />
         {title !== '' && <span className="min-w-0 truncate font-medium">{title}</span>}
         <span className="shrink-0">{localize(subagentStatusLabelKey(status))}</span>
-        {selection != null && openPanel != null && (
+        {selection != null && openActivity != null && (
           /** The trigger identity attributes let the panel's close handler
            *  return keyboard focus to this button. */
           <Button

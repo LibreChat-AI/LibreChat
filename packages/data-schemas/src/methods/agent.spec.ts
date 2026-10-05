@@ -552,6 +552,29 @@ describe('Agent Methods', () => {
       expect(retrievedAgent!.description).toBe('Test description');
     });
 
+    test('should persist a linked native prompt-group instructions selection on create', async () => {
+      const { agentId, authorId } = createTestIds();
+      const instructionsPrompt = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+
+      const newAgent = await createAgent({
+        id: agentId,
+        name: 'Linked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+
+      expect(newAgent.instructionsPrompt).toEqual(instructionsPrompt);
+
+      const retrievedAgent = await getAgent({ id: agentId });
+      expect(retrievedAgent!.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
     test('should derive mcpServerNames only from MCP tools on create', async () => {
       const { agentId, authorId } = createTestIds();
       const actionTool = `sync${Constants.mcp_delimiter}state${actionDelimiter}api---example---com`;
@@ -2990,6 +3013,57 @@ describe('Agent Methods', () => {
       expect(revertedAgent.code_environment_id).toBeUndefined();
     });
 
+    test('should unset a linked prompt-group instructions selection absent from the restored version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+
+      await createAgent({
+        id: agentId,
+        name: 'Unlinked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+      await updateAgent(
+        { id: agentId },
+        {
+          instructionsPrompt: {
+            source: 'native',
+            groupId: new mongoose.Types.ObjectId().toString(),
+            selection: { type: 'production' },
+          },
+        },
+      );
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.instructionsPrompt).toBeUndefined();
+    });
+
+    test('should restore a linked prompt-group instructions selection present in the reverted version', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const instructionsPrompt = {
+        source: 'native',
+        groupId: new mongoose.Types.ObjectId().toString(),
+        selection: { type: 'production' },
+      };
+
+      await createAgent({
+        id: agentId,
+        name: 'Linked Instructions Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt,
+      });
+      await updateAgent({ id: agentId }, { instructionsPrompt: null });
+
+      const revertedAgent = await revertAgentVersion({ id: agentId }, 0);
+
+      expect(revertedAgent.instructionsPrompt).toEqual(instructionsPrompt);
+    });
+
     test('should clear a Git identity absent from the restored version', async () => {
       const agentId = `agent_${uuidv4()}`;
       const authorId = new mongoose.Types.ObjectId();
@@ -3498,6 +3572,39 @@ describe('Agent Methods', () => {
 
       // Should create new version as order matters for arrays
       expect(updatedAgent!.versions).toHaveLength(2);
+    });
+
+    test('should create a new version when the linked prompt-group selection changes', async () => {
+      const agentId = `agent_${uuidv4()}`;
+      const authorId = new mongoose.Types.ObjectId();
+      const groupId = new mongoose.Types.ObjectId().toString();
+
+      await createAgent({
+        id: agentId,
+        name: 'Test Agent',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+        instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+      });
+
+      const updatedAgent = await updateAgent(
+        { id: agentId },
+        {
+          instructionsPrompt: {
+            source: 'native',
+            groupId,
+            selection: { type: 'exact', promptId: new mongoose.Types.ObjectId().toString() },
+          },
+        },
+      );
+
+      expect(updatedAgent!.versions).toHaveLength(2);
+      expect(updatedAgent!.instructionsPrompt).toMatchObject({
+        source: 'native',
+        groupId,
+        selection: { type: 'exact' },
+      });
     });
 
     test('should handle isDuplicateVersion with mixed primitive and object arrays', async () => {

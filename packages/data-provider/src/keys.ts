@@ -145,6 +145,7 @@ export enum MutationKeys {
   updateMediaThread = 'updateMediaThread',
   deleteMediaThread = 'deleteMediaThread',
   deleteMediaThreads = 'deleteMediaThreads',
+  resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',

@@ -3940,12 +3940,13 @@ describe('BaseClient', () => {
     /* The stored path is an upload-time inference, so delivery resolves it again by the
      * routing settled for the agent running the turn. A test asserting a route has to
      * configure that route rather than rely on the stored value alone. */
-    const routeTo = (path, ...mimeTypes) => {
+    const routeTo = (path, mimeTypes, endpointConfig = {}) => {
       TestClient.options.req = {
         config: {
           fileConfig: {
             endpoints: {
               [EModelEndpoint.openAI]: {
+                ...endpointConfig,
                 defaultLLMDeliveryPath: {
                   overrides: Object.fromEntries(mimeTypes.map((mime) => [mime, path])),
                 },
@@ -3961,7 +3962,7 @@ describe('BaseClient', () => {
     };
 
     test('keeps a none image in returned files without adding image URLs', async () => {
-      routeTo('none', 'image/*');
+      routeTo('none', ['image/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3982,7 +3983,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text after the current provider resolves none', () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const file = {
         file_id: 'none-pdf',
         filename: 'report.pdf',
@@ -3995,10 +3996,7 @@ describe('BaseClient', () => {
     });
 
     const routeCsvToTools = ({ textFallbackWithoutTools = true } = {}) => {
-      routeTo('none', 'text/csv');
-      TestClient.options.req.config.fileConfig.endpoints[
-        EModelEndpoint.openAI
-      ].textFallbackWithoutTools = textFallbackWithoutTools;
+      routeTo('none', ['text/csv'], { textFallbackWithoutTools });
     };
 
     test('injects the text stored for a tool-routed file when this turn runs no reader', () => {
@@ -4197,7 +4195,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text when the current provider resolves native delivery', () => {
-      routeTo('provider', 'application/pdf');
+      routeTo('provider', ['application/pdf']);
       const file = {
         file_id: 'provider-pdf',
         filename: 'report.pdf',
@@ -4217,7 +4215,7 @@ describe('BaseClient', () => {
        * extracted text, and extraction at delivery is Phase 2 work. So the model receives
        * nothing here either way, which the assertions state rather than imply, and the
        * change is limited to not downloading and encoding a file to no purpose. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4241,7 +4239,7 @@ describe('BaseClient', () => {
     test('re-resolves a converted image against the type it was routed on', async () => {
       /* Conversion rewrote the stored type, so resolving against that asks about a format
        * the administrator never configured a route for and delivers what they excluded. */
-      routeTo('none', 'image/png');
+      routeTo('none', ['image/png']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4374,7 +4372,7 @@ describe('BaseClient', () => {
     test('keeps an explicitly named destination even under a different provider', async () => {
       /* The user named this one, through the chooser or by requesting a tool resource,
        * and that decision is not this endpoint's to re-derive. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4394,7 +4392,7 @@ describe('BaseClient', () => {
     });
 
     test('keeps a none PDF in returned files without adding documents', async () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const message = {};
       const file = {
         user: 'user1',

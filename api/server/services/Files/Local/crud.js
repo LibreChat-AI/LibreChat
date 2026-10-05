@@ -3,13 +3,16 @@ const path = require('path');
 const axios = require('axios');
 const {
   deleteRagFile,
+  moveLocalFile,
   stripCacheBust,
   unlinkLocalFile,
   createLocalStreamStorage,
+  writeLocalFile,
   assertRemoteFileURL,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
+  saveLocalBuffer: saveBufferToLocalPath,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { EModelEndpoint } = require('librechat-data-provider');
@@ -28,17 +31,8 @@ const paths = require('~/config/paths');
  */
 async function saveLocalFile(file, outputPath, outputFilename) {
   try {
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
-
     const fileExtension = path.extname(file.originalname);
-    const filenameWithExt = outputFilename + fileExtension;
-    const outputFilePath = path.join(outputPath, filenameWithExt);
-    fs.copyFileSync(file.path, outputFilePath);
-    fs.unlinkSync(file.path);
-
-    return outputFilePath;
+    return await moveLocalFile(file.path, outputPath, outputFilename + fileExtension);
   } catch (error) {
     logger.error('[saveFile] Error while saving the file:', error);
     throw error;
@@ -74,30 +68,7 @@ const saveLocalImage = async (req, file, filename) => {
  */
 async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }) {
   try {
-    const { publicPath, uploads } = paths;
-
-    /**
-     * For 'images': save to publicPath/images/userId (images are served statically)
-     * For 'uploads': save to uploads/userId (files downloaded via API)
-     * */
-    const directoryPath =
-      basePath === 'images' ? path.join(publicPath, basePath, userId) : path.join(uploads, userId);
-
-    if (!fs.existsSync(directoryPath)) {
-      fs.mkdirSync(directoryPath, { recursive: true });
-    }
-
-    const resolvedDir = path.resolve(directoryPath);
-    const resolvedPath = path.resolve(resolvedDir, fileName);
-    const rel = path.relative(resolvedDir, resolvedPath);
-    if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-      throw new Error('Path traversal detected in filename');
-    }
-    fs.writeFileSync(resolvedPath, buffer);
-
-    const filePath = path.posix.join('/', basePath, userId, fileName);
-
-    return filePath;
+    return await saveBufferToLocalPath({ paths, userId, buffer, fileName, basePath });
   } catch (error) {
     logger.error('[saveLocalBuffer] Error while saving the buffer:', error);
     throw error;
@@ -144,11 +115,6 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
     // Construct the outputPath based on the basePath and userId
     const outputPath = path.join(paths.publicPath, basePath, userId.toString());
 
-    // Check if the output directory exists, if not, create it
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
-
     // Replace or append the correct extension
     const extRegExp = new RegExp(path.extname(fileName) + '$');
     fileName = fileName.replace(extRegExp, `.${extension}`);
@@ -156,9 +122,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
       fileName += `.${extension}`;
     }
 
-    // Save the file to the output path
-    const outputFilePath = path.join(outputPath, fileName);
-    fs.writeFileSync(outputFilePath, buffer);
+    await writeLocalFile(outputPath, fileName, buffer);
 
     return {
       bytes,
@@ -290,14 +254,8 @@ async function uploadLocalFile({ req, file, file_id }) {
   const { uploads } = appConfig.paths;
   const userPath = path.join(uploads, req.user.id);
 
-  if (!fs.existsSync(userPath)) {
-    fs.mkdirSync(userPath, { recursive: true });
-  }
-
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
-  const newPath = path.join(userPath, fileName);
-
-  await fs.promises.writeFile(newPath, inputBuffer);
+  const newPath = await writeLocalFile(userPath, fileName, inputBuffer);
   const filepath = path.posix.join('/', 'uploads', req.user.id, path.basename(newPath));
 
   let height, width;

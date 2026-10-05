@@ -457,20 +457,20 @@ describe('ControlCombobox dropdown caps', () => {
     renderCapped();
     openPopover();
     const popover = document.querySelector('.animate-popover') as HTMLElement;
-    expect(popover.style.maxHeight).toBe('min(480px, var(--popover-available-height, 480px))');
+    expect(popover.style.maxHeight).toBe('min(30rem, var(--popover-available-height, 30rem))');
     expect(popover.className).toContain('flex-col');
     const scroller = popover.querySelector('div.overflow-auto');
     expect(scroller?.className).toContain('flex-1');
     expect(scroller?.className).toContain('min-h-0');
   });
 
-  it('keeps the fixed 300px list cap for consumers that pass neither prop', () => {
+  it('keeps the fixed list cap (300px at 100% scale) for consumers that pass neither prop', () => {
     renderCapped({ popoverMaxHeight: undefined, unsearchedLimit: undefined });
     openPopover();
     const popover = document.querySelector('.animate-popover') as HTMLElement;
     expect(popover.style.maxHeight).toBe('');
     const scroller = popover.querySelector('div.overflow-auto');
-    expect(scroller?.className).toContain('max-h-[300px]');
+    expect(scroller?.className).toContain('max-h-[18.75rem]');
     expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '15');
   });
 });
@@ -566,4 +566,36 @@ describe('ControlCombobox portal placement', () => {
       expect(screen.getByRole('dialog', { name: 'Outer dialog' })).toBeVisible();
     },
   );
+
+  it('portals into the dialog outside a clipping scroll region', () => {
+    function Harness() {
+      const [container, setContainer] = useState<HTMLDivElement | null>(null);
+      return (
+        <OGDialog open>
+          <OGDialogContent ref={setContainer}>
+            <OGDialogTitle>Change project</OGDialogTitle>
+            <div data-testid="scroller" className="overflow-auto">
+              <ControlCombobox
+                selectedValue="a"
+                items={items}
+                setValue={() => undefined}
+                ariaLabel="Test combobox"
+                searchPlaceholder="Search projects"
+                isCollapsed={false}
+                portalElement={container}
+              />
+            </div>
+          </OGDialogContent>
+        </OGDialog>
+      );
+    }
+    render(<Harness />);
+    openPopover();
+    const search = screen.getByPlaceholderText('Search projects');
+    expect(screen.getByRole('dialog', { name: 'Change project' }).contains(search)).toBe(true);
+    expect(screen.getByTestId('scroller').contains(search)).toBe(false);
+    fireEvent.change(search, { target: { value: 'Option B' } });
+    expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
+  });
 });
