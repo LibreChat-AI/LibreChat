@@ -6,9 +6,10 @@ const SCAN_DIRS = ['Input', 'Menus'];
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
-  /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover)|Popover\.Content|HoverCardContent|DropdownMenuContent)\b(?:=>|[^>])*>/g;
+  /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
-const SCALE_STEP = /\brounded-(?:md|lg|xl|2xl|3xl)\b/;
+const PANEL_ROLE = /\brounded-theme-(?:menu-panel|popover)\b/;
+const DELEGATED = /className=\{[A-Za-z.]+\}|\{\.\.\./;
 
 function sourcesUnder(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -35,11 +36,11 @@ describe('composer menu and popover panels', () => {
   });
 
   it.each(files.map((file) => [path.relative(CHAT_DIR, file), file]))(
-    '%s corners its panels with a theme role, not a scale step',
+    '%s names a theme radius role on every panel that styles its own corners',
     (_name, file) => {
       const text = fs.readFileSync(file, 'utf8');
       const strays = [...(text.match(PANEL_TAG) ?? []), ...(text.match(PANEL_CONSTANT) ?? [])]
-        .filter((panel) => SCALE_STEP.test(panel))
+        .filter((panel) => !PANEL_ROLE.test(panel) && !DELEGATED.test(panel))
         .map((panel) => panel.slice(0, 80));
       expect(strays).toEqual([]);
     },
