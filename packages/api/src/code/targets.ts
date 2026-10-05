@@ -450,7 +450,7 @@ export interface SubagentCodeRouting<TContext> {
     contexts: Map<string, TContext>,
     input: {
       agentId: string;
-      context?: Pick<SubagentCodeCallContext, 'executionId'> | null;
+      context?: Pick<SubagentCodeCallContext, 'executionId' | 'parentRunId'> | null;
       placement: SubagentCodePlacement<T>;
       codeExecutionContext?: Pick<CodeExecutionContext, 'environmentId'> | null;
       toolContext: TContext;
@@ -559,11 +559,33 @@ export function createSubagentCodeRouting<TContext>({
   };
   const release = (placement: object): void => endHold(placement, false);
   const commit = (placement: object): void => endHold(placement, true);
+  const recordPassedOn = (agentId: string, environmentId: string): void => {
+    const passedOn = passedOnByAgent.get(agentId) ?? new Set<string>();
+    passedOn.add(environmentId);
+    passedOnByAgent.set(agentId, passedOn);
+  };
+  /** Pass-throughs recorded by a call, kept only if the resolution deciding them succeeds. */
+  const passOnsByExecution = new Map<
+    string,
+    Array<{ agentId: string; environmentId: string; settled: boolean }>
+  >();
   const settleHoldsOf = (executionId: string | undefined, keep: boolean): void => {
-    const pending = executionId == null ? undefined : holdsByExecution.get(executionId);
+    if (executionId == null) {
+      return;
+    }
+    const pending = holdsByExecution.get(executionId);
     for (const placement of [...(pending ?? [])]) {
       endHold(placement, keep);
     }
+    for (const passOn of passOnsByExecution.get(executionId) ?? []) {
+      if (!passOn.settled) {
+        passOn.settled = true;
+        if (keep) {
+          recordPassedOn(passOn.agentId, passOn.environmentId);
+        }
+      }
+    }
+    passOnsByExecution.delete(executionId);
   };
   const conflicts = (agentId: string, environmentId: string | null): boolean => {
     const claimed = routeByAgent.get(agentId);
@@ -774,9 +796,16 @@ export function createSubagentCodeRouting<TContext>({
         childRoutes.set(executionId, placement.childEnvironmentId);
       }
       if (placement.target == null && placement.childEnvironmentId != null) {
-        const passedOn = passedOnByAgent.get(agentId) ?? new Set<string>();
-        passedOn.add(placement.childEnvironmentId);
-        passedOnByAgent.set(agentId, passedOn);
+        const executions = [context?.executionId, context?.parentRunId].filter(
+          (id): id is string => id != null && id !== '',
+        );
+        if (executions.length === 0) {
+          recordPassedOn(agentId, placement.childEnvironmentId);
+        }
+        const passOn = { agentId, environmentId: placement.childEnvironmentId, settled: false };
+        for (const id of executions) {
+          passOnsByExecution.set(id, [...(passOnsByExecution.get(id) ?? []), passOn]);
+        }
       }
       if ((holds.get(placement)?.executions.length ?? 0) === 0) {
         commit(placement);

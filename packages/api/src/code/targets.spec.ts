@@ -942,27 +942,38 @@ describe('subagent code routing', () => {
       code_environment_id: 'laptop',
       code_environment_ids: ['buildbox'],
     };
-    const fromWriterSelfRun = () =>
+    const fromWriterSelfRun = (id: string) =>
       routing.place({
-        agent: tester,
+        agent: { ...tester, id },
         flags,
         context: { ...call(undefined, `self-run-${Math.random()}`), parentAgentId: writer.id },
       });
 
     const parentCall = call({ machine: 'buildbox' });
     await placeAndAttach(reviewer, parentCall);
-    await placeAndAttach(writer, call(undefined, parentCall.executionId), {
-      statefulCodeSessions: false,
-    });
-    await expect(fromWriterSelfRun()).resolves.toMatchObject({
+    const failedWriterCall = call(undefined, parentCall.executionId);
+    await expect(
+      routing.settleExecution(failedWriterCall, async () => {
+        await placeAndAttach(writer, failedWriterCall, { statefulCodeSessions: false });
+        throw new Error('the writer failed to resolve');
+      }),
+    ).rejects.toThrow('the writer failed to resolve');
+    expect((await fromWriterSelfRun('agent_after_failure')).target).toBeUndefined();
+
+    const writerCall = call(undefined, parentCall.executionId);
+    await routing.settleExecution(writerCall, () =>
+      placeAndAttach(writer, writerCall, { statefulCodeSessions: false }),
+    );
+    await expect(fromWriterSelfRun('agent_after_success')).resolves.toMatchObject({
       target: { environmentId: 'buildbox' },
     });
 
     const lintCall = call({ machine: 'laptop' });
     await placeAndAttach({ ...tester, id: 'agent_lint' }, lintCall);
-    await placeAndAttach(writer, call(undefined, lintCall.executionId), {
-      statefulCodeSessions: false,
-    });
+    const secondWriterCall = call(undefined, lintCall.executionId);
+    await routing.settleExecution(secondWriterCall, () =>
+      placeAndAttach(writer, secondWriterCall, { statefulCodeSessions: false }),
+    );
     const ambiguous = await routing.place({
       agent: { ...tester, id: 'agent_docs' },
       flags,
