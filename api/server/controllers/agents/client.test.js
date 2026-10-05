@@ -147,6 +147,12 @@ describe('AgentClient code approval persistence', () => {
     }
   });
 
+  it('does not copy the loaded row mode into an overridden conversation', () => {
+    const client = noWorkspaceClient({ requested: 'ask', stored: 'fullAccess' });
+    client.options.req.body.overrideConvoId = `convo-2${Constants.COMMON_DIVIDER}0`;
+    expect(client.getSaveOptions()).not.toHaveProperty('codeApprovalMode');
+  });
+
   it('still rejects a value that is not an approval mode without a workspace', () => {
     expect(() =>
       noWorkspaceClient({ requested: 'unrestricted', stored: 'fullAccess' }).getSaveOptions(),

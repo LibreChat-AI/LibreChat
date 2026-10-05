@@ -430,6 +430,7 @@ const ChatForm = memo(function ChatForm({
     index,
     conversationId,
     conversation,
+    codeEnvironmentMode: codeWorkspace.mode,
     isSubmitting,
     answerModeActive: composerReserved,
     composerDisabled: isPreparingFromUrl,
@@ -1027,6 +1028,7 @@ const ChatForm = memo(function ChatForm({
                       <CodeApprovalMenu
                         conversation={conversation}
                         addedConversation={addedConvo}
+                        codeEnvironmentMode={codeWorkspace.mode}
                         setConversation={setConversation}
                         disabled={disableInputs}
                       />

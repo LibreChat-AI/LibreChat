@@ -1988,6 +1988,7 @@ class AgentClient extends BaseClient {
     const codeApprovalMode = resolvePersistedCodeApprovalMode({
       requested: this.options.req.body.codeApprovalMode,
       conversationId: this.options.req.body.conversationId,
+      overrideConversationId: this.options.req.body.overrideConvoId,
       conversation: this.options.req.resolvedConversation,
       settingsByAgentId: collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
       approvalsEnabled: agentsEConfig?.toolApproval?.enabled !== false,

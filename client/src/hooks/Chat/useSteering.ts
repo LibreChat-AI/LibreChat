@@ -15,6 +15,7 @@ import type {
   TAgentQueuedTurnFileRef,
   TMessage,
   TConversation,
+  CodeEnvironmentMode,
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { CallbackInterface } from 'recoil';
@@ -544,6 +545,8 @@ export interface UseSteeringParams {
   conversationId: string;
   conversation: TConversation | null;
   addedConversation?: TConversation | null;
+  /** The workspace mode the composer resolved for the next turn. */
+  codeEnvironmentMode?: CodeEnvironmentMode;
   isSubmitting: boolean;
   answerModeActive: boolean;
   /** Host-owned preparation hold; existing queued-message and Stop actions remain independent. */
@@ -581,6 +584,7 @@ export default function useSteering({
   conversationId,
   conversation,
   addedConversation,
+  codeEnvironmentMode,
   isSubmitting,
   answerModeActive,
   composerDisabled = false,
@@ -615,7 +619,11 @@ export default function useSteering({
     steerInterruptsByDefault,
   } = useChatSettings();
 
-  const { selected: codeApprovalMode } = useCodeApprovalMode(conversation, addedConversation);
+  const { selected: codeApprovalMode } = useCodeApprovalMode(
+    conversation,
+    addedConversation,
+    codeEnvironmentMode,
+  );
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
   const steerable = !isAssistantsEndpoint(endpoint);
   const hasRealConvoId =

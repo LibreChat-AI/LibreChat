@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, Constants } from 'librechat-data-provider';
 import { TooltipAnchor, composerControlClasses } from '@librechat/client';
 import { Check, ChevronDown, FilePen, FileQuestionMark, FileTerminal } from 'lucide-react';
-import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
+import type { TConversation, CodeApprovalMode, CodeEnvironmentMode } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
@@ -41,17 +41,24 @@ const modeOptions: Record<
 export default function CodeApprovalMenu({
   conversation,
   addedConversation,
+  codeEnvironmentMode,
   setConversation,
   disabled,
 }: {
   conversation: TConversation | null;
   addedConversation?: TConversation | null;
+  /** The workspace mode the composer resolved for the next turn. */
+  codeEnvironmentMode?: CodeEnvironmentMode;
   setConversation: SetterOrUpdater<TConversation | null>;
   disabled: boolean;
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
-  const { available, modes, selected } = useCodeApprovalMode(conversation, addedConversation);
+  const { available, modes, selected } = useCodeApprovalMode(
+    conversation,
+    addedConversation,
+    codeEnvironmentMode,
+  );
   const preference = useCodeApprovalModePreference();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');

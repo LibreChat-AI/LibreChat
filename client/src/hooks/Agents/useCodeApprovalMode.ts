@@ -14,6 +14,7 @@ import type {
   TAgentsMap,
   TConversation,
   CodeApprovalMode,
+  CodeEnvironmentMode,
   TPublicCodeEnvironment,
   CodeWorkspaceSelection,
   CodeWorkspaceRoutingAgent,
@@ -23,9 +24,14 @@ import useAgentToolPermissions from './useAgentToolPermissions';
 import useGetAgentsConfig from './useGetAgentsConfig';
 import { useAgentsMapContext } from '~/Providers';
 
+/**
+ * `codeEnvironmentMode` is the mode the composer resolved for the next turn (`useCodeWorkspace`'s
+ * `mode`), which also covers a saved chat with no recorded decision and a draft still choosing.
+ */
 export default function useCodeApprovalMode(
   conversation: TConversation | null,
   addedConversation?: TConversation | null,
+  codeEnvironmentMode?: CodeEnvironmentMode,
 ): {
   available: boolean;
   modes: CodeApprovalMode[];
@@ -72,9 +78,10 @@ export default function useCodeApprovalMode(
       conversation?.codeWorkspaces,
     ],
   );
-  /** A chat that runs without attached workspaces opts every agent out of its attached machine
-   *  on the server, so no attached mode applies to it, whatever the agents' defaults are. */
-  const withoutAttached = conversation?.codeEnvironmentMode === 'without_attached';
+  /** A turn sent without attached workspaces opts every agent out of its attached machine on the
+   *  server, so no attached mode applies to it, whatever the agents' defaults are. */
+  const withoutAttached =
+    (codeEnvironmentMode ?? conversation?.codeEnvironmentMode) === 'without_attached';
   const attachedEnvironments = useMemo(
     () =>
       withoutAttached

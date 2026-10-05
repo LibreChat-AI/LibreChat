@@ -261,11 +261,12 @@ export default function useChatFunctions({
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
   const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
     immutableConversation,
     addedConversation,
+    codeWorkspaceState.mode,
   );
-  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
 
   /**
    * `ask` refuses while `isSubmitting`, but that Recoil value only reads true

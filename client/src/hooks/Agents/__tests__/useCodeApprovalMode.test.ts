@@ -86,6 +86,22 @@ describe('useCodeApprovalMode', () => {
     });
   });
 
+  test('follows the composer-resolved mode for a chat that records no decision', () => {
+    const { result, rerender } = renderHook(
+      ({ resolved }: { resolved?: TConversation['codeEnvironmentMode'] }) =>
+        useCodeApprovalMode(conversation, undefined, resolved),
+      { initialProps: { resolved: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ resolved: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
   test('uses the chosen machine policy without inheriting full access from the default', () => {
     mockUseAgentToolPermissions.mockReturnValue({
       agent: {

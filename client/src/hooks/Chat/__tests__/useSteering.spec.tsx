@@ -657,6 +657,7 @@ describe('useSteering', () => {
     function setupServerQueue(
       initializer = withActiveGeneration(),
       addedConversation?: TConversation,
+      codeEnvironmentMode?: TConversation['codeEnvironmentMode'],
     ) {
       const sendNow = jest.fn();
       const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -670,6 +671,7 @@ describe('useSteering', () => {
             conversationId: CONVO_ID,
             conversation: agentsConversation,
             addedConversation,
+            codeEnvironmentMode,
             isSubmitting: true,
             answerModeActive: false,
             sendNow,
@@ -717,8 +719,21 @@ describe('useSteering', () => {
         result.current.steering.queueFromComposer('run later');
         await Promise.resolve();
       });
-      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(agentsConversation, addedConversation);
+      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
+        agentsConversation,
+        addedConversation,
+        undefined,
+      );
       expect(mockEnqueueQueuedTurn.mock.calls[0]?.[0].codeApprovalMode).toBe('ask');
+    });
+
+    it('gates the queued mode on the workspace mode the composer resolved', () => {
+      setupServerQueue(withActiveGeneration(), undefined, 'without_attached');
+      expect(mockCodeApprovalMode).toHaveBeenLastCalledWith(
+        agentsConversation,
+        undefined,
+        'without_attached',
+      );
     });
 
     it('keeps startup turns local until the server generation epoch exists', async () => {

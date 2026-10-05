@@ -831,6 +831,22 @@ describe('approval mode without attached targets', () => {
       expect(() => persist('unrestricted', 'fullAccess')).toThrow('not permitted');
     });
 
+    test('never carries the loaded row into a turn saved under another conversation', () => {
+      const persistUnder = (overrideConversationId: unknown) =>
+        resolvePersistedCodeApprovalMode({
+          requested: 'ask',
+          conversationId: 'convo-1',
+          overrideConversationId,
+          conversation: { conversationId: 'convo-1', codeApprovalMode: 'fullAccess' },
+          settingsByAgentId: new Map(),
+        });
+      expect(persistUnder('convo-2__0')).toBeUndefined();
+      expect(persistUnder('convo-2')).toBeUndefined();
+      expect(persistUnder('convo-1__0')).toBe('fullAccess');
+      expect(persistUnder('')).toBe('fullAccess');
+      expect(persistUnder(undefined)).toBe('fullAccess');
+    });
+
     test('records exactly the validated mode once a target is attached', () => {
       const permissive = new Map([['attached-agent', fullAccessSettings]]);
       expect(persist('acceptEdits', 'fullAccess', permissive)).toBe('acceptEdits');

@@ -2,6 +2,7 @@ import { Constants } from '@librechat/agents';
 import {
   CODE_APPROVAL_MODES,
   CodeApprovalModeError,
+  Constants as ProviderConstants,
   getAllowedCodeApprovalModes,
   resolveCodeApprovalMode,
   resolveCodePermissionDecision,
@@ -301,12 +302,15 @@ type StoredCodeApprovalConversation = {
 export function resolvePersistedCodeApprovalMode({
   requested,
   conversationId,
+  overrideConversationId,
   conversation,
   settingsByAgentId,
   approvalsEnabled = true,
 }: {
   requested: unknown;
   conversationId?: string | null;
+  /** The request's `overrideConvoId`: the turn is saved under this conversation instead. */
+  overrideConversationId?: unknown;
   conversation?: StoredCodeApprovalConversation | null;
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>;
   approvalsEnabled?: boolean;
@@ -315,8 +319,12 @@ export function resolvePersistedCodeApprovalMode({
   if (!approvalsEnabled || settingsByAgentId.size > 0) {
     return effective;
   }
+  const savedConversationId =
+    typeof overrideConversationId === 'string' && overrideConversationId !== ''
+      ? overrideConversationId.split(ProviderConstants.COMMON_DIVIDER)[0]
+      : conversationId;
   const stored =
-    conversation != null && conversation.conversationId === conversationId
+    conversation != null && conversation.conversationId === savedConversationId
       ? conversation.codeApprovalMode
       : undefined;
   return isCodeApprovalMode(stored) ? stored : undefined;
