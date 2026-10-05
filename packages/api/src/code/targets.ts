@@ -560,7 +560,12 @@ export function createSubagentCodeRouting<TContext>({
         const target = selectSubagentCodeTarget(hostArgs, resolution);
         if (target != null) {
           if (conflicts(agent.id, target.environmentId)) {
-            throw createSubagentHostArgumentError(SUBAGENT_MACHINE_ARG, 'unavailable');
+            throw createSubagentHostArgumentError(
+              hostArgs?.[SUBAGENT_MACHINE_ARG] != null
+                ? SUBAGENT_MACHINE_ARG
+                : SUBAGENT_WORKSPACE_ARG,
+              'unavailable',
+            );
           }
           return routeTo(agent, target);
         }
@@ -571,10 +576,14 @@ export function createSubagentCodeRouting<TContext>({
           ? { agent }
           : { agent, childEnvironmentId: parentEnvironmentId };
       }
-      const inherited = inheritedRoute(agent.id, parentEnvironmentId);
-      if (inherited != null) {
+      if (inheritedRoute(agent.id, parentEnvironmentId) != null) {
         const { targets } = await resolveSubagentCodeTargets(paramsFor(agent, flags));
-        const target = targets.find((candidate) => candidate.environmentId === inherited);
+        /** Re-read after the await: a concurrent call may have settled this subagent meanwhile. */
+        const inherited = inheritedRoute(agent.id, parentEnvironmentId);
+        const target =
+          inherited == null
+            ? undefined
+            : targets.find((candidate) => candidate.environmentId === inherited);
         if (target != null) {
           return routeTo(agent, target);
         }
