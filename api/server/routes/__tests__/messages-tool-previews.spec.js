@@ -220,7 +220,7 @@ describe('tool-call previews on the message routes', () => {
   });
 
   it('serves the full part to its owner and nobody else', async () => {
-    const url = `/api/messages/${conversationId}/${responseId}/parts/1?toolCallId=call_bash`;
+    const url = `/api/messages/${conversationId}/${responseId}/parts/1?toolCallId=call_bash&agentId=agent_a`;
     const owner = await request(app).get(url);
     expect(owner.status).toBe(200);
     expect(owner.body.tool_call.output).toBe(fullOutput);
@@ -253,7 +253,7 @@ describe('tool-call previews on the message routes', () => {
     });
 
     const partUrl = () =>
-      `/api/messages/${liveConversationId}/live-response/parts/1?toolCallId=call_bash`;
+      `/api/messages/${liveConversationId}/live-response/parts/1?toolCallId=call_bash&agentId=agent_a`;
 
     it('serves the part to the job owner, as the conversation read does', async () => {
       GenerationJobManager.getJob.mockResolvedValue({
@@ -313,7 +313,7 @@ describe('tool-call previews on the message routes', () => {
       { messageId: 'child-msg', conversationId: childId, content: assistantContent() },
     );
     const response = await request(app).get(
-      `/api/messages/${childId}/child-msg/parts/1?toolCallId=call_bash`,
+      `/api/messages/${childId}/child-msg/parts/1?toolCallId=call_bash&agentId=agent_a`,
     );
     expect(response.status).toBe(404);
   });

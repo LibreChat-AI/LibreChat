@@ -62,39 +62,28 @@ function getAgentToolCall(part: unknown): FullToolCall | undefined {
   return toolCall.type == null || toolCall.type === 'tool_call' ? toolCall : undefined;
 }
 
-/**
- * Finds the part at its index, or by tool-call id when the client's copy of the content no
- * longer lines up with storage (a client-only card was inserted or removed). An id that matches
- * a different part than the index points at never wins over the indexed part.
- */
+/** Exact match: an absent step or agent matches only a call that has none, as the preview pass
+ *  assumed when it checked the identity was unique. */
 function matchesIdentity(part: unknown, toolCall: FullToolCall, identity: PartIdentity): boolean {
-  if (identity.toolCallId != null && toolCall.id !== identity.toolCallId) {
+  if (toolCall.id !== identity.toolCallId) {
     return false;
   }
-  if (identity.stepId != null && toolCall.stepId !== identity.stepId) {
+  if ((toolCall.stepId ?? undefined) !== (identity.stepId ?? undefined)) {
     return false;
   }
-  return identity.agentId == null || (part as StoredToolCallPart).agentId === identity.agentId;
+  return ((part as StoredToolCallPart).agentId ?? undefined) === (identity.agentId ?? undefined);
 }
 
 /**
- * Finds the part at its index when it carries the requested identity. Otherwise, when the
- * client's copy no longer lines up with storage (a client-only card was inserted or removed),
- * scans by identity and accepts only a single match: provider ids can repeat within a response,
- * so an ambiguous match resolves to not found rather than to another call's content.
+ * Finds the one part carrying the requested identity. The client's index is not trusted for
+ * this: its copy of the content can be shifted by client-only cards. The preview pass only
+ * shortens calls whose identity is unique in their message, so a request for a preview always
+ * names exactly one part; a repeated identity resolves to not found, never to another call.
  */
 function locatePart(
   content: unknown[],
-  partIndex: number,
   identity: PartIdentity,
 ): { partIndex: number; toolCall: FullToolCall } | undefined {
-  const indexed = getAgentToolCall(content[partIndex]);
-  if (indexed != null && matchesIdentity(content[partIndex], indexed, identity)) {
-    return { partIndex, toolCall: indexed };
-  }
-  if (identity.toolCallId == null) {
-    return undefined;
-  }
   let found: { partIndex: number; toolCall: FullToolCall } | undefined;
   for (let i = 0; i < content.length; i++) {
     const toolCall = getAgentToolCall(content[i]);
@@ -114,7 +103,7 @@ export async function readToolCallPart(
   deps: ToolCallPartDeps,
   input: ToolCallPartInput,
 ): Promise<ToolCallPartResult> {
-  const { user, conversationId, messageId, partIndex, toolCallId, stepId, agentId } = input;
+  const { user, conversationId, messageId, toolCallId, stepId, agentId } = input;
   const messages = await deps.getMessages(
     { user, conversationId, messageId },
     CLIENT_MESSAGE_SELECT,
@@ -123,7 +112,7 @@ export async function readToolCallPart(
   if (!Array.isArray(content)) {
     return { ok: false, error: { code: 'message_not_found' } };
   }
-  const located = locatePart(content, partIndex, { toolCallId, stepId, agentId });
+  const located = locatePart(content, { toolCallId, stepId, agentId });
   if (located == null) {
     return { ok: false, error: { code: 'part_not_found' } };
   }

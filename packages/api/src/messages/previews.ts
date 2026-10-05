@@ -1,5 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import {
+  Tools,
   Constants,
   ContentTypes,
   TOOL_CALL_PREVIEWS_PARAM,
@@ -51,12 +52,19 @@ const PARSED_OUTPUT_TOOLS: ReadonlySet<string> = new Set<string>([
   Constants.CHECK_BACKGROUND_TASK as string,
 ]);
 
+/**
+ * Older web-search failures carry only this phrase, anywhere in the output, and the collapsed
+ * card reads it to label the search as not completed; such output goes whole.
+ */
+const LEGACY_SEARCH_ERROR = /error processing/i;
+
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /** The stored fields this module reads; everything else on the tool call passes through. */
 interface StoredToolCall extends ToolCallPreviewMarkers {
   type?: string;
   id?: unknown;
+  stepId?: unknown;
   name?: string;
   executor?: string;
   progress?: unknown;
@@ -69,6 +77,7 @@ interface StoredToolCall extends ToolCallPreviewMarkers {
 
 interface StoredToolCallPart {
   type?: string;
+  agentId?: unknown;
   tool_call?: StoredToolCall;
 }
 
@@ -96,6 +105,22 @@ const hasOutput = (toolCall: StoredToolCall): boolean =>
 /** Only a call with an id can be fetched back by identity, so only such calls are previewed. */
 const hasIdentity = (toolCall: StoredToolCall): boolean =>
   typeof toolCall.id === 'string' && toolCall.id !== '';
+
+/**
+ * The identity the client sends to fetch a part back: provider call id, host run-step id and
+ * the part's agent, matched exactly by the part endpoint. Provider ids can repeat within a
+ * response, so a call is previewed only when this identity is unique in its message; otherwise
+ * no request could name it without also naming another call.
+ */
+function toolCallIdentity(part: StoredToolCallPart & { tool_call: StoredToolCall }): string | null {
+  const { id, stepId } = part.tool_call;
+  if (typeof id !== 'string' || id === '') {
+    return null;
+  }
+  const step = typeof stepId === 'string' ? stepId : '';
+  const agent = typeof part.agentId === 'string' ? part.agentId : '';
+  return `${id}\u0000${step}\u0000${agent}`;
+}
 
 /**
  * A call whose content no card still acts on: it has output, or its run step closed or reached
@@ -328,6 +353,9 @@ export function previewToolCallOutput(
   ) {
     return output;
   }
+  if (toolCall.name === Tools.web_search && LEGACY_SEARCH_ERROR.test(output)) {
+    return output;
+  }
   return previewOutputText(output, maxChars, commandTrailerLength(toolCall, output));
 }
 
@@ -401,11 +429,26 @@ export function previewContentToolCalls(
   limits: ToolCallPreviewLimits,
 ): unknown[] {
   let result: unknown[] | undefined;
+  /** First index of each identity; a repeat sends both calls whole (see `toolCallIdentity`). */
+  const firstIndex = new Map<string, number>();
   for (let i = 0; i < content.length; i++) {
     const part = content[i];
     if (!isToolCallPart(part)) {
       continue;
     }
+    const identity = toolCallIdentity(part);
+    if (identity == null) {
+      continue;
+    }
+    const first = firstIndex.get(identity);
+    if (first != null) {
+      if (result != null && first >= 0) {
+        result[first] = content[first];
+      }
+      firstIndex.set(identity, -1);
+      continue;
+    }
+    firstIndex.set(identity, i);
     const toolCall = previewToolCallSafely(part.tool_call, limits);
     if (toolCall === part.tool_call) {
       continue;

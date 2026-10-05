@@ -234,17 +234,34 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
         repeated('agent_b', 'step_b', 'from agent b'),
       ],
     });
-    const byStep = await request(app).get(`${partUrl(0, 'call_dup')}&stepId=step_b`);
-    expect(byStep.status).toBe(200);
-    expect(byStep.body).toMatchObject({ partIndex: 2, tool_call: { output: 'from agent b' } });
+    const identity = (agentId: string, stepId: string) =>
+      `${partUrl(0, 'call_dup')}&stepId=${stepId}&agentId=${agentId}`;
+    const agentB = await request(app).get(identity('agent_b', 'step_b'));
+    expect(agentB.status).toBe(200);
+    expect(agentB.body).toMatchObject({ partIndex: 2, tool_call: { output: 'from agent b' } });
 
-    const byAgent = await request(app).get(`${partUrl(0, 'call_dup')}&agentId=agent_a`);
-    expect(byAgent.body).toMatchObject({ partIndex: 1, tool_call: { output: 'from agent a' } });
+    const agentA = await request(app).get(identity('agent_a', 'step_a'));
+    expect(agentA.body).toMatchObject({ partIndex: 1, tool_call: { output: 'from agent a' } });
 
-    const indexedMismatch = await request(app).get(`${partUrl(1, 'call_dup')}&stepId=step_b`);
-    expect(indexedMismatch.body).toMatchObject({ partIndex: 2 });
+    /** An index pointing at the other agent's call does not win over the identity. */
+    const shifted = await request(app).get(
+      `${partUrl(1, 'call_dup')}&stepId=step_b&agentId=agent_b`,
+    );
+    expect(shifted.body).toMatchObject({ partIndex: 2 });
 
-    expect((await request(app).get(partUrl(0, 'call_dup'))).status).toBe(404);
+    /** Without the step and agent, both calls carry the requested identity loosely; neither does
+     *  exactly, so nothing is returned. */
+    expect((await request(app).get(partUrl(1, 'call_dup'))).status).toBe(404);
+  });
+
+  it('refuses an identity that repeats exactly, even when the index points at one occurrence', async () => {
+    const twin = (output: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: { id: 'call_twin', type: 'tool_call', name: 'read_file', output, args: '{}' },
+    });
+    await seed(OWNER, { content: [twin('first'), twin('second')] });
+    expect((await request(app).get(partUrl(0, 'call_twin'))).status).toBe(404);
+    expect((await request(app).get(partUrl(1, 'call_twin'))).status).toBe(404);
   });
 
   it('serves a call whose provider id is unusually long', async () => {

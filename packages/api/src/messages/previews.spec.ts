@@ -25,6 +25,7 @@ type TestToolCall = {
   executor?: string;
   progress?: number;
   runStepStatus?: string;
+  stepId?: string;
   approval?: unknown;
   subagent_content?: unknown[];
   outputTruncated?: true;
@@ -293,6 +294,14 @@ describe('previewToolCall', () => {
     expect(otherPreview.output?.length).toBeLessThanOrEqual(limits.outputChars);
   });
 
+  it('keeps a legacy web-search error whole, since its card reads the phrase anywhere', () => {
+    const output = `${'result '.repeat(500)}Error processing request${' tail'.repeat(500)}`;
+    const search = toolPart({ name: 'web_search', output }).tool_call;
+    expect(previewToolCall(search, limits).output).toBe(output);
+    const plain = toolPart({ name: 'web_search', output: 'result '.repeat(2_000) }).tool_call;
+    expect(previewToolCall(plain, limits).outputTruncated).toBe(true);
+  });
+
   it('leaves the question-and-answer record and legacy Assistants calls whole', () => {
     const ask = toolPart({ name: 'ask_user_question', output: 'a'.repeat(5_000) }).tool_call;
     expect(previewToolCall(ask, limits)).toBe(ask);
@@ -359,6 +368,20 @@ describe('previewMessagesToolCalls', () => {
     expect(result[1].content?.[2]).toBe(smallPart);
     expect(result[1].content?.[1]).toMatchObject({ tool_call: { outputTruncated: true } });
     expect(bigPart.tool_call.output).toHaveLength(10_000);
+  });
+
+  it('previews a call only when its identity is unique in the message', () => {
+    const repeated = (agentId: string) => ({
+      ...toolPart({ id: 'call_dup', stepId: 'step_1', output: 'o'.repeat(10_000) }),
+      agentId,
+    });
+    const content = [repeated('a'), repeated('a'), repeated('a'), repeated('b')];
+    const [message] = previewMessagesToolCalls([{ content }], limits);
+    const parts = message.content as Array<{ tool_call: TestToolCall }>;
+    expect(parts[0]).toBe(content[0]);
+    expect(parts[1]).toBe(content[1]);
+    expect(parts[2]).toBe(content[2]);
+    expect(parts[3].tool_call.outputTruncated).toBe(true);
   });
 
   it('returns the same array when nothing needs shortening', () => {
