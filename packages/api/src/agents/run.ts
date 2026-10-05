@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import { resolveSubagents } from 'librechat-data-provider';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { Run, Providers, Constants, HookRegistry } from '@librechat/agents';
 import {
@@ -1892,6 +1893,7 @@ function buildSubagentConfigs(
   detachedTasksEnabled = false,
   onResolvedAgent?: (agent: RunAgent) => void,
 ): SubagentConfigEntry[] {
+  agent = { ...agent, subagents: resolveSubagents(agent.subagents, agentsEConfig?.capabilities) };
   if (!agent.subagents?.enabled) {
     return [];
   }
@@ -2024,7 +2026,9 @@ function buildSubagentConfigs(
     );
   }
 
-  for (const { definition, memberConfigs } of agent.subagentGraphConfigs ?? []) {
+  for (const { definition, memberConfigs } of agent.subagents.graphsEnabled !== false
+    ? (agent.subagentGraphConfigs ?? [])
+    : []) {
     if (memberConfigs.length === 0) {
       continue;
     }
@@ -2298,6 +2302,10 @@ export async function createRun({
   RunConfig,
   'tokenCounter' | 'customHandlers' | 'indexTokenCountMap' | 'initialSessions'
 >): Promise<Run<IState>> {
+  agents = agents.map((agent) => ({
+    ...agent,
+    subagents: resolveSubagents(agent.subagents, appConfig?.endpoints?.agents?.capabilities),
+  }));
   const resolvedRunId = runId ?? randomUUID();
   const runFilesActive =
     runFiles?.activate(

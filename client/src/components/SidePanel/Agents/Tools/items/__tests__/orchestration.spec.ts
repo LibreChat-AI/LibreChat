@@ -93,9 +93,9 @@ test('subagent toggles preserve their complete settings and restore the retained
     ],
   };
   const disabled = setSubagentsEnabled(subagents, false);
-  expect(disabled).toEqual({ ...subagents, enabled: false });
+  expect(disabled).toEqual({ ...subagents, enabled: false, graphsEnabled: true });
   expect(subagents.enabled).toBe(true);
-  expect(setSubagentsEnabled(disabled, true)).toEqual(subagents);
+  expect(setSubagentsEnabled(disabled, true)).toEqual({ ...subagents, graphsEnabled: true });
   expect(setSubagentsEnabled(undefined, true)).toEqual({
     enabled: true,
     allowSelf: true,
@@ -125,4 +125,39 @@ test('handoff removal retains all direct edges and does not mutate stored input'
   expect(removeHandoffs(edges)).toEqual([direct, implicitDirect]);
   expect(edges).toHaveLength(3);
   expect(removeHandoffs()).toEqual([]);
+});
+
+test('graph selection and removal use the graph flag independently of ordinary spawning', () => {
+  const graphItem: AgentItem = {
+    kind: 'builtin',
+    id: 'subagent_graphs',
+    name: '',
+    description: '',
+    iconKey: 'subagent_graphs',
+  };
+  const team = {
+    type: 'team',
+    name: 'Team',
+    description: 'Work',
+    agent_ids: ['child'],
+    entry_agent_id: 'child',
+    result_agent_id: 'child',
+    edges: [],
+  };
+  expect(
+    deriveSelectedItems(
+      { ...form, subagents: { enabled: false, graphsEnabled: true, graphs: [team] } },
+      [graphItem, subagentItem],
+      [],
+    ),
+  ).toEqual([graphItem]);
+  expect(
+    deriveSelectedItems(
+      { ...form, subagents: { enabled: true, graphsEnabled: false, graphs: [team] } },
+      [graphItem, subagentItem],
+      [],
+    ),
+  ).toEqual([subagentItem]);
+  expect(computeToggleAction(graphItem, { selected: true })).toEqual({ type: 'graphs-remove' });
+  expect(computeToggleAction(graphItem, { selected: false })).toEqual({ type: 'configure' });
 });

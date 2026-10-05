@@ -1,5 +1,6 @@
 import {
   Tools,
+  isSubagentGraphsEnabled,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_GRAPH_NODES,
   stripAgentIdSuffix,
@@ -13,7 +14,10 @@ import {
   resolveAgentCodeEnvironmentRouting,
 } from '~/agents/execution';
 
-type SpawnConfig = Pick<NonNullable<Agent['subagents']>, 'enabled' | 'agent_ids'> & {
+type SpawnConfig = Pick<
+  NonNullable<Agent['subagents']>,
+  'enabled' | 'graphsEnabled' | 'agent_ids'
+> & {
   graphs?: ReadonlyArray<
     Pick<NonNullable<NonNullable<Agent['subagents']>['graphs']>[number], 'agent_ids'>
   >;
@@ -41,12 +45,14 @@ export function getSpawnableSubagentIds(
   agent: Pick<SubagentCodeRoutingAgent, 'id' | 'subagents'>,
 ): string[] {
   const subagents = agent.subagents;
-  if (subagents?.enabled !== true) {
+  if (!subagents || (subagents.enabled !== true && !isSubagentGraphsEnabled(subagents))) {
     return [];
   }
   const ids = [
-    ...(Array.isArray(subagents.agent_ids) ? subagents.agent_ids : []),
-    ...(subagents.graphs ?? []).flatMap((graph) =>
+    ...(subagents.enabled === true && Array.isArray(subagents.agent_ids)
+      ? subagents.agent_ids
+      : []),
+    ...(isSubagentGraphsEnabled(subagents) ? (subagents.graphs ?? []) : []).flatMap((graph) =>
       Array.isArray(graph?.agent_ids) ? graph.agent_ids : [],
     ),
   ];

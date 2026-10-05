@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo } from 'react';
 import { Switch } from '@librechat/client';
 import { Network, Users } from 'lucide-react';
+import { isSubagentGraphsEnabled } from 'librechat-data-provider';
 import type { ControllerRenderProps } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import { StaticAgentRow, AddAgentSelect, ListMeta, useSelectableAgents } from './AgentList';
@@ -28,7 +29,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
   const enabled = value.enabled === true;
   const allowSelf = value.allowSelf !== false;
   const agentIds = useMemo(() => value.agent_ids ?? [], [value.agent_ids]);
-  const graphCount = value.graphs?.length ?? 0;
+  const graphCount = isSubagentGraphsEnabled(value) ? (value.graphs?.length ?? 0) : 0;
 
   const { options, getAgent } = useSelectableAgents({ currentAgentId, exclude: agentIds });
 
@@ -43,12 +44,13 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
        */
       field.onChange({
         ...value,
+        ...(graphCount > 0 && { graphsEnabled: isSubagentGraphsEnabled(value) }),
         enabled: next,
         allowSelf: value.allowSelf ?? true,
         agent_ids: value.agent_ids ?? [],
       });
     },
-    [field, value],
+    [field, value, graphCount],
   );
 
   const setAllowSelf = useCallback(
@@ -106,8 +108,8 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
       beta
       info={
         <>
-          <p className="text-sm text-text-secondary">{localize('com_ui_agent_subagents_info')}</p>
-          <p className="text-sm text-text-secondary">{localize('com_ui_agent_subagents_info_2')}</p>
+          <p className="text-text-secondary text-sm">{localize('com_ui_agent_subagents_info')}</p>
+          <p className="text-text-secondary text-sm">{localize('com_ui_agent_subagents_info_2')}</p>
         </>
       }
       trailing={
@@ -126,7 +128,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
             checked={allowSelf}
             onCheckedChange={setAllowSelf}
             info={
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {localize('com_ui_agent_subagents_allow_self_info')}
               </p>
             }
@@ -139,7 +141,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
               checked={value.shareFiles === true}
               onCheckedChange={setShareFiles}
               info={
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {localize('com_ui_agent_subagents_share_files_info')}
                 </p>
               }
@@ -178,14 +180,14 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
             )}
 
             {agentIds.length >= maxSubagents && (
-              <p className="pt-1 text-center text-xs italic text-text-tertiary">
+              <p className="text-text-tertiary pt-1 text-center text-xs italic">
                 {localize('com_ui_agent_subagents_max', { 0: maxSubagents })}
               </p>
             )}
           </div>
 
           {nothingToSpawn && (
-            <p className="flex items-center gap-2 text-xs italic text-text-warning">
+            <p className="text-text-warning flex items-center gap-2 text-xs italic">
               <Users size={14} aria-hidden="true" />
               {localize('com_ui_agent_subagents_empty')}
             </p>

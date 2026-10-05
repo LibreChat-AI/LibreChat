@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
+  hasSubagentCapability,
   EModelEndpoint,
   ResourceType,
   PermissionBits,
@@ -950,7 +951,7 @@ const executeResponse = async (envelope, { req, res }) => {
       let handoffAgentConfigs = new Map();
       let discoveredEdges = [];
       let discoveredMCPAuthMap;
-      const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+      const subagentsCapabilityEnabled = hasSubagentCapability([...enabledCapabilities]);
       const primaryHasGraphSubagents =
         subagentsCapabilityEnabled &&
         primaryConfig.subagents?.enabled === true &&

@@ -993,6 +993,8 @@ export type AgentSubagentGraph = {
 
 export type AgentSubagentsConfig = {
   enabled?: boolean;
+  /** Enables saved graph teams independently. Omitted legacy records follow enabled. */
+  graphsEnabled?: boolean;
   /** When true (default), the agent may spawn itself in an isolated context. */
   allowSelf?: boolean;
   /** Share current-turn files with authorized descendants. Off unless explicitly enabled. */

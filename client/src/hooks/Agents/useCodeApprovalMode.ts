@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import {
   EModelEndpoint,
   Tools,
+  resolveSubagents,
   isEphemeralAgentId,
   getAllowedCodeApprovalModes,
   CODE_APPROVAL_MODES,
@@ -232,7 +233,7 @@ export function collectReachableAgents(
       ...(Array.isArray(edge.from) ? edge.from : [edge.from]),
       ...(Array.isArray(edge.to) ? edge.to : [edge.to]),
     ]);
-    const subagents = agent.subagents?.enabled === true ? agent.subagents : undefined;
+    const subagents = resolveSubagents(agent.subagents);
     const graphIds = subagents?.graphs?.flatMap((graph) => graph.agent_ids);
     const ids = [
       ...(agent.agent_ids ?? []),
@@ -273,10 +274,12 @@ function toCodeWorkspaceRoutingAgent(
     allowSelection:
       getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null,
     subagentIds:
-      agent.subagents?.enabled === true
+      resolveSubagents(agent.subagents)?.enabled === true
         ? [
-            ...(agent.subagents.agent_ids ?? []),
-            ...(agent.subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? []),
+            ...(resolveSubagents(agent.subagents)?.agent_ids ?? []),
+            ...(resolveSubagents(agent.subagents)?.graphs ?? []).flatMap(
+              (graph) => graph.agent_ids ?? [],
+            ),
           ].filter((id) => id.length > 0 && id !== agent.id)
         : undefined,
   };

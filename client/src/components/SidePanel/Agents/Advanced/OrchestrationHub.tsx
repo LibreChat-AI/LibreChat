@@ -4,16 +4,23 @@ import type { AgentForm } from '~/common';
 import { useAgentPanelContext } from '~/Providers';
 import AgentSubagents from './AgentSubagents';
 import AgentHandoffs from './AgentHandoffs';
+import Graphs from './Graphs';
 
 interface OrchestrationHubProps {
   currentAgentId: string;
-  tool: 'subagents' | 'handoffs';
+  tool: 'subagents' | 'subagent_graphs' | 'handoffs';
 }
 
 /** Settings for one native collaboration tool, never the other tool's fields. */
 export default function OrchestrationHub({ currentAgentId, tool }: OrchestrationHubProps) {
   const { control } = useFormContext<AgentForm>();
   const { agentsConfig } = useAgentPanelContext();
+
+  if (tool === 'subagent_graphs') {
+    return agentsConfig?.capabilities.includes(AgentCapabilities.subagent_graphs) ? (
+      <Graphs currentAgentId={currentAgentId} />
+    ) : null;
+  }
 
   if (tool === 'subagents') {
     if (!agentsConfig?.capabilities.includes(AgentCapabilities.subagents)) {
