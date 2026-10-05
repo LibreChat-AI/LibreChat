@@ -9359,6 +9359,126 @@ describe('Conversation Operations', () => {
   });
 });
 
+describe('laneGit', () => {
+  const seed = async (user = 'lane-user') => {
+    const conversationId = uuidv4();
+    await Conversation.create({ conversationId, user, title: 'Lane test', endpoint: 'agents' });
+    return conversationId;
+  };
+  const head = 'a'.repeat(40);
+
+  it('stores the reported branch and head for the owner and reads them back', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: 'feat/pr-chip', head };
+    await expect(
+      methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit }),
+    ).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
+  });
+
+  it('does not write for another owner or an unknown conversation', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: 'main', head };
+    await expect(
+      methods.setConvoLaneGit({ user: 'intruder', conversationId, laneGit }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.setConvoLaneGit({ user: 'lane-user', conversationId: uuidv4(), laneGit }),
+    ).resolves.toBe(false);
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+    await expect(methods.getConvoLaneGit('intruder', conversationId)).resolves.toBeNull();
+  });
+
+  it('reports no change when the same state is recorded again', async () => {
+    const conversationId = await seed();
+    const input = { user: 'lane-user', conversationId, laneGit: { branch: 'main', head } };
+    await expect(methods.setConvoLaneGit(input)).resolves.toBe(true);
+    await expect(methods.setConvoLaneGit(input)).resolves.toBe(false);
+  });
+
+  it('replaces the stored state when the branch or head changes', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    await methods.setConvoLaneGit({ user, conversationId, laneGit: { branch: 'main', head } });
+    const next = { branch: 'feat/x', head: 'b'.repeat(40) };
+    await expect(methods.setConvoLaneGit({ user, conversationId, laneGit: next })).resolves.toBe(
+      true,
+    );
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual(next);
+  });
+
+  it('stores the repository with the lane and treats a repository change as a change', async () => {
+    const conversationId = await seed();
+    const user = 'lane-user';
+    const laneGit = { branch: 'main', head };
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r' }),
+    ).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit(user, conversationId)).resolves.toEqual({
+      ...laneGit,
+      repo: 'o/r',
+    });
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/r' }),
+    ).resolves.toBe(false);
+    await expect(
+      methods.setConvoLaneGit({ user, conversationId, laneGit, repo: 'o/other' }),
+    ).resolves.toBe(true);
+  });
+
+  it('keeps a detached or empty lane distinct from an unknown one', async () => {
+    const conversationId = await seed();
+    const laneGit = { branch: null, head: null };
+    await expect(
+      methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit }),
+    ).resolves.toBe(true);
+    await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(laneGit);
+  });
+
+  describe('server-written only', () => {
+    const kept = { branch: 'kept', head };
+    const seedWithLane = async () => {
+      const conversationId = await seed();
+      await methods.setConvoLaneGit({ user: 'lane-user', conversationId, laneGit: kept });
+      return conversationId;
+    };
+
+    it('is not overwritten by a generic save', async () => {
+      const conversationId = await seedWithLane();
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, laneGit: { branch: 'forged', head: null } },
+      );
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(kept);
+    });
+
+    it('is not cleared by a generic save', async () => {
+      const conversationId = await seedWithLane();
+      await saveConvo({ userId: 'lane-user' }, { conversationId }, { unsetFields: { laneGit: 1 } });
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual(kept);
+    });
+
+    it('is not accepted from a bulk import', async () => {
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId: imported,
+          user: 'lane-user',
+          title: 'Imported',
+          laneGit: { branch: 'x', head: null },
+        },
+      ]);
+      await expect(methods.getConvoLaneGit('lane-user', imported)).resolves.toBeNull();
+    });
+
+    it('is excluded from ordinary conversation reads', async () => {
+      const conversationId = await seedWithLane();
+      const read = await Conversation.findOne({ conversationId }).lean();
+      expect(read).not.toHaveProperty('laneGit');
+    });
+  });
+});
+
 describe('stampForcedRetention', () => {
   const ephemeral = { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 };
   let userId: string;

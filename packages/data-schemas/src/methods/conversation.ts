@@ -329,6 +329,16 @@ export interface ConversationMethods {
     IConversation,
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
+  setConvoLaneGit(input: {
+    user: string;
+    conversationId: string;
+    laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
+    repo?: string;
+  }): Promise<boolean>;
+  getConvoLaneGit(
+    user: string,
+    conversationId: string,
+  ): Promise<NonNullable<IConversation['laneGit']> | null>;
   addConvoToolApprovalAllows(input: {
     user: string;
     conversationId: string;
@@ -2452,6 +2462,7 @@ export function createConversationMethods(
       }
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
+      delete update.laneGit;
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2477,6 +2488,7 @@ export function createConversationMethods(
       delete unsetFields.titleSetByUser;
       delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
+      delete unsetFields.laneGit;
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -3003,6 +3015,55 @@ export function createConversationMethods(
     return result.matchedCount === 1;
   }
 
+  /**
+   * Record the branch and head a conversation's code lane last reported. Owner-scoped and
+   * conditional on a change, so a lane that keeps reporting the same state costs no write.
+   * Server-written only: generic saves and imports cannot set it. Resolves to whether the
+   * stored value changed; false means unchanged or no such conversation for this owner.
+   */
+  async function setConvoLaneGit({
+    user,
+    conversationId,
+    laneGit,
+    repo,
+  }: {
+    user: string;
+    conversationId: string;
+    laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
+    repo?: string;
+  }): Promise<boolean> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const next = {
+      branch: laneGit.branch,
+      head: laneGit.head,
+      ...(repo ? { repo } : {}),
+    };
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        {
+          user,
+          conversationId,
+          $expr: { $ne: [{ $ifNull: ['$laneGit', null] }, { $literal: next }] },
+        },
+        { $set: { laneGit: next } },
+        { timestamps: false },
+      ),
+    );
+    return result.modifiedCount === 1;
+  }
+
+  /** The last reported lane state, or null when the conversation has none or is not the owner's. */
+  async function getConvoLaneGit(
+    user: string,
+    conversationId: string,
+  ): Promise<NonNullable<IConversation['laneGit']> | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.findOne({ user, conversationId })
+      .select('laneGit')
+      .lean<Pick<IConversation, 'laneGit'> | null>();
+    return stored?.laneGit ?? null;
+  }
+
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     return withoutMeiliIndexing(
@@ -3150,6 +3211,7 @@ export function createConversationMethods(
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
         delete sanitized.toolApprovalAllows;
+        delete sanitized.laneGit;
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -4232,6 +4294,8 @@ export function createConversationMethods(
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
     addConvoToolApprovalAllows,
+    setConvoLaneGit,
+    getConvoLaneGit,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,

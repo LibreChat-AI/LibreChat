@@ -21,6 +21,14 @@ export const MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH = 128;
  */
 export const AGENT_EVENT_ACTOR_SUMMARY_VERSION = 1;
 
+/** Branch and head commit the conversation's code lane last reported; null when it has none. */
+export interface IConversationLaneGit {
+  branch: string | null;
+  head: string | null;
+  /** `owner/name` of the lane's repository, as its worker registered it. */
+  repo?: string;
+}
+
 export interface ISubagentThreadLease {
   token: string;
   taskId: string;
@@ -290,6 +298,8 @@ export interface IConversation extends Document {
   codeWorkspaces?: CodeWorkspaceSelection[];
   /** Exact tool names auto-approved for this conversation; server-written only. */
   toolApprovalAllows?: string[];
+  /** Last lane branch and head a command reported; server-written only and excluded from reads. */
+  laneGit?: IConversationLaneGit;
   /** Immutable primary persisted-agent attribution for Insights. */
   initial_agent_id?: string | null;
   subagentThread?: TSubagentThreadLineage;

@@ -47,6 +47,18 @@ const convoSchema: Schema<IConversation> = new Schema(
     /** Exact tool names the owner chose to auto-approve for this conversation.
      *  Server-written only, through `addConvoToolApprovalAllows`. */
     toolApprovalAllows: { type: [String], default: undefined },
+    /** Branch and head of the code lane, as the worker last reported them. Server-written only,
+     *  through `setConvoLaneGit`, and excluded from ordinary conversation reads. */
+    laneGit: {
+      type: {
+        branch: { type: String, default: null },
+        head: { type: String, default: null },
+        repo: { type: String, default: undefined },
+      },
+      _id: false,
+      default: undefined,
+      select: false,
+    },
     agent_id: {
       type: String,
     },

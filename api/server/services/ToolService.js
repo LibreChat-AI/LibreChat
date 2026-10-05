@@ -50,6 +50,7 @@ const {
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
+  createLaneGitRecorder,
   createAttachedWorkspaceBashTool,
   createRepositoryInstructionSource,
   createRepositoryInstructionLoader,
@@ -130,7 +131,7 @@ const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSe
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys, getRoleByName } = require('~/models');
+const { findPluginAuthsByKeys, getRoleByName, setConvoLaneGit } = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -2386,6 +2387,12 @@ async function loadToolsForExecution({
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
+              onLaneGit: createLaneGitRecorder({
+                user: req.user.id,
+                conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+                repo: codeExecutionContext.codeWorkspace.environment?.repo,
+                setConvoLaneGit,
+              }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
               nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
               environment: codeExecutionContext.codeWorkspace.environment,

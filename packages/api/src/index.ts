@@ -11,6 +11,7 @@ export * from './artifacts';
 export * from './admin';
 export * from './cdn';
 export * from './code';
+export * from './pulls';
 /* Auth */
 export * from './auth';
 /* API Keys */

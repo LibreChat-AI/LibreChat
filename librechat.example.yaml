@@ -922,6 +922,14 @@ endpoints:
   #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
+  #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
+  #   # a code worker that reports its branch, and a read-only GitHub token held on the server.
+  #   pullRequests:
+  #     enabled: false
+  #     # Environment variable reference only, never the token itself.
+  #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
+  #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
+  #     cacheTtlSeconds: 30
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
