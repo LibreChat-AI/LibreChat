@@ -678,6 +678,27 @@ describe('subagent code routing', () => {
     ).rejects.toMatchObject({ argument: 'machine' });
   });
 
+  it('gives back a machine whose initialization landed elsewhere', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const routedCall = call({ machine: 'buildbox' });
+
+    const placement = await routing.place({ agent: reviewer, flags, context: routedCall });
+    expect(() =>
+      routing.attach(new Map(), {
+        agentId: reviewer.id,
+        context: routedCall,
+        placement,
+        codeExecutionContext: { environmentId: 'laptop' },
+        toolContext: 'laptop',
+      }),
+    ).toThrow();
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
+  });
+
   it('offers and accepts no attached machine while run files are shared', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>({ ...request, sharedRunFiles: true });

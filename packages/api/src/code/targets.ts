@@ -707,7 +707,12 @@ export function createSubagentCodeRouting<TContext>({
     attach(contexts, { agentId, context, placement, codeExecutionContext, toolContext }) {
       const executionId = context?.executionId;
       if (placement.target != null) {
-        assertSubagentCodePlacement(codeExecutionContext, placement.target);
+        try {
+          assertSubagentCodePlacement(codeExecutionContext, placement.target);
+        } catch (error) {
+          release(placement);
+          throw error;
+        }
       }
       if (executionId && placement.childEnvironmentId != null) {
         childRoutes.set(executionId, placement.childEnvironmentId);
