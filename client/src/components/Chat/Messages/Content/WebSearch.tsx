@@ -367,7 +367,7 @@ export default function WebSearch({
                         className={cn(
                           'hover:bg-surface-hover flex gap-2.5 px-3 py-2 transition-colors',
                           snippet ? 'items-start' : 'items-center',
-                          i > 0 && 'border-border-inset border-t',
+                          i > 0 && 'border-border-light border-t',
                         )}
                       >
                         <FaviconImage
