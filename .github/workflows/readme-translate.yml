@@ -1,0 +1,90 @@
+name: Sync README Translations
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'README.md'
+  workflow_dispatch:
+    inputs:
+      languages:
+        description: 'Comma-separated language codes'
+        default: 'zh,ru'
+      force:
+        description: 'Retranslate everything, ignoring the cache'
+        type: boolean
+        default: false
+
+concurrency:
+  group: readme-translate
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  translate:
+    name: Translate README
+    # Unset on forks and until a maintainer picks a model, so the job skips instead of failing.
+    if: ${{ vars.README_TRANSLATE_MODEL != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24.16.0'
+
+      - name: Test Translation Helpers
+        run: node --test scripts/readme/lib.test.mjs
+
+      - name: Translate Changed README Sections
+        env:
+          README_TRANSLATE_BASE_URL: ${{ secrets.README_TRANSLATE_BASE_URL }}
+          README_TRANSLATE_API_KEY: ${{ secrets.README_TRANSLATE_API_KEY }}
+          README_TRANSLATE_MODEL: ${{ vars.README_TRANSLATE_MODEL }}
+          LANGUAGES: ${{ inputs.languages || 'zh,ru' }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+        run: node scripts/readme/index.mjs "--langs=$LANGUAGES" $FORCE
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ github.token }}
+          add-paths: |
+            README.md
+            README.*.md
+            .github/readme-i18n.json
+          commit-message: 'i18n: Sync README Translations'
+          base: dev
+          branch: i18n/readme-translations
+          title: '🌐 i18n: Sync README Translations'
+          body: |
+            ## Summary
+
+            `README.md` changed on `dev`, so the Chinese and Russian READMEs are regenerated from it. Only sections whose English text changed were retranslated; the rest comes from the cache in `.github/readme-i18n.json`. Each section is checked against its source for identical links, image paths, HTML tags and list structure before it is accepted.
+
+            ## Type of change
+
+            * [x] Translation
+
+            ## Testing
+
+            * `node --test scripts/readme/lib.test.mjs` passed in the workflow run.
+            * Every regenerated section kept its source links, image paths, HTML tags and list structure.
+
+            ## Risk / compatibility
+
+            None. Only README files and the translation cache change.
+
+            ## Checklist
+
+            * [x] The change does not introduce new warnings or errors
+          labels: '🌍 i18n'
