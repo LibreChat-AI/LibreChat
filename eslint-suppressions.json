@@ -1652,9 +1652,6 @@
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 10
-    },
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ToolCard.tsx": {
