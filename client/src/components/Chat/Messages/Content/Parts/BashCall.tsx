@@ -18,6 +18,7 @@ import { AttachmentGroup } from './Attachment';
 import { parseCommandOutput } from './command';
 import { useToolCallIntent } from './intent';
 import PtcToolTrace from './PtcToolTrace';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -123,8 +124,8 @@ export default function BashCall({
   /** The model-authored `intent` is the settled label too, and only the row
    *  renders it, so a call that carries one keeps its row. */
   const intent = useToolCallIntent(args);
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
-    {
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
       initialProgress,
       isSubmitting,
       output,
@@ -134,8 +135,7 @@ export default function BashCall({
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
       keepRow: backgroundHandle != null || intent != null,
-    },
-  );
+    });
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
@@ -172,19 +172,21 @@ export default function BashCall({
     return localize('com_ui_running_command');
   })();
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'));
+
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES}>
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}
             inProgressText={inProgressText}
-            finishedText={
-              phase === 'cancelled'
-                ? localize('com_ui_cancelled')
-                : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'))
-            }
+            finishedText={finishedText}
             /** A backgrounded call's run step closes when dispatch returns the
              *  handle, so its duration is the dispatch time, and showing it would
              *  misstate a detached task's runtime as seconds. The handle check

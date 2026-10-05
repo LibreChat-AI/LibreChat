@@ -29,6 +29,7 @@ import { TOOL_ROW_CLASSES } from './rows';
 import { hasToolParams } from './params';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
+import useRowHandoff from './handoff';
 
 export default function ToolCall({
   initialProgress = 0.1,
@@ -244,6 +245,7 @@ export default function ToolCall({
     intent == null;
   const showInfo = bare || expandedInfo;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
+  const rowRef = useRowHandoff(bare);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
@@ -425,7 +427,12 @@ export default function ToolCall({
         })()}
       </span>
       {!bare && (
-        <div className={TOOL_ROW_CLASSES} data-testid="tool-call" data-tool-call-id={toolCallId}>
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-testid="tool-call"
+          data-tool-call-id={toolCallId}
+        >
           <ProgressText
             phase={phase}
             onClick={handleToggleInfo}

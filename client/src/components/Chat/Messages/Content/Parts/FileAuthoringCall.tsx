@@ -18,6 +18,7 @@ import { AttachmentGroup } from './Attachment';
 import { langFromPath } from './ReadFileCall';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -169,7 +170,7 @@ export default function FileAuthoringCall({
     previewLang = fileLang;
   }
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, bare } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -198,10 +199,16 @@ export default function FileAuthoringCall({
     finishedKey = overwrote ? 'com_ui_updated_file' : 'com_ui_created_file';
   }
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize(finishedKey, { 0: fileName }));
+
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES}>
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -211,11 +218,7 @@ export default function FileAuthoringCall({
                 0: fileName,
               })
             }
-            finishedText={
-              phase === 'cancelled'
-                ? localize('com_ui_cancelled')
-                : (intent ?? localize(finishedKey, { 0: fileName }))
-            }
+            finishedText={finishedText}
             durationMs={runStepDurationMs}
             icon={
               <Icon

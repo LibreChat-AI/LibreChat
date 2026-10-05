@@ -13,6 +13,7 @@ import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import Stdout from './Stdout';
 import { cn } from '~/utils';
@@ -117,8 +118,8 @@ export default function ExecuteCode({
       )
     : null;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
-    {
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
       initialProgress,
       isSubmitting,
       output,
@@ -128,8 +129,7 @@ export default function ExecuteCode({
       extraError: backgroundFailed,
       extraCancelled: cancelledInBackground,
       keepRow: backgroundHandle != null || intent != null,
-    },
-  );
+    });
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -138,10 +138,16 @@ export default function ExecuteCode({
     showCode,
   );
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'));
+
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES}>
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}
@@ -149,11 +155,7 @@ export default function ExecuteCode({
               intent ??
               (sandboxStarting ? localize('com_ui_sandbox_starting') : localize('com_ui_analyzing'))
             }
-            finishedText={
-              phase === 'cancelled'
-                ? localize('com_ui_cancelled')
-                : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'))
-            }
+            finishedText={finishedText}
             /** A backgrounded call's run step closes when dispatch returns the
              *  handle, so its duration is the dispatch time, and showing it would
              *  misstate a detached task's runtime as seconds. The handle check

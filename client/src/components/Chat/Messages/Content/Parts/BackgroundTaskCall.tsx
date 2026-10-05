@@ -68,7 +68,7 @@ export default function BackgroundTaskCall({
     () => (display?.kind === 'list' ? backgroundListGuidanceKeys(display) : []),
     [display],
   );
-  const { showCode, toggleCode, expandRef, phase, hasContent, bare } = useToolCallState({
+  const { showCode, toggleCode, expandRef, phase, hasContent, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -116,6 +116,7 @@ export default function BackgroundTaskCall({
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
+          ref={rowRef}
           data-testid="background-task-call"
           data-tool-call-id={toolCallId}
         >

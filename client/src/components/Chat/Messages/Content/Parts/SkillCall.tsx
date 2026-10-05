@@ -8,6 +8,7 @@ import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import Stdout from './Stdout';
 import { cn } from '~/utils';
@@ -38,8 +39,8 @@ export default function SkillCall({
   const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
   const intent = useToolCallIntent(args);
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
-    {
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
       initialProgress,
       isSubmitting,
       output,
@@ -48,22 +49,23 @@ export default function SkillCall({
       keepRow: true,
       onExpand,
       runStepStatus,
-    },
-  );
+    });
+
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_skill_finished', { 0: skillName }));
 
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES}>
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}
             inProgressText={intent ?? localize('com_ui_skill_running', { 0: skillName })}
-            finishedText={
-              phase === 'cancelled'
-                ? localize('com_ui_cancelled')
-                : (intent ?? localize('com_ui_skill_finished', { 0: skillName }))
-            }
+            finishedText={finishedText}
             durationMs={runStepDurationMs}
             icon={
               <ScrollText

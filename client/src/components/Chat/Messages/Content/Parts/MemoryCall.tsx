@@ -8,6 +8,7 @@ import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import MemoryInfo from '../MemoryInfo';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -63,7 +64,7 @@ export default function MemoryCall({
   }, [attachments]);
   const memoryFailed = isMemoryFailureOutput(toolName, output) || memoryErrors.length > 0;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, bare } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
@@ -82,8 +83,9 @@ export default function MemoryCall({
 
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
+        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}

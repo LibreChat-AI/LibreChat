@@ -5,6 +5,7 @@ import { LoneGroupContext, SoleToolContext, useToolExpansion } from '../disclosu
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
+import useRowHandoff from '../handoff';
 
 interface ToolCallState {
   showCode: boolean;
@@ -19,6 +20,8 @@ interface ToolCallState {
   phase: ToolCallPhase;
   hasOutput: boolean;
   hasContent: boolean;
+  /** Goes on the card's row so focus can follow it out. */
+  rowRef: (node: HTMLElement | null) => void;
   /** The only call of its group, with a panel to show: the group header is
    *  already the row, so the card renders its panel alone, held open. */
   bare: boolean;
@@ -95,14 +98,12 @@ export default function useToolCallState({
    *  runs, or once it failed or was stopped, the row is the only place that
    *  says so, and `keepRow` covers a state the phase cannot express. */
   const lone = useContext(LoneGroupContext);
-  const bare =
-    (useContext(SoleToolContext) === true || lone) &&
-    (panelReady ?? hasContent) &&
-    phase === 'completed' &&
-    !keepRow;
+  const solo = useContext(SoleToolContext) === true || lone;
+  const bare = solo && (panelReady ?? hasContent) && phase === 'completed' && !keepRow;
   const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
   const showCode = bare || expanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
+  const rowRef = useRowHandoff(bare);
   const toggleCode = useCallback(() => {
     const next = !showCode;
     setExpansionOverride(next);
@@ -119,6 +120,7 @@ export default function useToolCallState({
     phase,
     hasOutput,
     hasContent,
+    rowRef,
     bare,
   };
 }

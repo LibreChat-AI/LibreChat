@@ -10,6 +10,7 @@ import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -94,8 +95,8 @@ export default function ReadFileCall({
   const fileName = filePath.split('/').pop() || filePath;
   const lang = useMemo(() => langFromPath(filePath), [filePath]);
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare } = useToolCallState(
-    {
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
       initialProgress,
       isSubmitting,
       output,
@@ -104,24 +105,25 @@ export default function ReadFileCall({
       keepRow: intent != null,
       onExpand,
       runStepStatus,
-    },
-  );
+    });
 
   const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_read_file', { 0: fileName }));
+
   return (
     <>
+      <BareStatus active={bare} text={finishedText} />
       {!bare && (
-        <div className={TOOL_ROW_CLASSES}>
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
             phase={phase}
             onClick={toggleCode}
             inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
-            finishedText={
-              phase === 'cancelled'
-                ? localize('com_ui_cancelled')
-                : (intent ?? localize('com_ui_read_file', { 0: fileName }))
-            }
+            finishedText={finishedText}
             durationMs={runStepDurationMs}
             icon={
               <FileText
