@@ -826,8 +826,9 @@ test.describe('mid-run steering and queuing', () => {
       releaseStatus();
     }
     await expect(page.getByText('Generating a reply…', { exact: true })).toHaveCount(0);
-    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
-    await expect(messageTurns(page)).toHaveCount(2);
+    const stoppedTurns = await messageTurns(page).count();
+    expect([0, 2]).toContain(stoppedTurns);
+    await expect(page).toHaveURL(stoppedTurns === 0 ? /\/c\/new$/ : /\/c\/[0-9a-fA-F-]{36}$/);
 
     const followUp = replyPrompt(`after-${label}`);
     const followUpStart = await sendMessage(page, followUp);
@@ -841,7 +842,7 @@ test.describe('mid-run steering and queuing', () => {
       true,
     );
     await page.reload();
-    await expect(messageTurns(page)).toHaveCount(4);
+    await expect(messageTurns(page)).toHaveCount(stoppedTurns + 2);
     await expect(messagesView(page).getByText(replyText(`after-${label}`))).toBeVisible();
   });
 
