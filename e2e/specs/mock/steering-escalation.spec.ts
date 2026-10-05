@@ -83,7 +83,7 @@ test.describe('escalating waiting messages to an interrupt', () => {
      steer route, so pin the during-run default to steering. */
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
-      localStorage.setItem('duringRunDefaultAction', JSON.stringify('steer'));
+      localStorage.setItem('duringRunAction', JSON.stringify('steer'));
     });
   });
 
@@ -91,7 +91,7 @@ test.describe('escalating waiting messages to an interrupt', () => {
    *  flips it, and a mid-test failure must not leak preempt-by-default into
    *  the rest of the serial suite. */
   test.afterEach(async ({ page }) => {
-    await page.evaluate(() => window.localStorage.removeItem('steerInterruptsByDefault'));
+    await page.evaluate(() => window.localStorage.removeItem('duringRunAction'));
   });
 
   test('queued row escalates as an interrupt: the message seals mid-stream instead of waiting for run end', async ({
@@ -259,9 +259,7 @@ test.describe('escalating waiting messages to an interrupt', () => {
     });
   }
 
-  test('always-interrupt toggle in a waiting row menu makes plain Enter preempt', async ({
-    page,
-  }) => {
+  test('the Interrupt default makes plain Enter preempt', async ({ page }) => {
     test.setTimeout(150000);
     const label = uniqueLabel('toggle');
     const queueText = `Queued while toggling ${label}`;
@@ -282,16 +280,13 @@ test.describe('escalating waiting messages to an interrupt', () => {
     const row = queuedRows(page).filter({ hasText: queueText });
     await expect(row).toBeVisible({ timeout: 10000 });
 
-    // The during-run default lives in Settings > Chat as an ordinary switch.
     await page.getByTestId('nav-user').click();
     await page.getByRole('menuitem', { name: 'Settings' }).click();
     await page.getByRole('tab', { name: 'Chat' }).click();
-    const interruptToggle = page.getByRole('switch', {
-      name: 'Steer sooner on Enter',
-    });
-    await expect(interruptToggle).toBeVisible({ timeout: 5000 });
-    await interruptToggle.click();
-    await expect(interruptToggle).toHaveAttribute('aria-checked', 'true');
+    const mode = page.getByTestId('duringRunAction');
+    await mode.click();
+    await page.getByRole('option', { name: 'Interrupt', exact: true }).click();
+    await expect(mode).toContainText('Interrupt');
     await page.keyboard.press('Escape');
 
     // The toggle is live for the SAME run: plain Enter now routes the default
@@ -310,6 +305,35 @@ test.describe('escalating waiting messages to an interrupt', () => {
     });
     await expect(messagesView(page).getByText(SLOW_REPLY_LAST_CHUNK)).toHaveCount(0);
     await expectModelContinuation(page, label, steerText);
+  });
+
+  test('Interrupt cancels a running foreground tool and continues the same response', async ({
+    page,
+  }) => {
+    const label = uniqueLabel('tool-interrupt');
+    const steerText = `Change direction ${label}`;
+    await page.goto(NEW_CHAT_PATH);
+    await selectMockEndpoint(page, { label: 'Mock Provider C', model: 'mock-model-c' });
+    await establishConversation(page, `tools-${label}`);
+    await page.getByRole('button', { name: 'Attach and tools' }).click();
+    const memory = page
+      .getByRole('dialog', { name: 'Attach and tools' })
+      .getByRole('button', { name: /^E2E Memory\b/ });
+    await memory.click();
+    await page.keyboard.press('Escape');
+    await sendMessage(page, `E2E_INTERRUPT_TOOL_REPLY:${label}`);
+    await expect(messagesView(page).getByText('slow_echo', { exact: false }).first()).toBeVisible();
+    await typeDuringRun(page, steerText);
+    const [response] = await Promise.all([
+      page.waitForResponse(isSteerRequest),
+      messageInput(page).press('ControlOrMeta+Shift+Enter'),
+    ]);
+    expect(response.status()).toBe(202);
+    await expect(messagesView(page).getByText(`[steers-seen=1] ${steerText}`)).toBeVisible();
+    await expect(messagesView(page).getByText(/Cancellation was requested/)).toBeVisible();
+    await expect(messageTurns(page)).toHaveCount(4);
+    await page.waitForTimeout(5500);
+    await expect(messagesView(page).getByText(`E2E slow echo: late ${label}`)).toHaveCount(0);
   });
 
   test('the dedicated shortcut escalates the newest waiting steer from the keyboard', async ({

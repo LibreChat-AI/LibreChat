@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
-import { Run, Providers, Constants, HookRegistry } from '@librechat/agents';
+import { Run, Providers, Constants, GraphEvents, HookRegistry } from '@librechat/agents';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -125,6 +125,7 @@ import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
+import { interruptToolHandler } from '~/agents/steering/tools';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
 import { getAgentCheckpointer } from '~/agents/checkpointer';
 import { getPluginHookSource } from '~/agents/hooks/source';
@@ -2994,11 +2995,20 @@ export async function createRun({
    * runtime) — excess-property checks only apply to fresh literals. Inline
    * the field at the call site once the dependency is bumped.
    */
+  const toolHandler = customHandlers?.[GraphEvents.ON_TOOL_EXECUTE];
+  const runHandlers =
+    toolHandler != null && steering?.preemption != null && isSteerPreemptSupported()
+      ? {
+          ...customHandlers,
+          [GraphEvents.ON_TOOL_EXECUTE]: interruptToolHandler(toolHandler, steering.preemption),
+        }
+      : customHandlers;
+
   const runConfig = {
     runId: resolvedRunId,
     graphConfig,
     tokenCounter,
-    customHandlers,
+    customHandlers: runHandlers,
     initialSessions,
     calibrationRatio,
     fadingTier,

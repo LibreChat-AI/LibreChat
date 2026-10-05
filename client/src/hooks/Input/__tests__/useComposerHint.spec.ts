@@ -211,3 +211,10 @@ describe('composeHint', () => {
     });
   });
 });
+
+it('names Interrupt as the default while leaving Queue as the alternate', () => {
+  const result = hint({ duringRunActive: true, hasText: true, duringRunAction: 'interrupt' });
+  expect(result).toContain('com_ui_interrupt_steer');
+  expect(result).toContain('com_ui_composer_hint_queue');
+  expect(result).not.toContain('com_ui_composer_hint_steer');
+});

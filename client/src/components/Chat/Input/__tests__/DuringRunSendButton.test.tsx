@@ -41,18 +41,19 @@ const steeringStub = ({
   canSteer = true,
   canControlGeneration = true,
   steerInterruptsByDefault = false,
-}: StubOptions & { steerInterruptsByDefault?: boolean }) =>
-  ({
-    effectiveAction: canSteer ? 'steer' : 'queue',
+}: StubOptions & { steerInterruptsByDefault?: boolean }) => {
+  const preferredAction = steerInterruptsByDefault ? 'interrupt' : 'steer';
+  return {
+    effectiveAction: canSteer ? preferredAction : 'queue',
     canSteer,
     canControlGeneration,
     pausedOnApproval,
-    steerInterruptsByDefault,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
     interruptAndSend: mockInterruptAndSend,
-  }) as unknown as SteeringControls;
+  } as unknown as SteeringControls;
+};
 
 function Harness({
   steering,
@@ -110,9 +111,7 @@ function openMenu(options: MenuOptions = {}) {
       />
     </RecoilRoot>,
   );
-  expect(
-    screen.getByText(isNewConversation ? 'com_ui_steer_first_turn_stop' : 'com_ui_interrupt_steer'),
-  ).toBeInTheDocument();
+  expect(screen.getByText('com_ui_interrupt_steer')).toBeInTheDocument();
 }
 
 beforeEach(() => {
@@ -128,12 +127,7 @@ describe('DuringRunSendButton — external hold', () => {
       </RecoilRoot>
     );
     const view = render(frame(false));
-    const labels = [
-      'com_ui_steer',
-      'com_ui_queue',
-      'com_ui_interrupt_steer',
-      'com_ui_interrupt_send',
-    ];
+    const labels = ['com_ui_steer', 'com_ui_queue', 'com_ui_interrupt_steer'];
     view.rerender(frame(true));
     expect(screen.getByTestId('during-run-send-button')).toBeDisabled();
     for (const label of labels) {
@@ -173,22 +167,13 @@ describe('DuringRunSendButton — Interrupt & steer availability', () => {
     expect(mockOnConsumed).not.toHaveBeenCalled();
   });
 
-  /**
-   * Guards the gate against being "simplified" to `!canSteer` like the steer
-   * row above it. `canSteer` is also false before a conversation exists, where
-   * `interruptSteer` deliberately falls back to interrupt & send — disabling
-   * the row there would make it dead for the whole first turn.
-   */
-  test('labels the first-response fallback as stop and send without changing its action', () => {
-    openMenu({ pausedOnApproval: false, canSteer: false, isNewConversation: true });
-
-    expect(screen.queryByText('com_ui_interrupt_steer')).not.toBeInTheDocument();
-    const row = screen.getByText('com_ui_steer_first_turn_stop').closest('button');
-    expect(row).toHaveAttribute('aria-disabled', 'false');
-
+  test('keeps Interrupt disabled until the first conversation can be steered', () => {
+    openMenu({ canSteer: false, isNewConversation: true });
+    const row = screen.getByText('com_ui_interrupt_steer').closest('button');
+    expect(row).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(row as HTMLButtonElement);
-    expect(mockInterruptSteer).toHaveBeenCalledWith(TEXT);
-    expect(mockOnConsumed).toHaveBeenCalled();
+    expect(mockInterruptSteer).not.toHaveBeenCalled();
+    expect(mockOnConsumed).not.toHaveBeenCalled();
   });
 
   test('the ordinary Steer row stays gated on canSteer', () => {
@@ -209,10 +194,6 @@ describe('DuringRunSendButton — Interrupt & steer availability', () => {
       'true',
     );
     expect(screen.getByText('com_ui_interrupt_steer').closest('button')).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
-    expect(screen.getByText('com_ui_interrupt_send').closest('button')).toHaveAttribute(
       'aria-disabled',
       'true',
     );
@@ -280,7 +261,7 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
     expect(kbdFor('com_ui_steer')).toBe('⏎');
     expect(kbdFor('com_ui_queue')).toBe('Ctrl ⏎');
     expect(kbdFor('com_ui_interrupt_steer')).toBe('Ctrl ⇧ ⏎');
-    expect(kbdFor('com_ui_interrupt_send')).toBe('Alt ⏎');
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
   });
 
   test('drops a hint whose chord is rebound to a global shortcut', () => {
@@ -290,8 +271,8 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
         focusSearch: { mac: 'Meta+Shift+Enter', other: 'Ctrl+Shift+Enter' },
       },
     });
-    expect(kbdFor('com_ui_interrupt_steer')).toBeNull();
-    expect(kbdFor('com_ui_interrupt_send')).toBe('Alt ⏎');
+    expect(kbdFor('com_ui_interrupt_steer')).toBe('Alt ⏎');
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
     expect(kbdFor('com_ui_queue')).toBe('Ctrl ⏎');
   });
 
@@ -302,7 +283,7 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
         submitMessage: { mac: 'Alt+Enter', other: 'Alt+Enter' },
       },
     });
-    expect(kbdFor('com_ui_interrupt_send')).toBeNull();
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
     expect(kbdFor('com_ui_steer')).toBe('⏎');
     expect(kbdFor('com_ui_interrupt_steer')).toBe('Ctrl ⇧ ⏎');
   });
@@ -313,7 +294,7 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
     expect(kbdFor('com_ui_interrupt_steer')).toBeNull();
     /** The disabled Steer row drops its alternate-action hint the same way. */
     expect(kbdFor('com_ui_steer')).toBeNull();
-    expect(kbdFor('com_ui_interrupt_send')).toBe('Alt ⏎');
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
   });
 
   test('moves the default-action hint to Ctrl+Enter when Enter-to-send is off', () => {
@@ -322,7 +303,7 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
     expect(kbdFor('com_ui_steer')).toBe('Ctrl ⏎');
     expect(kbdFor('com_ui_queue')).toBeNull();
     expect(kbdFor('com_ui_interrupt_steer')).toBe('Ctrl ⇧ ⏎');
-    expect(kbdFor('com_ui_interrupt_send')).toBe('Alt ⏎');
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
   });
 
   test('keeps plain Enter but hides shortcut hints when shortcuts are disabled', () => {
@@ -330,6 +311,18 @@ describe('DuringRunSendButton — hints follow the effective bindings', () => {
     expect(kbdFor('com_ui_steer')).toBe('⏎');
     expect(kbdFor('com_ui_queue')).toBeNull();
     expect(kbdFor('com_ui_interrupt_steer')).toBeNull();
-    expect(kbdFor('com_ui_interrupt_send')).toBeNull();
+    expect(screen.queryByText('com_ui_interrupt_send')).not.toBeInTheDocument();
   });
+});
+
+test('exposes exactly three modes in a stable order', () => {
+  openMenu();
+  const rows = screen
+    .getAllByRole('button')
+    .filter((button) => button.getAttribute('type') === 'button');
+  expect(rows.map((row) => row.textContent?.replace(/Ctrl.*|Alt.*|⏎.*/g, '').trim())).toEqual([
+    'com_ui_steer',
+    'com_ui_interrupt_steer',
+    'com_ui_queue',
+  ]);
 });

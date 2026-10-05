@@ -448,18 +448,16 @@ const ChatForm = memo(function ChatForm({
     return () => publishRewake(null);
   }, [publishRewake, steeringRewakeDrain]);
 
-  /** ⌘/Ctrl+Enter = the non-default during-run action, ⌥/Alt+Enter =
-   *  interrupt & send (discards the answer), ⌘/Ctrl+Shift+Enter = interrupt &
-   *  steer (keeps it): all counterparts of Enter's `submitDuringRun`. */
+  /** Ctrl/Cmd+Enter selects the alternate; both interrupt chords use the same mode. */
   const handleDuringRunModifier = useCallback(
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
       if (kind === 'interrupt') {
-        consumed = steering.interruptAndSend(text);
+        consumed = steering.interruptSteer(text);
       } else if (kind === 'preempt') {
         consumed = steering.interruptSteer(text);
-      } else if (steering.effectiveAction === 'steer') {
+      } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
       } else {
         consumed = steering.steerFromComposer(text);
@@ -1052,7 +1050,6 @@ const ChatForm = memo(function ChatForm({
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
-            steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             /* A staged reasoning choice forces the message to queue, and the
                send-now chord then queues too; do not advertise it. */

@@ -149,6 +149,7 @@ import {
 import { editConflictExcerptText, formatEditConflict, parseEditConflict } from '~/code/edits';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
+import { SteerToolInterrupt, interruptedToolResult } from './steering/tools';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
 import { toolValidationFeedback } from './validationFeedback';
@@ -7240,6 +7241,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     isFileAuthoringCall &&
                     typeof (tc.args as { path?: unknown }).path === 'string' &&
                     !(tc.args as { path: string }).path.startsWith(SKILL_FILE_PREFIX);
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return interruptedToolResult(tc.id);
+                  }
                   let sandboxReadSucceeded = false;
                   if (
                     tc.name === Constants.SKILL_TOOL ||
@@ -7359,6 +7363,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       };
                     }
 
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
                     const filteredOutput = filteredToolOutputResult(tc, req, {
                       content: handlerResult.content,
                       artifact: handlerResult.artifact,
@@ -7624,6 +7631,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        *  intentionally use their own controller instead. */
                       ...(runSignal != null && { signal: runSignal }),
                     } as Record<string, unknown>);
+
+                    if (runSignal?.reason instanceof SteerToolInterrupt) {
+                      return interruptedToolResult(tc.id);
+                    }
 
                     /* Only sandbox-bound calls carry a runtime session hint, so
                      * this refreshes the prewarm module's warm window without
