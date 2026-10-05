@@ -173,9 +173,9 @@ function sanitizeSharedAttachments(attachments: unknown): t.SharedFile[] | undef
  * Sources backed by a durable stored object that the share-scoped routes can
  * stream with only `storageKey`/`filepath` + the request. Sources requiring
  * owner-specific credentials (openai/azure assistants, execute_code, vectordb,
- * OCR/parser pipelines) are skipped — those files degrade to a 404 in the share
- * view. Text-source files are eligible because the share route serves their
- * database-backed extracted text instead of the deleted Multer temp path.
+ * OCR pipelines) are skipped. Parsed `FileSources.text` records are admitted as
+ * preview-only snapshots because their extracted text is durable in MongoDB even
+ * though their original upload path is not.
  */
 const SNAPSHOT_STREAMABLE_SOURCES = new Set<string>([
   FileSources.local,
@@ -190,6 +190,42 @@ function isLlmDeliveryPath(
   value: unknown,
 ): value is NonNullable<t.SharedFileSnapshot['llmDeliveryPath']> {
   return value === 'provider' || value === 'text' || value === 'none';
+}
+
+/**
+ * Bumped whenever `buildFileSnapshots` starts capturing records it used to skip, so
+ * links snapshotted by an older build are rebuilt on their next view. Version 1 shares
+ * omitted every parsed `FileSources.text` record; without this marker their snapshot
+ * array is present but incomplete, and a presence check alone would never repair it.
+ */
+export const FILE_SNAPSHOT_VERSION = 2;
+
+/** A populated snapshot from an older build covers fewer files than it would today. */
+function isSnapshotStale(share: Pick<t.ISharedLink, 'fileSnapshots' | 'snapshotVersion'>): boolean {
+  return share.fileSnapshots === undefined || (share.snapshotVersion ?? 1) < FILE_SNAPSHOT_VERSION;
+}
+
+/**
+ * Raise an existing snapshot to the current version by adding only the records it could
+ * not capture, never by re-reading the ones it did.
+ *
+ * Each existing entry pins `previewRevision` and `bytes` as they were at share time, and
+ * the share file route refuses to serve when the live file no longer matches. Rebuilding
+ * an entry from the live document would re-pin it to whatever that `file_id` holds now,
+ * so a link shared before a same-filename code output reused the id would start serving
+ * the newer content: an upgrade that silently widens what an old link exposes. Entries
+ * the rebuild no longer produces are kept for the same reason; a file that has since
+ * disappeared is the live lookup's answer to give, not this function's.
+ */
+function mergeFileSnapshots(
+  existing: t.SharedFileSnapshot[] | undefined,
+  rebuilt: t.SharedFileSnapshot[],
+): t.SharedFileSnapshot[] {
+  if (existing === undefined) {
+    return rebuilt;
+  }
+  const pinned = new Set(existing.map((snapshot) => snapshot.file_id));
+  return [...existing, ...rebuilt.filter((snapshot) => !pinned.has(snapshot.file_id))];
 }
 
 /** Collect `file_id`s from a message's `files`/`attachments` array into `target`. */
@@ -394,21 +430,36 @@ function showsConfiguredSender(message: t.IMessage): boolean {
 }
 
 /**
- * Commit a lazy snapshot backfill only while the link still has none. An owner can
- * republish the same shareId while a viewer's first read is in flight, and an
- * unconditional write would restore the snapshot that republish just replaced,
- * re-authorizing the stable URL of a file they removed. The stored snapshot wins any
- * race; `timestamps: false` keeps a migration from looking like a publication, since
+ * Commit a lazy snapshot backfill only while the link still holds exactly the snapshot
+ * the viewer read (or none), at an older snapshot version. An owner can republish the
+ * same shareId while a viewer's first read is in flight, and an unconditional write
+ * would restore the snapshot that republish just replaced, re-authorizing the stable URL
+ * of a file they removed. A version check alone is not enough during a rolling deploy:
+ * an older replica republishes without `snapshotVersion`, which still reads as stale, and
+ * may even write back the same array, so the publication revision the viewer read
+ * (`updatedAt`, which every republish bumps) is part of the compare-and-set alongside the
+ * read array. The stored snapshot wins any race;
+ * `timestamps: false` keeps a migration from looking like a publication, since
  * `updatedAt` is the revision a viewer's fork request is validated against.
  */
 async function persistBackfilledSnapshots(
   SharedLink: Model<t.ISharedLink>,
   filter: FilterQuery<t.ISharedLink>,
+  read: Pick<t.ISharedLink, 'fileSnapshots' | 'updatedAt'>,
   fileSnapshots: t.SharedFileSnapshot[],
 ): Promise<t.SharedFileSnapshot[]> {
   const result = await SharedLink.updateOne(
-    { ...filter, fileSnapshots: { $exists: false }, snapshotFiles: { $ne: false } },
-    { $set: { fileSnapshots } },
+    {
+      ...filter,
+      snapshotFiles: { $ne: false },
+      fileSnapshots: read.fileSnapshots === undefined ? { $exists: false } : read.fileSnapshots,
+      ...(read.updatedAt != null && { updatedAt: read.updatedAt }),
+      $or: [
+        { snapshotVersion: { $exists: false } },
+        { snapshotVersion: { $lt: FILE_SNAPSHOT_VERSION } },
+      ],
+    },
+    { $set: { fileSnapshots, snapshotVersion: FILE_SNAPSHOT_VERSION } },
     { timestamps: false },
   );
 
@@ -416,7 +467,9 @@ async function persistBackfilledSnapshots(
     return fileSnapshots;
   }
 
-  const current = await SharedLink.findOne(filter).select('fileSnapshots snapshotFiles').lean();
+  const current = await SharedLink.findOne(filter)
+    .select('fileSnapshots snapshotFiles snapshotVersion')
+    .lean();
   if (!current || current.snapshotFiles === false) {
     return [];
   }
@@ -446,9 +499,10 @@ function snapshotMatchesCurrentVersion(
  */
 async function enrichSnapshotDeliveryPaths(
   mongoose: typeof import('mongoose'),
-  share: t.ISharedLink & { messages: t.IMessage[] },
+  share: Pick<t.ISharedLink, '_id' | 'user'>,
+  snapshots: t.SharedFileSnapshot[] | undefined,
 ): Promise<{ snapshots: t.SharedFileSnapshot[]; changed: boolean }> {
-  const existing = share.fileSnapshots ?? [];
+  const existing = snapshots ?? [];
   const missingIds = new Set(
     existing
       .filter((snapshot) => snapshot.llmDeliveryPath === undefined)
@@ -494,29 +548,36 @@ function shareFileRoute(shareId: string, fileId: string): string {
 function applyShareFileRoute(
   file: t.SharedFile,
   shareId: string,
-  snapshotIds: Set<string>,
-  textSourceIds?: Set<string>,
-  deliveryPathById?: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>,
+  snapshots: Map<string, t.SharedFileSnapshot>,
 ): t.SharedFile {
   const fileId = file.file_id;
-  if (typeof fileId === 'string' && snapshotIds.has(fileId)) {
-    const route = shareFileRoute(shareId, fileId);
-    const next: t.SharedFile = {
-      ...file,
-      filepath: route,
+  if (typeof fileId === 'string') {
+    const snapshot = snapshots.get(fileId);
+    if (snapshot) {
+      const next: t.SharedFile = { ...file };
       // General storage sources stay private, but `text` is a render semantic:
       // clients must preview the database-backed payload as text, not the original MIME.
-      ...(textSourceIds?.has(fileId) && { source: FileSources.text }),
-      ...(deliveryPathById?.get(fileId) != null && {
-        llmDeliveryPath: deliveryPathById.get(fileId),
-      }),
-    };
-    for (const key of ['preview', 'uri', 'url'] as const) {
-      if (file[key] !== undefined) {
-        next[key] = route;
+      if (snapshot.source === FileSources.text) {
+        next.source = FileSources.text;
       }
+      if (snapshot.llmDeliveryPath != null) {
+        next.llmDeliveryPath = snapshot.llmDeliveryPath;
+      }
+      if (snapshot.filepath == null) {
+        for (const key of ['filepath', 'preview', 'uri', 'url'] as const) {
+          delete next[key];
+        }
+        return next;
+      }
+      const route = shareFileRoute(shareId, fileId);
+      next.filepath = route;
+      for (const key of ['preview', 'uri', 'url'] as const) {
+        if (file[key] !== undefined) {
+          next[key] = route;
+        }
+      }
+      return next;
     }
-    return next;
   }
   // Not snapshotted (e.g. a non-streamable source on an included link): neutralize
   // the render URLs so the owner's original path can't be loaded through the share.
@@ -540,9 +601,7 @@ export function anonymizeSharedContent(
     newConvoId: string;
     newMessageId: string;
     shareId: string;
-    snapshotIds: Set<string>;
-    textSourceIds?: Set<string>;
-    deliveryPathById?: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>;
+    snapshots: Map<string, t.SharedFileSnapshot>;
     includeFiles: boolean;
     sanitizeUIResourceMarkers?: boolean;
   },
@@ -572,9 +631,7 @@ export function anonymizeSharedContent(
               ...(file.messageId !== undefined && { messageId: params.newMessageId }),
             },
             params.shareId,
-            params.snapshotIds,
-            params.textSourceIds,
-            params.deliveryPathById,
+            params.snapshots,
           ),
         )
       : undefined;
@@ -610,9 +667,7 @@ function anonymizeMessages(
   messages: t.IMessage[],
   newConvoId: string,
   shareId: string,
-  snapshotIds: Set<string>,
-  textSourceIds: Set<string>,
-  deliveryPathById: ReadonlyMap<string, t.SharedFileSnapshot['llmDeliveryPath']>,
+  snapshots: Map<string, t.SharedFileSnapshot>,
   includeFiles: boolean,
   anonymizeMessageId: (id: string) => string,
   anonymizeAssistantId: (id: string) => string,
@@ -641,9 +696,7 @@ function anonymizeMessages(
               conversationId: newConvoId,
             },
             shareId,
-            snapshotIds,
-            textSourceIds,
-            deliveryPathById,
+            snapshots,
           ),
         )
       : undefined;
@@ -658,9 +711,7 @@ function anonymizeMessages(
               ...(file.messageId !== undefined && { messageId: newMessageId }),
             },
             shareId,
-            snapshotIds,
-            textSourceIds,
-            deliveryPathById,
+            snapshots,
           ),
         )
       : undefined;
@@ -681,9 +732,7 @@ function anonymizeMessages(
         newConvoId,
         newMessageId,
         shareId,
-        snapshotIds,
-        textSourceIds,
-        deliveryPathById,
+        snapshots,
         includeFiles,
         sanitizeUIResourceMarkers: message.isCreatedByUser !== true,
       }),
@@ -997,7 +1046,8 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
        * link's own choice wasn't opted out (`snapshotFiles === false`). When
        * excluded, files/attachments are stripped from the payload so nothing leaks
        * through the owner's original paths. Legacy links (no per-link choice and no
-       * snapshot yet) are backfilled here so their first view rewrites correctly.
+       * snapshot yet) are backfilled here so their first view rewrites correctly, as
+       * are links whose snapshot predates a version that captures more file records.
        */
       const adminEnabled = options?.snapshotFiles !== false;
       const perLinkEnabled = share.snapshotFiles !== false;
@@ -1005,44 +1055,34 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       let fileSnapshots = share.fileSnapshots;
       const originalFileSnapshots = share.fileSnapshots;
       let shouldPersistEnrichedDeliveryPaths = false;
-      const shouldPersistFileSnapshots =
-        includeFiles && fileSnapshots === undefined && share._id != null;
-      if (shouldPersistFileSnapshots) {
-        fileSnapshots = await buildFileSnapshots(mongoose, messagesToShare, share.user);
-      } else if (includeFiles && fileSnapshots !== undefined) {
-        const enriched = await enrichSnapshotDeliveryPaths(mongoose, share);
-        fileSnapshots = enriched.snapshots;
-        shouldPersistEnrichedDeliveryPaths = enriched.changed;
+      let shouldPersistFileSnapshots = false;
+      if (includeFiles && isSnapshotStale(share) && share._id) {
+        fileSnapshots = mergeFileSnapshots(
+          share.fileSnapshots,
+          await buildFileSnapshots(mongoose, messagesToShare, share.user),
+        );
+        shouldPersistFileSnapshots = true;
       }
-
-      const snapshotIds = includeFiles
-        ? new Set<string>((fileSnapshots ?? []).map((snapshot) => snapshot.file_id))
-        : new Set<string>();
-      const textSourceIds = includeFiles
-        ? new Set<string>(
-            (fileSnapshots ?? [])
-              .filter((snapshot) => snapshot.source === FileSources.text)
-              .map((snapshot) => snapshot.file_id),
+      /* Entries a rebuild preserved were pinned before the delivery marker existed, so
+       * the marker backfill runs over whatever the array holds now. Freshly built
+       * entries already carry it, which makes this a no-op for them. */
+      if (includeFiles && fileSnapshots !== undefined) {
+        const enriched = await enrichSnapshotDeliveryPaths(mongoose, share, fileSnapshots);
+        fileSnapshots = enriched.snapshots;
+        shouldPersistEnrichedDeliveryPaths = enriched.changed && !shouldPersistFileSnapshots;
+      }
+      const snapshots = includeFiles
+        ? new Map<string, t.SharedFileSnapshot>(
+            (fileSnapshots ?? []).map((snapshot) => [snapshot.file_id, snapshot]),
           )
-        : new Set<string>();
-      const deliveryPathById = includeFiles
-        ? new Map(
-            (fileSnapshots ?? []).flatMap((snapshot) =>
-              snapshot.llmDeliveryPath == null
-                ? []
-                : [[snapshot.file_id, snapshot.llmDeliveryPath] as const],
-            ),
-          )
-        : new Map<string, t.SharedFileSnapshot['llmDeliveryPath']>();
+        : new Map<string, t.SharedFileSnapshot>();
       /** The share view has no conversation in scope, so whether this link may reveal a
        *  model travels in the payload — read off the very messages being returned. */
       const { messages, hasConfiguredSender } = anonymizeMessages(
         messagesToShare,
         newConvoId,
         resolvedShareId,
-        snapshotIds,
-        textSourceIds,
-        deliveryPathById,
+        snapshots,
         includeFiles,
         anonymizeMessageId,
         anonymizeAssistantId,
@@ -1065,7 +1105,12 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       }
 
       if (shouldPersistFileSnapshots) {
-        await persistBackfilledSnapshots(SharedLink, { _id: share._id }, fileSnapshots ?? []);
+        await persistBackfilledSnapshots(
+          SharedLink,
+          { _id: share._id, shareId: resolvedShareId },
+          { fileSnapshots: originalFileSnapshots, updatedAt: share.updatedAt },
+          fileSnapshots ?? [],
+        );
       } else if (
         shouldPersistEnrichedDeliveryPaths &&
         share._id != null &&
@@ -1348,7 +1393,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
         snapshotFiles,
         ...(targetMessageId && { targetMessageId }),
         ...(expiredAt && { expiredAt }),
-        ...(snapshotFiles && { fileSnapshots }),
+        ...(snapshotFiles && { fileSnapshots, snapshotVersion: FILE_SNAPSHOT_VERSION }),
       });
 
       const supersededBy = await findOlderActiveShare(SharedLink, created, {
@@ -1505,7 +1550,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       // update can't keep serving stale file ids that the update dropped.
       const unset = {
         ...(expiredAt === null ? { expiredAt: 1 } : {}),
-        ...(snapshotFiles ? {} : { fileSnapshots: 1 }),
+        ...(snapshotFiles ? {} : { fileSnapshots: 1, snapshotVersion: 1 }),
       };
       const update = {
         $set: {
@@ -1514,7 +1559,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
           snapshotFiles,
           ...(resolvedTargetMessageId && { targetMessageId: resolvedTargetMessageId }),
           ...(hasNewExpiration && { expiredAt }),
-          ...(snapshotFiles && { fileSnapshots }),
+          ...(snapshotFiles && { fileSnapshots, snapshotVersion: FILE_SNAPSHOT_VERSION }),
         },
         ...(Object.keys(unset).length > 0 ? { $unset: unset } : {}),
       };
@@ -1593,10 +1638,11 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
   /**
    * Resolve a single file snapshot entry for a shared link, used by the
    * share-scoped file routes to authorize a file without the owner's ACL.
-   * `hasSnapshots` distinguishes a legacy share (field absent → caller may
-   * backfill) from an ordinary miss (field present but file not in it → 404,
-   * no rebuild). `optedOut` is the per-link "share files" choice — when true the
-   * route must 404 and never backfill, so an opted-out link can't expose files.
+   * `hasSnapshots` distinguishes a share the caller may backfill (field absent, or
+   * built by a version that captured fewer records) from an ordinary miss (current
+   * snapshot present but file not in it → 404, no rebuild). `optedOut` is the
+   * per-link "share files" choice: when true the route must 404 and never backfill,
+   * so an opted-out link can't expose files.
    */
   async function getSharedLinkFile(
     shareId: string,
@@ -1607,23 +1653,24 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       shareId,
       ...activeExpirationFilter<t.ISharedLink>(),
     })
-      .select('fileSnapshots snapshotFiles')
-      .lean()) as Pick<t.ISharedLink, 'fileSnapshots' | 'snapshotFiles'> | null;
+      .select('fileSnapshots snapshotFiles snapshotVersion')
+      .lean()) as Pick<t.ISharedLink, 'fileSnapshots' | 'snapshotFiles' | 'snapshotVersion'> | null;
 
     if (!share) {
       return { file: null, hasSnapshots: false, optedOut: false };
     }
 
-    const hasSnapshots = share.fileSnapshots !== undefined;
+    const hasSnapshots = !isSnapshotStale(share);
     const optedOut = share.snapshotFiles === false;
     const file = share.fileSnapshots?.find((snapshot) => snapshot.file_id === fileId) ?? null;
     return { file, hasSnapshots, optedOut };
   }
 
   /**
-   * Lazily build and persist the file snapshot for a legacy shared link that
-   * predates the feature. Mirrors the lazy migration done for legacy ACL grants.
-   * Returns the requested entry (or the full snapshot when no fileId is given).
+   * Lazily build and persist the file snapshot for a shared link that predates the
+   * feature, or whose snapshot was built before the current version. Mirrors the lazy
+   * migration done for legacy ACL grants. Returns the requested entry (or the full
+   * snapshot when no fileId is given).
    */
   async function backfillSharedLinkFiles(
     shareId: string,
@@ -1650,7 +1697,11 @@ export function createShareMethods(mongoose: typeof import('mongoose')): {
       const fileSnapshots = await persistBackfilledSnapshots(
         SharedLink,
         { shareId },
-        await buildFileSnapshots(mongoose, messages, share.user),
+        share,
+        mergeFileSnapshots(
+          share.fileSnapshots,
+          await buildFileSnapshots(mongoose, messages, share.user),
+        ),
       );
 
       if (fileId) {

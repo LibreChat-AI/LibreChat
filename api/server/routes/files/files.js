@@ -154,7 +154,19 @@ router.get('/agent/:agent_id', async (req, res) => {
 router.get('/config', async (req, res) => {
   try {
     const appConfig = req.config;
-    res.status(200).json(appConfig.fileConfig);
+    res.status(200).json({
+      ...appConfig.fileConfig,
+      ocr: {
+        ...appConfig.fileConfig?.ocr,
+        enabled: appConfig.ocr != null,
+      },
+      /* Whether a RAG text service exists to route documents to. The client mirrors the
+       * upload path's routing, and that decision reads the environment, not the config. */
+      text: {
+        ...appConfig.fileConfig?.text,
+        enabled: !!process.env.RAG_API_URL,
+      },
+    });
   } catch (error) {
     logger.error('[/files] Error getting fileConfig', error);
     res.status(400).json({ message: 'Error in request', error: error.message });

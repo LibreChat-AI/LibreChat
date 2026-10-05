@@ -1,5 +1,5 @@
-const fs = require('fs');
 const { sleep } = require('@librechat/agents');
+const { openNamedUpload } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { FilePurpose } = require('librechat-data-provider');
 
@@ -16,7 +16,7 @@ async function uploadOpenAIFile({ req, file, openai }) {
   const { height, width } = req.body;
   const isImage = height && width;
   const uploadedFile = await openai.files.create({
-    file: fs.createReadStream(file.path),
+    file: await openNamedUpload(file.path, file.originalname),
     purpose: isImage ? FilePurpose.Vision : FilePurpose.Assistants,
   });
 

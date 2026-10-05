@@ -65,18 +65,30 @@ jest.mock('~/server/routes/assistants/v1', () => ({
 
 describe('file route limiter wiring', () => {
   let app;
+  /* Captured during initialization: the suite clears mocks before each test, so the
+   * call that built the upload middleware is gone by the time one runs. */
+  let multerOptions;
 
   beforeAll(async () => {
     const { initialize } = require('./index');
+    const { createMulterInstance } = require('./multer');
     app = express();
     app.use(express.json());
     app.use('/api/files', await initialize());
+    multerOptions = createMulterInstance.mock.calls.at(-1)?.[0];
   });
 
   beforeEach(() => {
     hits.uploadIp = 0;
     hits.uploadUser = 0;
     hits.usage = 0;
+  });
+
+  /* Shared staging is a correctness problem, not a tuning choice: two uploads of the
+   * same filename by one user would otherwise read and delete each other's bytes
+   * through every stage that reopens the temporary path. */
+  it('stages uploads at a request-owned temporary path', () => {
+    expect(multerOptions).toEqual(expect.objectContaining({ uniqueTempPath: true }));
   });
 
   it('meters POST /usage with the usage limiter, never leaving it unlimited', async () => {

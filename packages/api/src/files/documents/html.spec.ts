@@ -284,6 +284,20 @@ describe('Office HTML producers', () => {
       expect(html).not.toContain('class="lc-sheet-tabs"');
     });
 
+    test('renders a legacy CFB workbook with a nested ZIP attachment', async () => {
+      const attachment = new JSZip();
+      attachment.file('attachment.txt', 'nested archive');
+      const buffer = Buffer.concat([
+        readFixture('sample.xls'),
+        await attachment.generateAsync({ type: 'nodebuffer' }),
+      ]);
+
+      const html = await excelSheetToHtml(buffer);
+
+      expect(html).toContain('first');
+      expect(html).toContain('<table');
+    });
+
     test('renders ods workbooks the same way', async () => {
       const html = await excelSheetToHtml(readFixture('sample.ods'));
       expect(html).toContain('Sheet One');
@@ -884,6 +898,20 @@ describe('Office HTML producers', () => {
       ]);
       expect(bomb.length).toBeLessThan(1 * megabyte);
       await expect(excelSheetToHtml(bomb)).rejects.toThrow(ZipBombError);
+    });
+
+    test('excelSheetToHtml rejects a bomb that a leading-`PK` check would wave through', async () => {
+      /* Zip readers locate the central directory from the tail and tolerate arbitrary
+       * prepended bytes, which is how self-extracting archives work. A magic-byte test
+       * therefore reports "not an archive" for a padded bomb while SheetJS still
+       * inflates it, so detection has to scan the tail instead. */
+      const bomb = await buildBombArchive([
+        { name: 'xl/worksheets/sheet1.xml', decompressedBytes: 50 * megabyte },
+      ]);
+      const padded = Buffer.concat([Buffer.from('SFX-STUB'), bomb]);
+
+      expect(padded[0]).not.toBe(0x50);
+      await expect(excelSheetToHtml(padded)).rejects.toThrow();
     });
 
     test('pptxToSlideListHtml rejects a zip-bomb PPTX before slide extraction', async () => {

@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import { isParsedDocument } from 'librechat-data-provider';
 import type { CodeArtifactCategory } from './classify';
 import { bufferToOfficeHtml, officeHtmlBucket } from '~/files/documents/html';
 import { createConcurrencyLimiter, withTimeout } from '~/utils/promise';
@@ -154,48 +155,34 @@ export function extractCodeArtifactRawText(
   return buffer.toString('utf-8');
 }
 
-/**
- * Map a known office-document extension back to its canonical MIME so we can
- * route through `parseDocument` even when buffer-sniffing yielded a generic
- * value like `application/zip` or `application/octet-stream`. `parseDocument`
- * dispatches strictly by MIME, so without this remap a `.docx` with a sniffed
- * `application/zip` would silently fall back to `null`.
- */
-const documentMimeFromExtension = (name: string): string | null => {
-  const ext = path.extname(name).toLowerCase();
-  switch (ext) {
-    case '.docx':
-      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case '.xlsx':
-      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    case '.xls':
-      return 'application/vnd.ms-excel';
-    case '.ods':
-      return 'application/vnd.oasis.opendocument.spreadsheet';
-    case '.odt':
-      return 'application/vnd.oasis.opendocument.text';
-    default:
-      return null;
-  }
+type ExtractedDocumentText = {
+  readonly text: string;
+  readonly pagesNeedingOcr?: number[];
+  readonly mayOmitContent?: boolean;
 };
 
 const extractDocumentText = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
-): Promise<string | null> => {
-  const canonicalMime = documentMimeFromExtension(name) ?? mimeType;
+): Promise<ExtractedDocumentText | null> => {
   const tempPath = path.join(os.tmpdir(), `code-artifact-${randomUUID()}`);
   await fs.writeFile(tempPath, buffer);
+  /* The timeout gives up on the result; the abort gives up on the work. Without it the
+   * parse keeps its admission slot for its own far longer budget after this caller has
+   * returned and deleted the file underneath it, and a handful of slow artifacts can
+   * hold every slot while unrelated uploads are turned away. */
+  const cancellation = new AbortController();
   try {
     const result = await withTimeout(
       parseDocument({
         file: {
           path: tempPath,
           size: buffer.length,
-          mimetype: canonicalMime,
+          mimetype: mimeType,
           originalname: path.basename(name),
         } as Express.Multer.File,
+        signal: cancellation.signal,
       }),
       DOCUMENT_PARSE_TIMEOUT_MS,
       `parseDocument exceeded ${DOCUMENT_PARSE_TIMEOUT_MS}ms`,
@@ -203,8 +190,13 @@ const extractDocumentText = async (
     if (!result?.text) {
       return null;
     }
-    return result.text;
+    return {
+      text: result.text,
+      pagesNeedingOcr: result.pagesNeedingOcr,
+      mayOmitContent: result.mayOmitContent,
+    };
   } finally {
+    cancellation.abort();
     fs.unlink(tempPath).catch(() => {});
   }
 };
@@ -214,8 +206,8 @@ const extractDocument = async (
   name: string,
   mimeType: string,
 ): Promise<string | null> => {
-  const text = await extractDocumentText(buffer, name, mimeType);
-  return text == null ? null : truncate(text);
+  const result = await extractDocumentText(buffer, name, mimeType);
+  return result == null ? null : truncate(result.text);
 };
 
 /**
@@ -388,6 +380,18 @@ export async function extractCodeArtifactInspectionText(
       complete: true,
     };
   };
+  const parserReadsDocument = isParsedDocument(mimeType, name);
+  const inspectParsedDocument = async (): Promise<CodeArtifactInspectionText | null> => {
+    const result = await extractDocumentText(buffer, name, mimeType);
+    if (result == null) {
+      return null;
+    }
+    const boundedResult = bounded(result.text);
+    if (result.pagesNeedingOcr?.length || result.mayOmitContent === true) {
+      return incomplete(boundedResult.text);
+    }
+    return boundedResult;
+  };
   if (buffer.length > MAX_TEXT_EXTRACT_BYTES) {
     return incomplete();
   }
@@ -396,9 +400,15 @@ export async function extractCodeArtifactInspectionText(
       if (category === 'utf8-text') {
         return bounded(extractCodeArtifactRawText(buffer, category));
       }
-      if (category === 'document') {
+      /* The classifier's category and the parser's catalog answer different questions:
+       * a legacy or macro-enabled presentation is categorized `other` and still parses.
+       * What decides whether the parse runs is whether the parser reads the type. */
+      if (category === 'document' || parserReadsDocument) {
         try {
-          return bounded(await extractDocumentText(buffer, name, mimeType));
+          const parsed = await inspectParsedDocument();
+          if (parsed != null) {
+            return parsed;
+          }
         } catch {
           // Compatibility mode can still inspect the available preview below.
         }
@@ -408,11 +418,11 @@ export async function extractCodeArtifactInspectionText(
     if (category === 'utf8-text') {
       return bounded(extractCodeArtifactRawText(buffer, category));
     }
-    if (category !== 'document') {
+    if (category !== 'document' && !parserReadsDocument) {
       return incomplete();
     }
 
-    return bounded(await extractDocumentText(buffer, name, mimeType));
+    return (await inspectParsedDocument()) ?? incomplete();
   } catch {
     logger.debug('[extractCodeArtifactInspectionText] Artifact inspection failed');
     return incomplete();

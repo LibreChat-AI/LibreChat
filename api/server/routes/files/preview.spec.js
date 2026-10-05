@@ -78,12 +78,15 @@ const filesRouter = require('./files');
  * Mount the router with a per-request user injector so we can simulate
  * a logged-in user without spinning up the full auth stack.
  */
-function buildApp({ user = { id: 'user-123', role: 'user' } } = {}) {
+function buildApp({
+  user = { id: 'user-123', role: 'user' },
+  config = { fileStrategy: 'local' },
+} = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.user = user;
-    req.config = { fileStrategy: 'local' };
+    req.config = config;
     next();
   });
   app.use('/files', filesRouter);
@@ -91,6 +94,28 @@ function buildApp({ user = { id: 'user-123', role: 'user' } } = {}) {
 }
 
 const OWNER_USER_ID = 'user-123';
+
+describe('GET /files/config', () => {
+  it('marks OCR enabled only when an OCR strategy exists', async () => {
+    const enabled = await request(
+      buildApp({
+        config: {
+          ocr: { strategy: 'mistral_ocr' },
+          fileConfig: { ocr: { supportedMimeTypes: ['^application/pdf$'] } },
+        },
+      }),
+    ).get('/files/config');
+    expect(enabled.body.ocr).toEqual({
+      enabled: true,
+      supportedMimeTypes: ['^application/pdf$'],
+    });
+
+    const disabled = await request(
+      buildApp({ config: { fileConfig: { ocr: { supportedMimeTypes: ['^application/pdf$'] } } } }),
+    ).get('/files/config');
+    expect(disabled.body.ocr.enabled).toBe(false);
+  });
+});
 
 describe('GET /files/:file_id/preview', () => {
   beforeEach(() => {

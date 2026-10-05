@@ -426,6 +426,167 @@ describe('Multer Configuration', () => {
       expect(error.body).toEqual({ message: 'Unsupported file type: application/x-msdownload' });
     });
 
+    it.each(['application/octet-stream', 'binary/octet-stream'])(
+      'should canonicalize generic MIME type %s before endpoint admission',
+      (genericType) => {
+        const { mergeFileConfig } = require('librechat-data-provider');
+        const fileFilter = createFileFilter(mergeFileConfig());
+        const documentFile = {
+          ...mockFile,
+          originalname: 'report.docx',
+          mimetype: genericType,
+        };
+        const cb = jest.fn();
+
+        fileFilter(mockReq, documentFile, cb);
+
+        expect(cb).toHaveBeenCalledWith(null, true);
+        expect(documentFile.mimetype).toBe(
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        );
+      },
+    );
+
+    /**
+     * A client that types uploads by magic bytes calls a `.docx` an archive. Admission
+     * and routing have to read it the same way: resolving only downstream leaves a
+     * narrowed endpoint allowlist refusing a document the parser would have accepted.
+     */
+    it.each(['application/zip', 'application/x-zip-compressed'])(
+      'should canonicalize a document sent as %s before endpoint admission',
+      (archiveType) => {
+        const { mergeFileConfig } = require('librechat-data-provider');
+        const fileFilter = createFileFilter(mergeFileConfig());
+        const documentFile = {
+          ...mockFile,
+          originalname: 'report.docx',
+          mimetype: archiveType,
+        };
+        const cb = jest.fn();
+
+        fileFilter(mockReq, documentFile, cb);
+
+        expect(cb).toHaveBeenCalledWith(null, true);
+        expect(documentFile.mimetype).toBe(
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        );
+      },
+    );
+
+    it('should leave an ordinary archive as an archive', () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(mergeFileConfig());
+      const archive = { ...mockFile, originalname: 'bundle.zip', mimetype: 'application/zip' };
+      const cb = jest.fn();
+
+      fileFilter(mockReq, archive, cb);
+
+      expect(cb).toHaveBeenCalledWith(null, true);
+      expect(archive.mimetype).toBe('application/zip');
+    });
+
+    /**
+     * An admin who names a type in `documentParser.supportedMimeTypes` has said the
+     * server parses it, and both the client's upload options and the routing act on
+     * that. Admission was the only place that did not, so a vendor alias was offered to
+     * the user and then refused at the door.
+     */
+    /**
+     * The instance-level config is resolved once at startup, so a tenant, role or user
+     * override lives only on the request. Reading the startup copy refused the upload
+     * before the post-upload gate could apply the configuration that governs it.
+     */
+    it('should admit a vendor MIME a per-request config override names', () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(mergeFileConfig());
+      mockReq.config = {
+        ...mockReq.config,
+        fileConfig: {
+          documentParser: { supportedMimeTypes: ['^application/vnd\\.tenant\\.word$'] },
+        },
+      };
+      const documentFile = {
+        ...mockFile,
+        originalname: 'report.docx',
+        mimetype: 'application/vnd.tenant.word',
+      };
+      const cb = jest.fn();
+
+      fileFilter(mockReq, documentFile, cb);
+
+      expect(cb).toHaveBeenCalledWith(null, true);
+    });
+
+    it('should admit a vendor MIME the document-parser allowlist names', () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(
+        mergeFileConfig({
+          documentParser: { supportedMimeTypes: ['^application/vnd\\.vendor\\.word$'] },
+        }),
+      );
+      const documentFile = {
+        ...mockFile,
+        originalname: 'report.docx',
+        mimetype: 'application/vnd.vendor.word',
+      };
+      const cb = jest.fn();
+
+      fileFilter(mockReq, documentFile, cb);
+
+      expect(cb).toHaveBeenCalledWith(null, true);
+    });
+
+    /**
+     * This filter runs while the file part is still streaming, so a field a multipart
+     * client sends after the file is not there yet. Reading the tool resource here would
+     * refuse a valid upload from any client that orders its fields differently;
+     * `filterFile` applies that scope a moment later on a complete body.
+     */
+    it.each([
+      ['a different tool resource', 'file_search'],
+      ['no tool resource at all', undefined],
+    ])(
+      'should admit a parser-named MIME regardless of field order, given %s',
+      (_l, toolResource) => {
+        const { mergeFileConfig } = require('librechat-data-provider');
+        const fileFilter = createFileFilter(
+          mergeFileConfig({
+            documentParser: { supportedMimeTypes: ['^application/vnd\\.vendor\\.word$'] },
+          }),
+        );
+        mockReq.body.tool_resource = toolResource;
+        const documentFile = {
+          ...mockFile,
+          originalname: 'report.docx',
+          mimetype: 'application/vnd.vendor.word',
+        };
+        const cb = jest.fn();
+
+        fileFilter(mockReq, documentFile, cb);
+
+        expect(cb).toHaveBeenCalledWith(null, true);
+      },
+    );
+
+    it('should still reject a type no allowlist names', () => {
+      const { mergeFileConfig } = require('librechat-data-provider');
+      const fileFilter = createFileFilter(
+        mergeFileConfig({
+          documentParser: { supportedMimeTypes: ['^application/vnd\\.vendor\\.word$'] },
+        }),
+      );
+      const unknownFile = {
+        ...mockFile,
+        originalname: 'data.xyz',
+        mimetype: 'application/x-unknown',
+      };
+      const cb = jest.fn();
+
+      fileFilter(mockReq, unknownFile, cb);
+
+      expect(cb).toHaveBeenCalledWith(expect.any(Error), false);
+    });
+
     it('should use real mergeFileConfig function', async () => {
       const { mergeFileConfig, mbToBytes } = require('librechat-data-provider');
 
@@ -466,6 +627,34 @@ describe('Multer Configuration', () => {
 
       expect(getAppConfig).toHaveBeenCalled();
       expect(multerInstance).toBeDefined();
+    });
+
+    it('stages concurrent same-name uploads at separate paths when asked to', async () => {
+      const upload = await createMulterInstance({ fileConfig: {}, uniqueTempPath: true });
+      const app = express();
+      app.use((req, _res, next) => {
+        req.user = { id: 'test-user-123' };
+        req.config = { paths: { uploads: tempDir } };
+        next();
+      });
+      app.post('/upload', upload.single('file'), (req, res) => {
+        res.json({ path: req.file.path, bytes: fs.readFileSync(req.file.path, 'utf8') });
+      });
+
+      const [first, second] = await Promise.all(
+        ['first body', 'second body'].map((body) =>
+          request(app).post('/upload').attach('file', Buffer.from(body), {
+            filename: 'notes.txt',
+            contentType: 'text/plain',
+          }),
+        ),
+      );
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(first.body.path).not.toBe(second.body.path);
+      expect(first.body.bytes).toBe('first body');
+      expect(second.body.bytes).toBe('second body');
     });
 
     it('should create multer instance with expected interface', async () => {

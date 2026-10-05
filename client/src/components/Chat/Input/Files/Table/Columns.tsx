@@ -12,10 +12,10 @@ import {
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
 import ImagePreview from '~/components/Chat/Input/Files/ImagePreview';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
+import FileNameCell from '~/components/Chat/Input/Files/FileNameCell';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { SortFilterHeader } from './SortFilterHeader';
-import { formatDate, getFileType } from '~/utils';
+import { formatDate } from '~/utils';
 
 const contextMap: Record<any, TranslationKeys> = {
   [FileContext.avatar]: 'com_ui_avatar',
@@ -119,13 +119,7 @@ export const columns: ColumnDef<TFile>[] = [
         );
       }
 
-      const fileType = getFileType(file.type);
-      return (
-        <div className="flex gap-2">
-          {fileType && <FilePreview fileType={fileType} className="relative" file={file} />}
-          <span className="self-center truncate">{file.filename}</span>
-        </div>
-      );
+      return <FileNameCell file={file} />;
     },
   },
   {

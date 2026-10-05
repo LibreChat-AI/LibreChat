@@ -19,6 +19,30 @@ export enum FileSources {
   document_parser = 'document_parser',
 }
 
+/**
+ * Which local engine produced a parsed record's text, recorded as provenance.
+ *
+ * Deliberately not `FileSources` members: no strategy resolves them, nothing streams
+ * from them, and a caller that asked for one would receive a storage adapter that
+ * cannot answer. Keeping them here means an engine can be swapped without touching the
+ * enum every stored record is validated against.
+ */
+export enum DocumentParser {
+  document_parser = 'document_parser',
+  pdf_inspector = 'pdf_inspector',
+  anydoc = 'anydoc',
+}
+
+/**
+ * Local document parsers, whose extraction results keep the uploaded file's MIME
+ * type. Remote OCR results must not: its supported types include images, and an
+ * OCR'd image stored as `image/png` with a provider marker for a filepath renders
+ * as a broken thumbnail.
+ */
+export const documentParserSources: ReadonlySet<string> = new Set<string>(
+  Object.values(DocumentParser),
+);
+
 export const checkOpenAIStorage = (source: string) =>
   source === FileSources.openai || source === FileSources.azure;
 
@@ -83,9 +107,36 @@ export type FileConfig = {
   };
   ocr?: {
     supportedMimeTypes?: RegexLike[];
+    /** Server-derived signal that an OCR strategy is configured. */
+    enabled?: boolean;
+  };
+  documentParser?: {
+    supportedMimeTypes?: RegexLike[];
+    /** Largest document the built-in parser accepts, in bytes. */
+    fileSizeLimit?: number;
+    /** Deadline for one extraction child, in milliseconds. */
+    timeoutMs?: number;
+    /** Compared directly with a PDF's page count, so it is not converted to bytes. */
+    maxPageCount?: number;
+    /** Maximum decompressed bytes allowed for one ZIP entry. */
+    archiveEntrySizeLimit?: number;
+    /** Maximum decompressed bytes allowed across one ZIP archive. */
+    archiveTotalSizeLimit?: number;
+    /** Maximum entries one ZIP archive may hold. */
+    archiveEntryCountLimit?: number;
+    /** Maximum whole-document parses allowed to run concurrently. */
+    maxConcurrentParsers?: number;
+    /** Maximum whole-document parses allowed to wait for a slot. */
+    maxQueuedParsers?: number;
+    /** Deadline for the optional PDF scan classifier, in milliseconds. */
+    classifierTimeoutMs?: number;
+    /** Maximum PDF pages the in-process recovery walk reads. */
+    maxRecoveredPageCount?: number;
   };
   text?: {
     supportedMimeTypes?: RegexLike[];
+    /** Server-derived signal that a RAG text service is configured. */
+    enabled?: boolean;
   };
   stt?: {
     supportedMimeTypes?: RegexLike[];
@@ -119,9 +170,33 @@ export type FileConfigInput = {
   };
   ocr?: {
     supportedMimeTypes?: string[];
+    enabled?: boolean;
+  };
+  documentParser?: {
+    supportedMimeTypes?: string[];
+    /** Megabytes, converted on merge like every other size limit here. */
+    fileSizeLimit?: number;
+    /** Milliseconds, passed through unchanged by mergeFileConfig. */
+    timeoutMs?: number;
+    /** Maximum whole-document parses allowed to run concurrently. */
+    maxConcurrentParsers?: number;
+    /** Maximum whole-document parses allowed to wait for a slot. */
+    maxQueuedParsers?: number;
+    /** Milliseconds, passed through unchanged by mergeFileConfig. */
+    classifierTimeoutMs?: number;
+    /** Operators enter a page count here; mergeFileConfig preserves it without conversion. */
+    maxPageCount?: number;
+    /** Megabytes, converted to bytes in the merged configuration. */
+    archiveEntrySizeLimit?: number;
+    /** Megabytes, converted to bytes in the merged configuration. */
+    archiveTotalSizeLimit?: number;
+    /** Entry and page counts stay counts: mergeFileConfig passes them through. */
+    archiveEntryCountLimit?: number;
+    maxRecoveredPageCount?: number;
   };
   text?: {
     supportedMimeTypes?: string[];
+    enabled?: boolean;
   };
   stt?: {
     supportedMimeTypes?: string[];

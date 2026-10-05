@@ -25,9 +25,13 @@ import {
   resolveMCPAppsPolicy,
   endpointSchema,
   isTwoFactorPolicyProvider,
+  LEGACY_LOCAL_OCR_STRATEGY,
+  OCRStrategy,
+  ocrSchema,
   resolveEndpointType,
   webSearchSchema,
 } from './config';
+import { documentParserSources, DocumentParser, FileSources } from './types/files';
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
@@ -2640,4 +2644,94 @@ describe('workspace admission configuration', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('OCRStrategy / FileSources coupling', () => {
+  it('contains only actual OCR services, not local document parsers', () => {
+    expect(Object.values(OCRStrategy)).not.toEqual(
+      expect.arrayContaining([
+        FileSources.document_parser,
+        DocumentParser.pdf_inspector,
+        DocumentParser.anydoc,
+      ]),
+    );
+  });
+
+  it.each([DocumentParser.pdf_inspector, DocumentParser.anydoc])(
+    'rejects local parser %s as an OCR configuration strategy',
+    (strategy) => {
+      expect(ocrSchema.safeParse({ strategy }).success).toBe(false);
+    },
+  );
+
+  /**
+   * `document_parser` was a valid `ocr.strategy` from v0.8.3 through v0.8.6. Rejecting
+   * it here would make `loadCustomConfig` exit(1) on every upgraded deployment that
+   * still has it in `librechat.yaml`, so the value stays parseable; `loadOCRConfig`
+   * is what reduces it to "no OCR provider configured".
+   */
+  it('keeps accepting the deprecated document_parser strategy', () => {
+    expect(LEGACY_LOCAL_OCR_STRATEGY).toBe(FileSources.document_parser);
+    expect(ocrSchema.safeParse({ strategy: LEGACY_LOCAL_OCR_STRATEGY }).success).toBe(true);
+  });
+
+  it.each([
+    OCRStrategy.MISTRAL_OCR,
+    OCRStrategy.AZURE_MISTRAL_OCR,
+    OCRStrategy.VERTEXAI_MISTRAL_OCR,
+  ])('accepts actual OCR service %s as an OCR configuration strategy', (strategy) => {
+    expect(ocrSchema.safeParse({ strategy }).success).toBe(true);
+  });
+
+  /**
+   * `appConfig.ocr.strategy` is handed straight to `getStrategyFunctions()` as a
+   * `FileSources` key (api/server/services/Files/process.js), so the two enums are
+   * bound by string equality alone. A strategy with no counterpart throws "Invalid
+   * file source", which the caller swallows into the document_parser fallback: the
+   * deployment silently gets the wrong parser with no error surfaced.
+   */
+  const fileSourceValues = new Set<string>(Object.values(FileSources));
+
+  /**
+   * `custom_ocr` is configurable today but has never had a strategy implementation.
+   * It stays listed here rather than removed, since dropping a live config value is
+   * a breaking change; wiring it up should delete this entry.
+   */
+  const unimplementedStrategies = new Set<string>([OCRStrategy.CUSTOM_OCR]);
+
+  it.each(Object.values(OCRStrategy).filter((strategy) => !unimplementedStrategies.has(strategy)))(
+    'strategy %s resolves to a FileSources key of the same name',
+    (strategy) => {
+      expect(fileSourceValues.has(strategy)).toBe(true);
+    },
+  );
+
+  it('only exempts strategies that are still known to be unimplemented', () => {
+    const stillMissing = Array.from(unimplementedStrategies).filter(
+      (strategy) => !fileSourceValues.has(strategy),
+    );
+
+    expect(stillMissing).toEqual(Array.from(unimplementedStrategies));
+  });
+
+  it('groups every local parser under documentParserSources', () => {
+    expect(Array.from(documentParserSources)).toEqual(Object.values(DocumentParser));
+    expect(documentParserSources.has(DocumentParser.pdf_inspector)).toBe(true);
+    expect(documentParserSources.has(DocumentParser.anydoc)).toBe(true);
+    /** Remote OCR must stay out: its results keep text/plain, not the source type */
+    expect(documentParserSources.has(FileSources.mistral_ocr)).toBe(false);
+  });
+
+  /**
+   * Engine names are provenance, not strategies: nothing resolves them, nothing streams
+   * from them, and a caller that asked `getStrategyFunctions` for one would receive a
+   * storage adapter that cannot answer. Keeping them out of `FileSources` is what lets an
+   * engine be replaced without migrating the enum every stored record is validated
+   * against. `document_parser`, which is a real strategy, stays in both.
+   */
+  it('keeps engine provenance out of the strategy enum', () => {
+    expect(fileSourceValues.has(DocumentParser.pdf_inspector)).toBe(false);
+    expect(fileSourceValues.has(DocumentParser.anydoc)).toBe(false);
+    expect(fileSourceValues.has(DocumentParser.document_parser)).toBe(true);
+  });
 });

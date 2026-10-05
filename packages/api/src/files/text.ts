@@ -116,7 +116,12 @@ export async function parseText({
     const jwtToken = generateShortLivedToken(userId);
     const formData = new FormData();
     formData.append('file_id', file_id);
-    formData.append('file', createReadStream(file.path));
+    /* Named explicitly: the staged path carries a per-request prefix, so the basename a
+     * stream would derive is an internal id rather than the document's own name. */
+    formData.append('file', createReadStream(file.path), {
+      filename: file.originalname,
+      contentType: file.mimetype,
+    });
 
     const formHeaders = formData.getHeaders();
 

@@ -5,6 +5,7 @@ import {
   resolveUploadErrorMessage,
 } from './files';
 import { UnsupportedProviderAudioError } from '~/files/upload/errors';
+import { ConcurrencyLimitError } from './promise';
 
 jest.mock('node:crypto', () => {
   const actualModule = jest.requireActual('node:crypto');
@@ -598,6 +599,74 @@ describe('resolveUploadErrorMessage', () => {
 
     expect(result).toBe('Unable to extract text from file');
     expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  /**
+   * A refusal the caller can act on is worth surfacing; "Error processing file" tells
+   * them to retry a document that will fail the same way, or not to retry one that
+   * would have succeeded a moment later.
+   */
+  test('surfaces the shed-load refusal, which is retryable', () => {
+    const limit = new ConcurrencyLimitError(
+      'Too many document parsing requests are already waiting (2 running, 6 queued).',
+    );
+
+    expect(resolveUploadErrorMessage(limit)).toBe(limit.message);
+    expect(limit.userErrorStatusCode).toBe(503);
+  });
+
+  /**
+   * Each of these is permanent for the document that caused it: the caller has to send a
+   * smaller or different one, and "Error processing file" invites them to retry the
+   * same bytes instead. Matched on the code, so rewording a message cannot quietly turn
+   * one back into a generic failure.
+   */
+  test.each([
+    ['an oversized parser input', 'PARSER_INPUT_LIMIT', 'report.docx exceeds the 15MB limit'],
+    ['an oversized extraction', 'PARSER_OUTPUT_LIMIT', 'anydoc extracted 22MB of text'],
+    ['a refused archive', 'ARCHIVE_INVALID', 'report.docx: archive could not be read safely'],
+    ['a zip bomb', 'ZIP_BOMB', 'evil.docx: entry count (9000) exceeds the 4096-entry cap'],
+    [
+      'a page-flooded PDF',
+      'PDF_PAGE_LIMIT',
+      'PDF contains 4000 pages, exceeding the 1000-page limit',
+    ],
+  ])('surfaces %s', (_label, code, message) => {
+    expect(resolveUploadErrorMessage({ message, code })).toBe(message);
+  });
+
+  test('redacts document details from coded refusals when requested', () => {
+    const result = resolveUploadErrorMessage(
+      {
+        code: 'ARCHIVE_INVALID',
+        message: 'PRIVATE-UPLOAD.docx: archive could not be read safely',
+      },
+      undefined,
+      true,
+    );
+
+    expect(result).toBe('Archive could not be read safely');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  test('redacts an oversized parser input to its stable client message', () => {
+    const result = resolveUploadErrorMessage(
+      {
+        code: 'PARSER_INPUT_LIMIT',
+        message: 'PRIVATE-UPLOAD.docx exceeds the 15MB parser limit',
+      },
+      undefined,
+      true,
+    );
+
+    expect(result).toBe('Document exceeds the supported file size limit');
+    expect(result).not.toContain('PRIVATE-UPLOAD');
+  });
+
+  test('still hides an untagged internal failure', () => {
+    expect(resolveUploadErrorMessage({ message: 'ECONNREFUSED 127.0.0.1:6379' })).toBe(
+      'Error processing file',
+    );
   });
 
   test('accepts a custom default message', () => {
