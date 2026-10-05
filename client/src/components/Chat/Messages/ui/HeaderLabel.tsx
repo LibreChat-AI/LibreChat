@@ -11,15 +11,16 @@ type HeaderLabelProps = {
  *  header. */
 const DOCUMENT_ID_PREFIXES = ['agent_', 'asst_'];
 
+/** An agent or assistant document id: a storage key, never a name to show. */
+export const isDocumentId = (value: string): boolean =>
+  DOCUMENT_ID_PREFIXES.some((prefix) => value.startsWith(prefix));
+
 /** Skip document ids so the hover label is a real model name. */
 export function getHeaderModelName(
   ...candidates: Array<string | null | undefined>
 ): string | undefined {
   return candidates.find(
-    (value): value is string =>
-      value != null &&
-      value !== '' &&
-      !DOCUMENT_ID_PREFIXES.some((prefix) => value.startsWith(prefix)),
+    (value): value is string => value != null && value !== '' && !isDocumentId(value),
   );
 }
 

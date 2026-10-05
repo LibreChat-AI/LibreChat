@@ -615,7 +615,7 @@ describe('MCPManager', () => {
       expect(result).toBeNull();
       expect(mockLogger.warn).toHaveBeenCalledWith(
         `[getServerToolFunctions] Error getting tool functions for server ${serverName}`,
-        expect.any(Error),
+        { type: 'Error' },
       );
     });
 
@@ -640,7 +640,7 @@ describe('MCPManager', () => {
       expect(result).toBeNull();
       expect(mockLogger.warn).toHaveBeenCalledWith(
         `[getServerToolFunctions] Error getting tool functions for server ${serverName}`,
-        expect.any(Error),
+        { type: 'Error' },
       );
       expect(spy).toHaveBeenCalled();
     });
@@ -787,7 +787,7 @@ describe('MCPManager', () => {
       expect(result).toBeNull();
       expect(mockLogger.warn).toHaveBeenCalledWith(
         `[getServerToolFunctions] Error getting tool functions for server ${specificServerName}`,
-        expect.any(Error),
+        { type: 'Error' },
       );
     });
 
@@ -3873,30 +3873,35 @@ describe('MCPManager', () => {
       });
     });
 
-    it('should fail closed with a retryable message when per-call OBO refresh has a transient failure', async () => {
-      mockResolveOboToken.mockRejectedValue(
-        new OboTokenResolutionError(
+    it.each([false, true])(
+      'bounds per-call OBO diagnostics and preserves typed=%s rejection semantics',
+      async (typed) => {
+        const diagnostic = Object.assign(new Error('private-runtime-diagnostic'), {
+          query: { token: 'private-runtime-query' },
+          response: { data: { token: 'private-runtime-provider' } },
+        });
+        const failure = new OboTokenResolutionError(
           'exchange_failed',
           'Temporary OBO token exchange failure.',
           true,
-        ),
-      );
+          diagnostic,
+        );
+        mockResolveOboToken.mockRejectedValue(typed ? failure : diagnostic);
 
-      const appConnections = {
-        get: jest.fn().mockResolvedValue(mockConnection),
-      };
+        const appConnections = {
+          get: jest.fn().mockResolvedValue(mockConnection),
+        };
 
-      mockAppConnections(appConnections);
+        mockAppConnections(appConnections);
 
-      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
 
-      const manager = await MCPManager.createInstance(newMCPServersConfig());
-      const getUserConnectionSpy = jest
-        .spyOn(manager, 'getUserConnection')
-        .mockResolvedValue(mockConnection);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const getUserConnectionSpy = jest
+          .spyOn(manager, 'getUserConnection')
+          .mockResolvedValue(mockConnection);
 
-      await expect(
-        manager.callTool({
+        const attempted = manager.callTool({
           user: mockUser as IUser,
           serverName,
           toolName: 'test_tool',
@@ -3906,20 +3911,27 @@ describe('MCPManager', () => {
           >[0]['flowManager'],
           oboTokenResolver: mockOboTokenResolver,
           upstreamTokenProvider: mockUpstreamTokenProvider,
-        }),
-      ).rejects.toMatchObject({
-        message: expect.stringContaining('Temporary OBO token exchange failure.'),
-      });
+        });
+        if (typed)
+          await expect(attempted).rejects.toMatchObject({
+            message: expect.stringContaining('Temporary OBO token exchange failure.'),
+          });
+        else await expect(attempted).rejects.toBe(diagnostic);
 
-      expect(appConnections.get).not.toHaveBeenCalled();
-      expect(getUserConnectionSpy).toHaveBeenCalled();
-      expect(mockConnection.setRequestHeaders).not.toHaveBeenCalled();
-      expect(mockConnection.client.request).not.toHaveBeenCalled();
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        expect.stringContaining('[test_tool] Tool call failed'),
-        expect.anything(),
-      );
-    });
+        expect(appConnections.get).not.toHaveBeenCalled();
+        expect(getUserConnectionSpy).toHaveBeenCalled();
+        expect(mockConnection.setRequestHeaders).not.toHaveBeenCalled();
+        expect(mockConnection.client.request).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          expect.stringContaining('[test_tool] Tool call failed'),
+          expect.objectContaining({ type: expect.any(String) }),
+        );
+        expect(failure.cause).toBe(diagnostic);
+        expect(
+          JSON.stringify([...mockLogger.error.mock.calls, ...mockLogger.warn.mock.calls]),
+        ).not.toMatch(/private-runtime-diagnostic|private-runtime-query|private-runtime-provider/);
+      },
+    );
 
     it('should fail closed with a re-authentication message when per-call OBO refresh has a permanent failure', async () => {
       mockResolveOboToken.mockRejectedValue(

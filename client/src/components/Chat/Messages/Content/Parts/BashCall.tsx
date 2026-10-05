@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolContentPending } from '../disclosure';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
@@ -8,7 +9,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
 import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from '../rows';
-import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import useFollowScroll from './useFollowScroll';
@@ -142,12 +142,16 @@ export default function BashCall({
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
+    if (contentPending) {
+      return;
+    }
     setIsCopied(true);
     copy(command, { format: 'text/plain' });
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setIsCopied(false), 3000);
-  }, [command]);
+  }, [command, contentPending]);
 
   /** The model-authored `intent` streams as the FIRST args key, so it is the
    *  live label from the earliest delta — before the command exists and while
@@ -220,6 +224,7 @@ export default function BashCall({
                   iconOnly
                   isCopied={isCopied}
                   onClick={handleCopy}
+                  disabled={contentPending}
                   className={cn('bg-surface-code absolute top-1 right-1.5 z-[1]', PANE_COPY_REVEAL)}
                   label={localize('com_ui_copy_code')}
                 />

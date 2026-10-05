@@ -36,6 +36,7 @@ const {
   extractStoredMessageContent,
   GenerationJobManager,
   isStopConfirmed,
+  withToolCallPreviews,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, EModelEndpoint } = require('librechat-data-provider');
@@ -800,7 +801,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
         : { legacyPii: req.config.messageFilter.pii }),
     });
 
-    res.json(result);
+    res.json(withToolCallPreviews(req, result));
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -833,7 +834,7 @@ router.post(
           ? {}
           : { legacyPii: req.config.messageFilter.pii }),
       });
-      res.status(201).json(result);
+      res.status(201).json(withToolCallPreviews(req, result));
     } catch (error) {
       if (isContentFilterError(error)) {
         return res.status(error.statusCode).json(error.body);

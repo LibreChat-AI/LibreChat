@@ -79,6 +79,7 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    withToolCallPreviews: (_req, result) => result,
     createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     createRenameConversationHandler: jest.fn((deps) => {
       renameHandlerInputs.push(deps);

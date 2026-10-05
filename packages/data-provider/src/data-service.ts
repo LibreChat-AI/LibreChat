@@ -11,6 +11,7 @@ import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
@@ -969,14 +970,20 @@ export const getCustomConfigSpeech = (): Promise<t.TCustomConfigSpeechResponse> 
 
 /* conversations */
 
+/** Asks for tool-call previews in a response whose messages seed the conversation cache. */
+function withToolCallPreviews(url: string): string {
+  const separator = url.includes('?') ? '&' : '?';
+  return `${url}${separator}${TOOL_CALL_PREVIEWS_PARAM}=${TOOL_CALL_PREVIEWS_VERSION}`;
+}
+
 export function duplicateConversation(
   payload: t.TDuplicateConvoRequest,
 ): Promise<t.TDuplicateConvoResponse> {
-  return request.post(endpoints.duplicateConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.duplicateConversation()), payload);
 }
 
 export function forkConversation(payload: t.TForkConvoRequest): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkConversation(), payload);
+  return request.post(withToolCallPreviews(endpoints.forkConversation()), payload);
 }
 
 export function forkSharedConversation(
@@ -984,7 +991,7 @@ export function forkSharedConversation(
   targetMessageIndex?: number,
   shareRevision?: string,
 ): Promise<t.TForkConvoResponse> {
-  return request.post(endpoints.forkSharedMessages(shareId), {
+  return request.post(withToolCallPreviews(endpoints.forkSharedMessages(shareId)), {
     targetMessageIndex,
     shareRevision,
   });
@@ -1138,13 +1145,13 @@ export const editArtifact = async ({
   messageId,
   ...params
 }: m.TEditArtifactRequest): Promise<m.TEditArtifactResponse> => {
-  return request.post(endpoints.messagesArtifacts(messageId), params);
+  return request.post(withToolCallPreviews(endpoints.messagesArtifacts(messageId)), params);
 };
 
 export const branchMessage = async (
   payload: m.TBranchMessageRequest,
 ): Promise<m.TBranchMessageResponse> => {
-  return request.post(endpoints.messagesBranch(), payload);
+  return request.post(withToolCallPreviews(endpoints.messagesBranch()), payload);
 };
 
 export interface OwnerMessageText {
@@ -1162,14 +1169,26 @@ export function getOwnerMessageTexts(
   return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
 }
 
-export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
+/**
+ * Loads a conversation's messages. `toolPreviews` asks for bounded previews of settled tool
+ * calls; a caller that needs every byte (export, share, trace) leaves it off.
+ */
+export function getMessagesByConvoId(
+  conversationId: string,
+  options?: { toolPreviews?: boolean },
+): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
     conversationId === config.Constants.PENDING_CONVO
   ) {
     return Promise.resolve([]);
   }
-  return request.get(endpoints.messages({ conversationId }));
+  const url = endpoints.messages({ conversationId });
+  return request.get(options?.toolPreviews === true ? withToolCallPreviews(url) : url);
+}
+
+export function getToolCallPart(params: q.ToolCallPartParams): Promise<q.ToolCallPartResponse> {
+  return request.get(endpoints.messageToolCallPart(params));
 }
 
 export function getMessageById(conversationId: string, messageId: string): Promise<s.TMessage[]> {

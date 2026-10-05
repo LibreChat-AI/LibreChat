@@ -287,19 +287,6 @@ export const registry: SettingEntry[] = [
     Component: DuringRunAction,
   },
   {
-    id: 'steerInterruptsByDefault',
-    tab: CHAT,
-    section: 'sending',
-    labelKey: 'com_ui_steer_interrupts_default',
-    keywords: ['steer', 'interrupt', 'preempt', 'generating', 'stop'],
-    Component: toggleControl({
-      stateAtom: store.steerInterruptsByDefault,
-      localizationKey: 'com_ui_steer_interrupts_default',
-      switchId: 'steerInterruptsByDefault',
-      hoverCardText: 'com_ui_steer_interrupts_default_info',
-    }),
-  },
-  {
     id: 'saveDrafts',
     tab: CHAT,
     section: 'sending',

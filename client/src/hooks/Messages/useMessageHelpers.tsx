@@ -7,8 +7,12 @@ import {
 } from 'librechat-data-provider';
 import type { SearchResultData } from 'librechat-data-provider';
 import type { TMessageProps } from '~/common';
+import {
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from './useCopyToClipboard';
 import { useMessagesViewContext, useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
-import { useCopyMessageToClipboard, hasCopyableText } from './useCopyToClipboard';
 import { useGetAddedConvo } from '~/hooks/Chat';
 import { logger } from '~/utils';
 
@@ -33,7 +37,7 @@ export default function useMessageHelpers(
 
   const getAddedConvo = useGetAddedConvo();
 
-  const { text, content, children, messageId = null, isCreatedByUser } = message ?? {};
+  const { children, messageId = null, isCreatedByUser } = message ?? {};
   const edit = messageId === currentEditId;
   const isLast = children?.length === 0 || children?.length === undefined;
 
@@ -89,17 +93,15 @@ export default function useMessageHelpers(
     regenerate(message, { addedConvo: getAddedConvo() });
   };
 
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
   const copyToClipboard = useCopyMessageToClipboard({
-    text,
-    content,
+    ...clipboardSource,
     searchResults,
-    isCreatedByUser,
-    error: message?.error,
   });
 
   const getCanCopy = useCallback(
-    () => hasCopyableText({ text, content, searchResults }),
-    [text, content, searchResults],
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
   );
 
   return {

@@ -68,6 +68,7 @@ import { MCPAppOperationBudget, getMCPAppOperationLimits } from './apps/budget';
 import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { formatToolContent, selectResolvedAppResource } from './parsers';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
+import { isOwnedAbortError, getSafeErrorMetadata } from '~/utils/errors';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
 import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
 import { assertToolApprovalTransportEpoch } from '~/tools/approval';
@@ -79,7 +80,6 @@ import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { OAuthLifecycleRelay } from './oauth/pending';
-import { isOwnedAbortError } from '~/utils/errors';
 import { markMCPToolResultError } from './status';
 import { withMCPRequestSignal } from './signal';
 import { MCPConnection } from './connection';
@@ -864,7 +864,7 @@ export class MCPManager extends UserConnectionManager {
     } catch (error) {
       logger.warn(
         `[getServerToolFunctions] Error getting tool functions for server ${serverName}`,
-        error,
+        getSafeErrorMetadata(error),
       );
       return { tools: null };
     }
@@ -1892,7 +1892,7 @@ Please follow these instructions when using tools from the respective MCP server
             }
             logger.warn(
               `${logPrefix}[${toolName}] Connection-check OAuth recovery failed`,
-              recoveryError,
+              getSafeErrorMetadata(recoveryError),
             );
             throw connectionCheckError;
           }
@@ -2061,7 +2061,10 @@ Please follow these instructions when using tools from the respective MCP server
               if (options?.signal?.aborted) {
                 throw recoveryError;
               }
-              logger.warn(`${logPrefix}[${toolName}] Runtime OAuth recovery failed`, recoveryError);
+              logger.warn(
+                `${logPrefix}[${toolName}] Runtime OAuth recovery failed`,
+                getSafeErrorMetadata(recoveryError),
+              );
               throw error;
             }
             result = await requestTool();
@@ -2225,7 +2228,7 @@ Please follow these instructions when using tools from the respective MCP server
           );
         }
         // Log with context and re-throw or handle as needed
-        logger.error(`${logPrefix}[${toolName}] Tool call failed`, error);
+        logger.error(`${logPrefix}[${toolName}] Tool call failed`, getSafeErrorMetadata(error));
         // Rethrowing allows the caller (createMCPTool) to handle the final user message
         throw error;
       } finally {
@@ -2457,7 +2460,7 @@ Please follow these instructions when using tools from the respective MCP server
             if (signal?.aborted) {
               throw recoveryError;
             }
-            logger.warn(`${logPrefix} OAuth recovery failed`, recoveryError);
+            logger.warn(`${logPrefix} OAuth recovery failed`, getSafeErrorMetadata(recoveryError));
             throw new MCPAuthenticationRejectedError(serverName, false, error);
           }
         };

@@ -76,6 +76,27 @@ export const messages = (params: q.MessagesListParams) => {
 
 export const messagesArtifacts = (messageId: string) => `${messagesRoot}/artifact/${messageId}`;
 
+/** One tool-call part of a stored message, in full. */
+export const messageToolCallPart = ({
+  conversationId,
+  messageId,
+  partIndex,
+  toolCallId,
+  stepId,
+  agentId,
+}: q.ToolCallPartParams) => {
+  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+  const query = [
+    ['toolCallId', toolCallId],
+    ['stepId', stepId],
+    ['agentId', agentId],
+  ]
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join('&');
+  return query === '' ? path : `${path}?${query}`;
+};
+
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
 const shareRoot = `${BASE_URL}/api/share`;

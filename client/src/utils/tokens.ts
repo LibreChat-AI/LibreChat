@@ -187,6 +187,33 @@ function addUsage(target: BranchUsage, usage?: BranchUsage): void {
   }
 }
 
+type ToolCallLengthFields = {
+  args?: unknown;
+  output?: unknown;
+  argsLength?: unknown;
+  outputLength?: unknown;
+};
+
+/** Stored lengths of a tool call's arguments and output. A preview carries the full lengths in
+ *  `argsLength`/`outputLength`, so estimates match the conversation the model actually sees. */
+function toolCallLengths(call: ToolCallLengthFields): { args: number; output: number } {
+  let args = 0;
+  if (typeof call.argsLength === 'number') {
+    args = call.argsLength;
+  } else if (typeof call.args === 'string') {
+    args = call.args.length;
+  } else if (call.args != null) {
+    args = JSON.stringify(call.args)?.length ?? 0;
+  }
+  let output = 0;
+  if (typeof call.outputLength === 'number') {
+    output = call.outputLength;
+  } else if (typeof call.output === 'string') {
+    output = call.output.length;
+  }
+  return { args, output };
+}
+
 /** Chars of a content part's text, handling both the string and `{ value }` forms.
  * Reasoning (`think`) and error parts are excluded — the send path strips them
  * before counting, so they aren't part of the next call's context. */
@@ -199,24 +226,12 @@ function partTextChars(part: unknown): number {
     return 0;
   }
   if (type === 'tool_call') {
-    const call = (part as { tool_call?: { name?: unknown; args?: unknown; output?: unknown } })
-      .tool_call;
+    const call = (part as { tool_call?: ToolCallLengthFields & { name?: unknown } }).tool_call;
     if (call == null) {
       return 0;
     }
-    let chars = typeof call.name === 'string' ? call.name.length : 0;
-    if (typeof call.args === 'string') {
-      chars += call.args.length;
-    } else if (call.args != null) {
-      const serialized = JSON.stringify(call.args);
-      if (typeof serialized === 'string') {
-        chars += serialized.length;
-      }
-    }
-    if (typeof call.output === 'string') {
-      chars += call.output.length;
-    }
-    return chars;
+    const lengths = toolCallLengths(call);
+    return (typeof call.name === 'string' ? call.name.length : 0) + lengths.args + lengths.output;
   }
   const text = (part as { text?: unknown }).text;
   if (typeof text === 'string') {
@@ -253,20 +268,10 @@ function messageToolChars(message: Partial<TMessage>): { chars: number; resultCh
       if ('name' in call && typeof call.name === 'string') {
         chars += call.name.length;
       }
-      if ('args' in call) {
-        if (typeof call.args === 'string') {
-          chars += call.args.length;
-        } else {
-          const serialized = JSON.stringify(call.args ?? null);
-          if (typeof serialized === 'string') {
-            chars += serialized.length;
-          }
-        }
-      }
-      if ('output' in call && typeof call.output === 'string') {
-        chars += call.output.length;
-        resultChars += call.output.length;
-      }
+      const lengths = toolCallLengths(call as ToolCallLengthFields);
+      chars += 'args' in call && call.args == null ? 4 : lengths.args;
+      chars += lengths.output;
+      resultChars += lengths.output;
     }
   }
   return { chars, resultChars };

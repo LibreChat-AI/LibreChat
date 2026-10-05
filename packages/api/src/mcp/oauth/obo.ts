@@ -7,8 +7,8 @@ import type { OpenIDTokenInfo } from '~/utils/oidc';
 import type { MCPOAuthTokens } from './types';
 import { getSkewedTokenExpiresAtMs, getTokenExpiresAtMs } from '~/oauth/expiry';
 import { extractOpenIDTokenInfo, isOpenIDTokenValid } from '~/utils/oidc';
+import { isAbortError, getSafeErrorMetadata } from '~/utils/errors';
 import { detachOnAbort } from '~/utils/promises';
-import { isAbortError } from '~/utils/errors';
 
 export interface OboConfig {
   scopes: string;
@@ -479,7 +479,10 @@ export async function isOboConfigStillTrusted({
   try {
     roleName = await getUserRoleByAuthorId(authorId);
   } catch (err) {
-    logger.warn('[OBO] Failed to resolve author role for OBO trust check', err);
+    logger.warn(
+      '[OBO] Failed to resolve author role for OBO trust check',
+      getSafeErrorMetadata(err),
+    );
     return false;
   }
   if (!roleName) {
@@ -489,7 +492,10 @@ export async function isOboConfigStillTrusted({
   try {
     permissions = await getRolePermissions(roleName);
   } catch (err) {
-    logger.warn('[OBO] Failed to load role permissions for OBO trust check', err);
+    logger.warn(
+      '[OBO] Failed to load role permissions for OBO trust check',
+      getSafeErrorMetadata(err),
+    );
     return false;
   }
   return permissions?.[PermissionTypes.MCP_SERVERS]?.[Permissions.CONFIGURE_OBO] === true;

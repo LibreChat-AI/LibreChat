@@ -14,6 +14,7 @@ import { PENDING_STALE_MS, FlowStateNotFoundError } from '~/flow/manager';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { getMCPServerGeneration } from '~/mcp/oauth/cleanup';
 import { preProcessGraphTokens } from '~/utils/graph';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { MCPConnection } from '~/mcp/connection';
 import { processMCPEnv } from '~/utils';
 
@@ -5532,7 +5533,7 @@ describe('MCPConnectionFactory', () => {
         expect.stringContaining(
           '[Discovery] OBO token resolution failed, attempting unauthenticated tool listing',
         ),
-        oboError,
+        getSafeErrorMetadata(oboError),
       );
     });
 
@@ -6892,6 +6893,66 @@ describe('MCPConnectionFactory', () => {
       expect(mockLogger.error).not.toHaveBeenCalled();
       expect(mockConnectionInstance.stopReconnecting).toHaveBeenCalled();
     });
+
+    it.each([false, true])(
+      'bounds OBO recovery logs while preserving typed=%s error causes and propagation',
+      async (typed) => {
+        const diagnostic = Object.assign(new Error('private-storage-diagnostic'), {
+          query: { token: 'private-query-credential' },
+          response: { status: 503, data: { refresh_token: 'private-provider-credential' } },
+        });
+        const OboError = OboTokenResolutionError as unknown as jest.Mock;
+        OboError.mockImplementation(
+          (reason: string, userMessage: string, retryable = false, cause?: unknown) => {
+            const error = new Error(userMessage, { cause });
+            Object.setPrototypeOf(error, OboError.prototype);
+            return Object.assign(error, {
+              name: 'OboTokenResolutionError',
+              reason,
+              userMessage,
+              retryable,
+            });
+          },
+        );
+        const failure = typed
+          ? new OboTokenResolutionError(
+              'session_refresh_failed',
+              'Temporary grant failure.',
+              true,
+              diagnostic,
+            )
+          : diagnostic;
+        resolveOboToken.mockResolvedValueOnce(connectionTokens).mockRejectedValueOnce(failure);
+        mockConnectionInstance.connect.mockImplementationOnce(async () => {
+          await getAuthHandler()();
+          throw new Error('HTTP 401 Unauthorized');
+        });
+        const rejected = await createOboConnection().catch((error: Error) => error);
+        if (typed) {
+          expect(rejected).toMatchObject({
+            reason: 'session_refresh_failed',
+            retryable: true,
+            cause: failure,
+          });
+          expect(failure.cause).toBe(diagnostic);
+        } else expect(rejected).toBe(diagnostic);
+        expect(mockConnectionInstance.emit).toHaveBeenCalledWith('oauthFailed', rejected);
+        expect(mockConnectionInstance.stopReconnecting).toHaveBeenCalled();
+        expect(mockConnectionInstance.setAuthorizationHeader).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+          expect.stringContaining('OBO token re-exchange failed'),
+          getSafeErrorMetadata(failure),
+        );
+        const logs = JSON.stringify([
+          ...mockLogger.error.mock.calls,
+          ...mockLogger.warn.mock.calls,
+          ...mockLogger.debug.mock.calls,
+        ]);
+        expect(logs).not.toMatch(
+          /private-storage-diagnostic|private-query-credential|private-provider-credential/,
+        );
+      },
+    );
 
     it('retires the connection when the re-exchange fails', async () => {
       resolveOboToken

@@ -73,13 +73,13 @@ export default function ProjectsSortMenu({ sortBy, onSortChange }: ProjectsSortM
         <Ariakit.MenuButton
           aria-label={localize('com_ui_sort_projects_by')}
           className={cn(
-            'text-text-secondary inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-lg px-2 text-sm font-medium transition-colors',
+            'border-border-light text-text-secondary inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors',
             'hover:bg-surface-hover hover:text-text-primary',
             'focus-visible:ring-text-primary focus-visible:ring-2 focus-visible:outline-hidden',
             isOpen && 'bg-surface-hover text-text-primary',
           )}
         >
-          <ArrowUpDown className="size-4 shrink-0" aria-hidden="true" />
+          <ArrowUpDown className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="truncate">{selectedSortLabel}</span>
         </Ariakit.MenuButton>
       }

@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { OboTokenResolver, UpstreamTokenProvider } from './obo';
@@ -628,6 +629,35 @@ describe('isOboConfigStillTrusted', () => {
     });
     expect(result).toBe(false);
   });
+
+  it.each(['author', 'permissions'] as const)(
+    'bounds %s trust lookup diagnostics and keeps denial fail-closed',
+    async (phase) => {
+      jest.mocked(logger.warn).mockClear();
+      const diagnostic = Object.assign(new Error('private-trust-diagnostic'), {
+        query: { secret: 'private-trust-query' },
+        status: 503,
+      });
+      const getUserRoleByAuthorId = jest.fn(async () => {
+        if (phase === 'author') throw diagnostic;
+        return 'ADMIN';
+      });
+      const getRolePermissions = jest.fn(async () => {
+        throw diagnostic;
+      });
+      await expect(
+        isOboConfigStillTrusted({ authorId: 'u1', getUserRoleByAuthorId, getRolePermissions }),
+      ).resolves.toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('OBO trust check'), {
+        type: 'Error',
+        status: 503,
+      });
+      expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toMatch(
+        /private-trust-diagnostic|private-trust-query/,
+      );
+      if (phase === 'author') expect(getRolePermissions).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns false when role lookup throws', async () => {
     const result = await isOboConfigStillTrusted({
