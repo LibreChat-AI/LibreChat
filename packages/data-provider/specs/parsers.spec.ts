@@ -637,6 +637,11 @@ describe('getSpeechText', () => {
     expect(getSpeechText({ text })).toBe('The answer is 4.');
   });
 
+  test('keeps the answer between and after repeated thinking blocks', () => {
+    const text = ':::thinking\na\n:::\nAnswer 1\n:::thinking\nb\n:::\nAnswer 2';
+    expect(getSpeechText({ text })).toBe('Answer 1\n\nAnswer 2');
+  });
+
   test('treats a thinking block still open mid-stream as reasoning', () => {
     expect(getSpeechText({ text: ':::thinking\nStill working' })).toBe('');
     expect(getSpeechText({ text: 'Intro :::thinking\nStill' })).toBe('Intro');

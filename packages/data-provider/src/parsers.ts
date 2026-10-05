@@ -417,7 +417,7 @@ export function parseTextParts(
 }
 
 /** Legacy plain-text reasoning, rendered as the collapsible Thoughts block. */
-const thinkingBlockPattern = /:::thinking[\s\S]*?:::/;
+const thinkingBlockPattern = /:::thinking[\s\S]*?:::/g;
 const thinkingOpenPattern = /:::thinking[\s\S]*$/;
 
 /**
