@@ -1957,6 +1957,10 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         foregroundRunId: mcpRequestBody.messageId,
         requestBody: mcpRequestBody,
         toolTimingReplayEvents: resumeState?.replayEvents,
+        // This turn's generation was already counted when it first ran; resuming
+        // replays it rather than repeating it, so linked-prompt usage is not
+        // recorded again. Resolution itself still runs, cache-first.
+        isResume: true,
       });
       client = result.client;
 

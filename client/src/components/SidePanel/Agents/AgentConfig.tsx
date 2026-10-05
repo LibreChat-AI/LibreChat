@@ -1,5 +1,6 @@
 import { Input, Label } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
+import type { InstructionsPromptStatus } from './Instructions';
 import type { AgentForm } from '~/common';
 import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
 import AgentCategorySelector from './AgentCategorySelector';
@@ -17,7 +18,13 @@ import { Panel } from '~/common';
 
 const fieldClass = 'h-9';
 
-export default function AgentConfig() {
+export default function AgentConfig({
+  instructionsPromptStatus,
+  onRetryInstructionsPrompt,
+}: {
+  instructionsPromptStatus?: InstructionsPromptStatus;
+  onRetryInstructionsPrompt?: () => void;
+}) {
   const localize = useLocalize();
   const methods = useFormContext<AgentForm>();
   const { setActivePanel, endpointsConfig, agentsConfig } = useAgentPanelContext();
@@ -144,7 +151,10 @@ export default function AgentConfig() {
       </div>
 
       {/* INSTRUCTIONS */}
-      <Instructions />
+      <Instructions
+        promptStatus={instructionsPromptStatus}
+        onRetryLoad={onRetryInstructionsPrompt}
+      />
 
       {/* TOOLS — unified built-ins / tools / actions / mcp / skills */}
       <ToolsSection agentId={agent_id} />

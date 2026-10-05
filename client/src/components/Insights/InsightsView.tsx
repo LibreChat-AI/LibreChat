@@ -2,14 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Check, Info, Minus, Search } from 'lucide-react';
-import {
-  Button,
-  Input,
-  MultiSelect,
-  Spinner,
-  TooltipAnchor,
-  useMediaQuery,
-} from '@librechat/client';
+import { Button, Input, MultiSelect, Spinner, TooltipAnchor } from '@librechat/client';
 import {
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
@@ -27,6 +20,7 @@ import { clearAgentFilters, shouldRecoverAgentFilters } from './agentFilters';
 import { useGetStartupConfig, useInsightsQuery } from '~/data-provider';
 import { useAuthContext, useDocumentTitle, useLocalize } from '~/hooks';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { LocalizedDateRangePicker } from '~/components/ui';
 import { getRollingDateRange } from './dateRange';
 import { cn } from '~/utils';
@@ -310,7 +304,7 @@ function TopUsersTable({
         <EmptyState message={localize('com_insights_no_data')} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[420px] text-left text-sm">
+          <table className="w-full min-w-[26.25rem] text-left text-sm">
             <thead className="border-border-medium text-text-secondary border-b text-xs">
               <tr>
                 <th className="px-2 py-2 font-medium">{localize('com_insights_user')}</th>
@@ -378,7 +372,7 @@ function ChurnedUsersTable({
         <EmptyState message={localize('com_insights_no_data')} />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[35rem] table-fixed text-left text-sm">
             <thead className="border-border-medium text-text-secondary border-b text-xs">
               <tr>
                 <th className="w-[34%] px-2 py-2 font-medium">{localize('com_insights_user')}</th>
@@ -472,12 +466,12 @@ function LatestConversations({
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[900px] table-fixed text-left text-sm">
+        <table className="w-full min-w-[56.25rem] table-fixed text-left text-sm">
           <thead className="border-border-medium text-text-secondary border-b text-xs">
             <tr>
-              <th className="w-[120px] px-2 py-2 font-medium">{localize('com_insights_date')}</th>
-              <th className="w-[192px] px-2 py-2 font-medium">{localize('com_insights_user')}</th>
-              <th className="w-[160px] px-2 py-2 font-medium">{localize('com_insights_agent')}</th>
+              <th className="w-[7.5rem] px-2 py-2 font-medium">{localize('com_insights_date')}</th>
+              <th className="w-[12rem] px-2 py-2 font-medium">{localize('com_insights_user')}</th>
+              <th className="w-[10rem] px-2 py-2 font-medium">{localize('com_insights_agent')}</th>
               <th className="px-2 py-2 font-medium">{localize('com_insights_first_message')}</th>
               <th className="w-20 px-2 py-2 text-right font-medium">
                 {localize('com_insights_messages')}
@@ -565,7 +559,7 @@ export default function InsightsView() {
   const [page, setPage] = useState(1);
   const [pendingAgentIds, setPendingAgentIds] = useState<string[] | null>(null);
   const dateRangeSelectionTimeout = useRef<number>();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const insightsFeatureEnabled = startupConfig?.insightsEnabled === true;
   const selectedAgentIds = useMemo(
     () => [...new Set(urlSearchParams.getAll('agentIds').filter(Boolean))].sort(),
@@ -848,7 +842,7 @@ export default function InsightsView() {
               </Button>
             ))}
           </div>
-          <div className="w-full min-w-0 sm:w-[340px]">
+          <div className="w-full min-w-0 sm:w-[21.25rem]">
             <LocalizedDateRangePicker
               endDate={displayDateRange.endDate}
               futureDatesDisabled
@@ -893,7 +887,7 @@ export default function InsightsView() {
                   <KpiCard key={card.id} card={card} locale={locale} />
                 ))}
               </div>
-              <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,580px),1fr))] gap-3">
+              <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
                 <TopUsersTable rows={data.topUsers} localize={localize} locale={locale} />
                 <ChurnedUsersTable rows={data.churnedUsers} localize={localize} locale={locale} />
               </div>

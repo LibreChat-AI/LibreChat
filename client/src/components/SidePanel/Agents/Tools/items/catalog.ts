@@ -122,14 +122,23 @@ export function buildCatalog(inputs: BuildCatalogInputs): AgentItem[] {
   const items: AgentItem[] = [
     {
       kind: 'builtin',
-      id: 'orchestration',
-      iconKey: 'orchestration',
-      name: 'com_ui_agent_orchestration',
-      description: 'com_ui_agent_orchestration_hint',
+      id: 'handoffs',
+      iconKey: 'handoffs',
+      name: 'com_ui_agent_handoffs',
+      description: 'com_ui_agent_handoffs_subtitle',
     },
   ];
 
   const enabled = new Set(inputs.agentsConfig.capabilities);
+  if (enabled.has(AgentCapabilities.subagents)) {
+    items.unshift({
+      kind: 'builtin',
+      id: AgentCapabilities.subagents,
+      iconKey: 'subagents',
+      name: 'com_ui_agent_subagents',
+      description: 'com_ui_agent_subagents_subtitle',
+    });
+  }
   for (const def of BUILTIN_DEFINITIONS) {
     if (!enabled.has(def.id)) {
       continue;

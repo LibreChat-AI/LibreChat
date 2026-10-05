@@ -68,7 +68,7 @@ async function waitForMCPTool(page: Page, token: string): Promise<void> {
 async function openOrchestration(page: Page, form: Locator) {
   const settings = form
     .getByRole('listitem')
-    .filter({ hasText: 'Multi-agent orchestration' })
+    .filter({ hasText: 'Handoffs' })
     .getByRole('button', { name: 'Configure', exact: true });
   if (await settings.count()) {
     await settings.click();
@@ -77,7 +77,7 @@ async function openOrchestration(page: Page, form: Locator) {
     await page
       .getByRole('dialog', { name: 'Tool Library', exact: true })
       .getByRole('listitem')
-      .filter({ hasText: 'Multi-agent orchestration' })
+      .filter({ hasText: 'Handoffs' })
       .getByRole('button', { name: 'Configure', exact: true })
       .click();
   }
@@ -116,7 +116,7 @@ async function configureNewAgent(page: Page, name: string): Promise<Locator> {
   let form = await startNewAgent(page);
   await form.getByLabel('Agent name').fill(name);
   await form.getByLabel('Agent description').fill(DESCRIPTION);
-  await form.getByLabel('Instructions').fill(INSTRUCTIONS);
+  await form.getByRole('textbox', { name: 'Instructions', exact: true }).fill(INSTRUCTIONS);
   await selectMockModel(page, true);
   form = page.getByRole('form', { name: 'Agent configuration form' });
   return form;

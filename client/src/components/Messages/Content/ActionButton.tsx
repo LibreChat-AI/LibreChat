@@ -52,7 +52,12 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
           className,
         )}
       >
-        <MorphIcon icon={isActive ? Check : icon} size={18} />
+        <span
+          className="relative flex size-[1.125rem] items-center justify-center"
+          aria-hidden="true"
+        >
+          <MorphIcon icon={isActive ? Check : icon} size="1.125rem" />
+        </span>
         {!iconOnly && (
           <span className="relative overflow-hidden">
             <span

@@ -79,6 +79,56 @@ function createPendingAction(streamId: string) {
   );
 }
 
+it('keeps a fresh terminal writer and its DONE subscription when cleanup reaps an unrelated job', async () => {
+  const store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+  const transport = new InMemoryEventTransport();
+  const manager = new GenerationJobManagerClass();
+  manager.configure({
+    jobStore: store,
+    eventTransport: transport,
+    isRedis: false,
+    cleanupOnComplete: false,
+  });
+  manager.initialize();
+  const onDone = jest.fn();
+  const onError = jest.fn();
+  try {
+    const job = await manager.createJob('fresh-final-writer', 'owner');
+    const subscription = await manager.subscribe(job.streamId, () => undefined, onDone, onError);
+    const claim = await manager.claimTerminalJob(
+      job.streamId,
+      'complete',
+      undefined,
+      job.createdAt,
+      { persistencePending: true },
+    );
+    expect(claim).not.toBeNull();
+    const victim = await store.createJob('unrelated-expired', 'owner');
+    await store.updateJob(
+      victim.streamId,
+      { status: 'complete', completedAt: Date.now() - 120_000 },
+      victim.createdAt,
+    );
+    await manager['cleanup']();
+    expect(await store.getJob(victim.streamId)).toBeNull();
+    expect((await store.getJob(job.streamId))?.terminalPersistencePending).toBe(true);
+    expect(job.abortController.signal.aborted).toBe(false);
+    expect(transport.getSubscriberCount(job.streamId)).toBe(1);
+    await store.finalizeTerminalPersistence(
+      job.streamId,
+      job.createdAt,
+      JSON.stringify({ final: true, terminalStatus: 'complete' }),
+    );
+    await manager.emitDone(job.streamId, { final: true }, job.createdAt);
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    await manager.finishTerminalJob(claim!);
+    subscription?.unsubscribe();
+  } finally {
+    await manager.destroy();
+  }
+});
+
 describe('GenerationJobManager startup telemetry', () => {
   it('returns sanitized initial metadata from the atomic job creation', async () => {
     const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });

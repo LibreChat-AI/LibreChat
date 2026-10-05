@@ -5,10 +5,11 @@ import { Search, ChevronDown } from 'lucide-react';
 import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
 import type { OptionWithIcon } from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
+import useRemScale from '~/hooks/useRemScale';
 import { fieldControl } from './Field';
 import './AnimatePopover.css';
 import { JSX } from 'react/jsx-runtime';
-import { cn } from '~/utils';
+import { cn, pxToRem } from '~/utils';
 
 interface ControlComboboxProps {
   selectedValue: string;
@@ -92,9 +93,10 @@ function ControlCombobox({
   onOpenChange,
 }: ControlComboboxProps): JSX.Element {
   const [searchValue, setSearchValue] = useState('');
+  const remScale = useRemScale();
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [buttonWidth, setButtonWidth] = useState<number | null>(null);
-  const popoverWidth = isCollapsed ? '300px' : (buttonWidth ?? '300px');
+  const popoverWidth = isCollapsed ? '18.75rem' : (buttonWidth ?? '18.75rem');
   const popoverZIndex = usePopoverZIndex();
 
   const getItem = (option: OptionWithIcon) => ({
@@ -250,12 +252,16 @@ function ControlCombobox({
            * placement, so a short viewport shrinks the cap instead of pushing
            * lower options offscreen; the fallback keeps the cap when the
            * variable is absent. */
+          /** The preferred width is expressed in rem, so it grows with the UI scale
+           *  past narrow viewports. Cap it here rather than in each caller: a
+           *  min-width outranks a max-width, so the minimum has to carry the cap. */
+          maxWidth: '90vw',
           maxHeight:
             popoverMaxHeight != null
-              ? `min(${popoverMaxHeight}px, var(--popover-available-height, ${popoverMaxHeight}px))`
+              ? `min(${pxToRem(popoverMaxHeight)}, var(--popover-available-height, ${pxToRem(popoverMaxHeight)}))`
               : undefined,
           width: matchTriggerWidth ? popoverWidth : undefined,
-          minWidth: matchTriggerWidth ? undefined : '16rem',
+          minWidth: matchTriggerWidth ? undefined : 'min(16rem, 90vw)',
         }}
       >
         <div className="shrink-0 py-1.5">
@@ -273,11 +279,16 @@ function ControlCombobox({
           className={cn(
             popoverMaxHeight != null
               ? 'min-h-0 flex-1 overflow-auto'
-              : 'max-h-[300px] overflow-auto',
+              : 'max-h-[18.75rem] overflow-auto',
           )}
         >
           <Ariakit.ComboboxList store={combobox}>
-            <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
+            <SelectRenderer
+              store={select}
+              items={matches}
+              itemSize={ROW_HEIGHT * remScale}
+              overscan={5}
+            >
               {({ value, icon, label, ...item }) => (
                 <Ariakit.ComboboxItem
                   key={item.id}

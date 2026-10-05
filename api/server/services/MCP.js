@@ -43,11 +43,14 @@ const {
   isOAuthServer,
   isAbortError,
   isDirectOpenIDBearerRecoveryEnabled,
+  bindScheduledMCPBearerInvocation,
+  createMCPPermissionDeniedError,
   createMCPStructuredTool,
   buildMCPDomainValidationConfig,
   OpenIDReauthRequiredError,
   MCPAuthenticationRefreshError,
   MCPAuthenticationRejectedError,
+  ScheduledMCPBearerError,
   prepareMCPAuthorizationMutation,
   resolveMCPClientCapabilityProfile,
   getMCPConnectionPoolKey,
@@ -1219,6 +1222,11 @@ async function createMCPTool({
   }
 
   return createToolInstance({
+    scheduledBearerInvocation: bindScheduledMCPBearerInvocation(
+      requestScopedConnections,
+      agentId,
+      toolName,
+    ),
     scheduledMCPInvocation: bindScheduledMCPInvocation(requestScopedConnections, agentId, toolName),
     res,
     mcpPermissionContext,
@@ -1252,6 +1260,7 @@ async function createMCPTool({
 }
 
 function createToolInstance({
+  scheduledBearerInvocation,
   scheduledMCPInvocation,
   res,
   mcpPermissionContext,
@@ -1317,7 +1326,11 @@ function createToolInstance({
         ? await mcpPermissionContext.canUseServers(permissionUser)
         : await userCanUseMCPServers(permissionUser);
       if (!canUseMCP) {
-        throw new Error('Forbidden: Insufficient MCP server permissions');
+        throw createMCPPermissionDeniedError(
+          scheduledBearerInvocation,
+          serverName,
+          capturedServerConfig,
+        );
       }
       const flowsCache = getLogStores(CacheKeys.FLOWS);
       const flowManager = getFlowStateManager(flowsCache);
@@ -1361,6 +1374,7 @@ function createToolInstance({
        * as the jwt-bearer assertion.
        */
       const result = await mcpManager.callTool({
+        scheduledBearerInvocation,
         scheduledMCPInvocation,
         serverName,
         serverConfig: capturedServerConfig,
@@ -1430,7 +1444,7 @@ function createToolInstance({
       // recording a durable tool failure; other tool errors are a cheap no-op.
       await require('~/server/services/Schedules').recordMCPToolAuthFailure({
         error,
-        identity: scheduledMCPInvocation?.identity,
+        identity: scheduledMCPInvocation?.identity ?? scheduledBearerInvocation?.identity,
         streamId,
         jobCreatedAt,
         userId,
@@ -1439,6 +1453,7 @@ function createToolInstance({
 
       /** Carries the actionable re-auth message; the substring heuristic below would misreport it as an OAuth configuration problem */
       if (
+        error instanceof ScheduledMCPBearerError ||
         error instanceof ScheduledMCPPolicyError ||
         error instanceof OpenIDReauthRequiredError ||
         error instanceof MCPAuthenticationRefreshError ||

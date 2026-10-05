@@ -75,7 +75,7 @@ function DynamicCheckbox({
               disabled={readonly}
               checked={selectedValue}
               onCheckedChange={handleCheckedChange}
-              className="mt-[2px]"
+              className="mt-[0.125rem]"
               aria-label={localize(label as TranslationKeys)}
             />
           </div>

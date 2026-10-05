@@ -215,6 +215,37 @@ describe('steer escalation confirmation timeout', () => {
   });
 });
 
+describe('linked instructions configuration', () => {
+  it('defaults optional reads and the native cache TTL, and bounds operator overrides', () => {
+    expect(agentsEndpointSchema.parse({}).linkedInstructions).toBeUndefined();
+    expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
+      timeoutMs: 2000,
+      native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
+    });
+    expect(
+      agentsEndpointSchema.parse({
+        linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
+      }).linkedInstructions,
+    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 } });
+    for (const timeoutMs of [0, 99, 30_001, 1.5]) {
+      expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
+        false,
+      );
+    }
+    for (const cacheTtlMs of [-1, 3_600_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheTtlMs } } }).success,
+      ).toBe(false);
+    }
+    for (const cacheClearTimeoutMs of [0, 30_001, 1.5]) {
+      expect(
+        agentsEndpointSchema.safeParse({ linkedInstructions: { native: { cacheClearTimeoutMs } } })
+          .success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe('ask user retained answers', () => {
   it('leaves the block unconfigured by default and accepts an operator budget', () => {
     expect(agentsEndpointSchema.parse({}).askUserQuestion).toBeUndefined();
@@ -2519,6 +2550,29 @@ describe('subagent activity policy', () => {
     ).toBe(false);
   });
 });
+
+it.each([
+  { baseMs: 100, maxMs: 1000 },
+  { baseMs: 1000, maxMs: 600_000 },
+])('accepts bounded MCP receipt retry policy %j', (mcpReceiptRetry) => {
+  expect(
+    configSchema.safeParse({
+      version: '1.2.1',
+      interface: { schedules: { use: true, mcpReceiptRetry } },
+    }).success,
+  ).toBe(true);
+});
+it.each([{ baseMs: 1 }, { maxMs: 600001 }, { baseMs: 1000, maxMs: 500 }])(
+  'rejects invalid MCP receipt retry policy %j',
+  (mcpReceiptRetry) => {
+    expect(
+      configSchema.safeParse({
+        version: '1.2.1',
+        interface: { schedules: { use: true, mcpReceiptRetry } },
+      }).success,
+    ).toBe(false);
+  },
+);
 
 describe('conversation title ownership rollout', () => {
   it('defaults running rename off and accepts only an explicit deployment opt-in', () => {

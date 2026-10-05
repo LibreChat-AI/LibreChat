@@ -21,10 +21,10 @@ import {
   useUninstallToolCredentials,
 } from './hooks';
 import { useSkillsInfiniteQuery, useDeleteAgentAction } from '~/data-provider';
+import { setSubagentsEnabled, removeHandoffs } from './items/orchestration';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import { useRemoveMCPTool, useVisibleTools } from '~/hooks/MCP';
 import ToolsMarketplaceDialog from './ToolsMarketplaceDialog';
-import { removeOrchestration } from './items/orchestration';
 import { computeToggleAction } from './items/mutations';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers';
@@ -128,14 +128,14 @@ export default function ToolsSection({ agentId }: Props) {
         case 'configure':
           setDialogItem(item);
           break;
-        case 'orchestration-remove': {
-          const next = removeOrchestration(getValues('subagents'), getValues('edges'));
-          if (next.subagents) {
-            setValue('subagents', next.subagents, { shouldDirty: true });
-          }
-          setValue('edges', next.edges, { shouldDirty: true });
+        case 'subagents':
+          setValue('subagents', setSubagentsEnabled(getValues('subagents'), patch.enabled), {
+            shouldDirty: true,
+          });
           break;
-        }
+        case 'handoffs-remove':
+          setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
+          break;
         case 'builtin':
           setValue(patch.field as keyof AgentForm, patch.value as never, { shouldDirty: true });
           if (patch.field === AgentCapabilities.execute_code && patch.value === false) {
@@ -292,7 +292,7 @@ export default function ToolsSection({ agentId }: Props) {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_delete_action')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="text-left text-sm font-medium">
               {localize('com_ui_delete_action_confirm')}
@@ -317,7 +317,7 @@ export default function ToolsSection({ agentId }: Props) {
         <OGDialogTemplate
           showCloseButton={false}
           title={localize('com_ui_delete_tool')}
-          className="max-w-[450px]"
+          className="max-w-[28.125rem]"
           main={
             <Label className="text-left text-sm font-medium">
               {localize('com_ui_delete_tool_confirm')}
@@ -364,7 +364,7 @@ function SelectedSection({
         <label className="text-text-secondary block text-[11px] font-medium tracking-wide uppercase">
           {title}
           {badge != null && (
-            <span className="bg-surface-tertiary text-text-secondary ml-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tracking-normal normal-case">
+            <span className="bg-surface-tertiary text-text-secondary ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium tracking-normal normal-case">
               {badge}
             </span>
           )}

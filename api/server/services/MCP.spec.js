@@ -1778,6 +1778,13 @@ describe('User parameter passing tests', () => {
       await execution.attach(context, identity, 'invoke');
       const error = new ScheduledMCPPolicyError('consent_revoked', 'test-server', 'child');
       const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      let durable = false;
+      let completed = false;
+      const persist = jest.fn(async () => durable);
+      receipt.mockImplementationOnce((input) =>
+        require('@librechat/api').recordScheduledMCPToolAuthFailure(input, () => persist),
+      );
+
       require('~/models').getRoleByName.mockResolvedValue({
         permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
       });
@@ -1800,8 +1807,8 @@ describe('User parameter passing tests', () => {
       // Model/run metadata cannot replace the tool-construction identity.
       const expectedIdentity = { ...identity };
       identity.scheduleId = 'mutated';
-      await expect(
-        tool.func({}, undefined, {
+      const result = tool
+        .func({}, undefined, {
           configurable: {
             user,
             requestScopedConnections: createMCPRequestContext(),
@@ -1809,8 +1816,24 @@ describe('User parameter passing tests', () => {
           },
           metadata: { provider: 'openai', thread_id: 'scheduled-conversation', run_id: 'run' },
           toolCall: {},
-        }),
-      ).rejects.toBe(error);
+        })
+        .catch((failure) => {
+          completed = true;
+          return failure;
+        });
+      try {
+        const deadline = Date.now() + 2000;
+        while (persist.mock.calls.length === 0 && Date.now() < deadline)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(persist).toHaveBeenCalled();
+        expect(completed).toBe(false);
+        durable = true;
+        await expect(result).resolves.toBe(error);
+      } finally {
+        durable = true;
+        await result;
+      }
+
       expect(receipt).toHaveBeenCalledWith({
         error,
         identity: expectedIdentity,

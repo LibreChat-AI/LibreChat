@@ -24,6 +24,7 @@ import type {
 } from 'undici';
 import type { Socket } from 'net';
 import { createSSRFSafeUndiciConnect, resolveHostnameSSRF } from '~/auth';
+import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { MCPConnection } from '~/mcp/connection';
 
 type CustomFetch = (input: UndiciRequestInfo, init?: UndiciRequestInit) => Promise<UndiciResponse>;
@@ -684,6 +685,139 @@ async function createCrossOriginRedirectingServer(
     close: destroySockets,
   };
 }
+
+describe('scheduled dispatch authority across redirect hops', () => {
+  it('refreshes only live credentials on a healthy redirected catalog without changing routing', async () => {
+    const seen: Array<{ authorization?: string; route?: string }> = [];
+    let resolutions = 0;
+    const authorize = jest.fn(async () => ({
+      authorization: `Bearer occurrence-${++resolutions}`,
+    }));
+    const server = await createRawResponseServer((req, res) => {
+      seen.push({
+        authorization: req.headers.authorization,
+        route: req.headers['x-route'] as string,
+      });
+      res.writeHead(req.url === '/start' ? 307 : 200, { Location: '/target' });
+      res.end('{}');
+    });
+    const connection = new MCPConnection({
+      serverName: 'healthy-redirect',
+      serverConfig: { type: 'streamable-http', url: server.url },
+      resolveRequestHeaders: authorize,
+    });
+    try {
+      const fetch = connection['createFetchFunction'](
+        () => ({ 'X-Route': 'unchanged' }),
+        5000,
+        undefined,
+        undefined,
+        server.url,
+      );
+      const response = await fetch(new URL('start', server.url).href, {
+        method: 'POST',
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+      await response.body?.cancel();
+      expect(response.status).toBe(200);
+      expect(seen).toEqual([
+        { authorization: 'Bearer occurrence-1', route: 'unchanged' },
+        { authorization: 'Bearer occurrence-2', route: 'unchanged' },
+      ]);
+      expect(authorize).toHaveBeenCalledTimes(2);
+    } finally {
+      await connection.dispose();
+      await server.close();
+    }
+  });
+
+  it.each([307, 308] as const)(
+    'reauthorizes before a same-origin %s catalog dispatch',
+    async (status) => {
+      let allowed = true;
+      const paths: string[] = [];
+      const denial = new ScheduledMCPBearerError('consent_revoked', 'Files');
+      const authorize = jest.fn(async () => {
+        if (!allowed) throw denial;
+        return { authorization: 'Bearer occurrence' };
+      });
+      const server = await createRawResponseServer((req, res) => {
+        paths.push(req.url!);
+        if (req.url === '/start') {
+          allowed = false;
+          res.writeHead(status, { Location: '/target' });
+        } else res.writeHead(200);
+        res.end('{}');
+      });
+      const connection = new MCPConnection({
+        serverName: 'redirect-authority',
+        serverConfig: { type: 'streamable-http', url: server.url },
+        resolveRequestHeaders: authorize,
+      });
+      try {
+        const fetch = connection['createFetchFunction'](
+          () => ({ 'X-Route': 'unchanged' }),
+          5000,
+          undefined,
+          undefined,
+          server.url,
+        );
+        const attempt = fetch(new URL('start', server.url).href, {
+          method: 'POST',
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+        });
+        await expect(attempt).rejects.toBe(denial);
+        expect(paths).toEqual(['/start']);
+        expect(authorize).toHaveBeenCalledTimes(2);
+      } finally {
+        await connection.dispose();
+        await server.close();
+      }
+    },
+  );
+
+  it.each([307, 308] as const)(
+    'never automatically repeats tools/call through a %s redirect',
+    async (status) => {
+      const paths: string[] = [];
+      const authorize = jest.fn(async () => ({ authorization: 'Bearer occurrence' }));
+      const server = await createRawResponseServer((req, res) => {
+        paths.push(req.url!);
+        res.writeHead(req.url === '/start' ? status : 200, { Location: '/target' });
+        res.end('{}');
+      });
+      const connection = new MCPConnection({
+        serverName: 'redirect-no-replay',
+        serverConfig: { type: 'streamable-http', url: server.url },
+        resolveRequestHeaders: authorize,
+      });
+      try {
+        const fetch = connection['createFetchFunction'](
+          () => undefined,
+          5000,
+          undefined,
+          undefined,
+          server.url,
+        );
+        const response = await fetch(new URL('start', server.url).href, {
+          method: 'POST',
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'read' },
+          }),
+        });
+        await response.body?.cancel();
+        expect(response.status).toBe(status);
+        expect(paths).toEqual(['/start']);
+      } finally {
+        await connection.dispose();
+        await server.close();
+      }
+    },
+  );
+});
 
 describe('MCP SSRF protection – 307/308 redirect following', () => {
   let server: TestServer | undefined;

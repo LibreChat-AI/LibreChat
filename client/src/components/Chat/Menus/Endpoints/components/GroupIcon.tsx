@@ -1,6 +1,6 @@
 import React, { memo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
-import { ProviderIcon } from '@librechat/client';
+import { pxToRem, ProviderIcon } from '@librechat/client';
 import { resolveProviderId } from 'librechat-data-provider';
 import { EntityEndpointMark, isEntityEndpoint } from '~/components/Endpoints/EntityEndpointMark';
 import CustomIcon from '~/components/ui/CustomIcon';
@@ -21,7 +21,11 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
 
   if (isEntityEndpoint(iconURL)) {
     return (
-      <div className="relative" style={{ width: 20, height: 20, margin: '2px' }} title={groupName}>
+      <div
+        className="relative"
+        style={{ width: pxToRem(20), height: pxToRem(20), margin: pxToRem(2) }}
+        title={groupName}
+      >
         <EntityEndpointMark endpoint={iconURL} />
       </div>
     );
@@ -29,14 +33,17 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
 
   if (provider || !isImageURL(iconURL) || imageError) {
     return (
-      <div className="relative" style={{ width: 20, height: 20, margin: '2px' }}>
+      <div
+        className="relative"
+        style={{ width: pxToRem(20), height: pxToRem(20), margin: pxToRem(2) }}
+      >
         <ProviderIcon provider={provider} size={20} className="icon-md shrink-0" />
         {imageError && (
           <div
-            className="absolute flex items-center justify-center rounded-full bg-surface-destructive"
-            style={{ width: '14px', height: '14px', top: 0, right: 0 }}
+            className="bg-surface-destructive absolute flex items-center justify-center rounded-full"
+            style={{ width: pxToRem(14), height: pxToRem(14), top: 0, right: 0 }}
           >
-            <AlertCircle size={10} className="text-text-on-status" />
+            <AlertCircle className="text-text-on-status size-2.5" />
           </div>
         )}
       </div>
@@ -45,8 +52,8 @@ const GroupIcon: React.FC<GroupIconProps> = ({ iconURL, groupName }) => {
 
   return (
     <div
-      className="icon-md shrink-0 overflow-hidden rounded-full text-text-primary"
-      style={{ width: 20, height: 20 }}
+      className="icon-md text-text-primary shrink-0 overflow-hidden rounded-full"
+      style={{ width: pxToRem(20), height: pxToRem(20) }}
     >
       <CustomIcon
         src={iconURL}

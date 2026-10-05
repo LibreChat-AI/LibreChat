@@ -48,7 +48,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           key={source.link}
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
-            'h-[22px] w-[22px]',
+            'h-[1.375rem] w-[1.375rem]',
             i > 0 && '-ml-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
@@ -251,9 +251,9 @@ export default function WebSearch({
         </span>
         <div className="relative flex h-5 items-center gap-1.5">
           <Button
-            variant="ghost"
+            variant="disclosure"
             className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal hover:bg-transparent',
+              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal',
               /** This row is a status line, not a padded control: the shared
                *  recipe's color transition would turn its hover into a fade,
                *  and the chevron reveal beside it is deliberately instant. */
@@ -352,7 +352,7 @@ export default function WebSearch({
                 <div
                   className={cn(
                     toolPanelSpacingClassName,
-                    'border-border-light mt-1.5 max-h-[280px] overflow-y-auto rounded-lg border',
+                    'border-border-light mt-1.5 max-h-[17.5rem] overflow-y-auto rounded-lg border',
                   )}
                 >
                   {allSources.map((source, i) => {

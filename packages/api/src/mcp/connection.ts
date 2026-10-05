@@ -25,6 +25,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ClientCapabilities } from '@modelcontextprotocol/sdk/types.js';
 import type { TMCPAppOperationLimits } from 'librechat-data-provider';
 import type { MCPClientCapabilityProfile } from './capabilities';
+import type { MCPRequestScopeRunner } from './signal';
 import type { MCPOAuthTokens } from './oauth/types';
 import type * as t from './types';
 import {
@@ -33,7 +34,15 @@ import {
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isStandaloneSseConflict,
+  isMCPInitializationError,
 } from './errors';
+import {
+  withMCPRequestSignal,
+  getMCPDispatchSignal,
+  holdMCPRequestFailure,
+  outsideMCPRequestScope,
+  captureMCPRequestScope,
+} from './signal';
 import {
   createMCPAppSSEEventGuard,
   getMCPAppOperationLimits,
@@ -45,9 +54,11 @@ import { projectMCPAppRuntimeTarget, type MCPAppRuntimeTarget } from './apps/bin
 import { assertToolApprovalTransportEpoch } from '~/tools/approval';
 import { reserveMCPToolsChangedRevision } from './toolsChanged';
 import { runOutsideTracing } from '~/utils/tracing';
+import { MCPRequestQuiescedError } from './request';
+import { isOwnedAbortError } from '~/utils/errors';
 import { mediaTypeEssence } from '~/utils/headers';
 import { isAddressAllowed } from '~/auth/domain';
-import { withMCPRequestSignal } from './signal';
+import { awaitOboOperation } from './oauth/obo';
 import { withTimeout } from '~/utils/promise';
 import { RESOURCE_MIME_TYPE } from './apps';
 import { isOAuthServer } from './utils';
@@ -236,6 +247,24 @@ function getBodyText(body: unknown): string | null {
     return textDecoder.decode(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
   }
   return null;
+}
+
+function containsToolInvocation(body: unknown): boolean {
+  const text = getBodyText(body);
+  if (!text) return false;
+  try {
+    const value: unknown = JSON.parse(text);
+    const messages: unknown[] = Array.isArray(value) ? value : [value];
+    return messages.some(
+      (message) =>
+        message != null &&
+        typeof message === 'object' &&
+        'method' in message &&
+        message.method === 'tools/call',
+    );
+  } catch {
+    return false;
+  }
 }
 
 function getJSONRPCRequestIds(body: unknown): JSONRPCRequestId[] {
@@ -1036,6 +1065,7 @@ const SSE_REQUEST_HEADERS = {
 };
 
 interface MCPConnectionParams {
+  resolveRequestHeaders?: t.MCPRequestHeaderResolver;
   serverName: string;
   serverConfig: t.MCPOptions;
   userId?: string;
@@ -1064,6 +1094,12 @@ export interface MCPToolsSnapshot {
   orderingUnavailable?: boolean;
 }
 
+/** Fatal initialization evidence cannot become a partial or optional catalog. */
+function requireToolsSnapshot(snapshot: MCPToolsSnapshot): MCPToolsSnapshot {
+  if (isMCPInitializationError(snapshot.authenticationError)) throw snapshot.authenticationError;
+  return snapshot;
+}
+
 export class MCPConnection extends EventEmitter {
   public client: Client;
   private options: t.MCPOptions;
@@ -1089,6 +1125,11 @@ export class MCPConnection extends EventEmitter {
   private transportCredentialSetId: string | null = null;
   private oauthTokens?: MCPOAuthTokens | null;
   private requestHeaders?: Record<string, string> | null;
+  private readonly resolveRequestHeaders?: t.MCPRequestHeaderResolver;
+  private readonly requestAuthorizationController?: AbortController;
+  private readonly requestAuthorization: { error?: unknown; closed: boolean } = { closed: false };
+  private readonly pendingRequests = new Set<Promise<unknown>>();
+  private readonly sdkRequestScopes = new Map<string | number, MCPRequestScopeRunner>();
   private oauthRequired = false;
   private oauthRecovery = false;
   private readonly useSSRFProtection: boolean;
@@ -1260,6 +1301,8 @@ export class MCPConnection extends EventEmitter {
   constructor(params: MCPConnectionParams) {
     super();
     this.options = params.serverConfig;
+    this.resolveRequestHeaders = params.resolveRequestHeaders;
+    if (this.resolveRequestHeaders) this.requestAuthorizationController = new AbortController();
     this.serverName = params.serverName;
     this.capabilityProfile = params.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
     this.operationLimits = params.operationLimits;
@@ -1321,6 +1364,16 @@ export class MCPConnection extends EventEmitter {
     const agents = this.agents;
     const logPrefix = this.getLogPrefix();
     const rejectDirectBearerAuthentication = this.directBearerRecoveryEnabled;
+    const authorizeHeaders = this.resolveRequestHeaders
+      ? this.authorizeRequestHeaders.bind(this)
+      : undefined;
+    const trackRequest = this.resolveRequestHeaders ? this.trackRequest.bind(this) : undefined;
+    const assertDispatch = this.resolveRequestHeaders
+      ? this.assertRequestDispatch.bind(this)
+      : undefined;
+    const reportRejection = this.resolveRequestHeaders?.recordFailure
+      ? this.failRequestAuthorization.bind(this)
+      : undefined;
     const thisAppProfile = this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE;
     const appOperationLimits = this.operationLimits;
     const effectiveTimeout = timeout || DEFAULT_TIMEOUT;
@@ -1393,10 +1446,10 @@ export class MCPConnection extends EventEmitter {
       }
     }
 
-    return async function customFetch(
+    const customFetch = async (
       input: UndiciRequestInfo,
       init?: UndiciRequestInit,
-    ): Promise<UndiciResponse> {
+    ): Promise<UndiciResponse> => {
       /**
        * Resolve the input shape upfront so the redirect loop can work with a
        * (string url, init) pair uniformly. When `input` is a `Request`, we
@@ -1406,17 +1459,25 @@ export class MCPConnection extends EventEmitter {
        * `Location` would otherwise drop the original method/body and turn a
        * redirected POST into a GET with no payload.
        */
+      const callerSignal = getMCPDispatchSignal();
       const { urlString, resolvedInit } = await resolveFetchInput(input, init);
 
       const isGet = (resolvedInit?.method ?? 'GET').toUpperCase() === 'GET';
       const requestHeaders = getHeaders();
+      const reauthorize =
+        authorizeHeaders && (resolvedInit?.method ?? 'GET').toUpperCase() !== 'DELETE';
+      const admissionSignal =
+        reauthorize && callerSignal
+          ? AbortSignal.any([callerSignal, ...(resolvedInit?.signal ? [resolvedInit.signal] : [])])
+          : (resolvedInit?.signal ?? undefined);
+      let credentialsStripped = false;
       /**
        * Headers that originated from user/server configuration — runtime
        * `setRequestHeaders` plus any keys baked into the transport at
        * construction time (e.g. `serverConfig.headers` API keys). All are
        * treated as credentials and stripped on cross-origin redirect.
        */
-      const secretHeaderKeys: ReadonlySet<string> = new Set([
+      const secretHeaderKeys = new Set([
         ...Object.keys(requestHeaders ?? {}).map((key) => key.toLowerCase()),
         ...(configuredSecretHeaderKeys ?? []),
       ]);
@@ -1437,13 +1498,34 @@ export class MCPConnection extends EventEmitter {
           useSSRFProtection,
           currentAllowedAddresses,
         );
+        if (reauthorize) {
+          const authorized = await authorizeHeaders(admissionSignal);
+          if (!credentialsStripped) {
+            for (const key of Object.keys(authorized ?? {}))
+              secretHeaderKeys.add(key.toLowerCase());
+            currentInit = buildFetchInit(
+              currentInit,
+              getRequestDispatcher(
+                isGet,
+                currentUrlString,
+                currentAllowedAddresses,
+                forceRedirectSSRFConnect,
+              ),
+              { ...getHeaders(), ...authorized },
+            );
+          }
+        }
+        // No await may separate this cutoff from network admission.
+        if (reauthorize) assertDispatch?.(admissionSignal);
         const response = await undiciFetch(currentUrlString, currentInit);
         if (
-          rejectDirectBearerAuthentication &&
+          (rejectDirectBearerAuthentication || (reportRejection && reauthorize)) &&
           (response.status === 401 || response.status === 403)
         ) {
           await response.body?.cancel().catch(() => undefined);
-          throw new MCPTransportAuthenticationError(response.status);
+          const error = new MCPTransportAuthenticationError(response.status);
+          if (reportRejection && reauthorize) return reportRejection(error);
+          throw error;
         }
         const isMethodPreservingRedirect = response.status === 307 || response.status === 308;
         const responseContext = {
@@ -1455,7 +1537,12 @@ export class MCPConnection extends EventEmitter {
           operationLimits: appOperationLimits,
         };
 
-        if (!isMethodPreservingRedirect || redirects >= MAX_REDIRECTS) {
+        // A redirected tool request is another dispatch, not proof the first was inert.
+        if (
+          !isMethodPreservingRedirect ||
+          redirects >= MAX_REDIRECTS ||
+          (reauthorize && containsToolInvocation(currentInit.body))
+        ) {
           return guardStreamableHTTPResponses
             ? guardMCPStreamableHTTPResponse(response, responseContext)
             : response;
@@ -1492,6 +1579,7 @@ export class MCPConnection extends EventEmitter {
 
         await response.body?.cancel().catch(() => undefined);
 
+        if (isCrossOriginRedirect) credentialsStripped = true;
         if (isCrossOriginRedirect && currentInit.headers != null) {
           currentInit = {
             ...currentInit,
@@ -1537,6 +1625,84 @@ export class MCPConnection extends EventEmitter {
         currentUrlString = targetUrl.href;
       }
     };
+    return trackRequest
+      ? (input, init) => trackRequest(() => customFetch(input, init))
+      : customFetch;
+  }
+
+  private trackRequest<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.resolveRequestHeaders) return operation();
+    const request = operation();
+    this.pendingRequests.add(request);
+    void request.then(
+      () => this.pendingRequests.delete(request),
+      () => this.pendingRequests.delete(request),
+    );
+    return request;
+  }
+
+  private assertRequestDispatch(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+    if (this.requestAuthorization.closed) throw new MCPRequestQuiescedError();
+    this.requestAuthorizationController?.signal.throwIfAborted();
+    this.resolveRequestHeaders?.assertOpen?.();
+  }
+
+  private async authorizeRequestHeaders(
+    signal?: AbortSignal,
+  ): Promise<Record<string, string> | undefined> {
+    if (!this.resolveRequestHeaders) return;
+    try {
+      if (this.requestAuthorization.closed) throw new Error('MCP connection is closed');
+      const connectionSignal = this.requestAuthorizationController!.signal;
+      signal = signal ? AbortSignal.any([signal, connectionSignal]) : connectionSignal;
+      signal.throwIfAborted();
+      // Detach this waiter only; shared mints retain their occurrence-owned signal.
+      const headers = await awaitOboOperation(
+        this.resolveRequestHeaders(signal, (error) => this.stopRequestAuthorization(error)),
+        signal,
+      );
+      signal.throwIfAborted();
+      if (this.requestAuthorization.closed) throw new Error('MCP connection is closed');
+      return headers;
+    } catch (error) {
+      if (isOwnedAbortError(error, signal)) throw error;
+      return this.failRequestAuthorization(error);
+    }
+  }
+
+  private stopRequestAuthorization(error: unknown): void {
+    this.requestAuthorization.error = error;
+    this.shouldStopReconnecting = true;
+  }
+
+  private failRequestAuthorization(error: unknown): Promise<never> {
+    // Stop retries before receipt admission waits; failure evidence outlives SDK deadlines.
+    this.stopRequestAuthorization(error);
+    const failure = (async () => {
+      try {
+        if (this.resolveRequestHeaders?.recordFailure)
+          await this.resolveRequestHeaders.recordFailure(error);
+      } catch (reported) {
+        this.requestAuthorization.error = reported;
+        throw reported;
+      }
+      throw error;
+    })();
+    if (
+      this.resolveRequestHeaders?.recordFailure &&
+      (isMCPInitializationError(error) || isMCPTransportAuthenticationError(error))
+    )
+      holdMCPRequestFailure(failure);
+    return failure;
+  }
+
+  /** Owns only this SDK request's caller cutoff and admission, never a connection-global error. */
+  public withRequestSignal<T>(
+    signal: AbortSignal | undefined,
+    request: (signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T> {
+    return withMCPRequestSignal(signal, request, this.resolveRequestHeaders != null);
   }
 
   private emitError(_error: unknown, errorContext: string): void {
@@ -1669,65 +1835,88 @@ export class MCPConnection extends EventEmitter {
               signal: abortController.signal,
             },
             eventSourceInit: {
-              fetch: async (url, init) => {
-                const { urlString, resolvedInit } = await resolveFetchInput(
-                  url as UndiciRequestInfo,
-                  init as UndiciRequestInit,
-                );
-                await assertProxiedRequestTargetAllowed(
-                  urlString,
-                  this.proxyConfig,
-                  this.useSSRFProtection,
-                  this.allowedAddresses,
-                );
-                /** Merge headers: SSE defaults < init headers < user headers (user wins) */
-                const fetchHeaders = Object.assign(
-                  {},
-                  SSE_REQUEST_HEADERS,
-                  resolvedInit?.headers,
-                  headers,
-                );
-                const liveHeaders = this.directBearerRecoveryEnabled
-                  ? this.getRequestHeaders()
-                  : undefined;
-                if (liveHeaders) {
-                  for (const key of Object.keys(fetchHeaders)) {
-                    const normalized = key.toLowerCase();
-                    if (
-                      sseConfiguredSecretHeaderKeys.has(normalized) &&
-                      liveHeaders[normalized] != null
-                    ) {
-                      delete fetchHeaders[key];
-                      fetchHeaders[normalized] = liveHeaders[normalized];
+              fetch: (url, init) =>
+                this.trackRequest(async () => {
+                  const callerSignal = getMCPDispatchSignal();
+                  const { urlString, resolvedInit } = await resolveFetchInput(
+                    url as UndiciRequestInfo,
+                    init as UndiciRequestInit,
+                  );
+                  await assertProxiedRequestTargetAllowed(
+                    urlString,
+                    this.proxyConfig,
+                    this.useSSRFProtection,
+                    this.allowedAddresses,
+                  );
+                  /** Merge headers: SSE defaults < init headers < user headers (user wins) */
+                  const fetchHeaders = Object.assign(
+                    {},
+                    SSE_REQUEST_HEADERS,
+                    resolvedInit?.headers,
+                    headers,
+                  );
+                  const admissionSignal = callerSignal
+                    ? AbortSignal.any([
+                        callerSignal,
+                        ...(resolvedInit?.signal ? [resolvedInit.signal] : []),
+                      ])
+                    : (resolvedInit?.signal ?? undefined);
+                  const authorized = this.resolveRequestHeaders
+                    ? await this.authorizeRequestHeaders(admissionSignal)
+                    : undefined;
+                  let liveHeaders = this.directBearerRecoveryEnabled
+                    ? this.getRequestHeaders()
+                    : undefined;
+                  if (authorized) liveHeaders = { ...this.getRequestHeaders(), ...authorized };
+                  if (liveHeaders) {
+                    for (const key of Object.keys(fetchHeaders)) {
+                      const normalized = key.toLowerCase();
+                      if (
+                        sseConfiguredSecretHeaderKeys.has(normalized) &&
+                        liveHeaders[normalized] != null
+                      ) {
+                        delete fetchHeaders[key];
+                        fetchHeaders[normalized] = liveHeaders[normalized];
+                      }
                     }
                   }
-                }
-                const response = await undiciFetch(urlString, {
-                  ...resolvedInit,
-                  redirect: 'manual',
-                  dispatcher: getSSEDispatcher(urlString),
-                  headers: fetchHeaders,
-                });
-                return this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
-                  ? guardMCPStreamableHTTPResponse(response, {
-                      logPrefix: this.getLogPrefix(),
-                      method: 'GET',
-                      url: urlString,
-                      appProfile: true,
-                      operationLimits: this.operationLimits,
-                      onAppSSEOverflow: () => {
-                        // Let the SDK observe its stream error and reject an in-flight start before
-                        // closing EventSource. Closing synchronously leaves start() pending forever.
-                        // A short bounded grace also prevents the SDK's automatic retry loop.
-                        const stop = setTimeout(() => {
-                          abortController.abort();
-                          void transport.close().catch(() => undefined);
-                        }, 30);
-                        stop.unref?.();
-                      },
-                    })
-                  : response;
-              },
+                  const requestInit: UndiciRequestInit = {
+                    ...resolvedInit,
+                    redirect: 'manual',
+                    dispatcher: getSSEDispatcher(urlString),
+                    headers: fetchHeaders,
+                  };
+                  if (this.resolveRequestHeaders) this.assertRequestDispatch(admissionSignal);
+                  const response = await undiciFetch(urlString, requestInit);
+                  if (
+                    this.resolveRequestHeaders?.recordFailure &&
+                    (response.status === 401 || response.status === 403)
+                  ) {
+                    await response.body?.cancel().catch(() => undefined);
+                    return this.failRequestAuthorization(
+                      new MCPTransportAuthenticationError(response.status),
+                    );
+                  }
+                  return this.capabilityProfile === MCP_APPS_CAPABILITY_PROFILE
+                    ? guardMCPStreamableHTTPResponse(response, {
+                        logPrefix: this.getLogPrefix(),
+                        method: 'GET',
+                        url: urlString,
+                        appProfile: true,
+                        operationLimits: this.operationLimits,
+                        onAppSSEOverflow: () => {
+                          // Let the SDK observe its stream error and reject an in-flight start before
+                          // closing EventSource. Closing synchronously leaves start() pending forever.
+                          // A short bounded grace also prevents the SDK's automatic retry loop.
+                          const stop = setTimeout(() => {
+                            abortController.abort();
+                            void transport.close().catch(() => undefined);
+                          }, 30);
+                          stop.unref?.();
+                        },
+                      })
+                    : response;
+                }),
             },
             fetch: this.createFetchFunction(
               this.getRequestHeaders.bind(this),
@@ -1964,7 +2153,8 @@ export class MCPConnection extends EventEmitter {
       await this.settlesBefore(refresh, undefined, signal);
       signal.throwIfAborted();
     }
-    return (await refresh) ?? this.suspendedToolListSnapshot;
+    const snapshot = (await refresh) ?? this.suspendedToolListSnapshot;
+    return snapshot && requireToolsSnapshot(snapshot);
   }
 
   private clearToolListRefreshRetry(): void {
@@ -2024,7 +2214,7 @@ export class MCPConnection extends EventEmitter {
       const snapshot: MCPToolsSnapshot =
         this.client.getServerCapabilities()?.tools == null
           ? { tools: [], complete: true, ...(await this.reserveToolsPublicationRevision()) }
-          : await this.fetchToolsSnapshot(undefined, signal);
+          : await this.readToolsSnapshot(undefined, signal);
       if (signal?.aborted) {
         if (this.toolListRefreshEpoch === refreshEpoch) {
           this.toolListRefreshSuspended = true;
@@ -2041,7 +2231,11 @@ export class MCPConnection extends EventEmitter {
       }
       /** Publishing unordered would drop this catalog silently; retry until it can be ordered. */
       if (!snapshot.complete || snapshot.orderingUnavailable) {
-        if (snapshot.authenticationError && this.directBearerRecoveryEnabled) {
+        if (
+          snapshot.authenticationError &&
+          (isMCPInitializationError(snapshot.authenticationError) ||
+            this.directBearerRecoveryEnabled)
+        ) {
           /** Keep the stopped queue's outcome available to an owner arriving after settlement. */
           this.suspendedToolListSnapshot = snapshot;
           this.toolListRefreshSuspended = true;
@@ -2148,6 +2342,12 @@ export class MCPConnection extends EventEmitter {
       } catch (error) {
         if (this.isDisposed) {
           throw error;
+        }
+        if (this.requestAuthorization.error !== undefined) {
+          this.lastConnectionCheckError = this.requestAuthorization.error;
+          this.connectionState = 'error';
+          this.emit('connectionChange', 'error');
+          throw this.requestAuthorization.error;
         }
         // Check if it's a rate limit error - stop immediately to avoid making it worse
         if (this.isRateLimitError(error)) {
@@ -2304,17 +2504,37 @@ export class MCPConnection extends EventEmitter {
         this.lastPingTime = Date.now();
       }
       const method = 'method' in msg ? msg.method : undefined;
+      const id = 'id' in msg ? msg.id : undefined;
+      if (
+        this.resolveRequestHeaders &&
+        method &&
+        (typeof id === 'string' || typeof id === 'number')
+      ) {
+        const scope: MCPRequestScopeRunner | undefined = captureMCPRequestScope(() => {
+          if (this.sdkRequestScopes.get(id) === scope) this.sdkRequestScopes.delete(id);
+        });
+        if (scope) this.sdkRequestScopes.set(id, scope);
+      }
+      if ('method' in msg && msg.method === 'notifications/cancelled' && msg.params) {
+        const cancelledId = msg.params.requestId;
+        if (typeof cancelledId === 'string' || typeof cancelledId === 'number') {
+          const scope = this.sdkRequestScopes.get(cancelledId);
+          if (scope) return scope(() => originalSend(msg));
+        }
+      }
       if (method === 'tools/call') {
         await assertToolApprovalTransportEpoch(
           this.serverName,
           this.oauthTokens?.credential_set_id ?? null,
         );
       }
-      const id = 'id' in msg ? (msg as { id: string | number | null }).id : undefined;
       logger.debug(
         `${this.getLogPrefix()} Transport sending: method=${method ?? 'response'} id=${id ?? 'none'}`,
       );
-      return originalSend(msg);
+      // Only initialization opens an autonomous stream; cancellation retains its caller cutoff.
+      return method === 'notifications/initialized'
+        ? outsideMCPRequestScope(() => originalSend(msg))
+        : originalSend(msg);
     };
   }
 
@@ -2359,6 +2579,10 @@ export class MCPConnection extends EventEmitter {
     this.transportCredentialSetId = transportCredentialSetId;
 
     transport.onerror = (error) => {
+      if (this.resolveRequestHeaders && isOwnedAbortError(error, getMCPDispatchSignal())) {
+        logger.debug(`${this.getLogPrefix()} Request cancelled before dispatch`);
+        return;
+      }
       const rawMessage =
         error && typeof error === 'object' ? ((error as { message?: string }).message ?? '') : '';
 
@@ -2532,6 +2756,16 @@ export class MCPConnection extends EventEmitter {
   }
 
   public async disconnect(resetCycleTracking = true, forceAgentClose = false): Promise<void> {
+    let failure: unknown;
+    try {
+      // Include dispatches whose rejection arrives after the completion cutoff.
+      if (this.requestAuthorization.closed) {
+        while (this.pendingRequests.size > 0) await Promise.allSettled(this.pendingRequests);
+      }
+      if (this.resolveRequestHeaders?.settle) await this.resolveRequestHeaders.settle();
+    } catch (error) {
+      failure = error;
+    }
     this.toolListRefreshEpoch++;
     this.suspendedToolListSnapshot = undefined;
     this.toolListRefreshSuspended = true;
@@ -2542,23 +2776,28 @@ export class MCPConnection extends EventEmitter {
         await this.client.close();
         this.transport = null;
       }
-      await this.closeAgents(forceAgentClose);
-      if (this.connectionState === 'disconnected') {
-        return;
+      if (this.connectionState !== 'disconnected') {
+        this.connectionState = 'disconnected';
+        this.emit('connectionChange', 'disconnected');
       }
-      this.connectionState = 'disconnected';
-      this.emit('connectionChange', 'disconnected');
+    } catch (error) {
+      failure ??= error;
     } finally {
+      await this.closeAgents(forceAgentClose);
       this.connectPromise = null;
-      if (!resetCycleTracking) {
-        this.recordCycle();
-      }
+      if (!resetCycleTracking) this.recordCycle();
     }
+    // Fenced evidence still fails, but cannot skip DELETE/client/dispatcher teardown.
+    if (failure != null) throw failure;
   }
 
   /** Permanently tears down a connection that will never be reused. */
   public async dispose(): Promise<void> {
     this.isDisposed = true;
+    this.requestAuthorization.closed = true;
+    // Failed-init teardown must cancel pre-dispatch waits before joining requests.
+    // Network responses and durable rejection admission keep their own drain barrier.
+    this.requestAuthorizationController?.abort(new MCPRequestQuiescedError());
     this.clearToolListRefreshRetry();
     this.shouldStopReconnecting = true;
     this.removeAllListeners();
@@ -2582,8 +2821,8 @@ export class MCPConnection extends EventEmitter {
    *
    * Pagination is bounded by {@link mcpConfig.TOOLS_LIST_MAX_PAGES}, aggregate
    * tool count, approximate serialized size, elapsed time, and a repeated-cursor
-   * guard. On error, the tools already fetched are returned rather than discarded,
-   * and the method never throws.
+   * guard. Transient failures preserve partial pages; fatal initialization
+   * failures propagate to the owning run.
    */
   async fetchTools(): Promise<MCPListToolsResult['tools']> {
     return (await this.fetchToolsSnapshot()).tools;
@@ -2601,6 +2840,14 @@ export class MCPConnection extends EventEmitter {
    * the SDK raises an abort from `request()` and the failed page ends pagination gracefully.
    */
   public async fetchToolsSnapshot(
+    deadlineMs?: number,
+    signal?: AbortSignal,
+  ): Promise<MCPToolsSnapshot> {
+    return requireToolsSnapshot(await this.readToolsSnapshot(deadlineMs, signal));
+  }
+
+  /** Refresh workers retain failure evidence without publishing or retrying a fatal denial. */
+  private async readToolsSnapshot(
     deadlineMs?: number,
     signal?: AbortSignal,
   ): Promise<MCPToolsSnapshot> {
@@ -2651,8 +2898,25 @@ export class MCPConnection extends EventEmitter {
       let result: MCPListToolsResult;
       try {
         result = await this.listToolsPage(cursor, remainingMs, signal);
-      } catch (error) {
-        /** Request failed mid-pagination: return the pages already fetched instead of discarding them. */
+      } catch (cause) {
+        let error = cause;
+        if (
+          this.resolveRequestHeaders?.recordFailure &&
+          (isMCPInitializationError(error) || isMCPTransportAuthenticationError(error))
+        ) {
+          try {
+            await this.failRequestAuthorization(error);
+          } catch (reported) {
+            error = reported;
+          }
+        }
+        if (isMCPInitializationError(error)) {
+          // The SDK may stop the stream before refresh can retain this denial.
+          this.suspendedToolListSnapshot = snapshot(false, error);
+          this.toolListRefreshSuspended = true;
+          return this.suspendedToolListSnapshot;
+        }
+        /** Request failed mid-pagination: preserve partial pages for transient errors. */
         return snapshot(false, isMCPTransportAuthenticationError(error) ? error : undefined);
       }
 
@@ -2801,7 +3065,7 @@ export class MCPConnection extends EventEmitter {
       (deadlineMs == null || Date.now() < deadlineMs) &&
       this.suspendedToolListSnapshot
     ) {
-      return this.suspendedToolListSnapshot;
+      return requireToolsSnapshot(this.suspendedToolListSnapshot);
     }
 
     return { tools: [], complete: false };
@@ -2851,7 +3115,7 @@ export class MCPConnection extends EventEmitter {
     signal?: AbortSignal,
   ): Promise<MCPListToolsResult> {
     try {
-      return await withMCPRequestSignal(signal, (requestSignal) =>
+      return await this.withRequestSignal(signal, (requestSignal) =>
         this.client.listTools(cursor != null ? { cursor } : undefined, {
           timeout: timeoutMs,
           maxTotalTimeout: timeoutMs,
@@ -2906,7 +3170,7 @@ export class MCPConnection extends EventEmitter {
 
     try {
       // Try ping first as it's the lightest check
-      await withMCPRequestSignal(signal, (requestSignal) =>
+      await this.withRequestSignal(signal, (requestSignal) =>
         this.client.ping({ signal: requestSignal }),
       );
       return this.connectionState === 'connected';
@@ -2942,17 +3206,17 @@ export class MCPConnection extends EventEmitter {
 
         // If we have capabilities, try calling a supported method to verify connection
         if (capabilities?.tools) {
-          await withMCPRequestSignal(signal, (requestSignal) =>
+          await this.withRequestSignal(signal, (requestSignal) =>
             this.client.listTools(undefined, { signal: requestSignal }),
           );
           return this.connectionState === 'connected';
         } else if (capabilities?.resources) {
-          await withMCPRequestSignal(signal, (requestSignal) =>
+          await this.withRequestSignal(signal, (requestSignal) =>
             this.client.listResources(undefined, { signal: requestSignal }),
           );
           return this.connectionState === 'connected';
         } else if (capabilities?.prompts) {
-          await withMCPRequestSignal(signal, (requestSignal) =>
+          await this.withRequestSignal(signal, (requestSignal) =>
             this.client.listPrompts(undefined, { signal: requestSignal }),
           );
           return this.connectionState === 'connected';

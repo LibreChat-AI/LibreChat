@@ -14,7 +14,8 @@ interface Props {
 
 export default function ItemDialog({ item, agentId, onClose }: Props) {
   const [portalElement, setPortalElement] = useState<HTMLDivElement | null>(null);
-  const isOrchestration = item?.kind === 'builtin' && item.id === 'orchestration';
+  const isOrchestration =
+    item?.kind === 'builtin' && (item.id === 'subagents' || item.id === 'handoffs');
   const isAction = item?.kind === 'action';
   return (
     <OGDialog open={item !== null} onOpenChange={(next) => !next && onClose()}>
@@ -23,7 +24,7 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
         className={cn(
           'w-11/12 gap-0 rounded-2xl p-0 md:max-h-[85dvh]',
           isOrchestration ? 'overflow-visible' : 'overflow-hidden',
-          isAction ? 'max-w-5xl' : 'max-w-[560px]',
+          isAction ? 'max-w-5xl' : 'max-w-[35rem]',
         )}
         data-testid="item-dialog"
       >

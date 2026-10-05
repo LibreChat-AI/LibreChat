@@ -143,8 +143,8 @@ export default function BuiltinSection({
 
   let body: React.ReactNode = null;
 
-  if (builtinId === 'orchestration') {
-    body = <OrchestrationHub currentAgentId={agentId} />;
+  if (builtinId === 'subagents' || builtinId === 'handoffs') {
+    body = <OrchestrationHub currentAgentId={agentId} tool={builtinId} />;
   } else if (builtinId === 'execute_code') {
     body = (
       <div className="flex flex-col gap-4">
@@ -176,7 +176,9 @@ export default function BuiltinSection({
   }
 
   const localizedDescription =
-    description && builtinId !== 'orchestration' ? localize(description as TranslationKeys) : '';
+    description && builtinId !== 'subagents' && builtinId !== 'handoffs'
+      ? localize(description as TranslationKeys)
+      : '';
 
   return (
     <div className="flex flex-col gap-5">
