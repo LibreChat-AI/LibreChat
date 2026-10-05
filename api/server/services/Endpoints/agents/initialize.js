@@ -1612,28 +1612,29 @@ const initializeClientWithProvider = async ({
               description: metadata.description,
               codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
               subagentHostArgs: metadata.subagentHostArgs,
-              resolve: async (context) => {
-                const config = await initializeLazySubagent({
-                  agentId: metadata.id,
-                  configId: metadata.configId,
-                  context,
-                  lazyChildren,
-                  codeFlags: metadata.subagentCodeFlags,
-                  codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
-                });
-                config.subagentAgentConfigs = eagerChildren;
-                if (!subagentCodeRouting.isRouted(context.executionId)) {
-                  graphMemberConfigsById.set(config.id, config);
-                }
-                await resolveGraphSubagentsFor(
-                  config,
-                  context.signal,
-                  subagentCodeRouting.routesChildren(context.executionId)
-                    ? context.executionId
-                    : undefined,
-                );
-                return config;
-              },
+              resolve: (context) =>
+                subagentCodeRouting.settleExecution(context, async () => {
+                  const config = await initializeLazySubagent({
+                    agentId: metadata.id,
+                    configId: metadata.configId,
+                    context,
+                    lazyChildren,
+                    codeFlags: metadata.subagentCodeFlags,
+                    codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
+                  });
+                  config.subagentAgentConfigs = eagerChildren;
+                  if (!subagentCodeRouting.isRouted(context.executionId)) {
+                    graphMemberConfigsById.set(config.id, config);
+                  }
+                  await resolveGraphSubagentsFor(
+                    config,
+                    context.signal,
+                    subagentCodeRouting.routesChildren(context.executionId)
+                      ? context.executionId
+                      : undefined,
+                  );
+                  return config;
+                }),
             }),
           },
           metadata,

@@ -471,6 +471,15 @@ export interface SubagentCodeRouting<TContext> {
     placement: SubagentCodePlacement<T>,
     initialization: Promise<TConfig>,
   ): Promise<TConfig>;
+  /**
+   * Runs one lazy child's whole resolution. The routes it and the graph members it
+   * initialized hold become permanent only when it succeeds, and are given back
+   * (unless another execution holds them) when it fails.
+   */
+  settleExecution<TConfig>(
+    context: Pick<SubagentCodeCallContext, 'executionId'> | null | undefined,
+    resolve: () => Promise<TConfig>,
+  ): Promise<TConfig>;
 }
 
 function throwIfCanceled(signal?: AbortSignal): void {
@@ -509,34 +518,64 @@ export function createSubagentCodeRouting<TContext>({
    * no call may move a subagent off the machine an earlier call settled on.
    */
   const routeByAgent = new Map<string, RouteClaim>();
-  /** Placements holding a claim until they attach or are given back. */
-  const holds = new WeakMap<object, { agentId: string; stopWatching: () => void }>();
-  const conflicts = (agentId: string, environmentId: string | null): boolean => {
-    const claimed = routeByAgent.get(agentId);
-    return claimed != null && claimed.environmentId !== environmentId;
-  };
-  const release = (placement: object): void => {
-    const hold = holds.get(placement);
-    if (hold == null) {
+  /** Placements holding a claim until they are committed or given back. */
+  const holds = new WeakMap<
+    object,
+    { agentId: string; executions: readonly string[]; stopWatching: () => void }
+  >();
+  /** Pending placements by the execution whose resolution decides them. */
+  const holdsByExecution = new Map<string, Set<object>>();
+  /** Ends a placement's hold, keeping its claim when `keep` is true. */
+  const endHold = (placement: object, keep: boolean): void => {
+    const held = holds.get(placement);
+    if (held == null) {
       return;
     }
     holds.delete(placement);
-    hold.stopWatching();
-    const claimed = routeByAgent.get(hold.agentId);
+    held.stopWatching();
+    for (const executionId of held.executions) {
+      const pending = holdsByExecution.get(executionId);
+      pending?.delete(placement);
+      if (pending?.size === 0) {
+        holdsByExecution.delete(executionId);
+      }
+    }
+    const claimed = routeByAgent.get(held.agentId);
     if (claimed == null || claimed.committed) {
+      return;
+    }
+    if (keep) {
+      claimed.committed = true;
       return;
     }
     claimed.holders -= 1;
     if (claimed.holders <= 0) {
-      routeByAgent.delete(hold.agentId);
+      routeByAgent.delete(held.agentId);
     }
   };
-  /** Claims (or joins) a subagent's one route for a placement until it attaches or fails. */
+  const release = (placement: object): void => endHold(placement, false);
+  const commit = (placement: object): void => endHold(placement, true);
+  const settleHoldsOf = (executionId: string | undefined, keep: boolean): void => {
+    const pending = executionId == null ? undefined : holdsByExecution.get(executionId);
+    for (const placement of [...(pending ?? [])]) {
+      endHold(placement, keep);
+    }
+  };
+  const conflicts = (agentId: string, environmentId: string | null): boolean => {
+    const claimed = routeByAgent.get(agentId);
+    return claimed != null && claimed.environmentId !== environmentId;
+  };
+  /**
+   * Claims (or joins) a subagent's one route for a placement. A call's placement is
+   * decided by its own resolution and a routed graph member's by its parent's; a
+   * placement outside any call is committed when it attaches.
+   */
   const hold = <T extends SubagentCodeAgent>(
     placement: SubagentCodePlacement<T>,
     route: { environmentId: string | null; routed: boolean },
-    signal?: AbortSignal,
+    context?: SubagentCodeCallContext | null,
   ): SubagentCodePlacement<T> => {
+    const signal = context?.signal;
     const agentId = placement.agent.id;
     const claimed = routeByAgent.get(agentId);
     if (claimed == null) {
@@ -547,23 +586,20 @@ export function createSubagentCodeRouting<TContext>({
     }
     const onAbort = (): void => release(placement);
     signal?.addEventListener('abort', onAbort, { once: true });
+    const executions = [context?.executionId, context?.parentRunId].filter(
+      (executionId): executionId is string => executionId != null && executionId !== '',
+    );
+    for (const executionId of executions) {
+      const pending = holdsByExecution.get(executionId) ?? new Set<object>();
+      pending.add(placement);
+      holdsByExecution.set(executionId, pending);
+    }
     holds.set(placement, {
       agentId,
+      executions,
       stopWatching: () => signal?.removeEventListener('abort', onAbort),
     });
     return placement;
-  };
-  const commit = (placement: object): void => {
-    const held = holds.get(placement);
-    if (held == null) {
-      return;
-    }
-    holds.delete(placement);
-    held.stopWatching();
-    const claimed = routeByAgent.get(held.agentId);
-    if (claimed != null) {
-      claimed.committed = true;
-    }
   };
   /** Live targets this request may place a subagent on per call. */
   const resolveTargets = async (params: SubagentCodeTargetParams): Promise<SubagentCodeTargets> => {
@@ -611,7 +647,7 @@ export function createSubagentCodeRouting<TContext>({
   const routeTo = <T extends SubagentCodeAgent>(
     agent: T,
     target: SubagentCodeTarget,
-    signal?: AbortSignal,
+    context?: SubagentCodeCallContext | null,
   ): SubagentCodePlacement<T> =>
     hold(
       {
@@ -620,7 +656,7 @@ export function createSubagentCodeRouting<TContext>({
         childEnvironmentId: target.environmentId,
       },
       { environmentId: target.environmentId, routed: true },
-      signal,
+      context,
     );
   /** The machine an omitted call should follow: this subagent's earlier per-call
    * route, else its routed parent's machine unless that would move it. */
@@ -665,7 +701,7 @@ export function createSubagentCodeRouting<TContext>({
               'unavailable',
             );
           }
-          return routeTo(agent, target, context?.signal);
+          return routeTo(agent, target, context);
         }
       }
       if (flags.statefulCodeSessions !== true) {
@@ -684,7 +720,7 @@ export function createSubagentCodeRouting<TContext>({
             ? undefined
             : targets.find((candidate) => candidate.environmentId === inherited);
         if (target != null) {
-          return routeTo(agent, target, context?.signal);
+          return routeTo(agent, target, context);
         }
         if (routeByAgent.get(agent.id)?.routed === true) {
           throw createSubagentHostArgumentError(SUBAGENT_MACHINE_ARG, 'unavailable');
@@ -698,7 +734,7 @@ export function createSubagentCodeRouting<TContext>({
       return hold(
         { agent },
         claimed ?? { environmentId: defaultRouteOf(agent, flags), routed: false },
-        context?.signal,
+        context,
       );
     },
     routesChildren(executionId) {
@@ -717,7 +753,9 @@ export function createSubagentCodeRouting<TContext>({
       if (executionId && placement.childEnvironmentId != null) {
         childRoutes.set(executionId, placement.childEnvironmentId);
       }
-      commit(placement);
+      if ((holds.get(placement)?.executions.length ?? 0) === 0) {
+        commit(placement);
+      }
       if (placement.target == null && !routeByAgent.has(agentId)) {
         routeByAgent.set(agentId, {
           environmentId: codeExecutionContext?.environmentId ?? null,
@@ -758,6 +796,16 @@ export function createSubagentCodeRouting<TContext>({
         return await initialization;
       } catch (error) {
         release(placement);
+        throw error;
+      }
+    },
+    async settleExecution(context, resolve) {
+      try {
+        const resolved = await resolve();
+        settleHoldsOf(context?.executionId, true);
+        return resolved;
+      } catch (error) {
+        settleHoldsOf(context?.executionId, false);
         throw error;
       }
     },

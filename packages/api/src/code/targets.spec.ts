@@ -656,19 +656,22 @@ describe('subagent code routing', () => {
     ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
   });
 
-  it('keeps a machine once a child on it has attached', async () => {
+  it('keeps a machine once the resolution that placed it succeeds', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);
     const controller = new AbortController();
     const routedCall = { ...call({ machine: 'buildbox' }), signal: controller.signal };
 
-    const placement = await routing.place({ agent: reviewer, flags, context: routedCall });
-    routing.attach(new Map(), {
-      agentId: reviewer.id,
-      context: routedCall,
-      placement,
-      codeExecutionContext: placement.target?.context,
-      toolContext: 'buildbox',
+    const placement = await routing.settleExecution(routedCall, async () => {
+      const placed = await routing.place({ agent: reviewer, flags, context: routedCall });
+      routing.attach(new Map(), {
+        agentId: reviewer.id,
+        context: routedCall,
+        placement: placed,
+        codeExecutionContext: placed.target?.context,
+        toolContext: 'buildbox',
+      });
+      return placed;
     });
     controller.abort();
     await expect(routing.settle(placement, Promise.reject(new Error('late')))).rejects.toThrow();
@@ -676,6 +679,46 @@ describe('subagent code routing', () => {
     await expect(
       routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
     ).rejects.toMatchObject({ argument: 'machine' });
+  });
+
+  it('gives back a child and its graph members when the rest of its resolution fails', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const member = { ...reviewer, id: 'agent_member' };
+    const routedCall = call({ machine: 'buildbox' });
+    const memberCall = {
+      executionId: `${routedCall.executionId}:graph:${member.id}`,
+      parentRunId: routedCall.executionId,
+    };
+    await expect(
+      routing.settleExecution(routedCall, async () => {
+        const placed = await routing.place({ agent: reviewer, flags, context: routedCall });
+        routing.attach(new Map(), {
+          agentId: reviewer.id,
+          context: routedCall,
+          placement: placed,
+          codeExecutionContext: placed.target?.context,
+          toolContext: 'buildbox',
+        });
+        const memberPlaced = await routing.place({ agent: member, flags, context: memberCall });
+        routing.attach(new Map(), {
+          agentId: member.id,
+          context: memberCall,
+          placement: memberPlaced,
+          codeExecutionContext: memberPlaced.target?.context,
+          toolContext: 'buildbox',
+        });
+        expect(memberPlaced.target?.environmentId).toBe('buildbox');
+        throw new Error('a graph member failed to load');
+      }),
+    ).rejects.toThrow('a graph member failed to load');
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
+    await expect(
+      routing.place({ agent: member, flags, context: call({ machine: 'laptop' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
   });
 
   it('gives back a machine whose initialization landed elsewhere', async () => {
