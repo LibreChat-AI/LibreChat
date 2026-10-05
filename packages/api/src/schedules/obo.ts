@@ -437,6 +437,12 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
     return { user, schedule, config, provider };
   };
 
+  const resourceBinding = (url: string): string =>
+    `urn:librechat:scheduled-obo-url:${createHmac('sha256', deps.previewKey!)
+      .update('scheduled-obo-resource-url-v1\0')
+      .update(url)
+      .digest('hex')}`;
+
   const credentialBinding = (authorized: Awaited<ReturnType<typeof validate>>): string =>
     JSON.stringify([
       authorized.user.openidId,
@@ -478,9 +484,10 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
     if (config.url !== target.url) throw missingGrant();
     const key = scheduledOboGrantKey(context.scheduleId, target.mcpServer);
     const identifier = getMCPOAuthTokenIdentifier(key, true);
+    const boundUrl = resourceBinding(target.url);
     const assertMetadata = (binding: Record<string, unknown>): void => {
       if (
-        binding.server_url !== target.url ||
+        binding.server_url !== boundUrl ||
         binding.issuer !== provider.issuer ||
         binding.token_endpoint !== provider.tokenEndpoint ||
         binding.openid_subject !== user.openidId ||
@@ -575,7 +582,7 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
     > = async (secret, stored, signal) => {
       if (
         !stored.credentialSetId ||
-        stored.storedServerUrl !== target.url ||
+        stored.storedServerUrl !== boundUrl ||
         stored.storedTokenEndpoint !== provider.tokenEndpoint ||
         stored.clientInfo?.client_id !== provider.clientId ||
         (stored.clientInfo as typeof stored.clientInfo & { scope?: string })?.scope !==
@@ -861,7 +868,7 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         issuer: provider.issuer,
         authorization_endpoint: provider.authorizationEndpoint,
         token_endpoint: provider.tokenEndpoint,
-        server_url: config.url!,
+        server_url: resourceBinding(config.url!),
         client_source: 'configured' as const,
         openid_subject: user.openidId,
         openid_issuer: user.openidIssuer,

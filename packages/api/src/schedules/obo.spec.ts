@@ -250,6 +250,76 @@ describe('separately authorized scheduled OBO grants', () => {
     ).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
   });
 
+  it('keeps sensitive resolved URL values out of all plaintext grant metadata without weakening exact-target renewal', async () => {
+    const { service, row, tokenStore, setServer, setVariables } = harness();
+    setServer({
+      ...config,
+      url: 'https://mcp.test/{{KEY}}?credential={{KEY}}',
+      customUserVars: { KEY: { title: 'Key', description: 'Credential', sensitive: true } },
+    });
+    setVariables({ KEY: 'private-persisted-url-key' });
+    const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await service.describeFromRequest(
+      { user, params: { id: row.id, server: 'Files' } } as unknown as ServerRequest,
+      response as unknown as Response,
+    );
+    const preview = response.json.mock.calls[0][0];
+    expect(JSON.stringify(preview)).not.toContain('private-persisted-url-key');
+    await service.enroll(user.id, row.id, 'Files', 'assertion', target.scopes, preview.binding);
+    const resolved =
+      'https://mcp.test/private-persisted-url-key?credential=private-persisted-url-key';
+    const assertPrivateMetadata = () => {
+      for (const record of tokenStore.getAll()) {
+        const metadata =
+          record.metadata instanceof Map ? Object.fromEntries(record.metadata) : record.metadata;
+        expect(JSON.stringify(metadata)).not.toContain('private-persisted-url-key');
+        const binding = metadata?.server_url;
+        if (binding) expect(binding).toMatch(/^urn:librechat:scheduled-obo-url:[a-f0-9]{64}$/);
+      }
+    };
+    assertPrivateMetadata();
+    row.enabled = true;
+    const provider = (await service.resolve(user, {
+      context,
+      target: { ...target, url: resolved },
+    }))!;
+    await expect(provider()).resolves.toMatchObject({ access_token: 'first' });
+    await expect(provider({ forceDownstreamRefresh: true })).resolves.toMatchObject({
+      access_token: 'fresh-after-12h',
+    });
+    assertPrivateMetadata();
+    setVariables({ KEY: 'changed-url-key' });
+    await expect(provider()).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
+    await service.revoke(user.id, row.id, 'Files');
+    expect(tokenStore.getAll()).toEqual([]);
+  });
+
+  it.each(['plaintext', 'different key'] as const)(
+    'requires re-enrollment for %s URL bindings while retaining cleanup',
+    async (changed) => {
+      const { service, deps, tokenStore, row } = harness();
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      const client = tokenStore.getAll().find((record) => record.type === 'mcp_oauth_client')!;
+      if (changed === 'plaintext')
+        await tokenStore.updateToken(
+          { userId: user.id, type: client.type, identifier: client.identifier },
+          { metadata: { ...client.metadata, server_url: config.url } },
+        );
+      const reader =
+        changed === 'different key'
+          ? createScheduledOboGrantService({ ...deps, previewKey: 'different-replica-key' })
+          : service;
+      const provider = (await reader.resolve(user, {
+        context: { ...context, manual: true },
+        target,
+      }))!;
+      await expect(provider()).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
+      await expect(reader.listEnrolled(user.id)).resolves.toEqual({ 'sched-1': ['Files'] });
+      await reader.revoke(user.id, row.id, 'Files');
+      expect(tokenStore.getAll()).toEqual([]);
+    },
+  );
+
   it('preserves ordinary OAuth credentials for a previously valid scheduled-looking server name', async () => {
     const { tokenStore, flow } = harness();
     const ordinary = {
@@ -2085,7 +2155,7 @@ describe('separately authorized scheduled OBO grants', () => {
       (await service.resolve(user, { context, target: { ...target, url: resolved } }))!(),
     ).resolves.toMatchObject({ access_token: 'first' });
     expect(tokenStore.getAll().find((r) => r.type === 'mcp_oauth_client')?.metadata).toMatchObject({
-      server_url: resolved,
+      server_url: expect.stringMatching(/^urn:librechat:scheduled-obo-url:[a-f0-9]{64}$/),
     });
     setVariables({ REGION: 'america' });
     await expect(provider()).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
