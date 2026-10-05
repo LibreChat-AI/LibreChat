@@ -26,15 +26,13 @@ const {
   getLazySubagentConfigId,
   createRoutedGraphMemberLoader,
   createViewableSubagentLoader,
-  resolveCodeExecutionContext,
+  resolveAgentCodeFlags,
+  resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceSelections,
-  optsOutOfAttachedCodeEnvironment,
-  isImplicitStatefulCodeRouteAvailable,
   resolveCodeExecutionWorkspaceContext,
   resolveSubagentCodeWorkspaceInheritance,
   resolveSubagentCodeAvailability,
   guardRoutableSubagent,
-  createStatefulCodeEnvironmentPolicyError,
   buildSubagentThreadTaskConfig,
   backgroundCompletionWakeupsEnabled,
   createLazyAgentHistoryResolver,
@@ -1151,6 +1149,7 @@ const initializeClientWithProvider = async ({
   });
 
   subagentCodeRouting = createSubagentCodeRouting({
+    codeEnvironmentMode: runtimeRequestBody?.codeEnvironmentMode,
     allowEnvironmentSelection:
       appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
     persistedSelections: admittedConversation?.codeWorkspaces,
@@ -1166,77 +1165,47 @@ const initializeClientWithProvider = async ({
     }),
   });
 
+  /** Inputs the shared per-agent code rule reads for a subagent in this request. */
+  const getSubagentCodeParams = (agent) => ({
+    agent,
+    requestBody: runtimeRequestBody,
+    conversation: admittedConversation,
+    codeExecutionAvailable: codeEnvAvailable === true,
+    statefulSessionsAvailable: statefulSessionsAvailable === true,
+    allowedStatefulCodeEnvironments,
+    allowEnvironmentSelection:
+      appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    inheritedEnvironments: req.codeWorkspaceInheritance,
+    environments: appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments,
+    userId,
+    conversationId,
+  });
+
   /** The code flags a lazy subagent runs with in this request. */
   const getSubagentCodeFlags = (agent) => {
-    const configuredCodeEnvironments =
-      appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments;
-    const attachedEnvironmentOptOut = optsOutOfAttachedCodeEnvironment(
-      agent,
-      runtimeRequestBody,
-      configuredCodeEnvironments,
-      isImplicitStatefulCodeRouteAvailable(
-        process.env.CODE_ENVIRONMENT_DECISION_VERSION,
-        process.env.LIBRECHAT_CODE_BASEURL_STATEFUL,
-      ),
-    );
-    const lazyCodeEnvAvailable =
-      codeEnvAvailable === true &&
-      agent.tools?.includes(Tools.execute_code) === true &&
-      !attachedEnvironmentOptOut;
-    const statefulCodeSessions =
-      statefulSessionsAvailable === true &&
-      lazyCodeEnvAvailable &&
-      agent.stateful_code_sessions === true &&
-      agent.tools?.includes(Tools.execute_code) === true;
-    const statefulCodeEnvironment = agent.stateful_code_environment ?? 'user';
-    if (
-      statefulCodeSessions &&
-      !allowedStatefulCodeEnvironments.includes(statefulCodeEnvironment)
-    ) {
-      throw createStatefulCodeEnvironmentPolicyError(statefulCodeEnvironment);
-    }
+    const flags = resolveAgentCodeFlags(getSubagentCodeParams(agent));
     return {
-      configuredCodeEnvironments,
-      lazyCodeEnvAvailable,
-      statefulCodeSessions,
-      statefulCodeEnvironment,
+      lazyCodeEnvAvailable: flags.codeEnvAvailable,
+      statefulCodeSessions: flags.statefulSessions,
+      statefulCodeEnvironment: flags.statefulCodeEnvironment,
     };
   };
 
   const toLazySubagentMetadata = async (agent) => {
-    const {
-      configuredCodeEnvironments,
-      lazyCodeEnvAvailable,
-      statefulCodeSessions,
-      statefulCodeEnvironment,
-    } = getSubagentCodeFlags(agent);
+    const { lazyCodeEnvAvailable, statefulCodeSessions, statefulCodeEnvironment } =
+      getSubagentCodeFlags(agent);
     const codeAvailability = await resolveSubagentCodeAvailability({
       agentId: agent.id,
       codeEnvAvailable: lazyCodeEnvAvailable,
       statefulCodeSessions,
       resolveContext: async () => {
         if (!lazyCodeEnvAvailable) return undefined;
+        const params = getSubagentCodeParams(agent);
         return resolveCodeExecutionWorkspaceContext({
-          context: resolveCodeExecutionContext({
-            statefulSessions: statefulCodeSessions,
-            environment: statefulCodeEnvironment,
-            environmentId: agent.code_environment_id,
-            environmentIds: agent.code_environment_ids,
-            allowEnvironmentSelection:
-              appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-            workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-              conversation: admittedConversation,
-              request: runtimeRequestBody,
-            }),
-            inheritedEnvironments: req.codeWorkspaceInheritance,
-            environments: configuredCodeEnvironments,
-            userId,
-            agentId: agent.id,
-            conversationId,
-          }),
+          context: resolveAgentCodeExecution(params).context,
           requestedSelections: runtimeRequestBody?.codeWorkspaces,
           persistedSelections: admittedConversation?.codeWorkspaces,
-          environments: configuredCodeEnvironments,
+          environments: params.environments,
           getAppConfig,
         });
       },

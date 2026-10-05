@@ -257,6 +257,9 @@ describe('subagent code targets', () => {
     await expect(
       resolveSubagentCodeTargets(params({ persistedSelections: 'tampered' })),
     ).resolves.toMatchObject({ targets: [] });
+    await expect(
+      resolveSubagentCodeTargets(params({ codeEnvironmentMode: 'without_attached' })),
+    ).resolves.toMatchObject({ targets: [] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -872,6 +875,23 @@ describe('subagent code routing', () => {
     await expect(
       routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
     ).rejects.toMatchObject({ argument: 'machine', rejection: 'not_allowed' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('offers and accepts no attached machine in a conversation that chose no workspace', async () => {
+    const fetchSpy = serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>({
+      ...request,
+      codeEnvironmentMode: 'without_attached',
+    });
+
+    await expect(routing.describe(reviewer, flags)).resolves.toEqual({});
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
+    ).rejects.toMatchObject({ argument: 'machine', rejection: 'not_allowed' });
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ workspace: 'agents' }) }),
+    ).rejects.toMatchObject({ argument: 'workspace', rejection: 'not_allowed' });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

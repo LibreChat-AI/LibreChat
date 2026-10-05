@@ -58,8 +58,8 @@ const {
   resolveAttachedWorkspaceAdmissionOptions,
   resolveAttachedWorkspaceRequestTimeoutMs,
   createContextProgrammaticBashTool,
-  resolveCodeExecutionContext,
-  resolveCodeExecutionWorkspaceSelections,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceContext,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
@@ -876,32 +876,21 @@ async function loadToolDefinitionsWrapper({
   /** Gates the sandbox everywhere it is reachable, not just the `execute_code`
    *  entry in `filteredTools`: this flag also drives tool classification and the
    *  programmatic bash tool, which would otherwise run code for a denied role. */
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
-  const baseCodeExecutionContext =
-    codeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions:
-        codeExecutionEnabled &&
-        enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-        agent.stateful_code_sessions === true,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: codeExecutionContext,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const resolvedCodeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -1810,34 +1799,22 @@ async function loadAgentTools({
     });
   }
 
-  const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
-    enabledCapabilities.has(AgentCapabilities.execute_code) &&
-    canUseTool(Tools.execute_code);
   const runtimeRequestBody = requestBody ?? req.body;
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-    agent.stateful_code_sessions === true;
-  const baseCodeExecutionContext =
-    providedCodeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions: statefulCodeSessions,
-      environment: agent.stateful_code_environment,
-      environmentId: agent.code_environment_id,
-      environmentIds: agent.code_environment_ids,
-      allowEnvironmentSelection:
-        req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-      workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-        conversation: req.resolvedConversation,
-        request: runtimeRequestBody,
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable:
+          enabledCapabilities.has(AgentCapabilities.execute_code) && canUseTool(Tools.execute_code),
+        statefulSessionsAvailable: enabledCapabilities.has(
+          AgentCapabilities.stateful_code_sessions,
+        ),
+        conversationId: runtimeRequestBody?.conversationId,
+        resolvedContext: providedCodeExecutionContext,
       }),
-      inheritedEnvironments: req.codeWorkspaceInheritance,
-      environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: runtimeRequestBody?.conversationId,
-    });
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
@@ -2244,7 +2221,7 @@ async function loadToolsForExecution({
   }
   /** Short-circuits before the role read, so an agent without `execute_code` or a
    *  deployment with the capability off pays nothing for the check. */
-  const codeExecutionEnabled =
+  const codeExecutionAllowed =
     enabledCapabilities?.has(AgentCapabilities.execute_code) === true &&
     agent?.tools?.includes(Tools.execute_code) === true &&
     (await checkToolRolePermission({
@@ -2255,30 +2232,22 @@ async function loadToolsForExecution({
       context: 'loadToolsForExecution',
     }));
 
-  /** Resolve the trusted endpoint/profile from the actually executing agent.
-   * This stays per-agent across handoffs and subagents; no graph-global stateful
-   * flag or model-supplied value is consulted. */
-  const statefulCodeSessions =
-    codeExecutionEnabled &&
-    enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true &&
-    agent?.stateful_code_sessions === true;
-  const baseCodeExecutionContext = resolveCodeExecutionContext({
-    statefulSessions: statefulCodeSessions,
-    environment: agent?.stateful_code_environment,
-    environmentId: agent?.code_environment_id,
-    environmentIds: agent?.code_environment_ids,
-    allowEnvironmentSelection:
-      req.config?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-      conversation: req.resolvedConversation,
-      request: runtimeRequestBody,
-    }),
-    inheritedEnvironments: req.codeWorkspaceInheritance,
-    environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-    userId: req.user.id,
-    agentId: agent?.id,
-    conversationId: conversationId ?? runtimeRequestBody?.conversationId,
-  });
+  /** Resolve the trusted endpoint/profile from the actually executing agent under the
+   * same per-agent rule as initialization, including the conversation's "No workspace"
+   * decision. This stays per-agent across handoffs and subagents; no graph-global
+   * stateful flag or model-supplied value is consulted. */
+  const { codeEnvAvailable: codeExecutionEnabled, context: baseCodeExecutionContext } =
+    resolveAgentCodeExecution(
+      withRequestCodeInputs({
+        req,
+        agent,
+        requestBody: runtimeRequestBody,
+        codeExecutionAvailable: codeExecutionAllowed,
+        statefulSessionsAvailable:
+          enabledCapabilities?.has(AgentCapabilities.stateful_code_sessions) === true,
+        conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+      }),
+    );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
