@@ -9,10 +9,20 @@ export function isHandoffEdge(edge: GraphEdge): boolean {
   return edge.edgeType !== 'direct' && !defaultDirect;
 }
 
-/** Disable orchestration without losing subagent settings or non-handoff edges. */
-export function removeOrchestration(subagents?: AgentSubagentsConfig, edges?: GraphEdge[]) {
+/** Persist the explicit flag while retaining the roster, graphs, and granular settings. */
+export function setSubagentsEnabled(
+  subagents: AgentSubagentsConfig | undefined,
+  enabled: boolean,
+): AgentSubagentsConfig {
   return {
-    subagents: subagents ? { ...subagents, enabled: false } : undefined,
-    edges: (edges ?? []).filter((edge) => !isHandoffEdge(edge)),
+    ...subagents,
+    enabled,
+    allowSelf: subagents?.allowSelf ?? true,
+    agent_ids: subagents?.agent_ids ?? [],
   };
+}
+
+/** Removing handoffs must leave unrelated direct edges intact. */
+export function removeHandoffs(edges?: GraphEdge[]): GraphEdge[] {
+  return (edges ?? []).filter((edge) => !isHandoffEdge(edge));
 }

@@ -23,8 +23,8 @@ const askInputs: BuildCatalogInputs = {
 };
 
 describe('buildCatalog', () => {
-  test('offers orchestration for always-available handoffs without the subagents capability', () => {
-    expect(buildCatalog(emptyInputs).map((item) => item.id)).toEqual(['orchestration']);
+  test('offers handoffs without the subagents capability', () => {
+    expect(buildCatalog(emptyInputs).map((item) => item.id)).toEqual(['handoffs']);
   });
 
   test('emits built-in items only for capabilities the admin enabled', () => {
@@ -35,18 +35,19 @@ describe('buildCatalog', () => {
       },
     });
     expect(items.filter((i) => i.kind === 'builtin').map((i) => i.id)).toEqual([
-      'orchestration',
+      'handoffs',
       AgentCapabilities.execute_code,
       AgentCapabilities.web_search,
     ]);
   });
 
-  test('offers exactly one orchestration item when subagents are enabled', () => {
+  test('offers two separate native tools when subagents are enabled', () => {
     const items = buildCatalog({
       ...emptyInputs,
       agentsConfig: { capabilities: [AgentCapabilities.subagents] },
     });
-    expect(items.map((item) => item.id)).toEqual(['orchestration']);
+    expect(items.map((item) => item.id)).toEqual(['subagents', 'handoffs']);
+    expect(items.map((item) => item.kind)).toEqual(['builtin', 'builtin']);
   });
 
   test('emits the memory builtin only when showMemory is set', () => {

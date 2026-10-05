@@ -14,7 +14,8 @@ interface Props {
 
 export default function ItemDialog({ item, agentId, onClose }: Props) {
   const [portalElement, setPortalElement] = useState<HTMLDivElement | null>(null);
-  const isOrchestration = item?.kind === 'builtin' && item.id === 'orchestration';
+  const isOrchestration =
+    item?.kind === 'builtin' && (item.id === 'subagents' || item.id === 'handoffs');
   const isAction = item?.kind === 'action';
   return (
     <OGDialog open={item !== null} onOpenChange={(next) => !next && onClose()}>

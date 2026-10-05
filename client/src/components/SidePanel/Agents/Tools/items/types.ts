@@ -22,7 +22,8 @@ export type BuiltinId =
    * in `selectors.ts` / `mutations.ts`.
    */
   | 'ask_user_question'
-  | 'orchestration';
+  | `${AgentCapabilities.subagents}`
+  | 'handoffs';
 
 export type AgentItemStatus = 'needs_setup';
 

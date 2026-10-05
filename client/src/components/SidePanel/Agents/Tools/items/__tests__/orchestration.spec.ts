@@ -1,18 +1,26 @@
 import type { AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 import type { FormSelection } from '../selectors';
 import type { AgentItem } from '../types';
-import { isHandoffEdge, removeOrchestration } from '../orchestration';
+import { isHandoffEdge, setSubagentsEnabled, removeHandoffs } from '../orchestration';
 import { hasConfigurableSettings } from '../configurable';
 import { deriveSelectedItems } from '../selectors';
 import { computeToggleAction } from '../mutations';
 
-const item: AgentItem = {
+const subagentItem: AgentItem = {
   kind: 'builtin',
-  id: 'orchestration',
+  id: 'subagents',
   name: '',
   description: '',
-  iconKey: 'orchestration',
+  iconKey: 'subagents',
 };
+const handoffItem: AgentItem = {
+  kind: 'builtin',
+  id: 'handoffs',
+  name: '',
+  description: '',
+  iconKey: 'handoffs',
+};
+const catalog = [subagentItem, handoffItem];
 const form: FormSelection = {
   execute_code: false,
   web_search: false,
@@ -33,28 +41,40 @@ const handoff: GraphEdge = {
 };
 const direct: GraphEdge = { from: 'parent', to: 'other', edgeType: 'direct' };
 
-test('derives the native item from existing subagent and handoff configurations', () => {
-  expect(deriveSelectedItems(form, [item], [])).toEqual([]);
-  expect(deriveSelectedItems({ ...form, subagents: { enabled: true } }, [item], [])).toEqual([
-    item,
+test('derives each native tool independently from stored configuration', () => {
+  expect(deriveSelectedItems(form, catalog, [])).toEqual([]);
+  expect(deriveSelectedItems({ ...form, subagents: { enabled: true } }, catalog, [])).toEqual([
+    subagentItem,
   ]);
-  expect(deriveSelectedItems({ ...form, edges: [handoff] }, [item], [])).toEqual([item]);
+  expect(deriveSelectedItems({ ...form, edges: [handoff] }, catalog, [])).toEqual([handoffItem]);
+  expect(
+    deriveSelectedItems({ ...form, subagents: { enabled: true }, edges: [handoff] }, catalog, []),
+  ).toEqual(catalog);
   expect(
     deriveSelectedItems(
       { ...form, edges: [direct], subagents: { enabled: false, agent_ids: ['child'] } },
-      [item],
+      catalog,
       [],
     ),
   ).toEqual([]);
 });
 
-test('adding opens settings instead of writing a bogus capability or plugin', () => {
-  expect(computeToggleAction(item, { selected: false })).toEqual({ type: 'configure' });
-  expect(computeToggleAction(item, { selected: true })).toEqual({ type: 'orchestration-remove' });
-  expect(hasConfigurableSettings(item)).toBe(true);
+test('toggles subagents and opens destination settings to add handoffs', () => {
+  expect(computeToggleAction(subagentItem, { selected: false })).toEqual({
+    type: 'subagents',
+    enabled: true,
+  });
+  expect(computeToggleAction(subagentItem, { selected: true })).toEqual({
+    type: 'subagents',
+    enabled: false,
+  });
+  expect(computeToggleAction(handoffItem, { selected: false })).toEqual({ type: 'configure' });
+  expect(computeToggleAction(handoffItem, { selected: true })).toEqual({ type: 'handoffs-remove' });
+  expect(hasConfigurableSettings(subagentItem)).toBe(true);
+  expect(hasConfigurableSettings(handoffItem)).toBe(true);
 });
 
-test('removal explicitly disables subagents and preserves their settings and unrelated edges', () => {
+test('subagent toggles preserve their complete settings and restore the retained roster', () => {
   const subagents: AgentSubagentsConfig = {
     enabled: true,
     allowSelf: false,
@@ -72,12 +92,15 @@ test('removal explicitly disables subagents and preserves their settings and unr
       },
     ],
   };
-  expect(removeOrchestration(subagents, [handoff, direct])).toEqual({
-    subagents: { ...subagents, enabled: false },
-    edges: [direct],
-  });
+  const disabled = setSubagentsEnabled(subagents, false);
+  expect(disabled).toEqual({ ...subagents, enabled: false });
   expect(subagents.enabled).toBe(true);
-  expect(removeOrchestration(undefined, [handoff])).toEqual({ subagents: undefined, edges: [] });
+  expect(setSubagentsEnabled(disabled, true)).toEqual(subagents);
+  expect(setSubagentsEnabled(undefined, true)).toEqual({
+    enabled: true,
+    allowSelf: true,
+    agent_ids: [],
+  });
 });
 
 test.each<[GraphEdge, boolean]>([
@@ -90,8 +113,16 @@ test.each<[GraphEdge, boolean]>([
   [{ from: 'parent', to: 'child', edgeType: 'direct' }, false],
 ])('matches runtime classification for %j', (edge, expected) => {
   expect(isHandoffEdge(edge)).toBe(expected);
-  expect(deriveSelectedItems({ ...form, edges: [edge] }, [item], [])).toEqual(
-    expected ? [item] : [],
+  expect(deriveSelectedItems({ ...form, edges: [edge] }, [handoffItem], [])).toEqual(
+    expected ? [handoffItem] : [],
   );
-  expect(removeOrchestration(undefined, [edge]).edges).toEqual(expected ? [] : [edge]);
+  expect(removeHandoffs([edge])).toEqual(expected ? [] : [edge]);
+});
+
+test('handoff removal retains all direct edges and does not mutate stored input', () => {
+  const implicitDirect: GraphEdge = { from: 'parent', to: ['left', 'right'] };
+  const edges = [handoff, direct, implicitDirect];
+  expect(removeHandoffs(edges)).toEqual([direct, implicitDirect]);
+  expect(edges).toHaveLength(3);
+  expect(removeHandoffs()).toEqual([]);
 });

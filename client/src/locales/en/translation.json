@@ -1115,8 +1115,6 @@
   "com_ui_agent_id_copy": "Copy agent ID",
   "com_ui_agent_name": "Agent name",
   "com_ui_agent_name_is_required": "Agent name is required",
-  "com_ui_agent_orchestration": "Multi-agent orchestration",
-  "com_ui_agent_orchestration_hint": "Choose how this agent works with other agents.",
   "com_ui_agent_recursion_limit": "Max Agent Steps",
   "com_ui_agent_recursion_limit_info": "Limits how many steps the agent can take in a run before giving a final response. Default is 25 steps. A step is either an AI API request or a tool usage round. For example, a basic tool interaction takes 3 steps: initial request, tool usage, and follow-up request.",
   "com_ui_agent_subagents": "Subagents",
