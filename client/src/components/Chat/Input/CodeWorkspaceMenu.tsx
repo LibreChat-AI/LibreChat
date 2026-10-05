@@ -182,6 +182,8 @@ function EnvironmentWorkspaces({
 }) {
   const localize = useLocalize();
   const owners = requiredBy?.map(({ id, name }) => name || id).join(', ');
+  const names = workspaces.map(({ id, name }) => name ?? id);
+  const sharedNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
   return (
     <div data-code-environment-id={environment.id}>
       <Ariakit.MenuHeading
@@ -200,10 +202,14 @@ function EnvironmentWorkspaces({
       )}
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
-        /** The id stands in when there is no repository to tell same-named workspaces apart. */
-        const source =
-          [descriptor.environment?.repo, descriptor.environment?.ref].filter(Boolean).join(' · ') ||
-          (descriptor.name != null && descriptor.name !== descriptor.id ? descriptor.id : '');
+        /** A sibling with the same name keeps its id visible, so the two rows never read alike. */
+        const source = [
+          descriptor.environment?.repo,
+          descriptor.environment?.ref,
+          sharedNames.has(descriptor.name ?? descriptor.id) ? descriptor.id : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ');
         return (
           <Fragment key={descriptor.id}>
             <Ariakit.MenuItemRadio

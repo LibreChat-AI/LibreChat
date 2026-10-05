@@ -513,11 +513,21 @@ describe('CodeWorkspaceMenu', () => {
     expect(graph.rememberSelection).not.toHaveBeenCalled();
   });
 
-  test('tells same-named workspaces apart by id when they have no repository', async () => {
+  test('tells same-named workspaces apart by id', async () => {
     const graph = workspace();
     graph.environments[0].workspaces = [
       { id: 'repo-main', name: 'Repo' },
-      { id: 'repo-fork', name: 'Repo' },
+      {
+        id: 'repo-fork',
+        name: 'Repo',
+        environment: { fingerprint: 'f', repo: 'org/repo', ref: 'main', actions: [] },
+      },
+      {
+        id: 'repo-copy',
+        name: 'Repo',
+        environment: { fingerprint: 'f', repo: 'org/repo', ref: 'main', actions: [] },
+      },
+      { id: 'solo', name: 'Solo' },
     ];
     renderMenu(
       <CodeWorkspaceMenu setConversation={jest.fn()} workspace={graph} disabled={false} />,
@@ -525,6 +535,9 @@ describe('CodeWorkspaceMenu', () => {
     await userEvent.click(screen.getByTestId('code-workspace'));
     expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-main/ })).toBeInTheDocument();
     expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-fork/ })).toBeInTheDocument();
+    expect(screen.getByRole('menuitemradio', { name: /Repo.*repo-copy/ })).toBeInTheDocument();
+    /** A unique name stays one compact line. */
+    expect(screen.getByRole('menuitemradio', { name: 'Solo' })).toBeInTheDocument();
   });
 
   test('hides Git context when continuing without an attached workspace', () => {
