@@ -292,10 +292,11 @@ type StoredCodeApprovalConversation = {
 
 /**
  * The approval mode a turn records on its conversation. A turn with attached targets records the
- * mode it validated. A turn without one makes no approval decision, so it keeps the mode the
- * conversation already stores (seeding it from the request only when none is stored): leaving a
- * workspace for a turn and returning keeps the reader's pick, which is validated again against
- * the targets of whichever later turn uses it. Omitting the key would `$unset` the stored mode.
+ * mode it validated. A turn without one makes no approval decision, so it records nothing new:
+ * it returns the mode the conversation already stores, since omitting the key would `$unset` it,
+ * and otherwise leaves the conversation without a mode so the composer keeps offering the
+ * reader's remembered pick. A kept mode grants nothing on its own and is validated again against
+ * the targets of whichever later turn uses it.
  */
 export function resolvePersistedCodeApprovalMode({
   requested,
@@ -318,10 +319,7 @@ export function resolvePersistedCodeApprovalMode({
     conversation != null && conversation.conversationId === conversationId
       ? conversation.codeApprovalMode
       : undefined;
-  if (isCodeApprovalMode(stored)) {
-    return stored;
-  }
-  return isCodeApprovalMode(requested) ? requested : undefined;
+  return isCodeApprovalMode(stored) ? stored : undefined;
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {

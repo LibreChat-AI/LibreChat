@@ -139,6 +139,14 @@ describe('AgentClient code approval persistence', () => {
     ).toMatchObject({ codeApprovalMode: 'acceptEdits' });
   });
 
+  it('records no mode for a chat without a workspace that stores none of its own', () => {
+    for (const requested of ['ask', 'fullAccess', undefined]) {
+      expect(noWorkspaceClient({ requested }).getSaveOptions()).not.toHaveProperty(
+        'codeApprovalMode',
+      );
+    }
+  });
+
   it('still rejects a value that is not an approval mode without a workspace', () => {
     expect(() =>
       noWorkspaceClient({ requested: 'unrestricted', stored: 'fullAccess' }).getSaveOptions(),

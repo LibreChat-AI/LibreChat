@@ -822,12 +822,12 @@ describe('approval mode without attached targets', () => {
       expect(persist(undefined, 'acceptEdits')).toBe('acceptEdits');
     });
 
-    test('seeds a valid requested mode only when nothing valid is stored for this chat', () => {
-      expect(persist('fullAccess')).toBe('fullAccess');
-      expect(persist('ask')).toBe('ask');
+    test('records no mode from the request when nothing valid is stored for this chat', () => {
+      expect(persist('fullAccess')).toBeUndefined();
+      expect(persist('ask')).toBeUndefined();
       expect(persist(undefined)).toBeUndefined();
-      expect(persist('acceptEdits', 'fullAccess', new Map(), 'other-convo')).toBe('acceptEdits');
-      expect(persist('acceptEdits', 'unrestricted')).toBe('acceptEdits');
+      expect(persist('acceptEdits', 'fullAccess', new Map(), 'other-convo')).toBeUndefined();
+      expect(persist('acceptEdits', 'unrestricted')).toBeUndefined();
       expect(() => persist('unrestricted', 'fullAccess')).toThrow('not permitted');
     });
 

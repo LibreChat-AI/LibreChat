@@ -248,12 +248,19 @@ describe('code approval mode across workspace choices', () => {
     expect(await saveTurn(userId, conversationId, undefined, attached)).toBeUndefined();
   });
 
-  it('records the first turn of a new chat without a workspace as it was sent', async () => {
+  it('leaves a new chat without a mode until a turn with a workspace validates one', async () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const conversationId = randomUUID();
 
-    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('ask');
+    /** The gated `ask` a current client sends must not replace the remembered pick the composer
+     *  offers a chat that stores no mode of its own. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBeUndefined();
     expect(await saveTurn(userId, randomUUID(), undefined, [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'acceptEdits', [['terra', permissive]])).toBe(
+      'acceptEdits',
+    );
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('acceptEdits');
   });
 });
 
