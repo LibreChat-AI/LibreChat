@@ -1,5 +1,6 @@
 import {
   parseConvo,
+  getSpeechText,
   parseTextParts,
   parseCompactConvo,
   replaceSpecialVars,
@@ -593,6 +594,51 @@ describe('parseCompactConvo - defaultParamsEndpoint', () => {
     expect(result).not.toBeNull();
     expect(result?.max_tokens).toBe(4096);
     expect(result?.maxOutputTokens).toBeUndefined();
+  });
+});
+
+describe('getSpeechText', () => {
+  test('speaks text parts and skips think parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'internal reasoning' },
+      { type: ContentTypes.TEXT, text: 'First.' },
+      { type: ContentTypes.THINK, think: 'more reasoning' },
+      { type: ContentTypes.TEXT, text: 'Second.' },
+    ];
+    expect(getSpeechText({ content, text: 'ignored' })).toBe('First. Second.');
+  });
+
+  test('is empty for a response that only reasoned', () => {
+    const content: TMessageContentParts[] = [{ type: ContentTypes.THINK, think: 'reasoning' }];
+    expect(getSpeechText({ content })).toBe('');
+  });
+
+  test('never speaks steer parts', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.STEER, steer: 'user words' } as TMessageContentParts,
+      { type: ContentTypes.TEXT, text: 'answer' },
+    ];
+    expect(getSpeechText({ content })).toBe('answer');
+  });
+
+  test('falls back to plain text when there are no content parts', () => {
+    expect(getSpeechText({ content: [], text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ text: 'plain answer' })).toBe('plain answer');
+    expect(getSpeechText({ content: null, text: null })).toBe('');
+  });
+
+  test('strips a legacy thinking block from plain text', () => {
+    const text = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ text })).toBe('The answer is 4.');
+  });
+
+  test('treats a thinking block still open mid-stream as reasoning', () => {
+    expect(getSpeechText({ text: ':::thinking\nStill working' })).toBe('');
+    expect(getSpeechText({ text: 'Intro :::thinking\nStill' })).toBe('Intro');
+  });
+
+  test('keeps plain text that merely uses colons', () => {
+    expect(getSpeechText({ text: 'Ratio is 3:1 ::: done' })).toBe('Ratio is 3:1 ::: done');
   });
 });
 

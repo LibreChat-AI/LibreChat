@@ -3,7 +3,7 @@ const {
   Time,
   CacheKeys,
   SEPARATORS,
-  parseTextParts,
+  getSpeechText,
   findLastSeparatorIndex,
 } = require('librechat-data-provider');
 const { getLogStores } = require('~/cache');
@@ -92,19 +92,18 @@ function createChunkProcessor(user, messageId) {
     if (!message) {
       notFoundCount++;
       return [];
-    } else {
-      const text = message.content?.length > 0 ? parseTextParts(message.content) : message.text;
-      messageCache.set(
-        cacheKey,
-        {
-          text,
-          complete: true,
-        },
-        Time.FIVE_MINUTES,
-      );
     }
 
-    const text = typeof message === 'string' ? message : message.text;
+    const text = typeof message === 'string' ? message : getSpeechText(message);
+    messageCache.set(
+      cacheKey,
+      {
+        text,
+        complete: true,
+      },
+      Time.FIVE_MINUTES,
+    );
+
     const complete = typeof message === 'string' ? false : (message.complete ?? true);
 
     if (text === processedText) {

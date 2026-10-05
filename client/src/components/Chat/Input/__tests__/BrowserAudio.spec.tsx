@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, waitFor } from '@testing-library/react';
-import { Constants, QueryKeys } from 'librechat-data-provider';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Constants, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import BrowserAudio from '../BrowserAudio';
 import store from '~/store';
@@ -104,6 +104,23 @@ describe('BrowserAudio autoplay', () => {
 
   it('speaks the finalized assistant message through speech synthesis', async () => {
     renderBrowserAudio();
+
+    await waitFor(() => expect(spoken).toEqual([responseText]));
+  });
+
+  it('speaks the answer without the reasoning that preceded it', async () => {
+    renderBrowserAudio({
+      messages: [
+        {
+          ...assistantMessage,
+          text: '',
+          content: [
+            { type: ContentTypes.THINK, think: 'Recalling European capitals.' },
+            { type: ContentTypes.TEXT, text: responseText },
+          ],
+        },
+      ],
+    });
 
     await waitFor(() => expect(spoken).toEqual([responseText]));
   });

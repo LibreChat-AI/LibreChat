@@ -141,6 +141,22 @@ describe('processChunks', () => {
     expect(result).toBe('No change in message after 10 attempts');
   });
 
+  /** An aborted turn persists `text` with its reasoning alongside the content parts. */
+  it('should not speak the reasoning of a stored message', async () => {
+    mockMessageCache.get.mockResolvedValueOnce(null);
+    require('~/models').getMessage.mockResolvedValueOnce({
+      text: 'Let me work this out. The answer is 4.',
+      content: [
+        { type: 'think', think: 'Let me work this out.' },
+        { type: 'text', text: 'The answer is 4.' },
+      ],
+    });
+
+    const result = await processChunks();
+
+    expect(result).toEqual([{ text: 'The answer is 4.', isFinished: true }]);
+  });
+
   it('should handle string messages as incomplete', async () => {
     const messageText = 'This is a message as a string.';
     mockMessageCache.get.mockResolvedValueOnce(messageText);
