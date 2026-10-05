@@ -63,7 +63,7 @@ describe('PeoplePickerAdminSettings', () => {
       screen.getByRole('switch', { name: 'com_ui_people_picker_allow_view_users' }),
     ).toBeInTheDocument();
     expect(saveButton).toHaveAttribute('type', 'submit');
-    expect(saveButton).not.toHaveClass('min-w-[120px]');
+    expect(saveButton).not.toHaveClass('min-w-[7.5rem]');
     expect(dialog.firstElementChild).not.toHaveClass('border-b');
     expect(saveButton.parentElement).toHaveClass('bg-transparent');
     expect(saveButton.parentElement).not.toHaveClass('border-t');

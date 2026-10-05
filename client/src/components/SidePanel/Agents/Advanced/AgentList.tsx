@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useContext, createContext } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { Button, ControlCombobox } from '@librechat/client';
@@ -8,6 +8,8 @@ import type { OptionWithIcon } from '~/common';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
+
+export const AgentPickerPortalContext = createContext<HTMLElement | null>(null);
 
 const AGENT_MESSAGE = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 
@@ -74,9 +76,11 @@ interface AddAgentSelectProps {
 /** Dashed "+ Add agent" combobox shared by every orchestration pattern. */
 export function AddAgentSelect({ options, onSelect, placeholder, ariaLabel }: AddAgentSelectProps) {
   const localize = useLocalize();
+  const portalElement = useContext(AgentPickerPortalContext) ?? undefined;
   return (
     <ControlCombobox
       isCollapsed={false}
+      portalElement={portalElement}
       ariaLabel={ariaLabel}
       selectedValue=""
       setValue={onSelect}
@@ -109,9 +113,11 @@ export function AgentSelectInline({
   ariaLabel,
 }: AgentSelectInlineProps) {
   const localize = useLocalize();
+  const portalElement = useContext(AgentPickerPortalContext) ?? undefined;
   return (
     <ControlCombobox
       isCollapsed={false}
+      portalElement={portalElement}
       ariaLabel={ariaLabel}
       selectedValue={selectedValue}
       setValue={onChange}

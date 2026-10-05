@@ -4,6 +4,7 @@ import { Tools, MemoryScope, ArtifactModes, AgentCapabilities } from 'librechat-
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentForm, ExtendedFile } from '~/common';
 import type { BuiltinId } from '../../items/types';
+import OrchestrationHub from '../../../Advanced/OrchestrationHub';
 import { useVerifyAgentToolAuth } from '~/data-provider';
 import CodeBackground from '../../../Code/Background';
 import CodeSettings from '../../../Code/Settings';
@@ -142,7 +143,9 @@ export default function BuiltinSection({
 
   let body: React.ReactNode = null;
 
-  if (builtinId === 'execute_code') {
+  if (builtinId === 'orchestration') {
+    body = <OrchestrationHub currentAgentId={agentId} />;
+  } else if (builtinId === 'execute_code') {
     body = (
       <div className="flex flex-col gap-4">
         <CodeSettings />
@@ -172,7 +175,8 @@ export default function BuiltinSection({
     );
   }
 
-  const localizedDescription = description ? localize(description as TranslationKeys) : '';
+  const localizedDescription =
+    description && builtinId !== 'orchestration' ? localize(description as TranslationKeys) : '';
 
   return (
     <div className="flex flex-col gap-5">

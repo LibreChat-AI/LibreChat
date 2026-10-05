@@ -21,6 +21,7 @@ export {
 } from './useProgressiveRowMount';
 export type { RowMountWindow } from './useProgressiveRowMount';
 export { default as useMessageActions } from './useMessageActions';
+export { default as useMessagesRetention } from './useMessagesRetention';
 export { useLatestMessage, useLatestMessageId } from './useLatestMessage';
 export { default as useMemoizedChatContext } from './useMemoizedChatContext';
 export { default as useMessageProcess } from './useMessageProcess';

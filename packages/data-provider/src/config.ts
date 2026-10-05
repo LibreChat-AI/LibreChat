@@ -709,6 +709,7 @@ export enum AgentCapabilities {
   memory = 'memory',
   ask_user_question = 'ask_user_question',
   tools = 'tools',
+  /** @deprecated Retained for legacy configuration. Chain authoring is retired. */
   chain = 'chain',
   ocr = 'ocr',
   run_in_background = 'run_in_background',
@@ -887,7 +888,6 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.memory,
   AgentCapabilities.ask_user_question,
   AgentCapabilities.tools,
-  AgentCapabilities.chain,
   AgentCapabilities.ocr,
 ];
 
@@ -1100,6 +1100,10 @@ export const toolApprovalPolicySchema = z
   .object({
     enabled: z.boolean().optional(),
     mode: toolApprovalModeSchema.optional(),
+    /** Enable after all replicas support agent-scoped approval modes and grants. */
+    agentModes: z.boolean().optional(),
+    /** Bounded grant lookups fail back to manual review, never automatic approval. */
+    grantLookupTimeoutMs: z.number().int().min(100).max(5000).optional(),
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
     ask: z.array(z.string()).optional(),
@@ -1285,6 +1289,9 @@ export const CODE_ENVIRONMENT_REQUEST_TIMEOUT_HARD_MAX_MS =
 
 export const codeEnvironmentAdmissionSchema = z
   .object({
+    durableRequests: z.boolean().optional(),
+    transportTimeoutMs: z.number().int().min(1000).max(30000).optional(),
+    pollIntervalMs: z.number().int().min(100).max(5000).optional(),
     /** Optional per-request queue ceiling, bounded by transport and execution reserves. */
     queueWaitMs: z.number().int().min(1).max(CODE_ENVIRONMENT_ADMISSION_MAX_MS).optional(),
     initialDelayMs: z.number().int().min(100).max(30_000).optional().default(1_000),
@@ -2361,6 +2368,10 @@ export const DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS = 60_000;
 export const DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS = 60_000;
 /** How many recently touched files the composer palette offers to reuse. */
 export const DEFAULT_COMPOSER_RECENT_FILES = 5;
+/** Milliseconds a left conversation's message history stays cached in the browser. */
+export const DEFAULT_HISTORY_CACHE_TTL_MS = 60_000;
+/** Most recently left conversations whose message history keeps that grace. */
+export const DEFAULT_HISTORY_CACHE_RECENT = 1;
 
 const mcpServersSchema = z
   .object({
@@ -2765,6 +2776,18 @@ export const interfaceSchema = z
      *  own default maximum (`fileListLimit`) so the palette can never ask for
      *  more than a typical deployment will return. */
     composerRecentFiles: z.number().int().min(0).max(100).default(DEFAULT_COMPOSER_RECENT_FILES),
+    /** Milliseconds a conversation's message history stays cached in the browser after the
+     *  user leaves it, so returning soon renders without refetching. Long agent transcripts
+     *  run to tens of megabytes each, so mobile browsers need this short. */
+    historyCacheTtlMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(60 * 60_000)
+      .default(DEFAULT_HISTORY_CACHE_TTL_MS),
+    /** How many of the most recently left conversations keep that grace; older ones are
+     *  released at the next conversation switch. */
+    historyCacheRecent: z.number().int().min(0).max(20).default(DEFAULT_HISTORY_CACHE_RECENT),
   })
   .default({
     modelSelect: true,
@@ -2849,6 +2872,8 @@ export const interfaceSchema = z
     queuedTurnReconciliationTimeoutMs: DEFAULT_QUEUED_TURN_RECONCILIATION_TIMEOUT_MS,
     queuedSendLockTimeoutMs: DEFAULT_QUEUED_SEND_LOCK_TIMEOUT_MS,
     composerRecentFiles: DEFAULT_COMPOSER_RECENT_FILES,
+    historyCacheTtlMs: DEFAULT_HISTORY_CACHE_TTL_MS,
+    historyCacheRecent: DEFAULT_HISTORY_CACHE_RECENT,
   });
 
 export type TInterfaceConfig = z.infer<typeof interfaceSchema>;

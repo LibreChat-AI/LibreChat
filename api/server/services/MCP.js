@@ -3,6 +3,7 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
 const {
   sendEvent,
+  createMCPToolApprovalMetadata,
   PENDING_STALE_MS,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -1238,6 +1239,7 @@ async function createMCPTool({
     currentToolName: matchedToolKey === strippedToolKey ? strippedToolName : undefined,
     serverName,
     serverConfig,
+    customUserVars: userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`],
     toolDefinition: toolEntry['function'],
     upstreamTokenProvider,
     upstreamTokenProviderResolver,
@@ -1261,6 +1263,7 @@ function createToolInstance({
   currentToolName,
   serverName,
   serverConfig: capturedServerConfig,
+  customUserVars: capturedCustomUserVars,
   toolDefinition,
   provider: capturedProvider,
   upstreamTokenProvider: capturedUpstreamTokenProvider = null,
@@ -1483,6 +1486,17 @@ function createToolInstance({
   });
   toolInstance.mcp = true;
   toolInstance.mcpRawServerName = serverName;
+  createMCPToolApprovalMetadata().bindInstance(toolInstance, {
+    serverName,
+    config: capturedServerConfig,
+    user: capturedUser,
+    body: capturedRequestBody,
+    customUserVars: capturedCustomUserVars,
+    currentToolName,
+    upstreamName: serverToolName,
+    parameters,
+    description,
+  });
   if (serverToolName !== toolName) {
     /** Upstream identity for stripped keys — lets the options aliasing in
      *  `buildToolClassification` heal legacy `tool_options` spellings. */

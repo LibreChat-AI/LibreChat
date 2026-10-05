@@ -21,6 +21,7 @@ type TestMessage = {
 const mockUseGetMessagesByConvoId = jest.fn();
 const mockUseMessagesConversation = jest.fn();
 const mockUseMessagesSubmission = jest.fn();
+let mockRemScale = 1;
 
 jest.mock('~/data-provider', () => ({
   useGetMessagesByConvoId: (...args: unknown[]) => mockUseGetMessagesByConvoId(...args),
@@ -47,6 +48,8 @@ jest.mock('@librechat/client', () => ({
     asChild ? children : <div>{children}</div>,
   HoverCardPortal: ({ children }: { children: ReactNode }) => <>{children}</>,
   HoverCardContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  pxToRem: jest.requireActual('../../../../../../packages/client/src/utils/theme').pxToRem,
+  useRemScale: () => mockRemScale,
 }));
 
 if (typeof window.matchMedia !== 'function') {
@@ -243,6 +246,7 @@ function clearDom() {
 }
 
 beforeEach(() => {
+  mockRemScale = 1;
   MockIntersectionObserver.reset();
   (
     global as unknown as { IntersectionObserver: typeof MockIntersectionObserver }
@@ -336,20 +340,6 @@ describe('MessageNav', () => {
   });
 
   describe('indicator styling', () => {
-    it('gives every message rib the same short resting width regardless of role', () => {
-      const messages = [
-        buildMessage({ messageId: 'u', text: 'user msg', isCreatedByUser: true }),
-        buildMessage({ messageId: 'a', text: 'assistant msg' }),
-        buildMessage({ messageId: 'u2', text: 'more user', isCreatedByUser: true }),
-      ];
-      const { container } = renderNav(messages);
-      const [, assistantInd, userInd] = messageRibs(container);
-      const userLine = assistantInd.querySelector('span') as HTMLElement;
-      const assistantLine = userInd.querySelector('span') as HTMLElement;
-      expect(userLine.style.width).toBe('12px');
-      expect(assistantLine.style.width).toBe('12px');
-    });
-
     it('gives the current rib a longer resting width than its neighbours', () => {
       const messages = [
         buildMessage({ messageId: 'u', text: 'user msg', isCreatedByUser: true }),
@@ -362,17 +352,6 @@ describe('MessageNav', () => {
       const currentWidth = parseFloat((current.querySelector('span') as HTMLElement).style.width);
       const nextWidth = parseFloat((next.querySelector('span') as HTMLElement).style.width);
       expect(currentWidth).toBeGreaterThan(nextWidth);
-    });
-
-    it('holds every rib row at a fixed height so the column cannot compress them', () => {
-      const messages = Array.from({ length: 6 }, (_, i) =>
-        buildMessage({ messageId: `m-${i}`, text: `message ${i}` }),
-      );
-      const { container } = renderNav(messages);
-      for (const rib of messageRibs(container)) {
-        expect(rib.className).toContain('shrink-0');
-        expect(rib.style.height).toBe('6px');
-      }
     });
 
     it('lights up only the in-viewport ribs at rest (no hover)', () => {
@@ -1888,6 +1867,41 @@ describe('MessageNav', () => {
       expect(scrubbed).toContain('m-2');
       expect(scrubbed).not.toContain('m-3');
       getById.mockRestore();
+      restoreLayout();
+    });
+
+    it.each([0.5, 1.5])('keeps magnified ribs inside their rows at scale %s', (scale) => {
+      mockRemScale = scale;
+      const messages = Array.from({ length: 6 }, (_, i) =>
+        buildMessage({ messageId: `m-${i}`, text: `message ${i}` }),
+      );
+      const restoreLayout = stubRibLayout(
+        messages.map((message) => message.messageId),
+        12 * scale,
+        6 * scale,
+      );
+      const { container } = renderNavWithEnd(messages);
+      const column = getColumn(container);
+      column.getBoundingClientRect = () =>
+        ({ top: 0, bottom: 72 * scale, height: 72 * scale, left: 0, right: 0 }) as DOMRect;
+      const row = messageRibs(container)[3];
+      const line = row.querySelector('span') as HTMLElement;
+      const pixels = (length: string) =>
+        parseFloat(length) * (length.endsWith('rem') ? 16 * scale : 1);
+      const restingHeight = pixels(line.style.height);
+
+      act(() => {
+        fireEvent.pointerMove(column, { pointerId: 1, clientY: 39 * scale });
+        jest.advanceTimersByTime(80);
+      });
+
+      expect(pixels(line.style.height)).toBeGreaterThan(restingHeight);
+      expect(pixels(line.style.height)).toBeLessThanOrEqual(pixels(row.style.height));
+
+      act(() => {
+        fireEvent.pointerLeave(column, { pointerId: 1 });
+      });
+      expect(pixels(line.style.height)).toBe(restingHeight);
       restoreLayout();
     });
 

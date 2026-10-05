@@ -28,6 +28,8 @@ const mockApprovalProviderMounted = jest.fn();
 const mockApprovalProviderUnmounted = jest.fn();
 let mockIsMobile = false;
 let mockCoarsePointer = false;
+let mockViewportWidth: number | null = null;
+let mockRemScale = 1;
 let mockParentChildrenByMessage = new Map<string, ParentSubagentSummary[]>();
 let mockParentChildrenByThread = new Map<string, ParentSubagentSummary>();
 const mockRefreshParentChildren = jest.fn().mockResolvedValue(undefined);
@@ -422,7 +424,12 @@ jest.mock('@librechat/client', () => ({
       )}
     </div>
   ),
-  useMediaQuery: (query: string) => (query.includes('hover') ? mockCoarsePointer : mockIsMobile),
+  useRemScale: () => mockRemScale,
+  useMediaQuery: (query: string) => {
+    if (query.includes('hover')) return mockCoarsePointer;
+    if (mockViewportWidth == null) return mockIsMobile;
+    return mockViewportWidth <= Number(/max-width:\s*([\d.]+)/.exec(query)?.[1]);
+  },
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
@@ -499,6 +506,8 @@ describe('SubagentThreadPanel', () => {
     window.sessionStorage.clear();
     mockIsMobile = false;
     mockCoarsePointer = false;
+    mockViewportWidth = null;
+    mockRemScale = 1;
     mockEnterToSend = true;
     mockClaimForeground.mockClear();
     mockHandOffComposerText.mockClear();
@@ -2616,8 +2625,9 @@ describe('SubagentThreadPanel', () => {
     expect(screen.queryByTestId('shared-activity')).not.toBeInTheDocument();
   });
 
-  it('exposes the focus-trapped mobile overlay as a modal dialog', () => {
-    mockIsMobile = true;
+  it('exposes the scaled overlay as a modal above the fixed mobile breakpoint', () => {
+    mockViewportWidth = 800;
+    mockRemScale = 1.5;
     mockUseSubagentThreadQuery.mockReturnValue({
       data: completedView,
       isLoading: false,

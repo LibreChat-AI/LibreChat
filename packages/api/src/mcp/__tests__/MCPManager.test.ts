@@ -19,6 +19,7 @@ import {
   STANDARD_MCP_CAPABILITY_PROFILE,
 } from '~/mcp/capabilities';
 import { OboTokenResolutionError, detectOAuthRequirement, resolveOboToken } from '~/mcp/oauth';
+import { withToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
 import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
@@ -26,6 +27,7 @@ import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
+import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
 import * as toolsChanged from '~/mcp/toolsChanged';
@@ -2083,6 +2085,94 @@ describe('MCPManager', () => {
       expect(request).toHaveBeenCalledTimes(2);
       expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
     });
+
+    it.each([false, true])(
+      'approval transport fencing handles account replacement=%s after a 401',
+      async (replaceAccount) => {
+        let epoch = 'account-a';
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(new Error('Non-200 status code (401)'))
+          .mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        connection.getOAuthCredentialSetId = () => epoch;
+        attachOAuthHandler((active) => {
+          if (replaceAccount) epoch = 'account-b';
+          active.emit('oauthHandled');
+        });
+        const manager = await createManager(connection);
+        const guard = jest.fn(async (_serverName: string, currentEpoch: string | null) => {
+          if (currentEpoch !== 'account-a') throw new Error('Approved OAuth epoch changed');
+        });
+        const invoke = () =>
+          withToolApprovalExecution(
+            { validateExecution: async () => {}, validateTransport: guard },
+            () =>
+              withToolApprovalTransport(
+                { toolCall: { id: 'approved-call' }, metadata: { agentId: 'agent-a' } },
+                () => callTool(manager),
+              ),
+          );
+        if (replaceAccount) {
+          await expect(invoke()).rejects.toThrow('Approved OAuth epoch changed');
+          expect(request).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(invoke()).resolves.toBeDefined();
+          expect(request).toHaveBeenCalledTimes(2);
+        }
+        expect(guard).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([true, false])(
+      'rechecks reviewed OAuth after scheduled authorization for enrolled=%s',
+      async (enrolled) => {
+        let epoch = 'account-a';
+        const request = jest.fn().mockResolvedValue(toolResult);
+        const connection = createConnection(request);
+        connection.getOAuthCredentialSetId = () => epoch;
+        const manager = await createManager(connection);
+        const authorize = jest.fn(async () => {
+          epoch = 'account-b';
+        });
+        const guard = jest.fn(async (_server: string, currentEpoch: string | null) => {
+          if (currentEpoch !== 'account-a') throw new Error('Approved OAuth epoch changed');
+        });
+        const invoke = () =>
+          withToolApprovalExecution(
+            { validateExecution: async () => {}, validateTransport: guard },
+            () =>
+              withToolApprovalTransport(
+                { toolCall: { id: 'approved-call' }, metadata: { agentId: 'root' } },
+                () =>
+                  manager.callTool({
+                    user: mockUser,
+                    serverName,
+                    toolName: 'oauth_tool',
+                    provider: 'openai',
+                    flowManager: mockFlowManager,
+                    scheduledMCPInvocation: {
+                      identity: {
+                        scheduleId: 'schedule',
+                        ownerId: mockUser.id,
+                        tenantId: null,
+                        agentId: 'root',
+                        invocationMode: 'delegated',
+                      },
+                      enrolled,
+                      agentId: 'root',
+                      authorize,
+                    },
+                  }),
+              ),
+          );
+        await expect(invoke()).rejects.toThrow('Approved OAuth epoch changed');
+        expect(authorize).toHaveBeenCalledTimes(1);
+        expect(guard).toHaveBeenCalledWith(serverName, 'account-b', expect.any(Object), true);
+        expect(request).not.toHaveBeenCalled();
+        expect(connection.connect).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([true, false])(
       'preserves first JSON-RPC failure without stored-OAuth replay for enrolled=%s',
@@ -7748,6 +7838,7 @@ describe('MCPManager', () => {
       });
       (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(mockConnection);
 
+      expect(getMCPToolApprovalAuthKind(runtimeUrlConfig)).toBeUndefined();
       const manager = await MCPManager.createInstance(newMCPServersConfig());
       await manager.getUserConnection({
         serverName,
@@ -7768,6 +7859,10 @@ describe('MCPManager', () => {
         }),
         expect.objectContaining({ useOAuth: true }),
       );
+      const runtime = (MCPConnectionFactory.create as jest.Mock).mock.calls[0][0];
+      expect(runtime.serverDefinition).toBe(runtimeUrlConfig);
+      expect(getMCPToolApprovalAuthKind(runtime.serverDefinition)).toBeUndefined();
+      expect(getMCPToolApprovalAuthKind(runtime.serverConfig)).toBe('oauth');
     });
 
     it('should reject disallowed runtime URLs before OAuth detection probes them', async () => {

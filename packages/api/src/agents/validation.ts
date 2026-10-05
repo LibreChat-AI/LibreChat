@@ -157,6 +157,8 @@ export const toolOptionsSchema: z.ZodObject<
     allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
     run_in_background: z.ZodOptional<z.ZodBoolean>;
     describe_intent: z.ZodOptional<z.ZodBoolean>;
+    approval_mode: z.ZodOptional<z.ZodEnum<['ask', 'allow', 'chat', 'always']>>;
+    approval_revision: z.ZodOptional<z.ZodString>;
   },
   'strip'
 > = z.object({
@@ -164,35 +166,13 @@ export const toolOptionsSchema: z.ZodObject<
   allowed_callers: z.array(z.enum(['direct', 'code_execution'])).optional(),
   run_in_background: z.boolean().optional(),
   describe_intent: z.boolean().optional(),
+  approval_mode: z.enum(['ask', 'allow', 'chat', 'always']).optional(),
+  approval_revision: z.string().uuid().optional(),
 });
 
 /** Agent tool options - map of tool_id to tool options */
 export const agentToolOptionsSchema: z.ZodOptional<
-  z.ZodRecord<
-    z.ZodString,
-    z.ZodObject<
-      {
-        defer_loading: z.ZodOptional<z.ZodBoolean>;
-        allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
-        run_in_background: z.ZodOptional<z.ZodBoolean>;
-        describe_intent: z.ZodOptional<z.ZodBoolean>;
-      },
-      'strip',
-      z.ZodTypeAny,
-      {
-        defer_loading?: boolean | undefined;
-        allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-        run_in_background?: boolean | undefined;
-        describe_intent?: boolean | undefined;
-      },
-      {
-        defer_loading?: boolean | undefined;
-        allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-        run_in_background?: boolean | undefined;
-        describe_intent?: boolean | undefined;
-      }
-    >
-  >
+  z.ZodRecord<z.ZodString, typeof toolOptionsSchema>
 > = z.record(z.string(), toolOptionsSchema).optional();
 
 /**

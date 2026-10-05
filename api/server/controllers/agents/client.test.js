@@ -2290,6 +2290,14 @@ describe('AgentClient - startup telemetry', () => {
   });
 
   it.each([
+    ...['ask', 'chat', 'always'].map((mode) => ({
+      name: `a deselected MCP tool retaining ${mode} mode`,
+      toolApproval: { enabled: true, mode: 'bypass', agentModes: true },
+      tool_options: {
+        deselected_mcp_db: { approval_mode: mode },
+        read_file: { approval_mode: 'allow' },
+      },
+    })),
     {
       name: 'a bypass-only approval policy',
       toolApproval: { enabled: true, mode: 'bypass' },
@@ -2298,6 +2306,44 @@ describe('AgentClient - startup telemetry', () => {
     {
       name: 'an approval rule that matches no selected tool',
       toolApproval: { enabled: true, mode: 'bypass', ask: ['approval_probe'] },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk denied attached-code lazy graph member',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['read_file'] },
+      primaryTools: [{ name: 'read_file' }],
+      subagentAgentConfigs: [
+        {
+          id: 'lazy-parent',
+          subagentGraphMemberMetadata: [
+            {
+              id: 'attached-member',
+              codeExecutionContext: { environmentType: 'attached' },
+              skillAuthoringAvailable: true,
+            },
+          ],
+        },
+      ],
+    },
+    {
+      name: 'dontAsk fallback-denied ask agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'ask' } },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk fallback-denied chat agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'chat' } },
+      subagentAgentConfigs: undefined,
+    },
+    {
+      name: 'dontAsk fallback-denied always agent tool',
+      toolApproval: { enabled: true, mode: 'dontAsk', allow: ['safe_mcp_db'] },
+      primaryTools: [{ name: 'query_mcp_db' }, { name: 'safe_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'always' } },
       subagentAgentConfigs: undefined,
     },
     {
@@ -2318,7 +2364,7 @@ describe('AgentClient - startup telemetry', () => {
     },
   ])(
     'does not reject scheduled runs for $name',
-    async ({ toolApproval, primaryTools, subagentAgentConfigs }) => {
+    async ({ toolApproval, primaryTools, subagentAgentConfigs, tool_options }) => {
       mockDeleteAgentCheckpoint.mockReset().mockResolvedValue(undefined);
       const processStream = jest.fn().mockResolvedValue();
       mockCreateRun.mockResolvedValueOnce({
@@ -2345,6 +2391,7 @@ describe('AgentClient - startup telemetry', () => {
           hide_sequential_outputs: false,
           tools: primaryTools ?? [{ name: 'read_file' }],
           subagentAgentConfigs,
+          tool_options,
         },
         endpointTokenConfig: {},
         eventHandlers: {},
@@ -2373,6 +2420,124 @@ describe('AgentClient - startup telemetry', () => {
         );
       } else {
         expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: 'selected review-gated tool',
+      tools: [{ name: 'query_mcp_db' }],
+      tool_options: { query_mcp_db: { approval_mode: 'ask' } },
+    },
+    {
+      name: 'selected tool with verified legacy mode',
+      tools: [{ name: 'query_mcp_db' }],
+      tool_options: { db_query_mcp_db: { approval_mode: 'chat' } },
+      mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    },
+    {
+      name: 'unresolved lazy review-gated child',
+      tools: [{ name: 'read_file' }],
+      lazySubagentConfigs: [
+        { id: 'lazy-agent', tool_options: { query_mcp_db: { approval_mode: 'always' } } },
+      ],
+    },
+  ])(
+    'rejects scheduled memory-store runs with a $name before provider execution',
+    async (surface) => {
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: { enabled: true, mode: 'bypass', agentModes: true },
+              },
+            },
+          },
+          _isScheduledFire: true,
+          _resumableStreamId: 'scheduled-agent-mode',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          ...surface,
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'scheduled-agent-mode';
+      client.responseMessageId = 'scheduled-agent-mode-response';
+      client.parentMessageId = 'scheduled-agent-mode-parent';
+      await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
+        code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+      });
+      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+    },
+  );
+
+  it.each(['db', 'Db', 'dB', 'DB'])(
+    'refuses unresolved %s legacy-hook schedules before provider startup under canonical dontAsk allow',
+    async (prefix) => {
+      mockIsHITLEnabled.mockReturnValue(true);
+      const hook = jest.fn(async () => ({ decision: 'ask' }));
+      const unregister = registerToolApprovalHook(() => hook, {
+        matcher: `^${prefix}_query_mcp_db$`,
+      });
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: {
+                toolApproval: {
+                  enabled: true,
+                  mode: 'dontAsk',
+                  allow: ['query_mcp_db', 'subagent'],
+                },
+              },
+            },
+          },
+          _isScheduledFire: true,
+          _resumableStreamId: 'scheduled-legacy-hook',
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [{ name: 'subagent' }],
+          lazySubagentConfigs: [{ id: 'lazy-child', tools: ['query_mcp_db'] }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'scheduled-legacy-hook';
+      client.responseMessageId = 'scheduled-legacy-hook-response';
+      client.parentMessageId = 'scheduled-legacy-hook-parent';
+      try {
+        await expect(client.chatCompletion({ payload: [] })).rejects.toMatchObject({
+          code: 'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+        });
+        expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+        expect(hook).not.toHaveBeenCalled();
+      } finally {
+        unregister();
       }
     },
   );

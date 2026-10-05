@@ -1,8 +1,13 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import { z } from 'zod';
+import type {
+  FunctionTool,
+  ToolResources,
+  AgentToolOptions,
+  ToolApprovalGrantBinding,
+} from './tools';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { FunctionTool, ToolResources, AgentToolOptions } from './tools';
 import type { StatefulCodeEnvironment } from '../stateful-code';
 import type { SummaryContentPart } from './content';
 import type { TFile } from './files';
@@ -133,6 +138,8 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      remember_scope?: 'chat' | 'always';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
       /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
       allow_always?: boolean;
     };
@@ -472,6 +479,8 @@ export namespace Agents {
    * by `tool_call_id`. `action_name` is retained for display only.
    */
   export interface ToolReviewConfig {
+    remember_scope?: 'chat' | 'always';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
@@ -599,6 +608,7 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
     /**
      * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
      * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks

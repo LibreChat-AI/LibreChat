@@ -18,9 +18,9 @@ import { ArchivedChatsModal } from '~/components/Nav/SettingsTabs/General/Archiv
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
+import { settingsOpenAtom } from './Settings';
 import { openInNewTab } from '~/utils';
 import { useLocalize } from '~/hooks';
-import Settings from './Settings';
 import store from '~/store';
 
 function HelpSubmenu({
@@ -55,7 +55,7 @@ function HelpSubmenu({
       <Menu.Menu
         portal
         gutter={12}
-        className="account-settings-popover popover-ui popover-from-left z-[126] w-[244px] rounded-lg"
+        className="account-settings-popover popover-ui popover-from-left z-[126] w-[min(15.25rem,90vw)] rounded-lg"
       >
         {hasHelpFaq && (
           <Menu.MenuItem
@@ -101,7 +101,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const balanceQuery = useGetUserBalance({
     enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
   });
-  const [showSettings, setShowSettings] = useState(false);
+  const setShowSettings = useSetAtom(settingsOpenAtom);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
   const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
   const setShowShortcutsDialog = useSetRecoilState(store.showShortcutsDialog);
@@ -136,7 +136,7 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
       </Menu.MenuButton>
       <Menu.Menu
         portal
-        className="account-settings-popover popover-ui z-[125] w-[305px] rounded-lg md:w-[244px]"
+        className="account-settings-popover popover-ui z-[125] w-[min(19.0625rem,90vw)] rounded-lg md:w-[min(15.25rem,90vw)]"
         style={{
           transformOrigin: collapsed ? 'left bottom' : 'bottom',
           translate: collapsed ? '4px 0' : '0 -4px',
@@ -201,7 +201,6 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
           triggerRef={accountSettingsButtonRef}
         />
       )}
-      {showSettings && <Settings open={showSettings} onOpenChange={setShowSettings} />}
     </Menu.MenuProvider>
   );
 }

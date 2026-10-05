@@ -48,7 +48,7 @@ export const revealOnRowHoverClasses =
  * completes. The value is the height of a hover button, `p-1.5` either side of a
  * 19px icon.
  */
-export const messageFooterClasses = 'min-h-[31px] text-xs';
+export const messageFooterClasses = 'min-h-[1.9375rem] text-xs';
 
 type HoverButtonStyleOptions = {
   isActive?: boolean;

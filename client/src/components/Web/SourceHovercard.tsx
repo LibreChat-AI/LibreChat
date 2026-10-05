@@ -47,7 +47,7 @@ export function FaviconImage({ domain, className = '' }: { domain: string; class
 }
 
 const hovercardClass = cn(
-  'z-[999] w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg',
+  'z-[999] w-[20rem] max-w-[calc(100vw-2rem)] rounded-xl border border-border-medium bg-surface-secondary p-3 text-text-primary shadow-lg',
   'origin-top -translate-y-1 opacity-0 transition-[opacity,transform] duration-150 ease-out',
   'data-[enter]:translate-y-0 data-[enter]:opacity-100',
   'data-[leave]:-translate-y-1 data-[leave]:opacity-0',

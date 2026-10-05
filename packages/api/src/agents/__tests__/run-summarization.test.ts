@@ -4815,12 +4815,13 @@ describe('HITL wiring is gated on hitlCapable', () => {
             matchQuery: alias.name,
           })
         ).decision;
-      expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
+      const initialMatcherCount = hooks.getMatchers('PreToolUse').length;
+      expect(initialMatcherCount).toBeGreaterThan(0);
       expect(await decisionForAlias()).toBe('allow');
       await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
         signal: new AbortController().signal,
       } as never);
-      expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
+      expect(hooks.getMatchers('PreToolUse')).toHaveLength(initialMatcherCount);
       expect(await decisionForAlias()).toBe('deny');
     },
   );

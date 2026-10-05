@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useMemo, memo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
-import { useMediaQuery } from '@librechat/client';
 import type { InfiniteQueryObserverResult } from '@tanstack/react-query';
 import type { ConversationListResponse } from 'librechat-data-provider';
 import type { List } from 'react-virtualized';
@@ -29,6 +28,7 @@ import ProjectsSection from '~/components/Conversations/ProjectsSection';
 import ChatFilterMenu from '~/components/Conversations/ChatFilterMenu';
 import PinnedSection from '~/components/Conversations/PinnedSection';
 import ProjectNamesProvider from '~/Providers/ProjectNamesContext';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { Conversations } from '~/components/Conversations';
 import { cn, collectPinnedConversations } from '~/utils';
@@ -39,7 +39,7 @@ const chatsHeaderTrailing = <ChatFilterMenu />;
 
 const ConversationsSection = memo(() => {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const { setSidebarOpen } = useSidebarToggle();
   const { isAuthenticated } = useAuthContext();
   useTitleGeneration(isAuthenticated);
@@ -70,9 +70,9 @@ const ConversationsSection = memo(() => {
    *  projects are loading or failed to load, an empty Chats list claims no more than
    *  that nothing sits outside a project. */
   const hasProjects = !projectsLoaded || (projectsData?.pages[0]?.projects?.length ?? 0) > 0;
-  /** Project chats list under Chats too, badged with their folder, because Chats is where
-   *  recent work is looked for first. Turning that off shows each one only under its
-   *  project. Search and the archived view stay whole either way: both are places the user
+  /** By default each project chat shows only under its project. Turning the preference on
+   *  lists it under Chats too, badged with its folder, for users who look for recent work
+   *  there first. Search and the archived view stay whole either way: both are places the user
    *  goes to find something, and a project chat that appears in neither list nor result
    *  would have no way back. So does a list whose projects failed to load, which would
    *  otherwise hide every project chat behind a section that cannot show them. */

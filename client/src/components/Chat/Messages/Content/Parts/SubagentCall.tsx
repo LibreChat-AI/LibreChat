@@ -415,7 +415,7 @@ export default function SubagentCall({
         data-subagent-part-index={partIndex}
         className={cn(
           'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-left transition',
-          canOpenDetails ? 'hover:bg-surface-tertiary group' : 'cursor-default opacity-80',
+          canOpenDetails ? 'group' : 'cursor-default opacity-80',
           running && !detachedStatusUnknown && 'animate-pulse-slow',
         )}
         aria-label={detachedStatusUnknown ? undefined : cardLabel}

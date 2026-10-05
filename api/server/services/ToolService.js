@@ -13,6 +13,7 @@ const {
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
   loadToolDefinitions,
+  createMCPToolApprovalMetadata,
   GenerationJobManager,
   isActionDomainAllowed,
   buildWebSearchContext,
@@ -1166,6 +1167,7 @@ async function loadToolDefinitionsWrapper({
   /** Name-preserving: the definitions loader resolves normalized-vs-raw
    *  spellings itself (direct identity first, alias fallback), so this
    *  closure must look up EXACTLY the name it is given. */
+  const approvalMetadata = createMCPToolApprovalMetadata();
   const getOrFetchMCPServerTools = async (userId, serverName) => {
     const addPendingOAuthServer = async () => {
       const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
@@ -1184,9 +1186,11 @@ async function loadToolDefinitionsWrapper({
 
     let serverConfig;
     try {
-      serverConfig =
-        configServers?.[serverName] ??
-        (await getMCPServersRegistry().getServerConfig(serverName, userId, configServers));
+      serverConfig = await getMCPServersRegistry().getServerConfig(
+        serverName,
+        userId,
+        configServers,
+      );
     } catch {
       logger.warn(
         '[Tool Definitions] MCP registry unavailable; skipping tool exposure for one server',
@@ -1202,6 +1206,13 @@ async function loadToolDefinitionsWrapper({
     }
 
     const customUserVars = userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
+    approvalMetadata.capture({
+      serverName,
+      config: serverConfig,
+      user: req.user,
+      body: runtimeRequestBody,
+      customUserVars,
+    });
     const missingUserVars = getMissingCustomUserVars(serverConfig, customUserVars);
     if (missingUserVars.length > 0) {
       logger.warn('[Tool Definitions] Skipping one MCP server with missing user configuration', {
@@ -1604,6 +1615,7 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
+  approvalMetadata.attach(toolDefinitions);
   return {
     toolRegistry,
     mcpAvailableTools,

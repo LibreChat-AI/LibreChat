@@ -60,7 +60,7 @@ export function SendActions({
         gutter={8}
         unmountOnHide
         aria-label={label}
-        className="border-border-light bg-surface-secondary text-text-primary z-50 min-w-[12rem] rounded-xl border p-1.5 shadow-lg outline-hidden"
+        className="border-border-light bg-surface-secondary text-text-primary z-50 max-w-[90vw] min-w-[min(12rem,90vw)] rounded-xl border p-1.5 shadow-lg outline-hidden"
       >
         {actions.map((action) => (
           <button

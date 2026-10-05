@@ -45,6 +45,8 @@ const {
   buildPendingAction,
   toClientPendingAction,
   captureCodeExecutionApprovalBinding,
+  captureRunToolApprovalBindings,
+  describeRememberedToolApprovals,
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
   getRunDiscoveredTools,
@@ -4421,37 +4423,42 @@ class AgentClient extends BaseClient {
       )
         ? captureCodeExecutionApprovalBinding(reachableAgents)
         : undefined;
-    const pendingAction = buildPendingAction(interruptPayload, {
-      streamId,
-      conversationId: this.conversationId,
-      // runId mirrors the LangGraph checkpoint namespace when the SDK provides it
-      // (its documented meaning), falling back to the response message id.
-      runId: interrupt.checkpointNs ?? this.responseMessageId,
-      responseMessageId: this.responseMessageId,
-      interruptId: interrupt.interruptId,
-      // thread_id was bound to conversationId at run config (config.configurable);
-      // fall back to it when the SDK doesn't echo threadId on the interrupt.
-      threadId: interrupt.threadId ?? this.conversationId,
-      ttlMs: getApprovalTtlMs(checkpointerCfg),
-      // Bind the pause to the authoritative project identity/revision. The key is
-      // server-only and is checked before provider/tool startup on resume.
-      projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
-      expiresAt: this.options.req?._agentEventBindingRetention?.expiredAt,
-      // Pin the graph-determining request fields so resume can't rebuild this paused
-      // run on a different agent/tool set (esp. ephemeral agents, whose agent_id is
-      // undefined so the id guard can't tell two configs apart).
-      // Keep the legacy digest in its established field so an old replica can
-      // resume pauses written during a rolling deploy; current replicas also
-      // enforce the stricter code-environment-aware digest below.
-      requestFingerprint: computeLegacyAgentRequestFingerprint(this.options.req?.body ?? {}),
-      requestFingerprintV2: computeAgentRequestFingerprint(this.options.req?.body ?? {}),
-      // Persist those same fields verbatim so the resume route can REPLAY them — a
-      // reload/cross-replica resume can't reconstruct the ephemeral config client-side,
-      // so the server restores it and rebuilds the same graph (and the fingerprint matches).
-      resumeContext,
-      codeExecutionBinding,
-      toolApprovalAliases: collectAllowAlwaysAliases(interruptPayload, getRunMCPToolAliases(run)),
-    });
+    const toolApprovalBindings = captureRunToolApprovalBindings(run, interruptPayload);
+    const pendingAction = buildPendingAction(
+      describeRememberedToolApprovals(interruptPayload, toolApprovalBindings, run),
+      {
+        streamId,
+        conversationId: this.conversationId,
+        // runId mirrors the LangGraph checkpoint namespace when the SDK provides it
+        // (its documented meaning), falling back to the response message id.
+        runId: interrupt.checkpointNs ?? this.responseMessageId,
+        responseMessageId: this.responseMessageId,
+        interruptId: interrupt.interruptId,
+        // thread_id was bound to conversationId at run config (config.configurable);
+        // fall back to it when the SDK doesn't echo threadId on the interrupt.
+        threadId: interrupt.threadId ?? this.conversationId,
+        ttlMs: getApprovalTtlMs(checkpointerCfg),
+        // Bind the pause to the authoritative project identity/revision. The key is
+        // server-only and is checked before provider/tool startup on resume.
+        projectContextKey: getChatProjectContextKey(this.options.req?.chatProjectContext),
+        expiresAt: this.options.req?._agentEventBindingRetention?.expiredAt,
+        // Pin the graph-determining request fields so resume can't rebuild this paused
+        // run on a different agent/tool set (esp. ephemeral agents, whose agent_id is
+        // undefined so the id guard can't tell two configs apart).
+        // Keep the legacy digest in its established field so an old replica can
+        // resume pauses written during a rolling deploy; current replicas also
+        // enforce the stricter code-environment-aware digest below.
+        requestFingerprint: computeLegacyAgentRequestFingerprint(this.options.req?.body ?? {}),
+        requestFingerprintV2: computeAgentRequestFingerprint(this.options.req?.body ?? {}),
+        // Persist those same fields verbatim so the resume route can REPLAY them — a
+        // reload/cross-replica resume can't reconstruct the ephemeral config client-side,
+        // so the server restores it and rebuilds the same graph (and the fingerprint matches).
+        resumeContext,
+        codeExecutionBinding,
+        toolApprovalAliases: collectAllowAlwaysAliases(interruptPayload, getRunMCPToolAliases(run)),
+      },
+    );
+    pendingAction.toolApprovalBindings = toolApprovalBindings;
 
     // Job-replacement guard: streamId == conversationId is reused per conversation, so a
     // newer request can replace this run's job. If this (older) run hits an interrupt
@@ -5043,6 +5050,7 @@ class AgentClient extends BaseClient {
           // opts into the tool-approval wiring. Non-resumable callers (OpenAI-compat, Responses)
           // leave this off so an approval-gated tool can't pause where there's no resume path.
           hitlCapable: true,
+          toolApprovalStorage: db,
           resolvedToolApprovalHooks,
           toolApprovalAllows: resolveRunToolApprovalAllows(
             agentsEConfig?.toolApproval,
@@ -5407,6 +5415,7 @@ class AgentClient extends BaseClient {
    */
   async resumeCompletion({
     resumeValue,
+    reviewedToolApprovals,
     seedContent = [],
     runSteps = [],
     storedMessages = [],
@@ -5846,6 +5855,8 @@ class AgentClient extends BaseClient {
         // The resumed run can pause AGAIN (another tool, a follow-up question), and this
         // controller owns that lifecycle, so it must keep the HITL wiring on the rebuilt run.
         hitlCapable: true,
+        toolApprovalStorage: db,
+        reviewedToolApprovals,
         resolvedToolApprovalHooks,
         toolApprovalAllows: resolveRunToolApprovalAllows(
           agentsEConfig?.toolApproval,

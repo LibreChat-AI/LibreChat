@@ -40,8 +40,10 @@ jest.mock('@librechat/client', () => {
             ),
           )
         : null,
-    OGDialogContent: ({ children, ...rest }: { children: React.ReactNode }) =>
-      React.createElement('div', rest, children),
+    OGDialogContent: React.forwardRef(
+      ({ children, ...rest }: { children: React.ReactNode }, ref: React.Ref<HTMLDivElement>) =>
+        React.createElement('div', { ...rest, ref }, children),
+    ),
     OGDialogHeader: ({ children, ...rest }: { children: React.ReactNode }) =>
       React.createElement('div', rest, children),
     OGDialogTitle: ({ children, ...rest }: { children: React.ReactNode }) =>
