@@ -59,7 +59,9 @@ describe('summarizeBalance', () => {
   });
 
   it('is empty without an allotment once credits run out', () => {
-    expect(summarizeBalance({ tokenCredits: -5, autoRefillEnabled: false }).tone).toBe('danger');
+    const empty = summarizeBalance({ tokenCredits: -5, autoRefillEnabled: false });
+    expect(empty.tone).toBe('danger');
+    expect(empty.usedPercent).toBe(100);
   });
 
   it('drops an unreadable last-refill date instead of inventing one', () => {

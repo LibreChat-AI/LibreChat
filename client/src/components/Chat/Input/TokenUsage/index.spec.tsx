@@ -131,6 +131,39 @@ describe('TokenUsage gauge', () => {
     expect(within(card).getByTestId('balance-value')).toHaveTextContent('3,100,000 credits');
   });
 
+  it('keeps the card inside the viewport', async () => {
+    mockStartupConfig.mockReturnValue(config());
+    renderGauge();
+    const card = await openCard();
+    expect(card).toHaveClass(
+      'max-h-[calc(100dvh-1rem)]',
+      'max-w-[calc(100vw-1rem)]',
+      'overflow-y-auto',
+    );
+  });
+
+  it('tints the balance-only ring with the balance tone, amber until empty', () => {
+    mockStartupConfig.mockReturnValue(config({ contextUsage: false }));
+    mockBalance.mockReturnValue({ ...balance, tokenCredits: 400_000 });
+    renderGauge();
+    const meter = screen.getByRole('meter', { name: 'Share of balance used' });
+    expect(meter).toHaveAttribute('aria-valuenow', '92');
+    const ring = meter.querySelectorAll('circle')[1];
+    expect(ring).toHaveClass('stroke-status-warning');
+    expect(ring).not.toHaveClass('stroke-status-error');
+  });
+
+  it('exposes no valueless meter while the balance-only gauge has nothing to measure', () => {
+    mockBalance.mockReturnValue({ tokenCredits: 900, autoRefillEnabled: false });
+    mockStartupConfig.mockReturnValue({
+      ...config({ contextUsage: false, display: 'percent' }),
+      balance: { enabled: true, startBalance: 0, display: 'percent' },
+    });
+    renderGauge();
+    expect(screen.getByTestId('token-usage')).toBeInTheDocument();
+    expect(screen.queryByRole('meter')).not.toBeInTheDocument();
+  });
+
   it('mounts nothing when both context usage and balance are off', () => {
     mockStartupConfig.mockReturnValue(config({ balanceEnabled: false, contextUsage: false }));
     const { container } = renderGauge();

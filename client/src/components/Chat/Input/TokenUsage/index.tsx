@@ -151,7 +151,7 @@ function TokenUsageIndicator({
     >
       {/* The popover owns its width, which the breakdown held only while it
           was the sole child of a shrink-to-fit box. */}
-      <div className="w-72 space-y-3">
+      <div className="w-72 max-w-full space-y-3">
         {hasContext && (
           <ContextCard
             view={view}
@@ -180,7 +180,8 @@ function BalanceIndicator({ conversationId }: { conversationId: string }) {
   if (state.status === 'empty') {
     return null;
   }
-  const usedPercent = state.status === 'success' ? state.summary.usedPercent : null;
+  const summary = state.status === 'success' ? state.summary : null;
+  const usedPercent = summary?.usedPercent ?? null;
   const label = localize('com_nav_balance');
 
   return (
@@ -188,20 +189,30 @@ function BalanceIndicator({ conversationId }: { conversationId: string }) {
       resetKey={conversationId}
       label={label}
       cardLabel={label}
-      trigger={() => (
-        <span
-          role="meter"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={usedPercent ?? undefined}
-          aria-label={localize('com_ui_balance_used_label')}
-          className="flex items-center justify-center"
-        >
-          <Gauge percent={usedPercent ?? 0} indeterminate={usedPercent == null} />
-        </span>
-      )}
+      busy={state.status === 'loading'}
+      trigger={() =>
+        /** A meter has no indeterminate state: until there is a share to report
+         *  (loading, failed, nothing to measure against) the ring is decoration
+         *  and the button's label carries the name. */
+        usedPercent != null ? (
+          <span
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={usedPercent}
+            aria-label={localize('com_ui_balance_used_label')}
+            className="flex items-center justify-center"
+          >
+            <Gauge percent={usedPercent} indeterminate={false} tone={summary?.tone} />
+          </span>
+        ) : (
+          <span aria-hidden="true" className="flex items-center justify-center">
+            <Gauge percent={0} indeterminate />
+          </span>
+        )
+      }
     >
-      <div className="w-72">
+      <div className="w-72 max-w-full">
         <BalanceSummary state={state} currency={currency} />
       </div>
     </UsagePopover>

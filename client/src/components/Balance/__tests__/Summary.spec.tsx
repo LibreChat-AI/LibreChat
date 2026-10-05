@@ -39,21 +39,23 @@ describe('balance Summary', () => {
       'aria-valuenow',
       '38',
     );
-    expect(screen.getByTestId('balance-refill')).toHaveTextContent('+5,000,000 in 3 days');
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent(
+      '+5,000,000 available in 3 days',
+    );
     expect(screen.getByTestId('balance-status')).toHaveTextContent('38% used');
   });
 
   it('shows money in currency mode', () => {
     render(<Summary state={success('currency')} currency={{ code: 'EUR', rate: 0.5 }} />);
     expect(screen.getByTestId('balance-value')).toHaveTextContent('€1.55');
-    expect(screen.getByTestId('balance-refill')).toHaveTextContent('+€2.50 in 3 days');
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent('+€2.50 available in 3 days');
   });
 
   it('shows no credit or money figure in percent mode', () => {
     const { container } = render(<Summary state={success('percent')} />);
     expect(screen.getByRole('heading', { name: 'Usage limit' })).toBeInTheDocument();
     expect(screen.getByTestId('balance-value')).toHaveTextContent('38% used');
-    expect(screen.getByTestId('balance-refill')).toHaveTextContent('Refills in 3 days');
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent('Refill available in 3 days');
     expect(container).not.toHaveTextContent(/credits|5,000,000|3,100,000|\$/);
   });
 
@@ -66,6 +68,32 @@ describe('balance Summary', () => {
     render(<Summary state={success('credits', { tokenCredits: 0 })} />);
     expect(screen.getByTestId('balance-status')).toHaveTextContent('Out of credits');
     expect(screen.getByTestId('balance-value')).toHaveClass('text-text-destructive');
+  });
+
+  it('says usage is unavailable in percent mode when nothing measures the spend', () => {
+    const state: BalanceState = {
+      status: 'success',
+      summary: summarizeBalance(
+        { tokenCredits: 900, autoRefillEnabled: false },
+        { display: 'percent', startBalance: 0 },
+      ),
+    };
+    render(<Summary state={state} />);
+    expect(screen.getByTestId('balance-value')).toHaveTextContent('Usage unavailable');
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  });
+
+  it('reads an empty balance as fully used even without an allotment', () => {
+    const state: BalanceState = {
+      status: 'success',
+      summary: summarizeBalance(
+        { tokenCredits: 0, autoRefillEnabled: false },
+        { display: 'percent', startBalance: 0 },
+      ),
+    };
+    render(<Summary state={state} />);
+    expect(screen.getByTestId('balance-value')).toHaveTextContent('100% used');
+    expect(screen.getByTestId('balance-status')).toHaveTextContent('Out of credits');
   });
 
   it('omits the bar when nothing measures the spend', () => {

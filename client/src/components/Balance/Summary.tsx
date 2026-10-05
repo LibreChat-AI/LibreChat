@@ -53,9 +53,12 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
   const refillText = useRefillText(summary, currency);
   const { display, credits, usedPercent, tone } = summary;
 
-  let value = '';
+  let value: string;
   if (display === 'percent') {
-    value = usedPercent != null ? localize('com_ui_balance_used', { 0: String(usedPercent) }) : '';
+    value =
+      usedPercent != null
+        ? localize('com_ui_balance_used', { 0: String(usedPercent) })
+        : localize('com_ui_balance_usage_unavailable');
   } else if (display === 'currency') {
     value = formatBalanceAmount(credits, display, currency);
   } else {

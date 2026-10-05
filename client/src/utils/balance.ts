@@ -17,7 +17,8 @@ export interface BalanceSummary {
   credits: number;
   /** Credits one period grants: the refill amount under auto-refill, else the starting balance. */
   allotment: number | null;
-  /** Whole percent of the allotment spent, 0–100; null without an allotment to measure against. */
+  /** Whole percent of the allotment spent, 0–100; 100 once credits run out, else null without
+   *  an allotment to measure against. */
   usedPercent: number | null;
   tone: BalanceTone;
   /** Credits the next auto-refill adds; null without auto-refill. */
@@ -48,14 +49,15 @@ function getNextRefill(balance: TBalanceResponse): Date | null {
 
 /**
  * Percent spent is floored while credits remain, so a nearly drained balance never
- * reads "100% used" before it is actually empty.
+ * reads "100% used" before it is actually empty; an empty balance is fully spent
+ * whatever it is measured against.
  */
 function getUsedPercent(credits: number, allotment: number | null): number | null {
-  if (allotment == null) {
-    return null;
-  }
   if (credits <= 0) {
     return 100;
+  }
+  if (allotment == null) {
+    return null;
   }
   const spent = (1 - credits / allotment) * 100;
   return Math.min(Math.max(Math.floor(spent), 0), 99);
