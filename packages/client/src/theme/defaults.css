@@ -238,9 +238,9 @@ html {
   --theme-surface-radius: 1rem;
   --theme-large-surface-radius: 1.5rem;
   --theme-menu-radius: 0.7rem;
-  --theme-popover-radius: 1rem;
-  --theme-menu-panel-radius: 0.75rem;
-  --theme-composer-action-radius: 9999px;
+  --theme-popover-radius: var(--theme-radius-2xl, 1rem);
+  --theme-menu-panel-radius: var(--theme-radius-xl, 0.75rem);
+  --theme-composer-action-radius: var(--theme-round-control-radius, 9999px);
   --theme-inline-code-weight: 600;
   --theme-tooltip-radius: 0.275rem;
   --theme-tooltip-padding-x: 0.5rem;

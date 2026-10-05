@@ -292,6 +292,9 @@ describe('LibreChat Tailwind preset', () => {
       dialogTitleSize: 'textLg',
       dialogTitleFontFamily: 'displayFontFamily',
       menuShadow: 'shadowLg',
+      popoverRadius: 'radius2xl',
+      menuPanelRadius: 'radiusXl',
+      composerActionRadius: 'roundControlRadius',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]

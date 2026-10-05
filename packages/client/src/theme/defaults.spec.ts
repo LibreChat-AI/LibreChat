@@ -93,6 +93,9 @@ const stockAliases: Partial<
   dialogTitleSize: 'textLg',
   dialogTitleFontFamily: 'displayFontFamily',
   menuShadow: 'shadowLg',
+  popoverRadius: 'radius2xl',
+  menuPanelRadius: 'radiusXl',
+  composerActionRadius: 'roundControlRadius',
 };
 
 /** Color roles split out of a broader one read it in the stylesheet, in both modes, so a

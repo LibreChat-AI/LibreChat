@@ -3,10 +3,15 @@ import path from 'path';
 
 const CHAT_DIR = path.resolve(__dirname, '../..');
 const SCAN_DIRS = ['Input', 'Menus', 'Messages', 'BackgroundTasks', 'approval'];
+const PACKAGE_COMPONENTS = path.resolve(
+  __dirname,
+  '../../../../../../packages/client/src/components',
+);
+const PACKAGE_PANELS = ['SendActions.tsx'];
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
-  /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
+  /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover|Hovercard)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
 const PANEL_CLASS = /className="popover\b[^"]*"/g;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
 const PANEL_ROLE = /\brounded-theme-(?:menu-panel|popover)\b/;
@@ -26,7 +31,10 @@ function sourcesUnder(dir: string): string[] {
 }
 
 describe('composer menu and popover panels', () => {
-  const files = SCAN_DIRS.flatMap((dir) => sourcesUnder(path.join(CHAT_DIR, dir)));
+  const files = [
+    ...SCAN_DIRS.flatMap((dir) => sourcesUnder(path.join(CHAT_DIR, dir))),
+    ...PACKAGE_PANELS.map((file) => path.join(PACKAGE_COMPONENTS, file)),
+  ];
 
   it('finds the panels the theme roles are meant to cover', () => {
     const panels = files.flatMap((file) => {
