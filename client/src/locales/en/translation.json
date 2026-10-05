@@ -85,7 +85,6 @@
   "com_ui_repository_instructions_defer": "Prefer agent conventions",
   "com_ui_repository_instructions_off": "Off",
   "com_ui_repository_instructions_description": "Load AGENTS.md, or CLAUDE.md when absent, from the selected workspace when its owner enables discovery. Tool permissions remain unchanged.",
-  "com_ui_repository_instructions_truncated": "Truncated",
   "com_ui_code_workspace_default": "Default workspace for new chats",
   "com_ui_code_workspace_last_used": "Last used workspace",
   "com_ui_code_workspace_default_description": "New chats use this workspace. Without a default, reuse your last available choice for this agent and machine in this browser. Existing chats keep their workspace.",
