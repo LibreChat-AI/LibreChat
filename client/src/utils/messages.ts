@@ -206,17 +206,21 @@ export const getLatestText = (message?: TMessage | null, includeIndex?: boolean)
   return '';
 };
 
+/**
+ * Spoken/announced text for a message: the answer only, never reasoning.
+ * `content` wins over `text` because an aborted run persists both, with the
+ * `text` copy including THINK parts — reading it aloud would leak reasoning.
+ * Reasoning-bearing content without any answer yields an empty string rather
+ * than falling back to that same `text` copy, which aborting before the first
+ * answer token leaves holding nothing but the reasoning.
+ */
 export const getAllContentText = (message?: TMessage | null): string => {
   if (!message) {
     return '';
   }
 
-  if (message.text) {
-    return message.text;
-  }
-
   if (message.content && message.content.length > 0) {
-    return message.content
+    const contentText = message.content
       .filter((part) => part != null && part.type === ContentTypes.TEXT)
       .map((part) => {
         if (!('text' in part)) return '';
@@ -226,9 +230,17 @@ export const getAllContentText = (message?: TMessage | null): string => {
       })
       .filter((text) => text.length > 0)
       .join('\n');
+
+    if (contentText.length > 0) {
+      return contentText;
+    }
+
+    if (message.content.some((part) => part?.type === ContentTypes.THINK)) {
+      return '';
+    }
   }
 
-  return '';
+  return message.text || '';
 };
 
 const getPartTextValue = (value?: string | { value?: string }): string =>
