@@ -6,9 +6,9 @@ import type { ProvisionToolContext } from '~/files/provision/callback';
 import type { ServerRequest } from '~/types';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
-import { createRun, collectResolvedSubagentAgents } from '~/agents/run';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
+import { createRun } from '~/agents/run';
 
 /**
  * Guards the code-tool eager/session wiring in `createRun`. The whole
@@ -66,7 +66,13 @@ jest.mock('~/agents/checkpointer', () => ({
   getAgentCheckpointer: jest.fn().mockResolvedValue({}),
 }));
 
-import { HookRegistry, InMemorySubagentTaskStore, Run } from '@librechat/agents';
+import {
+  Constants,
+  HookRegistry,
+  InMemorySubagentTaskStore,
+  Run,
+  executeHooks,
+} from '@librechat/agents';
 
 function makeAgent(overrides?: Record<string, unknown>) {
   return {
@@ -592,12 +598,82 @@ describe('createRun code-tool eager/session wiring', () => {
   });
 });
 
-describe('collectResolvedSubagentAgents', () => {
-  it('registers a resolved child together with the graph members it initialized', () => {
-    const member = { id: 'member' };
-    const child = { id: 'child', subagentGraphConfigs: [{ memberConfigs: [member] }] };
+describe('attached-machine policy for lazily initialized graph members', () => {
+  beforeEach(() => jest.clearAllMocks());
 
-    expect(collectResolvedSubagentAgents(child)).toEqual([child, member]);
-    expect(collectResolvedSubagentAgents({ id: 'solo' })).toEqual([{ id: 'solo' }]);
+  const attachedOn = (environmentId: string, commandExecution: 'allow' | 'deny') => ({
+    environmentType: 'attached',
+    environmentId,
+    codeEnvironmentConfigSchema: {
+      permissions: { commandExecution: { allowed: ['allow', 'ask', 'deny'], default: 'ask' } },
+    },
+    codeEnvironmentSettings: { permissions: { commandExecution } },
+  });
+
+  it('applies the policy of the machine a routed child sent its graph member to', async () => {
+    const definition = {
+      type: 'review_team',
+      name: 'Review team',
+      description: 'A one-member team',
+      agent_ids: ['member'],
+      edges: [],
+      entry_agent_id: 'member',
+      result_agent_id: 'member',
+    };
+    const routedMember = makeAgent({
+      id: 'member',
+      codeExecutionContext: attachedOn('buildbox', 'deny'),
+    });
+    const child = makeAgent({
+      id: 'child',
+      subagentGraphConfigs: [{ definition, memberConfigs: [routedMember] }],
+    });
+    const resolve = jest.fn().mockResolvedValue(child);
+    await createRun({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            {
+              id: 'child',
+              configId: 'child:1',
+              resolve,
+              subagentGraphMemberMetadata: [
+                { id: 'member', codeExecutionContext: attachedOn('laptop', 'allow') },
+              ],
+            },
+          ],
+        }),
+      ] as never,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+      hitlCapable: true,
+    });
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    const decide = async () =>
+      (
+        await executeHooks({
+          registry: runConfig.hooks as HookRegistry,
+          input: {
+            hook_event_name: 'PreToolUse',
+            runId: 'run-1',
+            toolName: Constants.BASH_TOOL,
+            toolInput: { command: 'ls' },
+            toolUseId: 'call-1',
+            executingAgentId: 'member',
+          },
+          matchQuery: Constants.BASH_TOOL,
+        })
+      ).decision;
+
+    expect(await decide()).toBe('allow');
+
+    const [parentInput] = (runConfig.graphConfig as { agents: AgentInputs[] }).agents;
+    const resolveInputs = parentInput.subagentConfigs?.[0].resolveAgentInputs;
+    if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+    await resolveInputs({ signal: new AbortController().signal } as SubagentResolveContext);
+
+    expect(await decide()).toBe('deny');
   });
 });
