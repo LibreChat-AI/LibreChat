@@ -74,7 +74,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
         className={cn(
           parent ? 'animate-popover-left ml-3' : 'animate-popover',
           'z-40 flex max-h-[min(28.125rem,var(--popover-available-height))] w-full outline-hidden!',
-          'border-border-menu w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto rounded-theme-menu-panel border',
+          'border-border-menu rounded-theme-menu-panel w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto border',
           'bg-surface-menu text-text-primary text-sm shadow-lg',
           parent ? 'px-0.5 py-0.5' : 'px-3 py-2',
           'max-w-[calc(100vw-4rem)] sm:max-h-[calc(65vh)] sm:max-w-[25rem]',
