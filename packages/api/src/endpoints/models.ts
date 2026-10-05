@@ -171,6 +171,7 @@ export async function fetchModels({
   onModelLabels,
 }: FetchModelsParams): Promise<string[]> {
   let models: string[] = [];
+  let fetchedModels = false;
   let modelLabels: Record<string, string> = {};
   const baseURL = direct ? extractBaseURL(_baseURL ?? '') : _baseURL;
 
@@ -204,6 +205,9 @@ export async function fetchModels({
       modelsCache.get(cacheKey),
       onModelLabels ? modelsCache.get<Record<string, string>>(`${cacheKey}:labels`) : undefined,
     ]);
+    if (cachedModels) {
+      models = cachedModels as string[];
+    }
     if (cachedModels && (!onModelLabels || cachedLabels != null)) {
       modelLabels = cachedLabels ?? {};
       onModelLabels?.(modelLabels);
@@ -318,12 +322,13 @@ export async function fetchModels({
     );
 
     onModelLabels?.(modelLabels);
+    fetchedModels = true;
   } catch (error) {
     const logMessage = `Failed to fetch models from ${azure ? 'Azure ' : ''}${name} API`;
     logAxiosError({ message: logMessage, error: error as Error });
   }
 
-  if (modelsCache && cacheKey && models.length > 0) {
+  if (fetchedModels && modelsCache && cacheKey && models.length > 0) {
     await modelsCache.set(`${cacheKey}:labels`, modelLabels, Time.TWO_MINUTES);
     await modelsCache.set(cacheKey, models, Time.TWO_MINUTES);
   }

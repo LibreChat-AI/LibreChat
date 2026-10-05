@@ -61,7 +61,7 @@ function prepareSearchResults(
     const filteredModels = endpointMatches
       ? models
       : models.filter((model) => {
-          let modelName = model.name;
+          let modelName = endpoint.modelLabels?.[model.name] ?? model.name;
           if (
             isAgentsEndpoint(endpoint.value) &&
             endpoint.agentNames &&
@@ -75,7 +75,10 @@ function prepareSearchResults(
           ) {
             modelName = endpoint.assistantNames[model.name];
           }
-          return modelName.toLowerCase().includes(lowerQuery);
+          return (
+            modelName.toLowerCase().includes(lowerQuery) ||
+            model.name.toLowerCase().includes(lowerQuery)
+          );
         });
 
     if (!filteredModels.length && !showMarketplace) {

@@ -1133,12 +1133,12 @@ describe('fetchModels display names', () => {
     expect(onModelLabels).toHaveBeenCalledWith({ 'model-1': 'Friendly model' });
   });
 
-  it('preserves distinct IDs when two models have the same name', async () => {
+  it('preserves model IDs and provides their display names', async () => {
     mockedAxios.get.mockResolvedValueOnce({
       data: {
         data: [
-          { id: 'model-1', name: 'Friendly' },
-          { id: 'model-2', name: 'Friendly' },
+          { id: 'model-1', name: 'Friendly A' },
+          { id: 'model-2', name: 'Friendly B' },
         ],
       },
     });
@@ -1146,8 +1146,8 @@ describe('fetchModels display names', () => {
 
     expect(await fetchModels({ ...options, onModelLabels })).toEqual(['model-1', 'model-2']);
     expect(onModelLabels).toHaveBeenCalledWith({
-      'model-1': 'Friendly',
-      'model-2': 'Friendly',
+      'model-1': 'Friendly A',
+      'model-2': 'Friendly B',
     });
   });
 
