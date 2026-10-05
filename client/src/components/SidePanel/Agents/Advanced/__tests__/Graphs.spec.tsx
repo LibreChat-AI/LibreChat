@@ -1,14 +1,19 @@
 import { useForm, FormProvider } from 'react-hook-form';
+import { AgentCapabilities } from 'librechat-data-provider';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { AgentSubagentsConfig } from 'librechat-data-provider';
+import type { AgentSubagentsConfig, TAgentsEndpoint } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import Graphs from '../Graphs';
 
+let mockAgentsConfig: Partial<TAgentsEndpoint> = {
+  maxSubagents: 2,
+  capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+};
 let mockGetValues: UseFormReturn<AgentForm>['getValues'];
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('~/Providers', () => ({
-  useAgentPanelContext: () => ({ agentsConfig: { maxSubagents: 2 } }),
+  useAgentPanelContext: () => ({ agentsConfig: mockAgentsConfig }),
   useAgentsMapContext: () => ({}),
 }));
 const team = {
@@ -27,9 +32,16 @@ const initialSubagents: AgentSubagentsConfig = {
   agent_ids: ['child'],
   graphs: [team],
 };
-function Harness({ subagents = initialSubagents }: { subagents?: AgentSubagentsConfig }) {
+function Harness({
+  subagents = initialSubagents,
+  defaults = {},
+}: {
+  subagents?: AgentSubagentsConfig;
+  defaults?: Partial<AgentForm>;
+}) {
   const methods = useForm<AgentForm>({
     defaultValues: {
+      ...defaults,
       subagents,
       edges: [{ from: 'parent', to: 'handoff', edgeType: 'handoff' }],
     },
@@ -118,4 +130,108 @@ test('removing one disabled team does not activate any remaining definitions', (
   render(<Harness subagents={subagents} />);
   fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_agent_graphs_remove' })[0]);
   expect(mockGetValues('subagents')).toEqual({ ...subagents, graphs: [otherTeam] });
+});
+
+beforeEach(() => {
+  mockAgentsConfig = {
+    maxSubagents: 2,
+    capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+  };
+});
+
+test.each([
+  { capabilities: [AgentCapabilities.subagent_graphs] },
+  { capabilities: [AgentCapabilities.subagents] },
+  { capabilities: [] },
+])('legacy edits retain the stored capability choice: %j', ({ capabilities }) => {
+  mockAgentsConfig.capabilities = capabilities;
+  const subagents = { enabled: true, allowSelf: false, graphs: [team] };
+  render(<Harness subagents={subagents} />);
+  expect(screen.getByRole('switch')).toHaveAttribute(
+    'aria-checked',
+    String(capabilities.includes(AgentCapabilities.subagents)),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_edit' }));
+  fireEvent.change(screen.getByLabelText('com_ui_agent_graphs_name'), {
+    target: { value: 'Renamed' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_save' }));
+  expect(mockGetValues('subagents.graphsEnabled')).toBeUndefined();
+});
+
+const chain = (type: string, start: number, count: number) => {
+  const agent_ids = Array.from({ length: count }, (_, index) => `member-${start + index}`);
+  return {
+    type,
+    name: type,
+    description: 'Work',
+    agent_ids,
+    entry_agent_id: agent_ids[0],
+    result_agent_id: agent_ids[count - 1],
+    edges: agent_ids
+      .slice(1)
+      .map((id, index) => ({ from: agent_ids[index], to: id, edgeType: 'direct' as const })),
+  };
+};
+test.each([49, 50])('validates unique graph members including ordinary targets at %s', (count) => {
+  const first = chain('first', 0, 25);
+  const second = chain('second', 25, count - 25);
+  const subagents = { ...initialSubagents, agent_ids: ['ordinary'], graphs: [first, second] };
+  render(<Harness subagents={subagents} />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_agent_graphs_edit' })[1]);
+  fireEvent.change(screen.getByLabelText('com_ui_agent_graphs_name'), {
+    target: { value: 'Changed second' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_agent_graphs_save' }));
+  if (count === 50) {
+    expect(screen.getByRole('alert')).toBeVisible();
+    expect(mockGetValues('subagents')).toEqual(subagents);
+  } else expect(mockGetValues('subagents.graphs.1.name')).toBe('Changed second');
+});
+
+test.each([undefined, false, true])(
+  'attached code warning respects effective endpoint enabled=%s',
+  (enabled) => {
+    mockAgentsConfig = {
+      ...mockAgentsConfig,
+      capabilities: [
+        ...(mockAgentsConfig.capabilities ?? []),
+        AgentCapabilities.stateful_code_sessions,
+      ],
+      toolApproval: enabled == null ? undefined : { enabled },
+      statefulCodeSessions: {
+        environments: [{ id: 'attached', type: 'attached', name: 'Machine', default: true }],
+      },
+    };
+    render(<Harness defaults={{ execute_code: true, stateful_code_sessions: true }} />);
+    expect(screen.queryByRole('note') != null).toBe(enabled !== false);
+  },
+);
+
+test('removing a legacy team never promotes remaining definitions to the new capability', () => {
+  mockAgentsConfig.capabilities = [AgentCapabilities.subagent_graphs];
+  const other = { ...team, type: 'other' };
+  const subagents = { enabled: true, graphs: [team, other] };
+  render(<Harness subagents={subagents} />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_agent_graphs_remove' })[0]);
+  expect(mockGetValues('subagents.graphsEnabled')).toBeUndefined();
+  expect(mockGetValues('subagents.graphs')).toEqual([other]);
+});
+
+test('managed code does not show an implicit attached approval warning', () => {
+  mockAgentsConfig = {
+    ...mockAgentsConfig,
+    capabilities: [
+      ...(mockAgentsConfig.capabilities ?? []),
+      AgentCapabilities.stateful_code_sessions,
+    ],
+    statefulCodeSessions: {
+      environments: [
+        { id: 'managed', type: 'managed', name: 'Managed', default: true },
+        { id: 'attached', type: 'attached', name: 'Machine' },
+      ],
+    },
+  };
+  render(<Harness defaults={{ execute_code: true, stateful_code_sessions: true }} />);
+  expect(screen.queryByRole('note')).toBeNull();
 });

@@ -12,6 +12,7 @@ import {
   ErrorTypes,
   MAX_SUBAGENT_GRAPH_NODES,
   graphSubagentSchema,
+  getSubagentGraphMemberCount,
 } from 'librechat-data-provider';
 import type {
   Agent,
@@ -211,7 +212,6 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
       });
     }
     const reservedTypes = new Set(subagents.agent_ids ?? []);
-    const configuredAgentIds = new Set(subagents.agent_ids ?? []);
     if (subagents.allowSelf !== false) {
       reservedTypes.add('self');
     }
@@ -228,11 +228,8 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
         });
       }
       reservedTypes.add(graph.type);
-      for (const agentId of graph.agent_ids) {
-        configuredAgentIds.add(agentId);
-      }
     }
-    if (configuredAgentIds.size > MAX_SUBAGENT_GRAPH_NODES) {
+    if (getSubagentGraphMemberCount(subagents) > MAX_SUBAGENT_GRAPH_NODES) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `Subagent configuration exceeds the maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents`,

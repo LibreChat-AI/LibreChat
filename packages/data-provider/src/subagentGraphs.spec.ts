@@ -1,6 +1,11 @@
 import type { AgentSubagentGraph, AgentSubagentsConfig } from './types/agents';
-import { graphSubagentSchema, isSubagentGraphsEnabled, resolveSubagents } from './subagentGraphs';
-import { AgentCapabilities } from './config';
+import {
+  getSubagentGraphMemberCount,
+  graphSubagentSchema,
+  isSubagentGraphsEnabled,
+  resolveSubagents,
+} from './subagentGraphs';
+import { AgentCapabilities, defaultAgentCapabilities } from './config';
 
 const graph: AgentSubagentGraph = {
   type: 'review',
@@ -142,4 +147,18 @@ test('a new graph capability never authorizes untouched legacy teams', () => {
   expect(
     resolveSubagents({ ...legacy, graphsEnabled: true }, [AgentCapabilities.subagent_graphs]),
   ).toMatchObject({ enabled: true, graphs: [graph], agent_ids: [], allowSelf: false });
+});
+
+test('graph teams remain an explicit deployment capability', () => {
+  expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.subagent_graphs);
+  expect(defaultAgentCapabilities).toContain(AgentCapabilities.subagents);
+});
+
+test('counts unique stored targets across ordinary and graph definitions', () => {
+  expect(
+    getSubagentGraphMemberCount({
+      agent_ids: ['entry', 'ordinary'],
+      graphs: [graph, { ...graph, type: 'second' }],
+    }),
+  ).toBe(5);
 });

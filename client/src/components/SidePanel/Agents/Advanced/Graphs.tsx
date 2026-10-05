@@ -12,6 +12,10 @@ import {
 } from '@librechat/client';
 import {
   graphSubagentSchema,
+  getSubagentGraphMemberCount,
+  MAX_SUBAGENT_GRAPH_NODES,
+  AgentCapabilities,
+  Tools,
   isSubagentGraphsEnabled,
   MAX_SUBAGENTS,
   MAX_GRAPH_SUBAGENT_MEMBERS,
@@ -36,7 +40,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
   const { control, getValues, setValue } = useFormContext<AgentForm>();
   const subagents = useWatch({ control, name: 'subagents' });
   const graphs = subagents?.graphs ?? [];
-  const enabled = isSubagentGraphsEnabled(subagents);
+  const enabled = isSubagentGraphsEnabled(subagents, agentsConfig?.capabilities);
   const maximum = agentsConfig?.maxSubagents ?? MAX_SUBAGENTS;
   const { options, getAgent } = useSelectableAgents({ currentAgentId });
   const portalElement = useContext(AgentPickerPortalContext) ?? undefined;
@@ -50,7 +54,33 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     id === currentAgentId || id === ''
       ? localize('com_ui_agent_graphs_self')
       : (getAgent(id)?.name ?? id);
-  const write = (next: AgentSubagentGraph[], active: boolean) => {
+  const [codeEnabled, statefulSessions, codeEnvironmentId] = useWatch({
+    control,
+    name: ['execute_code', 'stateful_code_sessions', 'code_environment_id'],
+  });
+  const environments = agentsConfig?.statefulCodeSessions?.environments;
+  const attachedEnvironment = (id?: string) =>
+    (id
+      ? environments?.find((environment) => environment.id === id)
+      : environments?.find((environment) => environment.default === true)
+    )?.type === 'attached';
+  const attachedCode =
+    agentsConfig?.capabilities.includes(AgentCapabilities.stateful_code_sessions) &&
+    ((codeEnabled && statefulSessions && attachedEnvironment(codeEnvironmentId)) ||
+      graphs.some((team) =>
+        team.agent_ids.some((id) => {
+          const member = getAgent(id);
+          return (
+            member?.stateful_code_sessions === true &&
+            member.tools?.includes(Tools.execute_code) &&
+            attachedEnvironment(member.code_environment_id)
+          );
+        }),
+      ));
+  const approvalEnabled =
+    agentsConfig?.toolApproval?.enabled === true ||
+    (agentsConfig?.toolApproval?.enabled !== false && attachedCode);
+  const write = (next: AgentSubagentGraph[], active?: boolean) => {
     const value = getValues('subagents');
     setValue(
       'subagents',
@@ -59,7 +89,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
         enabled: value?.enabled ?? false,
         allowSelf: value?.allowSelf ?? true,
         agent_ids: value?.agent_ids ?? [],
-        graphsEnabled: active,
+        ...(active === undefined ? {} : { graphsEnabled: active }),
         graphs: next,
       },
       { shouldDirty: true },
@@ -102,7 +132,11 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
       }
       next.push(parsed.data);
     } else next[draft.index] = parsed.data;
-    write(next, draft.index === null ? true : enabled);
+    if (getSubagentGraphMemberCount({ ...subagents, graphs: next }) > MAX_SUBAGENT_GRAPH_NODES) {
+      setInvalid(true);
+      return;
+    }
+    write(next, draft.index === null ? true : undefined);
     setDraft(null);
   };
   const graph = draft?.graph;
@@ -125,7 +159,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
         </CountPill>
       }
     >
-      {agentsConfig?.toolApproval?.enabled === true && (
+      {approvalEnabled && (
         <p role="note" className="text-text-warning text-sm">
           {localize('com_ui_agent_graphs_approvals')}
         </p>
@@ -175,7 +209,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
                   onClick={() =>
                     write(
                       graphs.filter((_, i) => i !== index),
-                      enabled,
+                      undefined,
                     )
                   }
                 >

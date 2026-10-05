@@ -159,6 +159,15 @@ export const graphSubagentSchema: z.ZodType<AgentSubagentGraph> = z
     }
   });
 
+/** Unique stored targets across ordinary subagents and every graph team. */
+export function getSubagentGraphMemberCount(config: AgentSubagentsConfig): number {
+  const members = new Set(config.agent_ids ?? []);
+  for (const graph of config.graphs ?? []) {
+    for (const id of graph.agent_ids) members.add(id);
+  }
+  return members.size;
+}
+
 /** Legacy teams retain the ordinary subagents gate until a graph-specific choice is saved. */
 export function isSubagentGraphsEnabled(
   config?: Pick<AgentSubagentsConfig, 'enabled' | 'graphsEnabled'> | null,

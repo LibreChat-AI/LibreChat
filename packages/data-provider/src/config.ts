@@ -885,7 +885,6 @@ export const defaultAgentCapabilities = [
   AgentCapabilities.web_search,
   AgentCapabilities.artifacts,
   AgentCapabilities.subagents,
-  AgentCapabilities.subagent_graphs,
   AgentCapabilities.actions,
   AgentCapabilities.context,
   AgentCapabilities.skills,
