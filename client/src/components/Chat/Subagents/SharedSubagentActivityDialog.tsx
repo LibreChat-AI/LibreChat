@@ -3,13 +3,10 @@ import { useAtom } from 'jotai';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import {
-  agentAuthor,
   isSelfSpawn as isSelfSpawnType,
   messageAuthor,
   findAgentLaneId,
-  resolveSelfAuthor,
-  resolveChildAgent,
-  readableSubagentType,
+  resolveSubagentAuthor,
   findAgentAuthorMessage,
 } from './author';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
@@ -63,31 +60,19 @@ export default function SharedSubagentActivityDialog({
     selection?.subagentType,
     selection?.subagentIdentity?.subagentKind,
   );
-  const childAgent = resolveChildAgent(
-    childAgentId,
-    selection?.subagentType,
-    parentAuthor.agent,
-    agentsMap,
-    selection?.subagentIdentity?.subagentKind,
-  );
   const childAuthor = useMemo(
     () =>
-      isSelfSpawn
-        ? resolveSelfAuthor(
-            parentAuthor,
-            childAgentId,
-            agentsMap,
-            localize('com_ui_subagent_actor'),
-          )
-        : agentAuthor(
-            childAgent,
-            readableSubagentType(
-              selection?.subagentType,
-              childAgentId,
-              selection?.subagentIdentity?.subagentKind,
-            ) || localize('com_ui_subagent_actor'),
-          ),
-    [agentsMap, childAgent, childAgentId, isSelfSpawn, localize, parentAuthor, selection],
+      resolveSubagentAuthor(
+        {
+          agentId: childAgentId,
+          subagentType: selection?.subagentType,
+          subagentKind: selection?.subagentIdentity?.subagentKind,
+        },
+        parentAuthor,
+        agentsMap,
+        localize('com_ui_subagent_actor'),
+      ),
+    [agentsMap, childAgentId, localize, parentAuthor, selection],
   );
   const title = childAuthor.name;
   const activity = useMemo(

@@ -4,9 +4,11 @@ import {
   isSelfSpawn,
   messageAuthor,
   resolveSelfAuthor,
+  resolveSubagentAuthor,
   findAgentLaneId,
   resolveChildAgent,
   readableSubagentType,
+  readableSubagentTitle,
   findAgentAuthorMessage,
 } from './author';
 
@@ -103,4 +105,33 @@ it('resolves repeated tool IDs by their content-part occurrence and rejects ambi
   expect(findAgentLaneId(dispatch, 'repeat', 1)).toBe('second');
   expect(findAgentLaneId(dispatch, 'repeat')).toBeUndefined();
   expect(findAgentLaneId(dispatch, 'repeat', 9)).toBeUndefined();
+});
+
+it('preserves literal graph titles while normalizing known legacy agent titles', () => {
+  expect(readableSubagentTitle('Subagent: research', undefined, 'graph')).toBe(
+    'Subagent: research',
+  );
+  expect(readableSubagentTitle('Subagent: Historical Agent', 'agent_deleted', 'agent')).toBe(
+    'Historical Agent',
+  );
+  expect(
+    readableSubagentTitle('Subagent: agent_deleted', 'agent_deleted', 'agent'),
+  ).toBeUndefined();
+});
+
+it.each([
+  [{ subagentType: 'self' }, 'Historical Parent'],
+  [{ subagentType: 'self', agentId: 'agent_parent' }, 'Historical Parent'],
+  [{ subagentType: 'self', agentId: 'agent_missing_lane' }, 'Agent'],
+  [{ subagentType: 'self', subagentKind: 'graph' as const }, 'self'],
+  [{ subagentType: 'Subagent: research', subagentKind: 'graph' as const }, 'Subagent: research'],
+  [{ subagentType: 'agent_research_team' }, 'agent_research_team'],
+  [{ subagentType: 'agent_deleted', subagentKind: 'agent' as const }, 'Agent'],
+  [{ subagentType: 'agent_deleted', agentId: 'agent_deleted' }, 'Agent'],
+])('resolves child identity %j consistently across surfaces', (child, expectedName) => {
+  const snapshot = message('dispatch', null);
+  snapshot.model = 'agent_parent';
+  snapshot.sender = 'Historical Parent';
+  const parent = messageAuthor(snapshot, undefined, 'Agent');
+  expect(resolveSubagentAuthor(child, parent, undefined, 'Agent').name).toBe(expectedName);
 });

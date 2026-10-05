@@ -30,21 +30,20 @@ import {
   retainBoundedMovingWindowTurns,
 } from './adapters';
 import {
-  agentAuthor,
-  resolveSelfAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  readableSubagentTitle,
-  useParentAuthor,
-} from './author';
-import {
   ACTIVE_THREAD_REFRESH_MS,
   subagentThreadHasTaskEvidence,
   useForkConvoMutation,
   useSubagentControlMutation,
   useSubagentThreadQuery,
 } from '~/data-provider';
+import {
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
+} from './author';
 import {
   activeSubagentPanel,
   subagentControlStateByTask,
@@ -166,6 +165,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     localize('com_ui_subagent_parent_agent'),
     selection.toolCallId,
     selection.partIndex,
+    selection.durable?.threadId,
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
@@ -244,7 +244,8 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const foregroundAgentId =
     childKind === 'graph'
       ? undefined
-      : resolveSubagentAgentId(progress, selection.subagentIdentity);
+      : (resolveSubagentAgentId(progress, selection.subagentIdentity) ??
+        byThreadId.get(threadId)?.agentId);
   const foregroundAgent = foregroundAgentId == null ? undefined : agentsMap?.[foregroundAgentId];
   /** Named the way main chat names an agent turn — never by its id. A
    *  self-spawn is the parent agent working on its own behalf. */
@@ -865,36 +866,34 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   );
   /** One author for the header, the composer and every child turn, so the three
    *  can never name the child differently. */
-  const childAuthor = useMemo(() => {
-    if (isSelfSpawn && selection.event == null) {
-      return resolveSelfAuthor(
-        parentAuthor,
-        selectedActorAgentId,
-        agentsMap,
-        localize('com_ui_subagent_actor'),
-      );
-    }
-    const fallbackName =
+  const childAuthor = useMemo(
+    () =>
       selection.event != null
-        ? selectedEventActorName
-        : readableSubagentTitle(
-            threadView?.title,
-            selectedActorAgentId,
-            threadView?.subagentKind,
-          ) || foregroundTitle;
-    return agentAuthor(selectedActorAgent, fallbackName);
-  }, [
-    agentsMap,
-    localize,
-    foregroundTitle,
-    isSelfSpawn,
-    parentAuthor,
-    selectedActorAgent,
-    selectedActorAgentId,
-    selectedEventActorName,
-    selection.event,
-    threadView,
-  ]);
+        ? agentAuthor(selectedActorAgent, selectedEventActorName)
+        : resolveSubagentAuthor(
+            {
+              agentId: selectedActorAgentId,
+              subagentType: selection.subagentType,
+              subagentKind: childKind,
+              title: threadView?.title,
+            },
+            parentAuthor,
+            agentsMap,
+            localize('com_ui_subagent_actor'),
+          ),
+    [
+      agentsMap,
+      childKind,
+      localize,
+      parentAuthor,
+      selectedActorAgent,
+      selectedActorAgentId,
+      selectedEventActorName,
+      selection.event,
+      selection.subagentType,
+      threadView?.title,
+    ],
+  );
   const panelTitle = childAuthor.name;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
     if (selection.event == null) return [];

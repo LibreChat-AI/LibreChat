@@ -833,7 +833,9 @@ describe('SubagentThreadPanel', () => {
     });
     const { rerender } = render(
       <Root>
-        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'repeat', partIndex: 0 }} />
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: undefined, toolCallId: 'repeat', partIndex: 0 }}
+        />
       </Root>,
     );
     expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
@@ -860,7 +862,9 @@ describe('SubagentThreadPanel', () => {
     });
     rerender(
       <Root>
-        <SubagentThreadPanel selection={{ ...selection, toolCallId: 'repeat', partIndex: 1 }} />
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: undefined, toolCallId: 'repeat', partIndex: 1 }}
+        />
       </Root>,
     );
     expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
@@ -868,6 +872,124 @@ describe('SubagentThreadPanel', () => {
       'Analyst One',
     );
   });
+
+  it.each([false, true])(
+    'retains an indexed saved agent while durable details are unavailable (failed: %s)',
+    (failed) => {
+      const child: ParentSubagentSummary = {
+        threadId: 'child-thread',
+        parentMessageId: 'parent-message',
+        subagentType: 'agent-2',
+        subagentKind: 'agent',
+        agentId: 'agent-2',
+        title: 'Analyst Two',
+        origin: 'tool',
+        status: 'completed',
+        latestTaskId: 'task',
+        tasks: [{ taskId: 'task', status: 'completed' }],
+        tasksTruncated: false,
+      };
+      mockParentChildrenByThread.set(child.threadId, child);
+      mockUseSubagentThreadQuery.mockReturnValue({ isLoading: !failed, isError: failed });
+      render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{ ...selection, subagentType: 'agent-2', subagentIdentity: undefined }}
+          />
+        </Root>,
+      );
+      expect(screen.getByRole('heading', { name: 'Analyst Two' })).toBeInTheDocument();
+    },
+  );
+
+  it('preserves a literal graph display title beginning with Subagent:', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: {
+        ...completedView,
+        agentId: undefined,
+        subagentKind: 'graph',
+        subagentType: 'Subagent: research',
+        title: 'Subagent: research',
+        turns: completedTurns,
+      },
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, subagentType: 'Subagent: research' }} />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: 'Subagent: research' })).toBeInTheDocument();
+  });
+
+  it.each(['self', 'researcher'])(
+    'resolves a restored %s dispatch by thread handle rather than its placeholder index',
+    (type) => {
+      const handle = (threadId: string) =>
+        JSON.stringify({
+          background_task_id: 'task',
+          subagent_thread_id: threadId,
+          tool: 'subagent',
+          subagent_type: type,
+          status: 'running',
+          message: 'Poll using background_task_id task.',
+        });
+      const dispatch: TMessage = {
+        messageId: 'parent-message',
+        parentMessageId: null,
+        conversationId: 'parent-conversation',
+        isCreatedByUser: false,
+        text: '',
+        endpoint: EModelEndpoint.agents,
+        model: 'agent-2',
+        sender: 'Analyst Two',
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            agentId: 'agent-2',
+            tool_call: {
+              id: 'repeat',
+              name: 'subagent',
+              args: { run_in_background: true },
+              output: handle('first-child'),
+            },
+          },
+          {
+            type: ContentTypes.TOOL_CALL,
+            agentId: 'agent-1',
+            tool_call: {
+              id: 'repeat',
+              name: 'subagent',
+              args: { run_in_background: true },
+              output: handle('child-thread'),
+            },
+          },
+        ],
+      };
+      queryClient.setQueryData([QueryKeys.messages, 'parent-conversation'], [dispatch]);
+      mockUseSubagentThreadQuery.mockReturnValue({
+        isLoading: false,
+        isError: false,
+        data: { ...completedView, subagentType: type, agentId: 'agent-1', turns: completedTurns },
+      });
+      render(
+        <Root>
+          <SubagentThreadPanel
+            selection={{ ...selection, subagentType: type, toolCallId: 'repeat', partIndex: 0 }}
+          />
+        </Root>,
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+        'data-parent-author',
+        'Analyst One',
+      );
+      expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+        'data-author',
+        'Analyst One',
+      );
+    },
+  );
 
   it('attributes restored parallel-lane self turns to the validated spawning agent', () => {
     queryClient.setQueryData<TMessage[]>(

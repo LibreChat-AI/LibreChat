@@ -6,6 +6,7 @@ import type { ReactNode } from 'react';
 import { isDocumentId } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
+import { findSubagentDispatch } from './dispatch';
 
 /** Who wrote a turn, in the form main chat's message header shows an author. */
 export type TurnAuthor = { name: string; icon: ReactNode; agent?: Agent; agentId?: string };
@@ -32,7 +33,8 @@ export function readableSubagentTitle(
   kind?: 'agent' | 'graph',
 ): string | undefined {
   if (!title) return undefined;
-  const name = title.startsWith('Subagent: ') ? title.slice('Subagent: '.length) : title;
+  const name =
+    kind !== 'graph' && title.startsWith('Subagent: ') ? title.slice('Subagent: '.length) : title;
   return readableSubagentType(name, agentId, kind);
 }
 
@@ -92,6 +94,36 @@ export function resolveSelfAuthor(
   const agent = agentsMap?.[agentId];
   if (parent.agentId == null && agent == null) return parent;
   return agentAuthor(agent, fallbackName);
+}
+
+/** One display rule for live, restored and shared child tasks. Explicit graph
+ *  aliases stay literal; self tasks retain the matching parent-turn snapshot. */
+export function resolveSubagentAuthor(
+  child: {
+    subagentType?: string | null;
+    subagentKind?: 'agent' | 'graph';
+    agentId?: string;
+    title?: string;
+  },
+  parent: TurnAuthor,
+  agentsMap: Record<string, Agent | undefined> | undefined,
+  fallbackName: string,
+): TurnAuthor {
+  if (isSelfSpawn(child.subagentType, child.subagentKind)) {
+    return resolveSelfAuthor(parent, child.agentId, agentsMap, fallbackName);
+  }
+  return agentAuthor(
+    resolveChildAgent(
+      child.agentId,
+      child.subagentType,
+      parent.agent,
+      agentsMap,
+      child.subagentKind,
+    ),
+    readableSubagentTitle(child.title, child.agentId, child.subagentKind) ??
+      readableSubagentType(child.subagentType, child.agentId, child.subagentKind) ??
+      fallbackName,
+  );
 }
 
 /** The author main chat draws for an agent turn: the agent's name and avatar,
@@ -180,23 +212,39 @@ export function useParentAuthor(
   fallbackName: string,
   toolCallId?: string,
   partIndex?: number,
+  threadId?: string,
 ): TurnAuthor {
   const queryClient = useQueryClient();
   const agentsMap = useAgentsMapContext();
   /** A different dispatch must read the latest message snapshot, even when
    *  both children belong to the same streamed parent turn. */
   const source = useMemo(
-    () => ({ conversationId, messageId, toolCallId, partIndex }),
-    [conversationId, messageId, toolCallId, partIndex],
+    () => ({ conversationId, messageId, toolCallId, partIndex, threadId }),
+    [conversationId, messageId, toolCallId, partIndex, threadId],
   );
   const store = useMemo(() => {
-    let message: TMessage | undefined;
+    let snapshot: { message: TMessage; laneId?: string } | undefined;
     const getSnapshot = () => {
-      message ??= findAgentAuthorMessage(
-        queryClient.getQueryData<TMessage[]>([QueryKeys.messages, source.conversationId]),
-        source.messageId,
-      );
-      return message;
+      if (snapshot != null) return snapshot;
+      const messages = queryClient.getQueryData<TMessage[]>([
+        QueryKeys.messages,
+        source.conversationId,
+      ]);
+      const dispatch = findSubagentDispatch(messages, source.threadId);
+      const message = dispatch?.message ?? findAgentAuthorMessage(messages, source.messageId);
+      if (message == null) return undefined;
+      /** Durable selections use a placeholder part index. A host-issued thread
+       *  handle identifies the real occurrence; without it, accept only a unique ID. */
+      const laneId =
+        dispatch != null
+          ? dispatch.agentId
+          : findAgentLaneId(
+              message,
+              source.toolCallId,
+              source.threadId ? undefined : source.partIndex,
+            );
+      snapshot = { message, laneId };
+      return snapshot;
     };
     return {
       getSnapshot,
@@ -213,15 +261,9 @@ export function useParentAuthor(
       },
     };
   }, [queryClient, source]);
-  const message = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
   return useMemo(
-    () =>
-      messageAuthor(
-        message,
-        agentsMap,
-        fallbackName,
-        findAgentLaneId(message, toolCallId, partIndex),
-      ),
-    [agentsMap, fallbackName, message, toolCallId, partIndex],
+    () => messageAuthor(snapshot?.message, agentsMap, fallbackName, snapshot?.laneId),
+    [agentsMap, fallbackName, snapshot],
   );
 }

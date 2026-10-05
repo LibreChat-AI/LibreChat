@@ -2,14 +2,10 @@ import { useMemo } from 'react';
 import type { ComponentProps } from 'react';
 import type { WakeupTask } from '../Content/Parts/wakeup';
 import {
-  agentAuthor,
-  isSelfSpawn,
   messageAuthor,
-  resolveSelfAuthor,
+  resolveSubagentAuthor,
   findAgentAuthorMessage,
   useParentAuthor,
-  readableSubagentType,
-  readableSubagentTitle,
 } from '~/components/Chat/Subagents/author';
 import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
@@ -31,28 +27,29 @@ export default function WakeupRow({
   const { getMessages } = useOptionalMessagesOperations();
   const { byThreadId } = useParentSubagents();
   const child = task?.threadId == null ? undefined : byThreadId.get(task.threadId);
-  const sharedDispatch = useMemo(
+  const dispatch = useMemo(
     () =>
-      isSharedConvo === true ? findSubagentDispatch(getMessages(), task?.threadId) : undefined,
-    [getMessages, isSharedConvo, task?.threadId],
+      child == null ? findSubagentDispatch(getMessages(conversationId), task?.threadId) : undefined,
+    [child, conversationId, getMessages, task?.threadId],
   );
-  const parentMessageId =
-    child?.parentMessageId ?? sharedDispatch?.message.messageId ?? props.id ?? '';
+  const parentMessageId = child?.parentMessageId ?? dispatch?.message.messageId ?? props.id ?? '';
   const fallbackName = localize('com_ui_subagent_actor');
   const privateParentAuthor = useParentAuthor(
     conversationId,
     isSharedConvo === true ? '' : parentMessageId,
     fallbackName,
     child?.parentToolCallId,
+    undefined,
+    isSharedConvo === true ? undefined : task?.threadId,
   );
   const parentAuthor = useMemo(
     () =>
       isSharedConvo === true
         ? messageAuthor(
-            findAgentAuthorMessage(getMessages(), parentMessageId),
+            dispatch?.message ?? findAgentAuthorMessage(getMessages(), parentMessageId),
             agentsMap,
             fallbackName,
-            sharedDispatch?.agentId,
+            dispatch?.agentId,
           )
         : privateParentAuthor,
     [
@@ -62,24 +59,24 @@ export default function WakeupRow({
       isSharedConvo,
       parentMessageId,
       privateParentAuthor,
-      sharedDispatch,
+      dispatch,
     ],
   );
-  const author = useMemo(() => {
-    const subagentType = child?.subagentType ?? sharedDispatch?.subagentType ?? task?.subagentType;
-    const kind = child?.subagentKind ?? sharedDispatch?.identity?.subagentKind;
-    const agentId = child?.agentId ?? sharedDispatch?.identity?.subagentAgentId;
-    if (isSelfSpawn(subagentType, kind)) {
-      return resolveSelfAuthor(parentAuthor, agentId, agentsMap, fallbackName);
-    }
-    const agent = kind === 'agent' ? agentsMap?.[agentId ?? ''] : undefined;
-    return agentAuthor(
-      agent,
-      readableSubagentTitle(child?.title, child?.agentId, child?.subagentKind) ??
-        readableSubagentType(subagentType, child?.agentId, kind) ??
-        localize('com_ui_subagent_actor'),
-    );
-  }, [agentsMap, child, fallbackName, localize, parentAuthor, sharedDispatch, task?.subagentType]);
+  const author = useMemo(
+    () =>
+      resolveSubagentAuthor(
+        {
+          subagentType: child?.subagentType ?? dispatch?.subagentType ?? task?.subagentType,
+          subagentKind: child?.subagentKind ?? dispatch?.identity?.subagentKind,
+          agentId: child?.agentId ?? dispatch?.identity?.subagentAgentId,
+          title: child?.title,
+        },
+        parentAuthor,
+        agentsMap,
+        fallbackName,
+      ),
+    [agentsMap, child, dispatch, fallbackName, parentAuthor, task?.subagentType],
+  );
   return (
     <MessageRow
       {...props}

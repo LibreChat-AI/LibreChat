@@ -1,6 +1,6 @@
 import { RecoilRoot } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
 import { render, screen } from '@testing-library/react';
+import { ContentTypes, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ParentSubagentSummary, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
@@ -99,12 +99,18 @@ const backgroundWakeup = [
   ]),
 ].join('\n');
 
-function renderMessage(text: string, parentModel = 'agent_lia', shared = false, submitted = false) {
+function renderMessage(
+  text: string,
+  parentModel = 'agent_lia',
+  shared = false,
+  submitted = false,
+  dispatch?: TMessage,
+) {
   const queryClient = new QueryClient();
   queryClient.setQueryData(
     [QueryKeys.messages, 'conversation-1'],
     [
-      {
+      dispatch ?? {
         messageId: 'dispatch',
         isCreatedByUser: false,
         endpoint: 'agents',
@@ -142,7 +148,13 @@ function renderMessage(text: string, parentModel = 'agent_lia', shared = false, 
             <ShareMessagesProvider messages={[message, sharedReply]}>{row}</ShareMessagesProvider>
           </ShareContext.Provider>
         ) : (
-          row
+          <ShareMessagesProvider
+            messages={
+              queryClient.getQueryData<TMessage[]>([QueryKeys.messages, 'conversation-1']) ?? []
+            }
+          >
+            {row}
+          </ShareMessagesProvider>
         )}
       </RecoilRoot>
     </QueryClientProvider>,
@@ -265,6 +277,64 @@ describe('MessageRender wake-up rows', () => {
 
     expect(screen.getByRole('heading', { name: 'com_ui_system_event' })).toBeInTheDocument();
     expect(screen.queryByTestId('author-face')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['self', 'graph', 'self'],
+    ['agent_reviewer', 'agent', 'Code Reviewer'],
+    ['self', 'agent', 'Code Reviewer'],
+  ] as const)(
+    'recovers a private child omitted from the bounded index (%s/%s)',
+    (alias, kind, label) => {
+      mockChildren.clear();
+      const dispatch: TMessage = {
+        messageId: 'old-dispatch',
+        parentMessageId: null,
+        conversationId: 'conversation-1',
+        isCreatedByUser: false,
+        text: '',
+        endpoint: 'agents',
+        model: 'agent_lia',
+        sender: 'Lia',
+        content: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: {
+              id: 'old-call',
+              name: 'subagent',
+              args: { run_in_background: true },
+              output: JSON.stringify({
+                background_task_id: 'task-1',
+                subagent_thread_id: 'thread-1',
+                tool: 'subagent',
+                subagent_type: alias,
+                status: 'running',
+                message: 'Poll using background_task_id task-1.',
+              }),
+              subagentIdentity: {
+                subagentKind: kind,
+                subagentAgentId: kind === 'graph' ? 'graph:self' : 'agent_reviewer',
+              },
+            },
+          },
+        ],
+      };
+      renderMessage(subagentWakeup(alias), 'agent_lia', false, false, dispatch);
+      expect(screen.getByRole('heading', { name: label })).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Lia' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('preserves a graph title whose prefix resembles a legacy label', () => {
+    mockChildren.set('thread-1', {
+      ...mockChildren.get('thread-1')!,
+      subagentType: 'Subagent: research',
+      title: 'Subagent: research',
+      subagentKind: 'graph',
+      agentId: undefined,
+    });
+    renderMessage(subagentWakeup('Subagent: research'));
+    expect(screen.getByRole('heading', { name: 'Subagent: research' })).toBeInTheDocument();
   });
 
   it('leaves an ordinary user turn without a visible author', () => {
