@@ -392,9 +392,20 @@ describe('CodeWorkspaceMenu', () => {
       renderMenu(<CodeWorkspaceMenu setConversation={setter} workspace={graph} disabled={false} />);
       const control = screen.getByTestId('code-checkout');
       expect(control).toHaveAttribute('aria-label', checkoutLabel('isolated'));
-      expect(control).toHaveAttribute('aria-disabled', 'true');
       await userEvent.click(control);
-      expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
+      if (enabled) {
+        /** Overrides stay open so the draft can leave the unavailable isolated mode, but
+         *  isolated itself is never offered without worker support. */
+        expect(
+          screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_isolated/ }),
+        ).toBeNull();
+        expect(
+          screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+        ).toBeInTheDocument();
+      } else {
+        expect(control).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument();
+      }
       expect(setter).not.toHaveBeenCalled();
       expect(graph.rememberSelection).not.toHaveBeenCalled();
     },
@@ -471,7 +482,7 @@ describe('CodeWorkspaceMenu', () => {
         );
         expect(screen.queryByText('com_ui_code_linked_worktrees') != null).toBe(expected);
         const control = screen.queryByTestId('code-checkout');
-        if (capable || checkout != null) {
+        if (capable || checkout != null || (allowed && !locked)) {
           expect(control).toHaveAttribute('aria-label', checkoutLabel(checkout));
         } else {
           expect(control).toBeNull();
@@ -659,7 +670,15 @@ describe('CodeWorkspaceMenu', () => {
     expect(screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout/ })).toBeNull();
     await userEvent.keyboard('{Escape}');
     if (!capable) {
-      expect(screen.queryByTestId('code-checkout')).not.toBeInTheDocument();
+      /** Without worktrees the registered checkout is still a valid override of Auto. */
+      await userEvent.click(screen.getByTestId('code-checkout'));
+      expect(
+        screen.queryByRole('menuitemradio', { name: /com_ui_code_checkout_isolated/ }),
+      ).toBeNull();
+      await userEvent.click(
+        screen.getByRole('menuitemradio', { name: /com_ui_code_checkout_source/ }),
+      );
+      expect(setConversation).toHaveBeenCalled();
       return;
     }
     const chip = screen.getByTestId('code-checkout');

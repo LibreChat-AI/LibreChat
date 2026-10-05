@@ -286,7 +286,9 @@ function GitContext({
   const checkout = target.selected?.checkout;
   const checkoutSelectionAllowed =
     target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
-  const checkoutEditable = !locked && supportsWorktree && checkoutSelectionAllowed;
+  /** The registered checkout needs no worker capability, so a workspace without worktrees still
+   *  lets the reader override Auto with it; only the isolated option depends on support. */
+  const checkoutEditable = !locked && checkoutSelectionAllowed;
   const usesIsolation = checkout !== 'source' && supportsWorktree;
   const showLinkedWorktrees =
     !usesIsolation &&
@@ -318,7 +320,7 @@ function GitContext({
           </span>
         </TooltipAnchor>
       )}
-      {(supportsWorktree || checkout != null) && current != null && (
+      {(supportsWorktree || checkout != null || checkoutEditable) && current != null && (
         <Ariakit.MenuProvider store={checkoutStore}>
           <TooltipAnchor
             description={localize(current.info)}
