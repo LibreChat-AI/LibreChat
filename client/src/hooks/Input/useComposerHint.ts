@@ -147,12 +147,12 @@ export function composeHint(
       };
     }
     /* The interrupt chord is named only while the keydown resolver still hands
-       it back: a `submitMessage` rebound to Alt+Enter, a chord yielded to a
-       global shortcut, or shortcuts disabled altogether each make the key do
-       something else, and advertising it is worse than omitting it. */
-    const text = altEnterInterrupt
-      ? [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR)
-      : parts.join(SEPARATOR);
+       it back and the run accepts steering. Approval pauses and staged reasoning
+       refuse Interrupt just like the disabled menu row. */
+    const text =
+      altEnterInterrupt && state.canSteer
+        ? [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR)
+        : parts.join(SEPARATOR);
     return {
       text: text || localize('com_ui_composer_hint_running'),
       kind: 'state',
