@@ -1002,6 +1002,34 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByRole('button', { name: /^Ran 2 actions/ })).not.toBeInTheDocument();
   });
 
+  it('does not hold a group in the running tense for a detached MCP call its row reports as ran', () => {
+    renderGroup({
+      ...baseProps,
+      isSubmitting: false,
+      parts: [
+        { part: completed(makePart('plain-1', 'ok', 'fetch_image')), idx: 0 },
+        {
+          part: completed(
+            makePart(
+              'mcp-bg',
+              JSON.stringify({
+                background_task_id: 'task-3',
+                tool: 'search',
+                status: 'running',
+                message: 'Use check_background_task to follow it',
+              }),
+              'search_mcp_github',
+            ),
+          ),
+          idx: 1,
+        },
+      ],
+      lastContentIdx: 1,
+    });
+
+    expect(screen.getByRole('button', { name: /^Ran 2 actions/ })).toBeInTheDocument();
+  });
+
   it('keeps the group open while a lone detached task is still running', () => {
     renderGroup({
       ...baseProps,

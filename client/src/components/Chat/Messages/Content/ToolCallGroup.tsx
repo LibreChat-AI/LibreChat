@@ -143,10 +143,18 @@ export default function ToolCallGroup({
     activityLabelText.length > 0 &&
     (labelPart?.part as { pending?: boolean } | undefined)?.pending !== true;
   /** A detached task's dispatch step closes with a handle as its output, so
-   *  the call reads as done while the work is still going. */
+   *  the call reads as done while the work is still going. Only the code
+   *  cards interpret that handle and say "Running in background"; a generic
+   *  MCP or action row reports the closed step as ran, and the header must
+   *  not contradict the row it sits above. */
   const detachedRunning = useMemo(
-    () => toolMetadata.some((m) => m.background === 'running'),
-    [toolMetadata],
+    () =>
+      toolMetadata.some(
+        (m) =>
+          m.background === 'running' &&
+          parseToolName(m.name, mcpServerNames).friendlyKey === 'com_ui_tool_name_code',
+      ),
+    [toolMetadata, mcpServerNames],
   );
   const allCompleted = useMemo(
     () => !detachedRunning && (labelSettled || toolMetadata.every((m) => m.hasOutput === true)),
