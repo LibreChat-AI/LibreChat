@@ -7,7 +7,7 @@ import {
 } from 'librechat-data-provider';
 import type { FullToolCall, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { ToolContentRequestContext } from './disclosure';
+import { ToolContentRequestContext, ToolContentPendingContext } from './disclosure';
 import { useToolCallPartQuery } from '~/data-provider';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -95,7 +95,9 @@ export function PreviewedToolCallPart({
 
   return (
     <ToolContentRequestContext.Provider value={full == null ? request : null}>
-      {children(effectivePart)}
+      <ToolContentPendingContext.Provider value={full == null}>
+        {children(effectivePart)}
+      </ToolContentPendingContext.Provider>
       {requested && full == null && query.isError && (
         <div role="alert" className="text-text-warning mb-2 flex items-center gap-2 pl-1 text-xs">
           <span>{localize('com_ui_tool_content_error')}</span>

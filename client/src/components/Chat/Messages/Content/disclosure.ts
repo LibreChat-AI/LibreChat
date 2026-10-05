@@ -74,6 +74,14 @@ export function useToolAutoExpand() {
  *  `null` outside a part that holds a preview. */
 export const ToolContentRequestContext = createContext<(() => void) | null>(null);
 
+/** True while the enclosing part still shows a server preview, so content actions (copy) would
+ *  hand out shortened text. False outside a previewed part. */
+export const ToolContentPendingContext = createContext(false);
+
+export function useToolContentPending(): boolean {
+  return useContext(ToolContentPendingContext);
+}
+
 /** Requests the part's full content while `active`: its card is open or its panel is showing. */
 export function useToolContentRequest(active: boolean) {
   const request = useContext(ToolContentRequestContext);

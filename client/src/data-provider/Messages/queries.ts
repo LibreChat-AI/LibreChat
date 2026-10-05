@@ -100,13 +100,14 @@ export const useToolCallPartQuery = (
   config?: UseQueryOptions<t.ToolCallPartResponse>,
   revision = '',
 ): QueryObserverResult<t.ToolCallPartResponse> => {
-  const { conversationId, messageId, partIndex, toolCallId, stepId, agentId } = params;
+  /** The index only rides along in the request; the server locates the call by identity, so the
+   *  cache does too, and a shifted index cannot fetch the same part twice. */
+  const { conversationId, messageId, toolCallId, stepId, agentId } = params;
   return useQuery<t.ToolCallPartResponse>(
     [
       QueryKeys.toolCallPart,
       conversationId,
       messageId,
-      partIndex,
       toolCallId ?? '',
       stepId ?? '',
       agentId ?? '',

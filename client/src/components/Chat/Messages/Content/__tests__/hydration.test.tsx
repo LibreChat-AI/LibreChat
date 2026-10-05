@@ -8,6 +8,7 @@ import type { ToolDisclosures } from '../disclosure';
 import {
   SoleToolContext,
   useToolExpansion,
+  useToolContentPending,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
 } from '../disclosure';
@@ -65,6 +66,7 @@ const stored = (toolCall: Record<string, unknown> = {}): ToolCallPartResponse =>
 /** A card that opens through the same disclosure hook every tool card uses. */
 function Card({ part }: { part: TMessageContentParts }) {
   const [expanded, setExpanded] = useToolExpansion(true);
+  const pending = useToolContentPending();
   const toolCall = (part as { tool_call: Record<string, unknown> }).tool_call;
   return (
     <div>
@@ -75,18 +77,24 @@ function Card({ part }: { part: TMessageContentParts }) {
       <span data-testid="markers">
         {String('outputTruncated' in toolCall || 'argsTruncated' in toolCall)}
       </span>
+      <span data-testid="pending">{String(pending)}</span>
     </div>
   );
 }
 
-function renderPart(part: TMessageContentParts, options: { sole?: boolean } = {}) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPart(
+  part: TMessageContentParts,
+  options: { sole?: boolean; partIndex?: number; queryClient?: QueryClient } = {},
+) {
+  const queryClient =
+    options.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const partIndex = options.partIndex ?? 2;
   const disclosures: ToolDisclosures = new Map();
   const tree = (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
         <MessageContext.Provider
-          value={{ messageId: 'msg-1', conversationId: 'convo-1', partIndex: 2, isExpanded: true }}
+          value={{ messageId: 'msg-1', conversationId: 'convo-1', partIndex, isExpanded: true }}
         >
           <ToolDisclosureContext.Provider value={disclosures}>
             <ToolDisclosureKeyContext.Provider value="call_1">
@@ -136,8 +144,10 @@ describe('previewed tool-call parts', () => {
       toolCallId: 'call_1',
     });
 
+    expect(screen.getByTestId('pending')).toHaveTextContent('true');
     await act(async () => resolve(stored()));
     await waitFor(() => expect(screen.getByTestId('output').textContent).toBe(fullOutput));
+    expect(screen.getByTestId('pending')).toHaveTextContent('false');
     expect(screen.getByTestId('markers')).toHaveTextContent('false');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
@@ -167,6 +177,17 @@ describe('previewed tool-call parts', () => {
 
     fireEvent.click(screen.getByText('toggle'));
     fireEvent.click(screen.getByText('toggle'));
+    expect(getToolCallPart).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves the same call from cache when client-only cards shift its index', async () => {
+    getToolCallPart.mockResolvedValue(stored());
+    const first = renderPart(previewPart(), { sole: true });
+    await waitFor(() => expect(screen.getByTestId('output').textContent).toBe(fullOutput));
+    first.unmount();
+
+    renderPart(previewPart(), { sole: true, partIndex: 3, queryClient: first.queryClient });
+    expect(screen.getByTestId('output').textContent).toBe(fullOutput);
     expect(getToolCallPart).toHaveBeenCalledTimes(1);
   });
 
