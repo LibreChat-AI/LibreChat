@@ -87,6 +87,9 @@ export function buildBalanceUpdateFields(
     config.refillAmount != null;
 
   if (!isAutoRefillConfigValid) {
+    if (userRecord?.autoRefillEnabled === true) {
+      updateFields.autoRefillEnabled = false;
+    }
     return updateFields;
   }
 
@@ -161,6 +164,7 @@ export function createSetBalanceConfig({
 
         if (Object.keys(updateFields).length === 0) {
           balanceLocals.balanceData =
+            balanceConfig.autoRefillEnabled === true &&
             userBalanceRecord?.refillMode === 'reset' &&
             isBalanceRefillDue(userBalanceRecord, new Date())
               ? await findBalanceByUser(userId)

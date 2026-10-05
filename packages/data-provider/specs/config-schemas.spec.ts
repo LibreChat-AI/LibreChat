@@ -2017,3 +2017,17 @@ describe('balance refill mode', () => {
     expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
   });
 });
+
+describe('reset interval validation', () => {
+  test.each([0, -1])(
+    'rejects reset interval %s while preserving additive settings',
+    (refillIntervalValue) => {
+      expect(balanceSchema.safeParse({ refillMode: 'reset', refillIntervalValue }).success).toBe(
+        false,
+      );
+      expect(balanceSchema.safeParse({ refillMode: 'add', refillIntervalValue }).success).toBe(
+        true,
+      );
+    },
+  );
+});

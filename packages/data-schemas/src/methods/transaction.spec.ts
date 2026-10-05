@@ -1590,6 +1590,28 @@ describe('Balance Reservations', () => {
         },
       );
 
+      test.each([0, -1, 0.0001])(
+        'does not grant repeated allowances for invalid interval %s',
+        async (refillIntervalValue) => {
+          const user = new mongoose.Types.ObjectId();
+          await Balance.create({ user, ...resettable, refillIntervalValue, tokenCredits: 500 });
+          await findBalanceByUser(user.toString());
+          await reserve(user.toString(), 100);
+          await findBalanceByUser(user.toString());
+          expect((await readState(user))?.tokenCredits).toBe(500);
+          expect(await Transaction.countDocuments({ user })).toBe(0);
+        },
+      );
+
+      test('disabled resets remain disabled on reads and admission', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        await upsertBalanceFields(user.toString(), { autoRefillEnabled: false });
+        expect((await findBalanceByUser(user.toString()))?.tokenCredits).toBe(500);
+        expect(await reserve(user.toString(), 100)).toEqual({ reserved: true, balance: 500 });
+        expect(await Transaction.countDocuments({ user })).toBe(0);
+      });
+
       test('resets before admission even when the remaining balance covers the request', async () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });

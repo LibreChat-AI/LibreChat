@@ -69,6 +69,7 @@ export function getRefillEligibilityDate(
 export function isBalanceRefillDue(
   record: Pick<
     TBalanceResponse,
+    | 'refillMode'
     | 'autoRefillEnabled'
     | 'refillAmount'
     | 'lastRefill'
@@ -80,16 +81,21 @@ export function isBalanceRefillDue(
   if (!record.autoRefillEnabled || !(record.refillAmount != null && record.refillAmount > 0)) {
     return false;
   }
+  if (
+    record.refillMode === 'reset' &&
+    !(record.refillIntervalValue != null && record.refillIntervalValue > 0)
+  ) {
+    return false;
+  }
   const lastRefill = new Date(record.lastRefill ?? 0);
   if (isNaN(lastRefill.getTime())) {
     return true;
   }
-  return (
-    now >=
-    getRefillEligibilityDate(
-      lastRefill,
-      record.refillIntervalValue ?? 0,
-      record.refillIntervalUnit ?? 'days',
-    )
+  const eligibleAt = getRefillEligibilityDate(
+    lastRefill,
+    record.refillIntervalValue ?? 0,
+    record.refillIntervalUnit ?? 'days',
   );
+  // Date setters can round a fractional interval down to the same instant.
+  return (record.refillMode !== 'reset' || eligibleAt > lastRefill) && now >= eligibleAt;
 }
