@@ -445,7 +445,8 @@ export function getSpeechText(message: {
   if (Array.isArray(message.content) && message.content.length > 0) {
     return parseTextParts(message.content, true).trim();
   }
-  const text = typeof message.content === 'string' ? message.content : message.text;
+  const text =
+    typeof message.content === 'string' && message.content ? message.content : message.text;
   return parseThinkingContent(text ?? '').regularContent.trim();
 }
 

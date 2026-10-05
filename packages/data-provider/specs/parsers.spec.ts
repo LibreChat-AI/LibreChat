@@ -633,6 +633,10 @@ describe('getSpeechText', () => {
     expect(getSpeechText({ content, text: '' })).toBe('The answer is 4.');
   });
 
+  test('falls back to text when string content is empty', () => {
+    expect(getSpeechText({ content: '', text: 'stored answer' })).toBe('stored answer');
+  });
+
   test('strips a legacy thinking block from plain text', () => {
     const text = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
     expect(getSpeechText({ text })).toBe('The answer is 4.');
