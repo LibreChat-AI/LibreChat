@@ -104,6 +104,7 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Scheduled chats */
   schedules = 'schedules',
+  scheduledOboTarget = 'scheduledOboTarget',
   scheduleMCPConsent = 'scheduleMCPConsent',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
@@ -188,6 +189,7 @@ export enum MutationKeys {
   updateSchedule = 'updateSchedule',
   deleteSchedule = 'deleteSchedule',
   runSchedule = 'runSchedule',
+  scheduledObo = 'scheduledObo',
   confirmScheduleMCPConsent = 'confirmScheduleMCPConsent',
   revokeScheduleMCPConsent = 'revokeScheduleMCPConsent',
   pairCodeEnvironment = 'pairCodeEnvironment',

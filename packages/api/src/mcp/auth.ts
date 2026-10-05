@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import { Constants, buildServerNameAliases } from 'librechat-data-provider';
 import type { PluginAuthMethods } from '@librechat/data-schemas';
 import type { GenericTool } from '@librechat/agents';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { getPluginAuthMap } from '~/agents/auth';
 import { splitMCPToolKey } from './utils';
 
@@ -98,10 +99,8 @@ export async function getUserMCPAuthMap({
     });
   } catch (err) {
     logger.error(
-      `[handleTools] Error batch fetching customUserVars for MCP tools (keys: ${mcpPluginKeysToFetch.join(
-        ', ',
-      )}), user ${userId}: ${err instanceof Error ? err.message : 'Unknown error'}`,
-      err,
+      '[handleTools] Error batch fetching customUserVars for MCP tools',
+      getSafeErrorMetadata(err),
     );
     if (throwOnError) {
       throw err;

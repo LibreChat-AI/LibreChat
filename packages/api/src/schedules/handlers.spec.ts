@@ -201,6 +201,7 @@ function makeCreateDeps(over: Partial<SchedulesHandlersDeps> = {}): SchedulesHan
       requireProject: false,
     }),
     preflightMCP: jest.fn().mockResolvedValue([]),
+    listOboGrants: jest.fn(async () => ({})),
     canViewAgent: async () => true,
     filterOwnedFileIds: async (ids: string[]) => ids,
     markFilesUsed: async () => undefined,
@@ -821,6 +822,59 @@ describe('in-flight run projection', () => {
     expect(schedules[0].inFlight).toEqual([{ conversationId: 'convo-1' }]);
   });
 
+  it('exposes owner-scoped grant names even after allowlist removal, without orphaned schedules', async () => {
+    const deps = makeCreateDeps({
+      listOboGrants: jest.fn(async () => ({
+        'sched-1': ['Files'],
+        'deleted-schedule': ['Hidden'],
+      })),
+      getLimits: async () => ({
+        enabled: true,
+        maxPerUser: 10,
+        minIntervalMinutes: 60,
+        autoDisableAfterFailures: 5,
+        admissionConcurrency: 20,
+        fireConcurrency: 5,
+        mcpPreflightConcurrency: 3,
+        mcpPreflightTimeoutMs: 300_000,
+        requireProject: false,
+        oboServers: [],
+      }),
+    });
+    (deps.methods.getSchedulesByUser as jest.Mock) = jest.fn(async () => [schedule]);
+    (deps.methods.getDeletingScheduleIds as jest.Mock) = jest.fn(async () => []);
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).listSchedules(
+      { user: { id: 'user-1' } } as unknown as ServerRequest,
+      res,
+    );
+    expect(deps.listOboGrants).toHaveBeenCalledTimes(1);
+    expect(deps.listOboGrants).toHaveBeenCalledWith('user-1');
+    expect(captured.body).toMatchObject({
+      oboGrants: { 'sched-1': ['Files'] },
+      limits: expect.not.objectContaining({ oboServers: expect.anything() }),
+    });
+  });
+
+  it('returns a retryable non-success when grant names are unavailable, never partial data', async () => {
+    const deps = makeCreateDeps({
+      listOboGrants: jest.fn(async () => {
+        throw new Error('grant store offline');
+      }),
+    });
+    (deps.methods.getSchedulesByUser as jest.Mock) = jest.fn(async () => [schedule]);
+    (deps.methods.getDeletingScheduleIds as jest.Mock) = jest.fn(async () => []);
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).listSchedules(
+      { user: { id: 'user-1' } } as unknown as ServerRequest,
+      res,
+    );
+    expect(captured.status).toBe(503);
+    expect(captured.body).toMatchObject({ code: 'schedule_obo_unavailable' });
+    expect(captured.body).not.toHaveProperty('schedules');
+    expect(JSON.stringify(captured.body)).not.toContain('grant store offline');
+  });
+
   it('asks only for generating occurrences, never the parked ones', async () => {
     // Indexed by status rather than user, and `requires_action` rows accumulate for
     // as long as approvals wait; `started` rows are bounded by the capacity slots.
@@ -882,6 +936,40 @@ describe('deleteSchedule result mapping', () => {
     const { res, captured } = makeRes();
     await createSchedulesHandlers(withResult('not_found')).deleteSchedule(makeDeleteReq(), res);
     expect(captured.status).toBe(404);
+  });
+
+  it('does not delete or hide a schedule when OBO grant cleanup fails', async () => {
+    const deleteSchedule = jest.fn(async () => 'deleted' as const);
+    const purgeOboGrants = jest.fn(async () => {
+      throw new Error('credential store offline');
+    });
+    const deps = makeCreateDeps({ deleteSchedule, purgeOboGrants });
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).deleteSchedule(makeDeleteReq(), res);
+    expect(captured.status).toBe(503);
+    expect(deleteSchedule).not.toHaveBeenCalled();
+    expect(purgeOboGrants).toHaveBeenCalledWith('user-1', 'sched-1', expect.any(Function));
+  });
+
+  it('purges OBO grants before deleting the schedule within the cleanup callback', async () => {
+    const order: string[] = [];
+    const deleteSchedule = jest.fn(async () => {
+      order.push('delete');
+      return 'deleted' as const;
+    });
+    const purgeOboGrants: NonNullable<SchedulesHandlersDeps['purgeOboGrants']> = async (
+      _userId,
+      _id,
+      afterPurge,
+    ) => {
+      order.push('purge');
+      return afterPurge();
+    };
+    const deps = makeCreateDeps({ deleteSchedule, purgeOboGrants });
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).deleteSchedule(makeDeleteReq(), res);
+    expect(captured.status ?? 200).toBe(200);
+    expect(order).toEqual(['purge', 'delete']);
   });
 
   it('answers 200 when drained and erased', async () => {
@@ -1152,6 +1240,138 @@ describe('updateSchedule cadence timezone resolution', () => {
     await createSchedulesHandlers(deps).updateSchedule(patchCadence(), res);
 
     expect(captured.status ?? 200).toBe(200);
+  });
+});
+
+describe('scheduled OBO activation preflight', () => {
+  const patch = (body: { enabled?: boolean; name?: string }) =>
+    ({
+      params: { id: 'sched-1' },
+      body,
+      user: { id: 'user-1', tenantId: 't1', role: 'USER' },
+    }) as unknown as ServerRequest;
+
+  it('probes a disabled grant before enabling but does not allow disabled run access', async () => {
+    const paused = fullScheduleDoc({ enabled: false, file_ids: [] });
+    const preflightMCP = jest.fn<
+      ReturnType<SchedulesHandlersDeps['preflightMCP']>,
+      Parameters<SchedulesHandlersDeps['preflightMCP']>
+    >(async (_agent, _owner, options) => {
+      expect(paused.enabled).toBe(false);
+      expect(options).toMatchObject({
+        scheduleId: paused.id,
+        stage: 'activation',
+        activationPreflight: true,
+      });
+      return [];
+    });
+    const deps = makeCreateDeps({
+      preflightMCP,
+      isUserDeleting: async () => false,
+    });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(paused);
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).updateSchedule(patch({ enabled: true }), res);
+    expect(preflightMCP).toHaveBeenCalledTimes(1);
+    expect(captured.status ?? 200).toBe(200);
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      paused.id,
+      'user-1',
+      expect.objectContaining({ enabled: true }),
+      expect.anything(),
+      expect.objectContaining({ expectedConfigRevision: paused.configRevision }),
+    );
+  });
+
+  it('does not grant activation preflight access for an ordinary enabled edit', async () => {
+    const preflightMCP = jest.fn<
+      ReturnType<SchedulesHandlersDeps['preflightMCP']>,
+      Parameters<SchedulesHandlersDeps['preflightMCP']>
+    >(async () => []);
+    const deps = makeCreateDeps({ preflightMCP, isUserDeleting: async () => false });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(fullScheduleDoc({ file_ids: [] }));
+    await createSchedulesHandlers(deps).updateSchedule(patch({ name: 'renamed' }), makeRes().res);
+    expect(preflightMCP).toHaveBeenCalledTimes(1);
+    expect(preflightMCP.mock.calls[0][2]).not.toHaveProperty('activationPreflight');
+  });
+
+  it('passes the persisted snapshot to prospective-agent preflight and revision-fences the final edit', async () => {
+    const current = fullScheduleDoc({
+      enabled: true,
+      agent_id: 'agent-1',
+      configRevision: 7,
+      file_ids: [],
+    });
+    const deps = makeCreateDeps({ isUserDeleting: async () => false });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(current);
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).updateSchedule(
+      {
+        params: { id: current.id },
+        body: {
+          agent_id: 'agent-2',
+          expectedConfigRevision: 7,
+          writePreflight: { agentId: 'injected', configRevision: 123 },
+        },
+        user: { id: 'user-1', tenantId: 't1', role: 'USER' },
+      } as unknown as ServerRequest,
+      res,
+    );
+    expect(captured.status ?? 200).toBe(200);
+    expect(deps.preflightMCP).toHaveBeenCalledWith(
+      'agent-2',
+      expect.objectContaining({ id: 'user-1' }),
+      expect.objectContaining({ writePreflight: { agentId: 'agent-1', configRevision: 7 } }),
+    );
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      current.id,
+      'user-1',
+      expect.objectContaining({ agent_id: 'agent-2' }),
+      undefined,
+      { expectedConfigRevision: 7 },
+    );
+    expect(jest.mocked(deps.methods.updateScheduleById).mock.calls[0][2]).not.toHaveProperty(
+      'writePreflight',
+    );
+  });
+
+  it('does not commit a prospective-agent update after a concurrent revision change', async () => {
+    const current = fullScheduleDoc({
+      enabled: true,
+      agent_id: 'agent-1',
+      configRevision: 7,
+      file_ids: [],
+    });
+    const deps = makeCreateDeps({ isUserDeleting: async () => false });
+    jest.mocked(deps.methods.getScheduleById).mockResolvedValue(current);
+    jest.mocked(deps.methods.updateScheduleById).mockResolvedValue(null);
+    const { res, captured } = makeRes();
+    await createSchedulesHandlers(deps).updateSchedule(
+      {
+        params: { id: current.id },
+        body: { agent_id: 'agent-2', expectedConfigRevision: 7 },
+        user: { id: 'user-1', tenantId: 't1' },
+      } as unknown as ServerRequest,
+      res,
+    );
+    expect(captured.status).toBe(409);
+    expect(deps.methods.updateScheduleById).toHaveBeenCalledWith(
+      current.id,
+      'user-1',
+      expect.objectContaining({ agent_id: 'agent-2' }),
+      undefined,
+      { expectedConfigRevision: 7 },
+    );
+  });
+
+  it('does not probe a disabled schedule whose edit leaves it paused', async () => {
+    const preflightMCP = jest.fn(async () => []);
+    const deps = makeCreateDeps({ preflightMCP, isUserDeleting: async () => false });
+    jest
+      .mocked(deps.methods.getScheduleById)
+      .mockResolvedValue(fullScheduleDoc({ enabled: false, file_ids: [] }));
+    await createSchedulesHandlers(deps).updateSchedule(patch({ name: 'renamed' }), makeRes().res);
+    expect(preflightMCP).not.toHaveBeenCalled();
   });
 });
 

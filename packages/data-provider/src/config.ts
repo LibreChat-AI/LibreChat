@@ -2769,6 +2769,8 @@ export const interfaceSchema = z
             .optional(),
           mcpPreflightConcurrency: z.number().int().min(1).max(10).optional(),
           mcpPreflightTimeoutMs: z.number().int().min(1000).max(600000).optional(),
+          /** Server allowlist; enrollment also requires the host scheduled-MCP authority. */
+          oboServers: z.array(z.string().trim().min(1)).max(20).optional(),
           /** Refuse schedules that are not filed under a chat project. Enforced on
            *  create/update AND at every fire, so raising it later stops schedules
            *  that predate the policy instead of grandfathering them. */

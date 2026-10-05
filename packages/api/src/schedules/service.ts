@@ -60,6 +60,7 @@ import { waitUntilDeadline } from '~/mcp/utils';
 import { startScheduleEngine } from './engine';
 import { withCapacitySlot } from './capacity';
 import { isEnabled } from '../utils/common';
+import { ScheduleMCPError } from './mcp';
 
 /** Recordable terminal/paused run outcome, as accepted by `recordRunOutcome`. */
 type ScheduleRunOutcomeStatus = Parameters<ScheduleMethods['recordRunOutcome']>[0]['status'];
@@ -140,6 +141,10 @@ export type ScheduleResumeClaimResult =
  */
 export interface SchedulesServiceDeps {
   preflightMCP: ScheduleMCPPreflight;
+  /** Only advertise enrollment when the trusted scheduled-MCP authority is installed. */
+  isScheduledOboAvailable?: () => boolean;
+  /** After the durable user-deletion barrier, drain grant persistence before the cascade. */
+  drainOboWrites?: (userId: string) => Promise<void>;
   methods: ScheduleMethods & {
     getRoleByName: (
       role?: string,
@@ -492,6 +497,7 @@ export interface ScheduleServiceTimings {
  */
 export function createScheduleLimitsResolver(
   getAppConfig: SchedulesServiceDeps['getAppConfig'],
+  isScheduledOboAvailable?: SchedulesServiceDeps['isScheduledOboAvailable'],
 ): SchedulesService['getLimits'] {
   /**
    * Resolves schedule limits, honoring per-principal (role/user) config overrides
@@ -567,6 +573,8 @@ export function createScheduleLimitsResolver(
         config.mcpPreflightTimeoutMs ?? DEFAULT_SCHEDULE_LIMITS.mcpPreflightTimeoutMs,
       requireProject: config.requireProject === true || projectId != null,
       ...(projectId != null && { projectId }),
+      ...(isScheduledOboAvailable?.() === true &&
+        config.oboServers?.length && { oboServers: config.oboServers }),
     };
   };
 }
@@ -655,7 +663,7 @@ export function createSchedulesService(
     }
   }
 
-  const getLimits = createScheduleLimitsResolver(deps.getAppConfig);
+  const getLimits = createScheduleLimitsResolver(deps.getAppConfig, deps.isScheduledOboAvailable);
   const MANUAL_RUN_LEASE_MS = 5 * 60 * 1000;
   // Bounded wait for aborted scheduled runs to settle during account-deletion quiesce,
   // before the message/conversation cascade runs. Long enough to cover a generation that
@@ -1799,6 +1807,21 @@ export function createSchedulesService(
       if (!(await engineDeps.hasScheduleAccess(owner))) {
         return false;
       }
+      try {
+        await engineDeps.runInTenantContext(owner, () =>
+          deps.preflightMCP(schedule.agent_id, owner, {
+            scheduleId,
+            stage: 'resume',
+            ...(options.automatic === false && { manual: true }),
+            oboOnly: true,
+            concurrency: limits.mcpPreflightConcurrency,
+            deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
+          }),
+        );
+      } catch (error) {
+        if (error instanceof ScheduleMCPError && error.code !== 'mcp_unavailable') return false;
+        throw error;
+      }
       // Project policy belongs HERE rather than in the resume claim: this branch's
       // refusal is already routed through abort-and-settle by both callers, so a
       // policy stop settles the occurrence instead of leaving it at `requires_action`
@@ -2319,6 +2342,7 @@ export function createSchedulesService(
    * restoreUserSchedulesFromDeletion) rather than stranding a live user with erased rows.
    */
   async function quiesceUserSchedules(userId: string, token: string): Promise<boolean> {
+    await deps.drainOboWrites?.(userId);
     await methods.suspendUserSchedulesForDeletion(userId, token);
     const active = await methods.getActiveRunsForUser(userId);
     const unconfirmed: string[] = [];

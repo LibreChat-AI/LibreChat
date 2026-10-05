@@ -1,5 +1,6 @@
 import { logger, decrypt } from '@librechat/data-schemas';
 import type { IPluginAuth, PluginAuthMethods } from '@librechat/data-schemas';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 export interface GetPluginAuthMapParams {
   userId: string;
@@ -56,14 +57,12 @@ export async function getPluginAuthMap({
               const decryptedValue = await decrypt(auth.value);
               authMap[pluginKey][auth.authField] = decryptedValue;
             } catch (error) {
-              const message = error instanceof Error ? error.message : 'Unknown error';
-              logger.error(
-                `[getPluginAuthMap] Decryption failed for userId ${userId}, plugin ${pluginKey}, field ${auth.authField}: ${message}`,
-              );
+              logger.error('[getPluginAuthMap] Decryption failed', getSafeErrorMetadata(error));
 
               if (throwError) {
                 throw new Error(
-                  `Decryption failed for plugin ${pluginKey}, field ${auth.authField}: ${message}`,
+                  `Decryption failed for plugin ${pluginKey}, field ${auth.authField}`,
+                  { cause: error },
                 );
               }
             }
@@ -75,11 +74,7 @@ export async function getPluginAuthMap({
     await Promise.all(decryptionPromises);
     return authMap;
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    const plugins = pluginKeys?.join(', ') ?? 'all requested';
-    logger.warn(
-      `[getPluginAuthMap] Failed to fetch auth values for userId ${userId}, plugins: ${plugins}: ${message}`,
-    );
+    logger.warn('[getPluginAuthMap] Failed to fetch auth values', getSafeErrorMetadata(error));
     if (!throwError) {
       /** Empty objects for each plugin key on error */
       return pluginKeys.reduce((acc, key) => {

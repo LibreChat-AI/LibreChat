@@ -505,7 +505,7 @@ describe('tests for the new helper functions used by the MCP connection status e
       expect(result).toEqual({ hasActiveFlow: false, hasFailedFlow: false });
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining('Error checking OAuth flows'),
-        mockError,
+        { type: 'Error' },
       );
     });
   });
@@ -2028,6 +2028,54 @@ describe('User parameter passing tests', () => {
           toolCall: {},
         }),
       ).rejects.toBe(abort);
+    });
+
+    it('bounds outer MCP diagnostics while preserving typed error causes and propagation', async () => {
+      const { MCPAuthenticationRefreshError, getSafeErrorMetadata } = require('@librechat/api');
+      const mockUser = { id: 'diagnostic-user', role: 'USER' };
+      const diagnostic = Object.assign(new Error('private-outer-diagnostic'), {
+        response: { data: { detail: 'private-outer-detail' } },
+        query: { secret: 'private-outer-query' },
+      });
+      const failure = new MCPAuthenticationRefreshError(diagnostic);
+      require('~/models').getRoleByName.mockResolvedValue({
+        permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+      });
+      mockGetMCPManager.mockReturnValue({ callTool: jest.fn().mockRejectedValue(failure) });
+      const mcpTool = await createMCPTool({
+        user: mockUser,
+        config: { url: 'https://diagnostic.example.com/mcp' },
+        toolKey: `test-tool${D}test-server`,
+        provider: 'openai',
+        userMCPAuthMap: {},
+        availableTools: {
+          [`test-tool${D}test-server`]: {
+            function: {
+              description: 'Cached tool',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        },
+      });
+      await expect(
+        mcpTool.func({}, undefined, {
+          configurable: { user: mockUser },
+          metadata: { provider: 'openai', thread_id: 'thread-1', run_id: 'run-1' },
+          toolCall: {},
+        }),
+      ).rejects.toBe(failure);
+      expect(failure.cause).toBe(diagnostic);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining('Error calling MCP tool'),
+        getSafeErrorMetadata(failure),
+      );
+      expect(
+        JSON.stringify([
+          ...logger.error.mock.calls,
+          ...logger.warn.mock.calls,
+          ...logger.debug.mock.calls,
+        ]),
+      ).not.toMatch(/private-outer-diagnostic|private-outer-detail|private-outer-query/);
     });
 
     it('keeps a real failure racing the Stop at error level', async () => {

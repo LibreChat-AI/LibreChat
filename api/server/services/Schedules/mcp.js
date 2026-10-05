@@ -1,4 +1,5 @@
 const { createScheduleMCPPreflight } = require('@librechat/api');
+const scheduledObo = require('./obo');
 const { CacheKeys } = require('librechat-data-provider');
 const { getMCPManager, getMCPServersRegistry, getFlowStateManager } = require('~/config');
 const { getAppConfig } = require('~/server/services/Config/app');
@@ -31,7 +32,7 @@ function createMCPPreflight(options = {}) {
     getServerConfigs: (userId, config, role) =>
       getMCPServersRegistry().getAllServerConfigs(userId, config, role),
     findPluginAuthsByKeys: methods.findPluginAuthsByKeys,
-    resolveUpstreamTokenProvider: options.resolveUpstreamTokenProvider,
+    resolveUpstreamTokenProvider: options.resolveUpstreamTokenProvider ?? scheduledObo.resolve,
     scheduledBearerHost: options.scheduledBearerHost,
     execution: require('./consent').execution,
     connect: (connectionOptions) =>
@@ -51,5 +52,7 @@ function createMCPPreflight(options = {}) {
   });
 }
 
-module.exports = createMCPPreflight();
+const preflight = createMCPPreflight();
+scheduledObo.setInspector(preflight);
+module.exports = preflight;
 module.exports.createMCPPreflight = createMCPPreflight;

@@ -5,6 +5,15 @@ export interface ScheduledTokenContext {
   readonly tenantId?: string;
   readonly agentId: string;
   readonly invocationMode: 'delegated';
+  /** Verified host/job classification, never a request-body permission. */
+  readonly manual?: true;
+}
+
+/** Persisted state an owner PATCH read before validating its prospective agent.
+ * This write-only capability is never restored from jobs or sent to tools. */
+export interface ScheduleWritePreflight {
+  readonly agentId: string;
+  readonly configRevision?: number;
 }
 
 interface ScheduleJobIdentity {
@@ -12,6 +21,7 @@ interface ScheduleJobIdentity {
   tenantId?: string;
   scheduleId?: string;
   agent_id?: string;
+  scheduleManual?: boolean;
 }
 
 /** Called by the resume host after job ownership, tenant, agent, and schedule checks. */
@@ -34,5 +44,6 @@ export function restoreScheduledTokenContext(
     ...(metadata.tenantId ? { tenantId: metadata.tenantId } : {}),
     agentId: metadata.agent_id,
     invocationMode: 'delegated',
+    ...(metadata.scheduleManual === true && { manual: true }),
   });
 }

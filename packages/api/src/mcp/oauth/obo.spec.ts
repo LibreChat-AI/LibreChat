@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { OboTokenResolver, UpstreamTokenProvider } from './obo';
@@ -37,6 +38,24 @@ const liveTokens = {
 
 const liveProvider: UpstreamTokenProvider = jest.fn().mockResolvedValue(liveTokens);
 const nullProvider: UpstreamTokenProvider = jest.fn().mockResolvedValue(null);
+
+it('uses a tagged downstream scheduled grant without trying to exchange it as an upstream assertion', async () => {
+  const exchange = jest.fn();
+  const grant = jest.fn(async () => ({
+    scheduledObo: true as const,
+    access_token: 'downstream',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  await expect(
+    resolveOboToken({ id: 'owner' } as IUser, { scopes: 'read' }, exchange, grant),
+  ).resolves.toMatchObject({ access_token: 'downstream', token_type: 'Bearer' });
+  expect(exchange).not.toHaveBeenCalled();
+  expect(grant).toHaveBeenCalledWith();
+  await expect(
+    resolveOboToken({ id: 'owner' } as IUser, { scopes: 'read' }, exchange, grant, undefined, true),
+  ).resolves.toMatchObject({ access_token: 'downstream' });
+  expect(grant).toHaveBeenLastCalledWith({ forceDownstreamRefresh: true });
+});
 
 describe('selectMCPUpstreamTokenProvider', () => {
   it.each([false, true])(
@@ -265,6 +284,28 @@ describe('resolveOboToken', () => {
       mockUser,
       'live-access-token',
       'api://mcp-server-id/Mcp.Tools.ReadWrite',
+      false,
+      undefined,
+    );
+  });
+
+  it('reuses a valid upstream assertion for downstream rejection without forcing its browser refresh', async () => {
+    const upstreamRefresh = jest.fn(async () => {
+      throw new Error('invalid_grant: browser refresh expired');
+    });
+    const browserProvider: UpstreamTokenProvider = jest.fn(async (options) => {
+      if (options?.forceRefresh) await upstreamRefresh();
+      return liveTokens;
+    });
+    await expect(
+      resolveOboToken(mockUser as IUser, oboConfig, mockResolver, browserProvider, undefined, true),
+    ).resolves.toMatchObject({ access_token: 'exchanged-mcp-token' });
+    expect(upstreamRefresh).not.toHaveBeenCalled();
+    expect(browserProvider).toHaveBeenCalledWith({ forceDownstreamRefresh: true });
+    expect(mockResolver).toHaveBeenCalledWith(
+      mockUser,
+      'live-access-token',
+      oboConfig.scopes,
       false,
       undefined,
     );
@@ -588,6 +629,35 @@ describe('isOboConfigStillTrusted', () => {
     });
     expect(result).toBe(false);
   });
+
+  it.each(['author', 'permissions'] as const)(
+    'bounds %s trust lookup diagnostics and keeps denial fail-closed',
+    async (phase) => {
+      jest.mocked(logger.warn).mockClear();
+      const diagnostic = Object.assign(new Error('private-trust-diagnostic'), {
+        query: { secret: 'private-trust-query' },
+        status: 503,
+      });
+      const getUserRoleByAuthorId = jest.fn(async () => {
+        if (phase === 'author') throw diagnostic;
+        return 'ADMIN';
+      });
+      const getRolePermissions = jest.fn(async () => {
+        throw diagnostic;
+      });
+      await expect(
+        isOboConfigStillTrusted({ authorId: 'u1', getUserRoleByAuthorId, getRolePermissions }),
+      ).resolves.toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('OBO trust check'), {
+        type: 'Error',
+        status: 503,
+      });
+      expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toMatch(
+        /private-trust-diagnostic|private-trust-query/,
+      );
+      if (phase === 'author') expect(getRolePermissions).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns false when role lookup throws', async () => {
     const result = await isOboConfigStillTrusted({

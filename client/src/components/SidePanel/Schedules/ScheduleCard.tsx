@@ -7,6 +7,7 @@ import { Play, Trash, Pencil, Ellipsis, TriangleAlert } from 'lucide-react';
 import {
   Label,
   Chip,
+  Button,
   Switch,
   Spinner,
   OGDialog,
@@ -15,9 +16,19 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TSchedule, ScheduleDisabledReason } from 'librechat-data-provider';
+import type { ReactNode } from 'react';
 import type { ImmediateScheduleMCPFailure } from './errors';
 import type { TranslationKeys } from '~/hooks';
 import type { ScheduleRowTone } from './state';
+import {
+  useGetAgentByIdQuery,
+  useScheduledOboTargetQuery,
+  useDeleteScheduleMutation,
+  useUpdateScheduleMutation,
+  useRunScheduleNowMutation,
+  useAuthorizeScheduledOboMutation,
+  useRevokeScheduledOboMutation,
+} from '~/data-provider';
 import {
   scheduleMCPErrorMessage,
   scheduleMCPErrorOutcomes,
@@ -25,12 +36,6 @@ import {
   scheduleMCPCardOutcomes,
   scheduleDisabledMCPLabel,
 } from './errors';
-import {
-  useGetAgentByIdQuery,
-  useDeleteScheduleMutation,
-  useUpdateScheduleMutation,
-  useRunScheduleNowMutation,
-} from '~/data-provider';
 import { useLocalize, useHasAccess, useClockFormat, useWeekStart } from '~/hooks';
 import { cn, getMessageTimestamp, rowActionClasses } from '~/utils';
 import ScheduleMCPRecovery from './ScheduleMCPRecovery';
@@ -46,6 +51,8 @@ interface ScheduleCardProps {
   /** Resolved by the panel, which holds ONE project-name lookup for the whole list —
    *  deriving it per card is O(schedules x projects) on every project-list refresh. */
   projectName?: string | null;
+  oboServers?: string[];
+  oboGrants?: string[];
 }
 
 const DISABLED_REASON_LABELS: Record<ScheduleDisabledReason, TranslationKeys> = {
@@ -154,7 +161,13 @@ function TrailingState({
   );
 }
 
-export default function ScheduleCard({ schedule, projectName, consentEnabled }: ScheduleCardProps) {
+export default function ScheduleCard({
+  schedule,
+  projectName,
+  consentEnabled,
+  oboServers = [],
+  oboGrants = [],
+}: ScheduleCardProps) {
   const localize = useLocalize();
   const navigate = useNavigate();
   const lastRunKey = scheduleLastRunKey(schedule);
@@ -174,6 +187,25 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
   );
   // Enable/disable, run-now, edit and delete all hit CREATE-gated routes, so a
   // USE-only viewer sees a read-only card instead of controls that 403.
+  const [inspectionServer, setInspectionServer] = useState<string | null>(null);
+  const inspection = useScheduledOboTargetQuery(schedule.id, inspectionServer);
+  const oboTarget = inspection.data;
+  const inspectingObo = inspection.isFetching;
+  const authorizeObo = useAuthorizeScheduledOboMutation({
+    onSuccess: () => {
+      setInspectionServer(null);
+      showToast({ message: localize('com_ui_schedule_obo_authorized'), status: 'success' });
+    },
+    onError: () =>
+      showToast({ message: localize('com_ui_schedule_obo_authorize_failed'), status: 'error' }),
+  });
+  const revokeObo = useRevokeScheduledOboMutation({
+    onSuccess: () =>
+      showToast({ message: localize('com_ui_schedule_obo_revoked'), status: 'success' }),
+    onError: () =>
+      showToast({ message: localize('com_ui_schedule_obo_revoke_failed'), status: 'error' }),
+  });
+  const oboTargets = [...new Set([...oboServers, ...oboGrants])];
   const canWrite = useHasAccess({
     permissionType: PermissionTypes.SCHEDULES,
     permission: Permissions.CREATE,
@@ -334,6 +366,39 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
   );
 
   const lastRunConvoId = schedule.lastRun?.conversationId;
+  let oboPreview: ReactNode = null;
+  if (inspectingObo) {
+    oboPreview = <Spinner className="size-5" aria-label={localize('com_ui_loading')} />;
+  } else if (inspection.isError) {
+    oboPreview = (
+      <div className="space-y-2">
+        <p role="alert">{localize('com_ui_schedule_obo_authorize_failed')}</p>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => {
+            void inspection.refetch();
+          }}
+        >
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    );
+  } else if (oboTarget != null) {
+    oboPreview = (
+      <div className="text-text-primary space-y-2 text-sm">
+        <p>{localize('com_ui_schedule_obo_confirm_body')}</p>
+        <p>
+          {localize('com_ui_schedule_obo_server')}: {oboTarget.server}
+        </p>
+        <p>{localize('com_ui_schedule_obo_scopes')}:</p>
+        <code className="bg-surface-secondary block rounded p-2 break-all">{oboTarget.scopes}</code>
+        <p>
+          {localize('com_ui_schedule_obo_endpoint')}: {oboTarget.url}
+        </p>
+      </div>
+    );
+  }
 
   /** One state per row, derived once so the marker and the word cannot disagree. */
   const rowState = useMemo(() => scheduleRowState(schedule, localize), [schedule, localize]);
@@ -435,6 +500,74 @@ export default function ScheduleCard({ schedule, projectName, consentEnabled }: 
           />
         </div>
       </div>
+      {canWrite && oboTargets.length > 0 && (
+        <div className="mt-2 space-y-1">
+          <p className="text-text-secondary text-xs">
+            {localize('com_ui_schedule_obo_description')}
+          </p>
+          {oboTargets.map((server) => (
+            <div key={server} className="flex items-center gap-2 text-xs">
+              <span className="text-text-primary min-w-0 flex-1 truncate">{server}</span>
+              {oboServers.includes(server) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={authorizeObo.isLoading || revokeObo.isLoading || inspectingObo}
+                  onClick={() => {
+                    setInspectionServer(server);
+                  }}
+                >
+                  {localize('com_ui_schedule_obo_authorize')}
+                </Button>
+              )}
+              {oboGrants.includes(server) && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={authorizeObo.isLoading || revokeObo.isLoading || inspectingObo}
+                  onClick={() => revokeObo.mutate({ id: schedule.id, server })}
+                >
+                  {localize('com_ui_schedule_obo_revoke')}
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <OGDialog
+        open={inspectionServer != null}
+        onOpenChange={(open) => {
+          if (!open) setInspectionServer(null);
+        }}
+      >
+        <OGDialogTemplate
+          title={localize('com_ui_schedule_obo_confirm_title')}
+          showCloseButton={false}
+          className="w-11/12 max-w-lg"
+          main={oboPreview}
+          selection={
+            <Button
+              type="button"
+              disabled={
+                authorizeObo.isLoading || inspectingObo || inspection.isError || oboTarget == null
+              }
+              onClick={() => {
+                if (oboTarget != null && !inspection.isError && !inspectingObo)
+                  authorizeObo.mutate({
+                    id: schedule.id,
+                    server: oboTarget.server,
+                    expectedScopes: oboTarget.scopes,
+                    expectedBinding: oboTarget.binding,
+                  });
+              }}
+            >
+              {localize('com_ui_schedule_obo_authorize')}
+            </Button>
+          }
+        />
+      </OGDialog>
       {consentOpen && (
         <Consent
           canConfirm={canWrite}

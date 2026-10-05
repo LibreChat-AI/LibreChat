@@ -5,6 +5,7 @@ import {
   EModelEndpoint,
   Permissions,
   PermissionTypes,
+  isProcessMCPServerConfig,
   buildServerNameAliases,
   normalizeMCPToolKey,
   normalizeServerName,
@@ -25,10 +26,10 @@ import type {
 } from '../mcp/oauth/obo';
 import type { ScheduleMCPExecution, createScheduleMCPExecution } from './authorization/execution';
 import type { ParsedServerConfig, UserMCPConnectionOptions } from '../mcp/types';
+import type { ScheduledTokenContext, ScheduleWritePreflight } from './context';
 import type { CheckAccessParams } from '../middleware/access';
 import type { MCPToolsSnapshot } from '../mcp/connection';
 import type { GetAppConfigOptions } from '../app/service';
-import type { ScheduledTokenContext } from './context';
 import type { ScheduledMCPBearerHost } from './bearer';
 import type { ScheduleMCPPreflight } from './types';
 import {
@@ -52,6 +53,7 @@ import { getAppConfigOptionsFromUser } from '../app/service';
 import { createConcurrencyLimiter } from '../utils/promise';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { OpenIDReauthRequiredError } from '../utils/oidc';
+import { resolveScheduledOboServer } from './target';
 import { formatMCPServerTools } from '../mcp/tools';
 import { checkAccess } from '../middleware/access';
 import { detachOnAbort } from '../utils/promises';
@@ -72,6 +74,9 @@ export type HostUpstreamTokenProviderResolver = (
     signal?: AbortSignal;
     context?: ScheduledTokenContext;
     target?: UpstreamTokenTarget;
+    /** Trusted write-side readiness probe, never present on a dispatched run. */
+    activationPreflight?: boolean;
+    writePreflight?: ScheduleWritePreflight;
   },
 ) => ReturnType<UpstreamTokenProviderResolver>;
 
@@ -81,14 +86,17 @@ export function bindUpstreamTokenProviderResolver(
   resolve: HostUpstreamTokenProviderResolver | undefined,
   signal?: AbortSignal,
   context?: ScheduledTokenContext,
+  activationPreflight = false,
+  writePreflight?: ScheduleWritePreflight,
 ): UpstreamTokenProviderResolver | undefined {
   if (!resolve) return undefined;
   const capturedContext = context && Object.freeze({ ...context });
+  const capturedWrite = context && writePreflight && Object.freeze({ ...writePreflight });
   const pending = new Map<string, Promise<UpstreamTokenProvider | undefined>>();
   return (options) => {
     signal?.throwIfAborted();
     const target = options?.target && Object.freeze({ ...options.target });
-    const key = JSON.stringify([target?.mcpServer, target?.scopes]);
+    const key = JSON.stringify([target?.mcpServer, target?.scopes, target?.url]);
     const cached = pending.get(key);
     if (cached) return cached;
     const lookup = Promise.resolve()
@@ -98,6 +106,8 @@ export function bindUpstreamTokenProviderResolver(
           signal,
           ...(capturedContext ? { context: capturedContext } : {}),
           ...(target ? { target } : {}),
+          ...(activationPreflight ? { activationPreflight: true } : {}),
+          ...(capturedWrite ? { writePreflight: capturedWrite } : {}),
         });
       })
       .then((provider) => {
@@ -132,6 +142,7 @@ export function createScheduleUpstreamTokenProviderResolver(
           ...(req.user.tenantId ? { tenantId: req.user.tenantId } : {}),
           agentId,
           invocationMode: 'delegated',
+          ...((req._isManualScheduledFire ?? fire.manual) === true && { manual: true }),
         }
       : undefined;
   return bindUpstreamTokenProviderResolver(req.user, resolve, signal, context);
@@ -261,16 +272,27 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         );
       }
     }
-    if (selectedTools.length === 0) return [];
+    if (selectedTools.length === 0) {
+      if (options.inspectOboTarget)
+        throw new ScheduleMCPError([
+          { server: options.inspectOboTarget.serverName, status: 'mcp_configuration_missing' },
+        ]);
+      return [];
+    }
 
     const effectiveConfig = await loadAppConfig();
     const rawConfig = effectiveConfig?.mcpConfig ?? {};
     const configNames = Object.keys(rawConfig);
-    const candidateNames = Array.from(new Set([...configNames, ...serverHints]));
+    const resumeServers = options.oboOnly
+      ? await deps.getServerConfigs(user.id, {}, user.role)
+      : undefined;
+    const candidateNames = Array.from(
+      new Set([...configNames, ...Object.keys(resumeServers ?? {}), ...serverHints]),
+    );
     // Authoritative config names claim normalized aliases before persisted hints.
     // A hint is often already normalized (for example `Sales_Force` for the real
     // config name `Sales Force`) and must not shadow that registry identity.
-    const aliases = buildServerNameAliases(configNames);
+    const aliases = buildServerNameAliases([...configNames, ...Object.keys(resumeServers ?? {})]);
     for (const hint of serverHints) {
       if (!aliases.has(hint)) aliases.set(hint, hint);
       const normalized = normalizeServerName(hint);
@@ -289,6 +311,13 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         const [, name] = splitMCPToolKey(tool, candidates);
         if (!name) continue;
         const server = exactNames.has(name) ? name : (nameAliases.get(name) ?? name);
+        const resumeServer = resumeServers?.[server] ?? rawConfig[server];
+        // An admin override may add OBO; defer its final classification to the registry.
+        const overrideMayAddObo =
+          rawConfig[server]?.obo != null &&
+          resumeServers?.[server]?.source !== 'user' &&
+          !isProcessMCPServerConfig(resumeServer);
+        if (options.oboOnly && resumeServer && !resumeServer.obo && !overrideMayAddObo) continue;
         const owners = serverAgentIds.get(server) ?? new Set<string>();
         owners.add(toolAgentId);
         serverAgentIds.set(server, owners);
@@ -309,7 +338,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     let { selected, serverAgentIds, toolAgentIds } = collectSelected(
       candidateNames,
       aliases,
-      new Set(configNames),
+      new Set([...configNames, ...Object.keys(resumeServers ?? {})]),
     );
     const outcomesForOwners = (
       server: string,
@@ -328,6 +357,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
         ...(ownerId !== agentId ? { agentId: ownerId } : {}),
       }));
     };
+    if (options.oboOnly && selected.size === 0) return [];
     const capabilities = effectiveConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [];
     if (!capabilities.includes(AgentCapabilities.tools)) {
       throw new ScheduleMCPError(
@@ -353,7 +383,8 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     // Resolve once more against the ACL-filtered registry before initializing config.
     // Exact accessible identities must beat normalized aliases from another tier, just
     // as they do in the interactive runtime.
-    const accessibleServers = await deps.getServerConfigs(user.id, {}, user.role);
+    const accessibleServers =
+      resumeServers ?? (await deps.getServerConfigs(user.id, {}, user.role));
     const authoritativeNames = Array.from(
       new Set([...Object.keys(accessibleServers), ...configNames]),
     );
@@ -369,8 +400,17 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       authoritativeAliases,
       new Set([...Object.keys(accessibleServers), ...configNames]),
     ));
+    if (options.inspectOboTarget && !selected.has(options.inspectOboTarget.serverName)) {
+      throw new ScheduleMCPError([
+        { server: options.inspectOboTarget.serverName, status: 'mcp_configuration_missing' },
+      ]);
+    }
     const selectedRawConfig = Object.fromEntries(
-      Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),
+      Object.entries(rawConfig).filter(([serverName]) =>
+        options.inspectOboTarget
+          ? serverName === options.inspectOboTarget.serverName
+          : selected.has(serverName),
+      ),
     );
     const requestProbeLimit = createConcurrencyLimiter(options.concurrency);
     const config = await deps.ensureConfigServers(selectedRawConfig, (task) =>
@@ -389,10 +429,29 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
     throwIfAborted();
     const auth = await getPluginAuthMap({
       userId: user.id,
-      pluginKeys: [...selected.keys()].map((server) => `${Constants.mcp_prefix}${server}`),
+      pluginKeys: (options.inspectOboTarget
+        ? [options.inspectOboTarget.serverName]
+        : [...selected.keys()]
+      ).map((server) => `${Constants.mcp_prefix}${server}`),
       throwError: true,
       findPluginAuthsByKeys: deps.findPluginAuthsByKeys,
     });
+    if (options.inspectOboTarget) {
+      const { serverName, onSelected } = options.inspectOboTarget;
+      const server = servers[serverName];
+      if (
+        !server?.obo?.scopes ||
+        shadowed.has(serverName) ||
+        server.source === 'user' ||
+        (server.dbId && server.source !== 'config')
+      ) {
+        throw new ScheduleMCPError([{ server: serverName, status: 'mcp_configuration_missing' }]);
+      }
+      await onSelected(
+        resolveScheduledOboServer(server, user, auth[`${Constants.mcp_prefix}${serverName}`]),
+      );
+      return [{ server: serverName, status: 'ready' }];
+    }
     const upstreamTokenProviderResolver = bindUpstreamTokenProviderResolver(
       user,
       deps.resolveUpstreamTokenProvider,
@@ -404,8 +463,11 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
             ...(user.tenantId ? { tenantId: user.tenantId } : {}),
             agentId,
             invocationMode: 'delegated',
+            ...(options.manual === true && { manual: true }),
           }
         : undefined,
+      options.activationPreflight === true && options.scheduleId != null,
+      options.writePreflight,
     );
     throwIfAborted();
     const requestBody = {
@@ -437,6 +499,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
               try {
                 throwIfAborted();
                 const serverConfig = servers[server];
+                if (options.oboOnly && serverConfig && !serverConfig.obo) return [];
                 const customUserVars = auth[`${Constants.mcp_prefix}${server}`];
                 if (
                   !serverConfig ||

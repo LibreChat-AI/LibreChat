@@ -15,6 +15,7 @@ const {
 } = require('~/server/services/Schedules');
 const { resolveAgentFireAccess } = require('~/server/services/Schedules/access');
 const methods = require('~/models');
+const scheduledObo = require('~/server/services/Schedules/obo');
 
 const { getRoleByName } = methods;
 
@@ -37,6 +38,7 @@ const handlers = createSchedulesHandlers({
   preflightMCP: require('~/server/services/Schedules/mcp'),
   methods,
   getLimits,
+  listOboGrants: (userId) => scheduledObo.listEnrolled(userId),
   // Full fire-equivalent access check (not mere existence): the body-based agent
   // middleware is a no-op for schedule payloads (no `endpoint: 'agents'`), so
   // enforce the same role AGENTS:USE + resource VIEW (with manage:agents bypass)
@@ -81,6 +83,8 @@ const handlers = createSchedulesHandlers({
   // synchronously, aborts live ones, and reports honestly (see ScheduleDeleteResult);
   // a delivered abort erases on the generation's own outcome write, in any topology.
   deleteSchedule: deleteScheduleForOwner,
+  purgeOboGrants: (userId, scheduleId, afterPurge) =>
+    scheduledObo.purge(userId, scheduleId, afterPurge),
   // Durable account-deletion barrier. A one-shot disable scan cannot close the
   // create race, so every scheduling WRITE consults the user-level flag instead.
   isUserDeleting,
@@ -97,6 +101,9 @@ router.get('/:id', checkSchedulesAccess, handlers.getSchedule);
 router.post('/', checkSchedulesCreate, handlers.createSchedule);
 router.patch('/:id', checkSchedulesCreate, handlers.updateSchedule);
 router.delete('/:id', checkSchedulesCreate, handlers.deleteSchedule);
+router.get('/:id/obo/:server', checkSchedulesAccess, scheduledObo.describeFromRequest);
+router.post('/:id/obo/:server', checkSchedulesCreate, scheduledObo.enrollFromRequest);
+router.delete('/:id/obo/:server', checkSchedulesCreate, scheduledObo.revokeFromRequest);
 // Run-now mutates runtime state; gate it on CREATE like the UI does (not USE).
 // This is also where LIMIT_MESSAGE_IP has to apply to a manual run: the fire itself is a
 // loopback POST carrying the server's address, so limiting by IP there would pool every

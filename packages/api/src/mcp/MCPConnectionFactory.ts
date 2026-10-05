@@ -58,8 +58,8 @@ import {
 } from './openid';
 import { PENDING_STALE_MS, FlowStateNotFoundError, normalizeExpiresAt } from '~/flow/manager';
 import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
+import { isAbortError, getSafeErrorMetadata } from '~/utils/errors';
 import { preProcessGraphTokens } from '~/utils/graph';
-import { isAbortError } from '~/utils/errors';
 import { MCPConnection } from './connection';
 import { processMCPEnv } from '~/utils';
 import { mcpConfig } from './mcpConfig';
@@ -418,7 +418,7 @@ export class MCPConnectionFactory {
         shouldAttemptAuthenticatedDiscovery = false;
         logger.debug(
           `${this.logPrefix} [Discovery] OBO token resolution failed, attempting unauthenticated tool listing`,
-          error,
+          getSafeErrorMetadata(error),
         );
       }
     } else if (this.useOAuth) {
@@ -739,7 +739,11 @@ export class MCPConnectionFactory {
       this.upstreamTokenProvider = createLazyOboUpstreamTokenProvider(
         this.upstreamTokenProviderResolver,
         this.signal,
-        { mcpServer: this.serverName, scopes: oboConfig.scopes },
+        {
+          mcpServer: this.serverName,
+          scopes: oboConfig.scopes,
+          url: 'url' in this.serverConfig ? this.serverConfig.url : undefined,
+        },
       );
     }
     if (!this.upstreamTokenProvider) {
@@ -1761,7 +1765,10 @@ export class MCPConnectionFactory {
         if (isAbortError(error)) {
           logger.debug(`${this.logPrefix} OBO token re-exchange cancelled`);
         } else {
-          logger.error(`${this.logPrefix} OBO token re-exchange failed`, error);
+          logger.error(
+            `${this.logPrefix} OBO token re-exchange failed`,
+            getSafeErrorMetadata(error),
+          );
         }
         /**
          * `connectClient` rejects its handling promise with this error and then
@@ -1832,7 +1839,10 @@ export class MCPConnectionFactory {
         }),
       );
     } catch (error) {
-      logger.warn(`${this.logPrefix} Failed to record upstream OAuth rejection`, error);
+      logger.warn(
+        `${this.logPrefix} Failed to record upstream OAuth rejection`,
+        getSafeErrorMetadata(error),
+      );
     }
   }
 

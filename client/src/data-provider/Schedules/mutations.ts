@@ -90,3 +90,43 @@ export const useRunScheduleNowMutation = (
     },
   );
 };
+
+export type ScheduledOboParams = { id: string; server: string };
+export type ScheduledOboConsent = ScheduledOboParams & {
+  expectedScopes: string;
+  expectedBinding: string;
+};
+export const useAuthorizeScheduledOboMutation = (
+  options?: UseMutationOptions<void, Error, ScheduledOboConsent>,
+) => {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, ScheduledOboConsent>(
+    [MutationKeys.scheduledObo],
+    ({ id, server, expectedScopes, expectedBinding }) =>
+      dataService.authorizeScheduledObo(id, server, expectedScopes, expectedBinding),
+    {
+      ...options,
+      onSettled: (...args) => {
+        queryClient.invalidateQueries([QueryKeys.schedules]);
+        options?.onSettled?.(...args);
+      },
+    },
+  );
+};
+
+export const useRevokeScheduledOboMutation = (
+  options?: UseMutationOptions<void, Error, ScheduledOboParams>,
+) => {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, ScheduledOboParams>(
+    [MutationKeys.scheduledObo, 'revoke'],
+    ({ id, server }) => dataService.revokeScheduledObo(id, server),
+    {
+      ...options,
+      onSettled: (...args) => {
+        queryClient.invalidateQueries([QueryKeys.schedules]);
+        options?.onSettled?.(...args);
+      },
+    },
+  );
+};

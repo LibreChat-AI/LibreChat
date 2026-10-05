@@ -1287,7 +1287,11 @@ describe('MCPTokenStorage', () => {
       expect(result!.access_token).toBe('refreshed-at');
       expect(refreshTokens).toHaveBeenCalledWith(
         'rt',
-        expect.objectContaining({ userId: 'u1', serverName: 'srv1' }),
+        expect.objectContaining({
+          userId: 'u1',
+          serverName: 'srv1',
+          credentialSetId: expect.any(String),
+        }),
         expect.any(AbortSignal),
       );
     });

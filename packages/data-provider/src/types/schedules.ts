@@ -183,11 +183,17 @@ export type TScheduleLimits = {
   /** Operator-pinned destination project; when set it is the ONLY destination and
    *  the client must not offer a picker. */
   projectId?: string;
+  /** Exact OBO MCP server names an operator allows owners to authorize separately. */
+  oboServers?: string[];
 };
+
+export type TScheduledOboTarget = { server: string; url: string; scopes: string; binding: string };
 
 export type TSchedulesResponse = {
   schedules: TSchedule[];
   limits: TScheduleLimits;
+  /** Owner-scoped stored grants, including those no longer allowed for new enrollment. */
+  oboGrants?: Record<string, string[]>;
 };
 
 export type TScheduleRunNowResponse = {

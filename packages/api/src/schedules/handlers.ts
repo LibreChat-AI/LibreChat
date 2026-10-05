@@ -21,6 +21,7 @@ import type {
   ScheduleLimits,
   FireResult,
 } from './types';
+import type { ScheduleWritePreflight } from './context';
 import type { ServerRequest } from '~/types';
 import {
   isValidCronExpression,
@@ -35,6 +36,7 @@ export interface SchedulesHandlersDeps {
   preflightMCP: ScheduleMCPPreflight;
   methods: ScheduleMethods;
   getLimits: (user?: ScheduleUserContext) => Promise<ScheduleLimits>;
+  listOboGrants: (userId: string) => Promise<Record<string, string[]>>;
   /** Agent existence + VIEW access for the requesting user. */
   canViewAgent: (agentId: string, req: ServerRequest) => Promise<boolean>;
   /** Whether the requesting user owns this chat project. Projects are user-owned,
@@ -57,6 +59,12 @@ export interface SchedulesHandlersDeps {
    * runs, and erases once drained. See ScheduleDeleteResult for the honest states.
    */
   deleteSchedule: (id: string, userId: string) => Promise<ScheduleDeleteResult>;
+  /** Erases all separately enrolled grants, including targets removed from current policy. */
+  purgeOboGrants?: (
+    userId: string,
+    scheduleId: string,
+    afterPurge: () => Promise<ScheduleDeleteResult>,
+  ) => Promise<ScheduleDeleteResult | undefined>;
   /** Whether this user's account deletion has begun. Fail-closed (unknown == true). */
   isUserDeleting: (userId: string) => Promise<boolean>;
 }
@@ -395,10 +403,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     signal: AbortSignal,
     limits: ScheduleLimits,
     scheduleId: string,
+    activationPreflight = false,
+    writePreflight?: ScheduleWritePreflight,
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
         scheduleId,
+        ...(activationPreflight && { activationPreflight: true }),
+        ...(writePreflight && { writePreflight }),
         stage: 'activation',
         signal,
         concurrency: limits.mcpPreflightConcurrency,
@@ -575,20 +587,35 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
 
   async function listSchedules(req: ServerRequest, res: Response): Promise<void> {
     const user = requestUser(req);
-    // Three independent, user-scoped reads; the generating runs ride alongside so
-    // the list can name the chat each one is producing without a second round trip
-    // per card.
-    const [schedules, limits, inFlight] = await Promise.all([
+    // Independent, user-scoped reads; one indexed grant-name projection serves
+    // all cards, including grants removed from the current operator allowlist.
+    const [schedules, limits, inFlight, enrolled] = await Promise.all([
       deps.methods.getSchedulesByUser(user.id),
       deps.getLimits(user),
       deps.methods.getActiveRunsForUser(user.id, LISTED_RUN_STATUSES),
+      deps.listOboGrants(user.id).then(
+        (grants) => ({ ok: true as const, grants }),
+        () => ({ ok: false as const }),
+      ),
     ]);
+    if (!enrolled.ok) {
+      res.status(503).json({
+        code: 'schedule_obo_unavailable',
+        error: 'Scheduled authorization is unavailable. Retry shortly.',
+      });
+      return;
+    }
     const inFlightBySchedule_ = inFlightBySchedule(inFlight);
+    const oboGrants: Record<string, string[]> = Object.create(null);
+    const projected = schedules.map((schedule) => {
+      if (enrolled.grants[schedule.id]?.length)
+        oboGrants[schedule.id] = enrolled.grants[schedule.id];
+      return toWireSchedule(schedule, limits, inFlightBySchedule_.get(schedule.id));
+    });
     retryDeferredDeletions(user.id);
     res.json({
-      schedules: schedules.map((schedule) =>
-        toWireSchedule(schedule, limits, inFlightBySchedule_.get(schedule.id)),
-      ),
+      schedules: projected,
+      oboGrants,
       limits: {
         maxPerUser: limits.maxPerUser,
         ...(limits.mcpConsent?.enabled && { mcpConsent: true }),
@@ -597,6 +624,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         minIntervalMinutes: limits.minIntervalMinutes,
         requireProject: limits.requireProject,
         ...(limits.projectId != null && { projectId: limits.projectId }),
+        ...(limits.oboServers?.length && { oboServers: limits.oboServers }),
       },
     });
   }
@@ -990,6 +1018,8 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
         mcpSignal,
         limits,
         existing.id,
+        existing.enabled === false && parsed.data.enabled === true,
+        { agentId: existing.agent_id, configRevision: existing.configRevision },
       ))
     )
       return;
@@ -1141,8 +1171,17 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // Quiesce-then-erase: disable + mark deleting (stops new claims, hides it),
     // abort in-flight loopback jobs, and erase once drained — so a live run's
     // evidence is never destroyed out from under it.
-    const result = await deps.deleteSchedule(id, requestUser(req).id);
-    if (result === 'not_found') {
+    const userId = requestUser(req).id;
+    let result: ScheduleDeleteResult | undefined;
+    try {
+      result = deps.purgeOboGrants
+        ? await deps.purgeOboGrants(userId, id, () => deps.deleteSchedule(id, userId))
+        : await deps.deleteSchedule(id, userId);
+    } catch {
+      res.status(503).json({ error: 'Offline OBO grant cleanup failed. Retry deletion.' });
+      return;
+    }
+    if (result == null || result === 'not_found') {
       res.status(404).json({ error: 'Schedule not found' });
       return;
     }
