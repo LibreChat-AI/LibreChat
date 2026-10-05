@@ -40,15 +40,21 @@ import type {
 import type { SubagentTaskControlTransport } from './subagentTaskRouting';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { HostSubagentTaskConfig } from './subagentDelivery';
+import type { ActivitySnapshot, ActivityTree } from './digest';
 import {
   boundedClaim,
   boundedTaskList,
   controlFingerprint,
   SubagentTaskOwnerUnavailableError,
 } from './subagentTaskRouting';
+import {
+  SUBAGENT_ACTIVITY_LIMITS,
+  projectSubagentActivity,
+  projectPersistedMessageActivityJson,
+} from './activity';
 import { boundSubagentActivityUpdate, SubagentActivityStream } from './subagentActivity';
 import { createSubagentAttemptKey, createSubagentThreadId } from './subagentThreadIds';
-import { SUBAGENT_ACTIVITY_LIMITS, projectSubagentActivity } from './activity';
+import { ActivityRecorder, activityTreeFromProjection } from './digest';
 import { runWithDetachedSubagentUsage } from './subagentTaskContext';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createConcurrencyLimiter } from '~/utils/promise';
@@ -79,6 +85,10 @@ const SHUTDOWN_CONTROL_RECEIPT_FLUSH_ATTEMPTS = 4;
 const DEFAULT_SHUTDOWN_CONTROL_RECEIPT_BACKOFF_MS = 1_000;
 /** Bounds retained live-only updates while an event transport is unavailable. */
 const MAX_PENDING_ACTIVITY_EVENTS = SUBAGENT_ACTIVITY_LIMITS.items;
+/** Matches the SDK's default retention of a settled task's result. */
+const ACTIVITY_TREE_RETENTION_MS = 60 * 60_000;
+/** Each tree is capped at a few dozen kilobytes; this caps the process total. */
+const MAX_ACTIVITY_TREES = 512;
 
 /** A cancellation target set resolved before the conversations are removed. */
 export interface SubagentCancellationPlan {
@@ -95,7 +105,7 @@ const MAX_TRANSCRIPT_BYTES = 12 * 1024 * 1024;
 const TRANSCRIPT_SELECT =
   'messageId parentMessageId text createdAt +subagentTranscript +subagentTask';
 const DURABLE_RESULT_SELECT =
-  'messageId conversationId sender text createdAt updatedAt +subagentTask';
+  'messageId conversationId sender text createdAt updatedAt +subagentTask +subagentActivityProjection';
 
 class SubagentThreadPublicError extends Error {}
 class SubagentThreadDeletedError extends SubagentThreadPublicError {}
@@ -568,6 +578,37 @@ function boundedControlCommand(command: SubagentTaskControlCommand): SubagentTas
   };
 }
 
+/**
+ * The settlement-time public projection is the only progress that outlives the
+ * owning process. It is scoped to the task it was written for, and is read only
+ * after the caller has re-established the child's parent lineage.
+ */
+function durableActivity(
+  message: IMessage,
+  taskId: string,
+  startedAt: number,
+  settledAt: number,
+): ActivityTree | undefined {
+  const projection = message.subagentActivityProjection;
+  if (projection == null || projection.taskId !== taskId) {
+    return undefined;
+  }
+  const { activity, truncated } = projectPersistedMessageActivityJson(
+    projection.activityJson,
+    projection.truncated,
+  );
+  return activityTreeFromProjection(activity, { startedAt, settledAt, truncated });
+}
+
+/** Progress is observational: a recording failure must never fail the child. */
+function recordActivity(recorder: ActivityRecorder, event: SubagentUpdateEvent): void {
+  try {
+    recorder.record(event);
+  } catch (error) {
+    logger.warn('[subagentThreads] Failed to record child progress', error);
+  }
+}
+
 function safeErrorMessage(error: unknown): string {
   return `Subagent task failed: ${publicFailureDetail(error).slice(0, 2_000)}`;
 }
@@ -641,6 +682,10 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
   private taskControlTransport?: SubagentTaskControlTransport;
   private activityOptions: TSubagentActivityConfig = subagentActivityConfigSchema.parse({});
   private activityStream = new SubagentActivityStream(new InMemoryEventTransport());
+  private readonly activityTrees = new Map<
+    string,
+    { recorder: ActivityRecorder; settledAt?: number }
+  >();
 
   constructor(
     private readonly methods: SubagentThreadMethods,
@@ -1070,10 +1115,10 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       throw new Error('Subagent task control transport is already configured.');
     }
     await transport.bind({
-      claim: (scopeId, taskId) => super.claim(scopeId, taskId),
+      claim: (scopeId, taskId) => this.withActivity(scopeId, super.claim(scopeId, taskId)),
       control: (scopeId, taskId, command, invocationId) =>
         this.controlInvocationAndPersist(scopeId, taskId, command, invocationId),
-      list: (scopeId) => super.list(scopeId),
+      list: (scopeId) => this.withActivitySummaries(scopeId, super.list(scopeId)),
       cancelScope: (scopeId, threadIds, removedConversationIds = []) => {
         const cancelled = this.cancelForScope(scopeId, threadIds);
         if (removedConversationIds.length > 0) {
@@ -1219,6 +1264,62 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
    * this task store. */
   publishTaskActivity(threadId: string, taskId: string, event: SubagentUpdateEvent): Promise<void> {
     return this.activityStream.publish(threadId, taskId, boundSubagentActivityUpdate(event));
+  }
+
+  /**
+   * Starts the bounded progress tree for one locally executing child. Trees outlive
+   * settlement so a finished, undelivered result can still be navigated, and are
+   * released by age and count rather than by the SDK's own result retention.
+   */
+  private trackActivity(scopeId: string, taskId: string): ActivityRecorder {
+    const now = Date.now();
+    for (const [key, entry] of this.activityTrees) {
+      if (entry.settledAt != null && now - entry.settledAt > ACTIVITY_TREE_RETENTION_MS) {
+        this.activityTrees.delete(key);
+      }
+    }
+    if (this.activityTrees.size >= MAX_ACTIVITY_TREES) {
+      const oldest =
+        [...this.activityTrees].find(([, entry]) => entry.settledAt != null) ??
+        this.activityTrees.entries().next().value;
+      if (oldest != null) {
+        this.activityTrees.delete(oldest[0]);
+      }
+    }
+    const recorder = new ActivityRecorder(now);
+    this.activityTrees.set(controlTaskKey(scopeId, taskId), { recorder });
+    return recorder;
+  }
+
+  private settleActivity(
+    scopeId: string,
+    taskId: string,
+    terminal: SubagentActivityTerminalStatus,
+  ): void {
+    const entry = this.activityTrees.get(controlTaskKey(scopeId, taskId));
+    if (entry == null) return;
+    entry.recorder.settle(terminal === 'failed' ? 'error' : terminal);
+    entry.settledAt = Date.now();
+  }
+
+  /** Attaches this process's progress tree to a claim the poll tool will render. */
+  private withActivity(scopeId: string, claim: SubagentTaskClaim): SubagentTaskClaim {
+    if (claim.status === 'not_found') return claim;
+    const entry = this.activityTrees.get(controlTaskKey(scopeId, claim.task.taskId));
+    if (entry == null) return claim;
+    const task: ActivitySnapshot = { ...claim.task, activity: entry.recorder.snapshot() };
+    return { ...claim, task };
+  }
+
+  /** Lists carry only counts and the node in flight, never whole trees. */
+  private withActivitySummaries(
+    scopeId: string,
+    snapshots: SubagentTaskSnapshot[],
+  ): SubagentTaskSnapshot[] {
+    return snapshots.map((snapshot): ActivitySnapshot => {
+      const entry = this.activityTrees.get(controlTaskKey(scopeId, snapshot.taskId));
+      return entry == null ? snapshot : { ...snapshot, activitySummary: entry.recorder.summary() };
+    });
   }
 
   private publishActivity(
@@ -1465,6 +1566,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 );
               }
               const preparedThread = prepared;
+              const recorder = this.trackActivity(request.scopeId, runtime.taskId);
               let activitySequence = 0;
               const activityRuntime: SubagentTaskRuntime = {
                 ...runtime,
@@ -1476,6 +1578,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                     activitySequence: sequence,
                   };
                   runtime.reportProgress(activityEvent);
+                  recordActivity(recorder, activityEvent);
                   this.publishActivity(
                     lease,
                     preparedThread.conversation.conversationId,
@@ -1559,6 +1662,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
                 this.wakeupTaskIds.delete(prepared.replay?.taskId ?? runtime.taskId);
               }
               if (prepared != null && prepared.replay == null) {
+                this.settleActivity(request.scopeId, runtime.taskId, activityTerminal);
                 this.completeActivity(
                   lease,
                   prepared.conversation.conversationId,
@@ -1623,7 +1727,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     taskId: string,
     invocationId?: string,
   ): Promise<SubagentTaskClaim> {
-    const local = super.claim(scopeId, taskId);
+    const local = this.withActivity(scopeId, super.claim(scopeId, taskId));
     const claim =
       local.status !== 'not_found'
         ? local
@@ -1725,7 +1829,8 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
     if (createdAt == null || updatedAt == null) {
       return { status: 'not_found' };
     }
-    const task: SubagentTaskSnapshot = {
+    const activity = durableActivity(message, taskId, createdAt, updatedAt);
+    const task: ActivitySnapshot = {
       taskId,
       threadId,
       subagentType: lineage.subagentType,
@@ -1736,6 +1841,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
       resultClaimed: true,
       pendingControls: 0,
       ...(status === 'completed' ? {} : { error: message.text ?? '' }),
+      ...(activity == null ? {} : { activity }),
     };
     const collected = await this.assignResultClaim(scope.userId, threadId, taskId, invocationId);
     if (collected.status === 'not_found') {
@@ -2224,7 +2330,7 @@ export class SubagentThreadTaskStore extends InMemorySubagentTaskStore {
 
   /** Returns this process's tasks plus tasks reported by registered remote owners. */
   async listTasks(scopeId: string): Promise<SubagentTaskSnapshot[]> {
-    const local = super.list(scopeId);
+    const local = this.withActivitySummaries(scopeId, super.list(scopeId));
     const remote = (await this.taskControlTransport?.list(scopeId)) ?? [];
     const byId = new Map(local.map((task) => [task.taskId, task]));
     for (const task of remote) {

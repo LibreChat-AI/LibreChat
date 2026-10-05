@@ -1,5 +1,5 @@
 import { StandardGraph } from '@librechat/agents';
-import { StepTypes } from 'librechat-data-provider';
+import { StepTypes, readScheduleMCPReceipts } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
 import type { Redis, Cluster } from 'ioredis';
 import type { SteerQueueItem, SteerReceipt } from '../interfaces/IJobStore';
@@ -135,11 +135,16 @@ describe('RedisJobStore Integration Tests', () => {
               patch: patch(transient),
             }),
           ).toBe(true);
-        expect(await first.getJob(id)).toMatchObject({
+        const retained = await first.getJob(id);
+        expect(retained).toMatchObject({
           scheduleMCPFailure: permanent,
           scheduleOutcome: 'error',
-          scheduleOutcomeError: patch(permanent).scheduleOutcomeError,
+          scheduleOutcomeError: expect.stringMatching(/^mcp_reauth_required: /),
         });
+        expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toEqual(
+          expect.arrayContaining([permanent, transient]),
+        );
+        expect(readScheduleMCPReceipts(retained?.scheduleOutcomeError)).toHaveLength(2);
         await second.updateJob(
           id,
           patch(new ScheduledMCPPolicyError('tool_policy_denied', 'warehouse').outcomes[0]),

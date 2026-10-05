@@ -3893,6 +3893,15 @@ export function createConversationMethods(
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
       }
 
+      try {
+        await mongoose.models.ToolApprovalGrant?.deleteMany({
+          user,
+          conversationId: { $in: conversationIds },
+        });
+      } catch {
+        logger.warn('[deleteConvos] Remembered approval cleanup failed.');
+      }
+
       // conversationIds lets callers run sibling cleanup that lives in higher layers
       // (e.g. pruning the conversations' durable agent checkpoints) without re-querying
       // documents that no longer exist.

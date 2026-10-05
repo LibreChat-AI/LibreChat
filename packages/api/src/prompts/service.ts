@@ -1,10 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
-import type {
-  FiltersConfig,
-  TDeletePromptResponse,
-  TMakePromptProductionResponse,
-} from 'librechat-data-provider';
+import type { FiltersConfig, TDeletePromptResponse } from 'librechat-data-provider';
 import type {
   PromptRecord,
   PromptDatabase,
@@ -13,10 +9,12 @@ import type {
   PromptOperation,
   PromptGroupRecord,
   ResolvePromptInput,
+  PromptServiceError,
   PromptServiceResult,
   PromptCreationResult,
   CreatePromptGroupInput,
   PromptServiceAdapters,
+  MakePromptProductionResult,
 } from './types';
 import type { ProjectedStoredPrompt, ProjectedStoredPromptGroup } from './protection';
 import {
@@ -95,7 +93,7 @@ export interface PromptService {
       readonly promptId: string;
       readonly loadedRevision?: PromptRecord | null;
     }>,
-  ): Promise<PromptServiceResult<TMakePromptProductionResponse>>;
+  ): Promise<MakePromptProductionResult>;
   deletePrompt(input: {
     readonly groupId: string;
     readonly promptId: string;
@@ -107,14 +105,17 @@ function invalidInput<T>(message: string, details?: unknown): PromptServiceResul
   return { ok: false, error: { type: 'invalid_input', message, details } };
 }
 
-function unsupported<T>(operation: PromptOperation): PromptServiceResult<T> {
+function unsupported(operation: PromptOperation): {
+  readonly ok: false;
+  readonly error: PromptServiceError;
+} {
   return { ok: false, error: { type: 'unsupported', operation } };
 }
 
-function inspect<T>(
+function inspect(
   input: Parameters<typeof inspectPromptContent>[0],
   filters: FiltersConfig | undefined,
-): PromptServiceResult<T> | null {
+): { readonly ok: false; readonly error: PromptServiceError } | null {
   const finding = inspectPromptContent(input, filters);
   return finding == null ? null : { ok: false, error: { type: 'blocked_content', finding } };
 }
@@ -182,10 +183,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
       }
-      const rejection = inspect<PromptCreationResult>(
-        { prompt: validation.data, group: input.group },
-        filters,
-      );
+      const rejection = inspect({ prompt: validation.data, group: input.group }, filters);
       if (rejection != null) {
         return rejection;
       }
@@ -215,7 +213,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
       }
-      const rejection = inspect<{ prompt: PromptRecord }>({ prompt: validation.data }, filters);
+      const rejection = inspect({ prompt: validation.data }, filters);
       if (rejection != null) {
         return rejection;
       }
@@ -235,7 +233,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         return null;
       }
       return (
-        inspect<ProjectedGroup | null>({ group }, filters) ?? {
+        inspect({ group }, filters) ?? {
           ok: true,
           value: projectStoredPromptGroup(group, filters),
         }
@@ -247,7 +245,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (revision == null) {
         return null;
       }
-      return inspect<PromptRecord>({ prompt: revision }, filters) ?? { ok: true, value: revision };
+      return inspect({ prompt: revision }, filters) ?? { ok: true, value: revision };
     },
 
     incrementPromptGroupUsage: (groupId) => catalog.incrementPromptGroupUsage(groupId),
@@ -257,7 +255,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!validation.success) {
         return invalidInput('Invalid request body', validation.error.errors);
       }
-      const rejection = inspect<PromptGroupRecord>({ group: validation.data }, filters);
+      const rejection = inspect({ group: validation.data }, filters);
       if (rejection != null) {
         return rejection;
       }
@@ -272,16 +270,13 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
         return unsupported('makePromptProduction');
       }
       const revision = await readPrompt(promptId, loadedRevision);
-      const rejection = inspect<TMakePromptProductionResponse>(
-        { prompt: revision ?? undefined },
-        filters,
-      );
+      const rejection = inspect({ prompt: revision ?? undefined }, filters);
       if (rejection != null) {
         return rejection;
       }
       const promote = source.makePromptProduction;
       const value = await withPromptStage('write', () => promote(promptId));
-      return { ok: true, value };
+      return { ok: true, value, groupId: revision?.groupId };
     },
 
     async deletePrompt(input) {

@@ -71,6 +71,7 @@ export function createUserMethods(
     options?: { preserveExpiresAt?: boolean },
   ) => Promise<IUser | null>;
   awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  consumeBackupCode: (userId: string, codeHash: string) => Promise<boolean>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
@@ -374,6 +375,19 @@ export function createUserMethods(
     await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
   }
 
+  /** Only the request that atomically consumes an unused recovery code may authenticate. */
+  async function consumeBackupCode(userId: string, codeHash: string): Promise<boolean> {
+    const result = await mongoose.models.User.updateOne(
+      { _id: userId, backupCodes: { $elemMatch: { codeHash, used: false } } },
+      { $set: { 'backupCodes.$.used': true, 'backupCodes.$.usedAt': new Date() } },
+    );
+    if (result.modifiedCount !== 1) {
+      return false;
+    }
+    await invalidateAuthUserDocCache(userId);
+    return true;
+  }
+
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
   async function claimSamlIdentity(
     userId: string,
@@ -509,6 +523,7 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
@@ -934,6 +949,7 @@ export function createUserMethods(
     createUser,
     updateUser,
     awaitAuthUserDocEviction,
+    consumeBackupCode,
     claimSamlIdentity,
     updateTwoFactorEnrollment,
     acceptTerms,

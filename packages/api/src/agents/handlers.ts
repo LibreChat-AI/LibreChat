@@ -112,6 +112,12 @@ import {
   WORKSPACE_WRITE_MAX_BYTES,
 } from '~/code/workspace';
 import {
+  noteToolApprovalDispatch,
+  bindToolApprovalInvocation,
+  finishToolApprovalDispatch,
+  getToolApprovalExecutionScope,
+} from '~/tools/approval';
+import {
   BACKGROUND_TASK_ABORT_GRACE_MS,
   BACKGROUND_TASK_SHUTDOWN_MESSAGE,
   BACKGROUND_TOOL_PRODUCER_HEARTBEAT_MS,
@@ -5618,6 +5624,23 @@ function createSkillFilesHandoff(
   };
 }
 
+function getToolFailureFeedback(content: ToolExecuteResult['content']): string {
+  if (typeof content === 'string') return content;
+  const messages: string[] = [];
+  for (const part of content) {
+    if (
+      part != null &&
+      typeof part === 'object' &&
+      'type' in part &&
+      part.type === 'text' &&
+      'text' in part &&
+      typeof part.text === 'string'
+    )
+      messages.push(part.text);
+  }
+  return messages.join('\n') || 'Tool execution failed.';
+}
+
 export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
   const {
     scheduledMCPExecution,
@@ -6476,6 +6499,13 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     );
                   }
                 };
+                const approvalDispatch = {
+                  agentId,
+                  toolCallId: tc.id,
+                  executionScope: getToolApprovalExecutionScope(executionContext),
+                  background: true,
+                };
+                noteToolApprovalDispatch(approvalDispatch);
                 let invokePromise: Promise<{ content?: unknown; artifact?: unknown }>;
                 try {
                   invokePromise = Promise.resolve(
@@ -6498,7 +6528,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                             }
                           : {}),
                       },
-                      metadata,
+                      metadata: bindToolApprovalInvocation(
+                        { ...metadata, executingAgentId: agentId },
+                        approvalDispatch,
+                      ),
                     } as Record<string, unknown>),
                   ) as Promise<{ content?: unknown; artifact?: unknown }>;
                 } catch (error) {
@@ -6507,6 +6540,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                    * through the same terminal-evidence path as an async one. */
                   invokePromise = Promise.reject(error);
                 }
+                invokePromise = invokePromise.finally(() =>
+                  finishToolApprovalDispatch(approvalDispatch),
+                );
                 const persistDetachedTerminal = async (
                   input:
                     | { status: 'succeeded'; result: unknown }
@@ -7579,7 +7615,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     const result = await tool.invoke(normalizedArgs, {
                       toolCall: toolCallConfig,
                       configurable: mergedConfigurable,
-                      metadata,
+                      metadata: { ...metadata, executingAgentId: agentId },
                       /** The run's cancellation signal. Without it a foreground
                        *  tool call keeps running after Stop: an MCP call never
                        *  sends `notifications/cancelled`, and every other
@@ -7674,7 +7710,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                       toolCallId: tc.id,
                       content: cleanedContent,
                       artifact: result.artifact,
-                      status: 'success' as const,
+                      status: result.status === 'error' ? ('error' as const) : ('success' as const),
+                      ...(result.status === 'error' && {
+                        errorMessage: getToolFailureFeedback(cleanedContent),
+                      }),
                     };
                   } catch (toolError) {
                     if (toolError instanceof ContentFilterError) {

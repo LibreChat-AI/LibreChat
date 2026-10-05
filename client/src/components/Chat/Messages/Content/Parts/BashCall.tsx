@@ -226,7 +226,7 @@ export default function BashCall({
                 <div
                   ref={commandPaneRef}
                   onScroll={onCommandPaneScroll}
-                  className="max-h-[300px] overflow-auto"
+                  className="max-h-[18.75rem] overflow-auto"
                 >
                   <pre className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap">
                     <span className="text-text-tertiary select-none" aria-hidden="true">

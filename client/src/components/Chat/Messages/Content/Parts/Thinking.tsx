@@ -93,7 +93,7 @@ export const ThinkingContent: FC<{
 
   return (
     <div className="border-border-light bg-surface-secondary text-text-secondary relative rounded-lg border p-3">
-      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{content}</p>
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{content}</p>
     </div>
   );
 });
@@ -295,7 +295,7 @@ export const FloatingThinkingBar = memo(
             >
               <MorphIcon
                 icon={isExpanded ? ChevronUpNode : ChevronDownNode}
-                className="h-[18px] w-[18px]"
+                className="h-[1.125rem] w-[1.125rem]"
               />
             </Button>
           }

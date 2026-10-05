@@ -196,7 +196,6 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'claude-sonnet-4': { prompt: 3, completion: 15 },
     'claude-sonnet-4-5': { prompt: 3, completion: 15 },
     'claude-sonnet-4-6': { prompt: 3, completion: 15 },
-    // Sonnet 5 introductory pricing through 2026-08-31; revert to { prompt: 3, completion: 15 } after.
     'claude-sonnet-5': { prompt: 2, completion: 10 },
     'claude-sonnet-5-5': { prompt: 2, completion: 10 },
     'claude-sonnet-5.5': { prompt: 2, completion: 10 },
@@ -272,7 +271,10 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'mistral-nemo': { prompt: 0.15, completion: 0.15 },
     'mistral-saba': { prompt: 0.2, completion: 0.6 },
     'pixtral-large': { prompt: 2.0, completion: 6.0 },
-    'mistral-large': { prompt: 2.0, completion: 6.0 },
+    'mistral-large': { prompt: 0.5, completion: 1.5 },
+    'mistral-large-2411': { prompt: 2.0, completion: 6.0 },
+    'mistral-large-2512': { prompt: 0.5, completion: 1.5 },
+    'mistral-large-3': { prompt: 0.5, completion: 1.5 },
     'mixtral-8x22b': { prompt: 0.65, completion: 0.65 },
     kimi: { prompt: 0.6, completion: 2.5 },
     moonshot: { prompt: 2.0, completion: 5.0 },
@@ -369,7 +371,6 @@ export const cacheTokenValues: Record<string, { write: number; read: number }> =
   'claude-sonnet-4': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-5': { write: 3.75, read: 0.3 },
   'claude-sonnet-4-6': { write: 3.75, read: 0.3 },
-  // Sonnet 5 introductory pricing through 2026-08-31; revert to { write: 3.75, read: 0.3 } after.
   'claude-sonnet-5': { write: 2.5, read: 0.2 },
   'claude-sonnet-5-5': { write: 2.5, read: 0.2 },
   'claude-sonnet-5.5': { write: 2.5, read: 0.2 },

@@ -22,6 +22,7 @@ const mockSidebarState = { isSmallScreen: true, expanded: false, setExpanded: je
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/hooks/Nav/useSidebarState', () => ({

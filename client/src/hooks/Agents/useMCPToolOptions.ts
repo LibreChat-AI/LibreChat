@@ -1,6 +1,12 @@
 import { useCallback } from 'react';
 import { useFormContext, useWatch } from 'react-hook-form';
-import type { AgentToolOptions, AllowedCaller, AgentToolType } from 'librechat-data-provider';
+import { v4 as uuidv4, validate as validateUUID } from 'uuid';
+import type {
+  AgentToolOptions,
+  AllowedCaller,
+  AgentToolType,
+  AgentToolApprovalMode,
+} from 'librechat-data-provider';
 import type { UseFormGetValues, UseFormSetValue } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 
@@ -21,6 +27,7 @@ interface ToolOptionsFormContext {
 
 interface UseMCPToolOptionsReturn {
   formToolOptions: AgentToolOptions | undefined;
+  setToolApprovalMode: (toolIds: readonly string[], mode?: AgentToolApprovalMode) => void;
   isToolDeferred: (toolId: string) => boolean;
   isToolProgrammatic: (toolId: string) => boolean;
   isToolBackground: (toolId: string) => boolean;
@@ -144,6 +151,33 @@ function useBooleanToolOption(
   return { isSet, toggle, areAllSet, toggleAll };
 }
 
+export function withApprovalModes(
+  options: AgentToolOptions,
+  toolIds: readonly string[],
+  mode?: AgentToolApprovalMode,
+): AgentToolOptions {
+  let updated = options;
+  for (const toolId of toolIds) {
+    const current = options[toolId];
+    const remembered = mode === 'chat' || mode === 'always';
+    if (
+      current?.approval_mode === mode &&
+      (!remembered || validateUUID(current.approval_revision ?? ''))
+    )
+      continue;
+    if (updated === options) updated = { ...options };
+    const { approval_mode: _mode, approval_revision: _revision, ...rest } = options[toolId] ?? {};
+    if (mode != null) {
+      updated[toolId] = { ...rest, approval_mode: mode, approval_revision: uuidv4() };
+    } else if (Object.keys(rest).length > 0) {
+      updated[toolId] = rest;
+    } else {
+      delete updated[toolId];
+    }
+  }
+  return updated;
+}
+
 export default function useMCPToolOptions(): UseMCPToolOptionsReturn {
   const { getValues, setValue, control } = useFormContext<AgentForm>();
   const formToolOptions = useWatch({ control, name: 'tool_options' });
@@ -255,8 +289,18 @@ export default function useMCPToolOptions(): UseMCPToolOptionsReturn {
     [getValues, setValue, areAllToolsProgrammatic],
   );
 
+  const setToolApprovalMode = useCallback(
+    (toolIds: readonly string[], mode?: AgentToolApprovalMode) => {
+      const options = getValues('tool_options') ?? {};
+      const updated = withApprovalModes(options, toolIds, mode);
+      if (updated !== options) setValue('tool_options', updated, { shouldDirty: true });
+    },
+    [getValues, setValue],
+  );
+
   return {
     formToolOptions,
+    setToolApprovalMode,
     isToolDeferred: defer.isSet,
     isToolProgrammatic,
     isToolBackground: background.isSet,

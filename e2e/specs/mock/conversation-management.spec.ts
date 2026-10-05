@@ -373,6 +373,11 @@ test.describe('conversation management', () => {
           }),
         );
         await expect(row).toContainText(renamedTitle);
+        if (titleTiming === 'final') {
+          await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden({
+            timeout: 30000,
+          });
+        }
         await expect.poll(async () => !!(await titleRequest())).toBe(true);
         const published = page.waitForResponse(
           (response) =>

@@ -1608,6 +1608,18 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient).toHaveBeenCalledTimes(1);
     });
 
+    it('passes isResume: true into initializeClient so recorded prompt-link usage is not doubled', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+      expect(mockInitializeClient.mock.calls[0][0]).toMatchObject({ isResume: true });
+    });
+
     it('does not read the checkpoint for a source unrelated to resume content', async () => {
       requestConfigOverrides = {
         filters: {
@@ -3264,6 +3276,33 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
           resumeValue: { tc1: { type: 'approve' } },
           userMCPAuthMap: { server1: { token: 't' } },
           compactionSemanticIndex,
+        }),
+      );
+    });
+
+    it('carries only server-owned approval bindings through the claimed resume', async () => {
+      const bindings = {
+        tc1: {
+          agentId: AGENT_ID,
+          instanceName: 'query_mcp_db',
+          toolName: 'query_mcp_db',
+          binding: 'server-digest',
+          scope: 'chat',
+        },
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { pendingAction: { toolApprovalBindings: bindings } } }),
+      );
+      await post(approveBody({ toolApprovalBindings: { tc1: { binding: 'forged' } } }));
+      await settled;
+      await flush();
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewedToolApprovals: {
+            bindings,
+            decisions: [{ tool_call_id: 'tc1', decision: 'approve' }],
+          },
         }),
       );
     });

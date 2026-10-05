@@ -7,6 +7,7 @@ export * from './refresh';
 export * from './googleRefresh';
 export * from './agent';
 export * from './password';
+export * from './recovery';
 export * from './passkey';
 export * from './passkey/handlers';
 export * from './credentials';

@@ -48,8 +48,10 @@ import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActiv
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import { useParentSubagents } from './ParentSubagentsProvider';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
 import { eventSubagentSelection } from './eventSelection';
 import { resolveSubagentAgentId } from './identity';
@@ -118,7 +120,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const { showToast } = useToastContext();
   const { navigateToConvo } = useNavigateToConvo();
   const panelRef = useRef<HTMLDivElement>(null);
-  const isMobile = useMediaQuery('(max-width: 767px)');
+  const isMobile = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
   /** Two reasons the send control's action list cannot be used where it hangs.
    *  Without hover, a tap on its anchor submits instead of opening it. And
    *  while the panel is a focus-trapped modal, the list is portaled outside the
@@ -1406,11 +1408,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       onKeyDown={handlePanelKeyDown}
       className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
-      {/* The main chat header's own shape: a 52px bar that floats over the
+      {/* The main chat header's own shape: a 3.25rem bar that floats over the
           thread and fades into it, so the conversation scrolls under it and
           more of it is on screen. Gradient stops track THIS surface rather
           than the chat's, since the panel sits on its own background. */}
-      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
+      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
         {actorOptions.length > 1 ? (
           /* The agent builder's picker, so switching actors here reads as the
              same control as every other agent selection in the app — avatar,
@@ -1467,7 +1469,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           aria-label={localize('com_ui_close')}
           className="h-8 w-8 shrink-0"
         >
-          <X size={17} aria-hidden="true" />
+          <X className="size-[1.0625rem]" aria-hidden="true" />
         </Button>
       </header>
 

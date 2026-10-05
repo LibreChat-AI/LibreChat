@@ -296,7 +296,7 @@ export default function ActionsInput({
           variant="submit"
           onClick={saveAction}
           disabled={!functions || !functions.length}
-          className="min-w-[100px]"
+          className="min-w-[6.25rem]"
         >
           {getButtonContent()}
         </Button>

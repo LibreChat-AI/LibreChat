@@ -57,13 +57,20 @@ const getOpenIdAudienceConfig = () => {
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const issuerTemplateRegexCache = new Map();
+
 const issuerMatchesTemplate = (expectedIssuer, actualIssuer) => {
   if (!expectedIssuer.includes('{tenantid}')) {
     return false;
   }
 
-  const escapedTemplate = expectedIssuer.split('{tenantid}').map(escapeRegExp).join('[^/]+');
-  return new RegExp(`^${escapedTemplate}$`).test(actualIssuer);
+  let regex = issuerTemplateRegexCache.get(expectedIssuer);
+  if (!regex) {
+    const escapedTemplate = expectedIssuer.split('{tenantid}').map(escapeRegExp).join('[^/]+');
+    regex = new RegExp(`^${escapedTemplate}$`);
+    issuerTemplateRegexCache.set(expectedIssuer, regex);
+  }
+  return regex.test(actualIssuer);
 };
 
 const isOpenIdIssuerAllowed = (payload, openIdConfig) => {

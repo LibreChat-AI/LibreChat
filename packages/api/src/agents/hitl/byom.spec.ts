@@ -629,3 +629,81 @@ describe('assertAttachedCodeEnvironmentApprovalSupported', () => {
     ).not.toThrow();
   });
 });
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['dontAsk', 'bypass'] as const)(
+    `${placement} BYOM hooks cannot predict review of statically denied tools under %s`,
+    (mode) => {
+      const graph = {
+        id: 'root',
+        tools: ['read_file'],
+        [placement]: [
+          {
+            id: 'attached-member',
+            codeExecutionContext: { environmentType: 'attached' },
+            skillAuthoringAvailable: true,
+          },
+        ],
+      };
+      const ids = collectAttachedCodeEnvironmentAgentIds([graph]);
+      const settings = collectAttachedCodeEnvironmentPolicySettings([graph]);
+      const hooks = buildAttachedCodeEnvironmentAdmissionHooks(ids, settings);
+      expect(hooks.every((h) => h.toolNames?.length)).toBe(true);
+      const denied = {
+        enabled: true,
+        mode,
+        allow: ['read_file'],
+        ...(mode === 'bypass'
+          ? {
+              deny: [
+                'write_file',
+                'edit_file',
+                'create_file',
+                'bash_tool',
+                'execute_code',
+                'run_tools_with_bash',
+                'run_tools_with_code',
+                'compile_check',
+              ],
+            }
+          : {}),
+      };
+      expect(
+        canAgentGraphPause({ policy: denied, agents: [graph], resolvedProgrammaticHooks: hooks }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy: { enabled: true, mode: 'dontAsk', allow: ['read_file', 'bash_tool'] },
+          agents: [graph],
+          resolvedProgrammaticHooks: hooks,
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: {
+            enabled: true,
+            mode: 'dontAsk',
+            allow: ['read_file', 'bash_tool'],
+            deny: ['bash_tool'],
+          },
+          agents: [graph],
+          resolvedProgrammaticHooks: hooks,
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy: { enabled: true, mode: 'dontAsk', allow: ['read_file', 'create_file'] },
+          agents: [graph],
+          resolvedProgrammaticHooks: hooks,
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { enabled: true, mode: 'bypass', deny: ['*'] },
+          agents: [graph],
+          resolvedProgrammaticHooks: hooks,
+        }),
+      ).toBe(false);
+    },
+  );
+}
