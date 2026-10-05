@@ -17,6 +17,7 @@ import { TraceButton, useTraceControl } from './Trace';
 import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
+import { PullRequestChip } from './PullRequest';
 import BookmarkMenu from './Menus/BookmarkMenu';
 import AddMultiConvo from './AddMultiConvo';
 import { useHasAccess } from '~/hooks';
@@ -117,6 +118,9 @@ function Header({
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
+        {!isNewChat && parentConversationId == null && (
+          <PullRequestChip key={`pr-${routeConversationId}`} conversationId={routeConversationId} />
+        )}
         {!isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
             key={routeConversationId}

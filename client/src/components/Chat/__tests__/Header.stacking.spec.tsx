@@ -49,6 +49,9 @@ jest.mock('../Trace', () => ({ useTraceControl: () => ({ show: false }) }));
 jest.mock('../BackgroundTasks', () => ({
   BackgroundTasksButton: jest.fn(() => <div data-testid="conversation-tasks" />),
 }));
+jest.mock('../PullRequest', () => ({
+  PullRequestChip: jest.fn(() => <div data-testid="conversation-pull-request" />),
+}));
 jest.mock('../Menus/Endpoints/ModelSelector', () => () => null);
 jest.mock('../ExportAndShareMenu', () => () => null);
 jest.mock('../SubagentThreadLink', () => () => null);
@@ -57,9 +60,11 @@ jest.mock('../AddMultiConvo', () => () => null);
 
 describe('Header stacking', () => {
   const backgroundTasks = jest.requireMock('../BackgroundTasks').BackgroundTasksButton as jest.Mock;
+  const pullRequestChip = jest.requireMock('../PullRequest').PullRequestChip as jest.Mock;
 
   beforeEach(() => {
     backgroundTasks.mockClear();
+    pullRequestChip.mockClear();
     mockEndpoint.current = 'agents';
   });
 
@@ -80,5 +85,15 @@ describe('Header stacking', () => {
   test('does not mount parent task controls on child threads', () => {
     render(<Header parentConversationId="parent" />);
     expect(backgroundTasks).not.toHaveBeenCalled();
+  });
+
+  test('mounts the pull request chip for the routed conversation', () => {
+    render(<Header />);
+    expect(pullRequestChip.mock.calls[0][0]).toEqual({ conversationId: 'convo-1' });
+  });
+
+  test('does not mount the pull request chip on child threads', () => {
+    render(<Header parentConversationId="parent" />);
+    expect(pullRequestChip).not.toHaveBeenCalled();
   });
 });
