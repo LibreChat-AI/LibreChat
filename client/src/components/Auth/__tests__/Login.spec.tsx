@@ -122,7 +122,7 @@ jest.mock('react-router-dom', () => ({
 test('renders login form', () => {
   const { getByLabelText, getByRole } = setup();
   expect(getByLabelText(/email/i)).toBeInTheDocument();
-  expect(getByLabelText(/password/i)).toBeInTheDocument();
+  expect(getByLabelText(/^password$/i)).toBeInTheDocument();
   expect(getByTestId(document.body, 'login-button')).toBeInTheDocument();
   expect(getByRole('link', { name: /Sign up/i })).toBeInTheDocument();
   expect(getByRole('link', { name: /Sign up/i })).toHaveAttribute('href', '/register');
@@ -165,7 +165,7 @@ test('calls loginUser.mutate on login', async () => {
   });
 
   const emailInput = getByLabelText(/email/i);
-  const passwordInput = getByLabelText(/password/i);
+  const passwordInput = getByLabelText(/^password$/i);
   const submitButton = getByTestId(document.body, 'login-button');
 
   await userEvent.type(emailInput, 'test@test.com');
@@ -195,7 +195,7 @@ test('Navigates to / on successful login', async () => {
   });
 
   const emailInput = getByLabelText(/email/i);
-  const passwordInput = getByLabelText(/password/i);
+  const passwordInput = getByLabelText(/^password$/i);
   const submitButton = getByTestId(document.body, 'login-button');
 
   await userEvent.type(emailInput, 'test@test.com');

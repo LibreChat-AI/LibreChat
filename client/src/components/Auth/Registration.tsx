@@ -9,6 +9,7 @@ import type { TRegisterUser, TError } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize, TranslationKeys } from '~/hooks';
 import { ErrorMessage } from './ErrorMessage';
+import PasswordToggleButton from './PasswordToggleButton';
 
 const Registration: React.FC = () => {
   const navigate = useNavigate();
@@ -28,6 +29,8 @@ const Registration: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [countdown, setCountdown] = useState<number>(3);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  // Tracks which password fields are shown as plain text, keyed by field id
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
 
   const location = useLocation();
   const queryParams = new URLSearchParams(location.search);
@@ -64,12 +67,19 @@ const Registration: React.FC = () => {
     },
   });
 
-  const renderInput = (id: string, label: TranslationKeys, type: string, validation: object) => (
+  // Toggles plain text visibility for the given password field.
+  const togglePasswordVisibility = (id: string) =>
+    setVisiblePasswords((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  const renderInput = (id: string, label: TranslationKeys, type: string, validation: object) => {
+    const isPasswordField = type === 'password';
+    const isVisible = isPasswordField && !!visiblePasswords[id];
+    return (
     <div className="mb-4">
       <div className="relative">
         <input
           id={id}
-          type={type}
+          type={isVisible ? 'text' : type}
           autoComplete={id}
           aria-label={localize(label)}
           {...register(
@@ -77,7 +87,7 @@ const Registration: React.FC = () => {
             validation,
           )}
           aria-invalid={!!errors[id]}
-          className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-transparent px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+          className={`webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-transparent ps-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none ${isPasswordField ? 'pe-11' : 'pe-3.5'}`}
           placeholder=" "
           data-testid={id}
         />
@@ -87,6 +97,9 @@ const Registration: React.FC = () => {
         >
           {localize(label)}
         </label>
+        {isPasswordField && (
+          <PasswordToggleButton isVisible={isVisible} onToggle={() => togglePasswordVisibility(id)} />
+        )}
       </div>
       {errors[id] && (
         <span role="alert" className="mt-1 text-sm text-red-500">
@@ -94,7 +107,8 @@ const Registration: React.FC = () => {
         </span>
       )}
     </div>
-  );
+    );
+  };
 
   return (
     <>

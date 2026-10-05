@@ -109,7 +109,7 @@ test('renders login form', () => {
     <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
   );
   expect(getByLabelText(/email/i)).toBeInTheDocument();
-  expect(getByLabelText(/password/i)).toBeInTheDocument();
+  expect(getByLabelText(/^password$/i)).toBeInTheDocument();
 });
 
 test('submits login form', async () => {
@@ -117,7 +117,7 @@ test('submits login form', async () => {
     <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
   );
   const emailInput = getByLabelText(/email/i);
-  const passwordInput = getByLabelText(/password/i);
+  const passwordInput = getByLabelText(/^password$/i);
   const submitButton = getByTestId(document.body, 'login-button');
 
   await userEvent.type(emailInput, 'test@example.com');
@@ -132,7 +132,7 @@ test('displays validation error messages', async () => {
     <Login onSubmit={mockLogin} startupConfig={mockStartupConfig} />,
   );
   const emailInput = getByLabelText(/email/i);
-  const passwordInput = getByLabelText(/password/i);
+  const passwordInput = getByLabelText(/^password$/i);
   const submitButton = getByTestId(document.body, 'login-button');
 
   await userEvent.type(emailInput, 'test');

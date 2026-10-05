@@ -409,16 +409,16 @@ export const verificationRequest = (baseUrl: string) =>
   `${baseUrl}/api/users/verification-request`;
 
 // External Verification Service — Location lookups (states/districts/blocks/villages)
-export const locationStates = (baseUrl: string) => `${baseUrl}/api/location/states`;
+export const locationStates = (baseUrl: string) => `${baseUrl}/location/states`;
 
 export const locationDistricts = (baseUrl: string, stateCode: number | string) =>
-  `${baseUrl}/api/location/districts?stateCode=${encodeURIComponent(stateCode)}`;
+  `${baseUrl}/location/districts?stateCode=${encodeURIComponent(stateCode)}`;
 
 export const locationBlocks = (baseUrl: string, districtCode: number | string) =>
-  `${baseUrl}/api/location/blocks?districtCode=${encodeURIComponent(districtCode)}`;
+  `${baseUrl}/location/blocks?districtCode=${encodeURIComponent(districtCode)}`;
 
 export const locationVillages = (baseUrl: string, blockCode: number | string) =>
-  `${baseUrl}/api/location/villages?blockCode=${encodeURIComponent(blockCode)}`;
+  `${baseUrl}/location/villages?blockCode=${encodeURIComponent(blockCode)}`;
 
 export const locationKvks = (baseUrl: string, districtCode: number | string) =>
-  `${baseUrl}/api/location/kvks?districtCode=${encodeURIComponent(districtCode)}`;
+  `${baseUrl}/location/kvks?districtCode=${encodeURIComponent(districtCode)}`;

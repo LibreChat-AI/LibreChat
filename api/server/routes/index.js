@@ -31,6 +31,7 @@ const feedbacks = require('./feedbacks');
 const push = require('./push');
 const notifications = require('./notifications');
 const diagnostics = require('./diagnostics');
+const crops = require('./crop');
 const answers = require('./answers');
 
 module.exports = {
@@ -67,5 +68,6 @@ module.exports = {
   push,
   notifications,
   diagnostics,
+  crops,
   answers,
 };

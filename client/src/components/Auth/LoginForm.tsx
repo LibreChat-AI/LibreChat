@@ -6,6 +6,7 @@ import type { TLoginUser, TStartupConfig } from 'librechat-data-provider';
 import type { TAuthContext } from '~/common';
 import { useResendVerificationEmail, useGetStartupConfig, useRequestVerificationMutation } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import PasswordToggleButton from './PasswordToggleButton';
 
 type TLoginFormProps = {
   onSubmit: (data: TLoginUser) => void;
@@ -27,6 +28,8 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [showRequestVerification, setShowRequestVerification] = useState<boolean>(false);
   const [verificationRequestSent, setVerificationRequestSent] = useState<boolean>(false);
+  // Controls whether the password field is shown as plain text
+  const [isPasswordVisible, setIsPasswordVisible] = useState<boolean>(false);
 
   const { data: config } = useGetStartupConfig();
   const useUsernameLogin = config?.ldap?.username;
@@ -164,7 +167,7 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
         <div className="mb-2">
           <div className="relative">
             <input
-              type="password"
+              type={isPasswordVisible ? 'text' : 'password'}
               id="password"
               autoComplete="current-password"
               aria-label={localize('com_auth_password')}
@@ -177,7 +180,7 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
                 maxLength: { value: 128, message: localize('com_auth_password_max_length') },
               })}
               aria-invalid={!!errors.password}
-              className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-transparent px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
+              className="webkit-dark-styles transition-color peer w-full rounded-2xl border border-border-light bg-transparent pe-11 ps-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-green-500 focus:outline-none"
               placeholder=" "
             />
             <label
@@ -186,6 +189,10 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             >
               {localize('com_auth_password')}
             </label>
+            <PasswordToggleButton
+              isVisible={isPasswordVisible}
+              onToggle={() => setIsPasswordVisible((prev) => !prev)}
+            />
           </div>
           {renderError('password')}
         </div>
