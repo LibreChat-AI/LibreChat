@@ -6,9 +6,9 @@ import type { ProvisionToolContext } from '~/files/provision/callback';
 import type { ServerRequest } from '~/types';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
+import { createRun, collectResolvedSubagentAgents } from '~/agents/run';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
-import { createRun } from '~/agents/run';
 
 /**
  * Guards the code-tool eager/session wiring in `createRun`. The whole
@@ -589,5 +589,15 @@ describe('createRun code-tool eager/session wiring', () => {
         new AbortController().signal,
       ),
     ).resolves.toEqual(expect.objectContaining({ updatedOutput: expect.any(String) }));
+  });
+});
+
+describe('collectResolvedSubagentAgents', () => {
+  it('registers a resolved child together with the graph members it initialized', () => {
+    const member = { id: 'member' };
+    const child = { id: 'child', subagentGraphConfigs: [{ memberConfigs: [member] }] };
+
+    expect(collectResolvedSubagentAgents(child)).toEqual([child, member]);
+    expect(collectResolvedSubagentAgents({ id: 'solo' })).toEqual([{ id: 'solo' }]);
   });
 });

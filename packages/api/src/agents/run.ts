@@ -1616,6 +1616,19 @@ function assertSubagentDepth(depth: number, agentId: string): void {
   }
 }
 
+/**
+ * A resolved lazy child and the graph members it initialized with it. Each is registered with the
+ * run, so a member routed to the child's per-call machine gets that machine's policy.
+ */
+export function collectResolvedSubagentAgents<
+  T extends { subagentGraphConfigs?: Array<{ memberConfigs: T[] }> },
+>(resolvedChild: T): T[] {
+  return [
+    resolvedChild,
+    ...(resolvedChild.subagentGraphConfigs ?? []).flatMap((graph) => graph.memberConfigs),
+  ];
+}
+
 function createLazySubagentConfig(
   child: LazySubagentAgent,
   toInput: (child: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
@@ -1642,7 +1655,9 @@ function createLazySubagentConfig(
       if (context.signal.aborted) {
         throw context.signal.reason ?? new Error('Subagent resolution was aborted.');
       }
-      onResolvedAgent?.(resolvedChild);
+      for (const resolved of collectResolvedSubagentAgents(resolvedChild)) {
+        onResolvedAgent?.(resolved);
+      }
       const childInputs = buildIsolatedAgentInputs(resolvedChild, toInput);
       const resolutionState: SubagentBuildState = {
         configCount: 1,

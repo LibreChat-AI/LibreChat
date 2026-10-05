@@ -567,6 +567,53 @@ describe('subagent code routing', () => {
     ).resolves.toMatchObject({ target: { environmentId: 'buildbox' } });
   });
 
+  it('settles concurrent inherited calls from differently routed parents on one machine', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const parentOn = async (machine: string) => {
+      const parent = {
+        id: `agent_parent_${machine}`,
+        code_environment_id: machine,
+        code_environment_ids: [machine],
+      };
+      const parentCall = call({ machine });
+      const placement = await routing.place({ agent: parent, flags, context: parentCall });
+      routing.attach(new Map(), {
+        agentId: parent.id,
+        context: parentCall,
+        placement,
+        codeExecutionContext: placement.target?.context,
+        toolContext: machine,
+      });
+      return parentCall.executionId;
+    };
+    const fromLaptop = await parentOn('laptop');
+    const fromBuildbox = await parentOn('buildbox');
+
+    const placements = await Promise.allSettled([
+      routing.place({ agent: reviewer, flags, context: call(undefined, fromLaptop) }),
+      routing.place({ agent: reviewer, flags, context: call(undefined, fromBuildbox) }),
+    ]);
+    const machines = placements.map((result) =>
+      result.status === 'fulfilled' ? result.value.target?.environmentId : 'rejected',
+    );
+
+    expect(
+      new Set(machines.filter((machine) => machine !== undefined && machine !== 'rejected')).size,
+    ).toBe(1);
+  });
+
+  it('attributes a workspace-only conflict to the workspace argument', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+
+    await routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) });
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ workspace: 'agents' }) }),
+    ).rejects.toMatchObject({ argument: 'workspace', rejection: 'unavailable' });
+  });
+
   it('keeps one machine per subagent for the whole request', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);
