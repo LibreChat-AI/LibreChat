@@ -200,7 +200,17 @@ test.each([undefined, false, true])(
       ],
       toolApproval: enabled == null ? undefined : { enabled },
       statefulCodeSessions: {
-        environments: [{ id: 'attached', type: 'attached', name: 'Machine', default: true }],
+        allowedEnvironments: ['user', 'agent-user', 'conversation'],
+        environments: [
+          {
+            id: 'attached',
+            type: 'attached',
+            name: 'Machine',
+            owner: 'principal',
+            baseURL: 'https://example.invalid',
+            default: true,
+          },
+        ],
       },
     };
     render(<Harness defaults={{ execute_code: true, stateful_code_sessions: true }} />);
@@ -226,9 +236,23 @@ test('managed code does not show an implicit attached approval warning', () => {
       AgentCapabilities.stateful_code_sessions,
     ],
     statefulCodeSessions: {
+      allowedEnvironments: ['user', 'agent-user', 'conversation'],
       environments: [
-        { id: 'managed', type: 'managed', name: 'Managed', default: true },
-        { id: 'attached', type: 'attached', name: 'Machine' },
+        {
+          id: 'managed',
+          type: 'managed',
+          name: 'Managed',
+          owner: 'deployment',
+          baseURL: 'https://example.invalid',
+          default: true,
+        },
+        {
+          id: 'attached',
+          type: 'attached',
+          name: 'Machine',
+          owner: 'principal',
+          baseURL: 'https://example.invalid',
+        },
       ],
     },
   };

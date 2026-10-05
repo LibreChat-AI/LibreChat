@@ -59,7 +59,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     name: ['execute_code', 'stateful_code_sessions', 'code_environment_id'],
   });
   const environments = agentsConfig?.statefulCodeSessions?.environments;
-  const attachedEnvironment = (id?: string) =>
+  const attachedEnvironment = (id?: string | null) =>
     (id
       ? environments?.find((environment) => environment.id === id)
       : environments?.find((environment) => environment.default === true)
