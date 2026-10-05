@@ -62,16 +62,20 @@ function getAgentToolCall(part: unknown): FullToolCall | undefined {
   return toolCall.type == null || toolCall.type === 'tool_call' ? toolCall : undefined;
 }
 
+/** An empty or missing discriminator is the same absent value, on both sides. */
+const discriminator = (value: unknown): string | undefined =>
+  typeof value === 'string' && value !== '' ? value : undefined;
+
 /** Exact match: an absent step or agent matches only a call that has none, as the preview pass
  *  assumed when it checked the identity was unique. */
 function matchesIdentity(part: unknown, toolCall: FullToolCall, identity: PartIdentity): boolean {
   if (toolCall.id !== identity.toolCallId) {
     return false;
   }
-  if ((toolCall.stepId ?? undefined) !== (identity.stepId ?? undefined)) {
+  if (discriminator(toolCall.stepId) !== discriminator(identity.stepId)) {
     return false;
   }
-  return ((part as StoredToolCallPart).agentId ?? undefined) === (identity.agentId ?? undefined);
+  return discriminator((part as StoredToolCallPart).agentId) === discriminator(identity.agentId);
 }
 
 /**

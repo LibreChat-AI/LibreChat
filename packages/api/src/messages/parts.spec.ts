@@ -264,6 +264,28 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     expect((await request(app).get(partUrl(1, 'call_twin'))).status).toBe(404);
   });
 
+  it('treats an empty step or agent as absent, so such a preview stays fetchable', async () => {
+    await seed(OWNER, {
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          agentId: '',
+          tool_call: {
+            id: 'call_empty',
+            stepId: '',
+            type: 'tool_call',
+            name: 'bash_tool',
+            output: 'done',
+            args: '{}',
+          },
+        },
+      ],
+    });
+    const response = await request(app).get(partUrl(0, 'call_empty'));
+    expect(response.status).toBe(200);
+    expect(response.body.tool_call.id).toBe('call_empty');
+  });
+
   it('serves a call whose provider id is unusually long', async () => {
     const longId = `call_${'x'.repeat(2_000)}`;
     await seed(OWNER, {

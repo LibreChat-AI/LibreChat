@@ -331,6 +331,16 @@ describe('wide or unusual JSON', () => {
     expect(preview.output?.length).toBeLessThanOrEqual(limits.outputChars);
   });
 
+  it('refuses a wide array without queueing its elements', () => {
+    const output = JSON.stringify(Array.from({ length: 300_000 }, () => 1));
+    const push = jest.spyOn(Array.prototype, 'push');
+    const preview = previewToolCall(toolPart({ output }).tool_call, limits);
+    const pushes = push.mock.calls.length;
+    push.mockRestore();
+    expect(pushes).toBeLessThan(1_000);
+    expect(preview.outputTruncated).toBe(true);
+  });
+
   it('keeps a __proto__ key as ordinary data', () => {
     const args = `{"__proto__":{"mode":"x"},"pad":"${'p'.repeat(4_000)}"}`;
     const preview = previewToolCallArgs(args, 512);
