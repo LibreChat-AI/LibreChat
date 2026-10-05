@@ -1,8 +1,11 @@
 import { z } from 'zod';
 import { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { EventHandler, StreamPreemption, ToolExecuteBatchRequest } from '@librechat/agents';
+import type { BackgroundToolResultClaim } from '@librechat/data-schemas';
+import type { InterruptibleToolBatchRequest } from '../tools';
+import { SteerToolInterrupt, interruptToolHandler } from '../tools';
+import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createToolExecuteHandler } from '~/agents/handlers';
-import { interruptToolHandler } from '../tools';
 
 function control() {
   let requested = false;
@@ -174,6 +177,143 @@ describe('interruptToolHandler', () => {
     await interruptToolHandler(handler, state.preemption).handle('on_tool_execute', input);
     expect(handler.handle).toHaveBeenCalledWith('on_tool_execute', input, undefined, undefined);
     expect(state.listeners.size).toBe(0);
+  });
+
+  it('keeps admitted output when a cancelled sibling reports a scope-abort failure', async () => {
+    const { handler, request } = pendingHandler();
+    const state = control();
+    const input = batch();
+    const pending = interruptToolHandler(handler, state.preemption).handle(
+      'on_tool_execute',
+      input,
+    );
+    (request() as InterruptibleToolBatchRequest).onResultAdmissionStart?.('one');
+    state.interrupt();
+    request().reject(new SteerToolInterrupt());
+    expect(input.reject).not.toHaveBeenCalled();
+    expect(input.resolve).not.toHaveBeenCalled();
+    const completed = { toolCallId: 'one', status: 'success' as const, content: 'admitted output' };
+    request().onResult?.(completed);
+    await pending;
+    expect(input.resolve).toHaveBeenCalledWith([
+      completed,
+      expect.objectContaining({ toolCallId: 'two', status: 'error' }),
+    ]);
+  });
+
+  it('preserves a durable background result claimed while interruption is requested', async () => {
+    const state = control();
+    let finishClaim: ((claim: BackgroundToolResultClaim) => void) | undefined;
+    let started: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const settleClaimed = jest.fn(async () => true);
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [] }),
+      backgroundToolCompletion: {
+        persist: async () => true,
+        claim: async () => {
+          started?.();
+          return new Promise<BackgroundToolResultClaim>((resolve) => {
+            finishClaim = resolve;
+          });
+        },
+        pending: {
+          list: async () => ({ completions: [], dead: [], complete: true }),
+          listSubagentWakeups: async () => ({ taskIds: [], complete: true }),
+          discard: async () => 'not_pending',
+          settleClaimed,
+        },
+      },
+    });
+    const input = batch({
+      toolCalls: [
+        {
+          id: 'poll',
+          name: CHECK_BACKGROUND_TASK_NAME,
+          args: { background_task_id: 'durable-task' },
+        },
+      ],
+      configurable: {
+        req: { user: { id: 'owner' }, body: { conversationId: 'thread' } },
+        backgroundToolNames: ['search'],
+      },
+      metadata: { thread_id: 'thread', run_id: 'root-run' },
+    });
+    const pending = interruptToolHandler(handler, state.preemption).handle(
+      'on_tool_execute',
+      input,
+    );
+    await ready;
+    state.interrupt();
+    expect(input.resolve).not.toHaveBeenCalled();
+    finishClaim?.({
+      status: 'acquired',
+      results: [
+        {
+          taskId: 'durable-task',
+          toolCallId: 'original',
+          toolName: 'search',
+          status: 'completed',
+          output: 'CLAIMED RESULT',
+        },
+      ],
+    });
+    await pending;
+    expect(settleClaimed).toHaveBeenCalledTimes(1);
+    expect(input.resolve).toHaveBeenCalledWith([
+      expect.objectContaining({
+        status: 'success',
+        content: expect.stringContaining('CLAIMED RESULT'),
+      }),
+    ]);
+    expect(state.listeners.size).toBe(0);
+  });
+
+  it('does not acquire background ownership after interruption during tool loading', async () => {
+    const state = control();
+    let finishLoad: (() => void) | undefined;
+    let started: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const claim = jest.fn(async () => ({ status: 'not_ready' as const }));
+    const handler = createToolExecuteHandler({
+      loadTools: async () => {
+        started?.();
+        await new Promise<void>((resolve) => {
+          finishLoad = resolve;
+        });
+        return { loadedTools: [] };
+      },
+      backgroundToolCompletion: { persist: async () => true, claim },
+    });
+    const input = batch({
+      toolCalls: [
+        {
+          id: 'poll',
+          name: CHECK_BACKGROUND_TASK_NAME,
+          args: { background_task_id: 'unclaimed-task' },
+        },
+      ],
+      configurable: {
+        req: { user: { id: 'owner' }, body: { conversationId: 'thread' } },
+        backgroundToolNames: ['search'],
+      },
+      metadata: { thread_id: 'thread', run_id: 'root-run' },
+    });
+    const pending = interruptToolHandler(handler, state.preemption).handle(
+      'on_tool_execute',
+      input,
+    );
+    await ready;
+    state.interrupt();
+    await pending;
+    finishLoad?.();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(claim).not.toHaveBeenCalled();
+    expect(input.resolve).toHaveBeenCalledTimes(1);
   });
 
   it('waits for admitted artifact validation and preserves the successful result', async () => {

@@ -5674,8 +5674,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
         resolve,
         reject,
       } = data;
-      const onArtifactDeliveryStart = (data as InterruptibleToolBatchRequest)
-        .onArtifactDeliveryStart;
+      const onResultAdmissionStart = (data as InterruptibleToolBatchRequest).onResultAdmissionStart;
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
@@ -6973,6 +6972,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                   if (filteredArguments != null) {
                     return reportResult(filteredArguments);
                   }
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   const pollContent = await runCheckBackgroundTask({
                     userId: backgroundUserId,
                     conversationId: backgroundConversationId,
@@ -7045,7 +7048,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                      *  ORIGINAL tool-call identity by the completion harvest. */
                     if (toolEndCallback && !(isCodeTask && pending.harvestStarted === true)) {
                       try {
-                        onArtifactDeliveryStart?.(tc.id);
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7231,6 +7234,10 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     persistBackgroundCodeResult == null
                   )
                 ) {
+                  if (runSignal?.reason instanceof SteerToolInterrupt) {
+                    return reportResult(interruptedToolResult(tc.id));
+                  }
+                  onResultAdmissionStart?.(tc.id);
                   return reportResult(await dispatchBackgroundToolCall(tc));
                 }
 
@@ -7382,7 +7389,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback && handlerResult.errorMessage == null) {
                         try {
-                          onArtifactDeliveryStart?.(tc.id);
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7406,7 +7413,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
 
                     if (toolEndCallback && handlerResult.artifact) {
                       try {
-                        onArtifactDeliveryStart?.(tc.id);
+                        onResultAdmissionStart?.(tc.id);
                         await toolEndCallback(
                           {
                             input: tc.args,
@@ -7596,7 +7603,11 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                                 eligiblePtcToolMap.keys(),
                                 ptcReq,
                               ),
-                              emit: emitPtcProgress,
+                              emit: (event) => {
+                                if (!(runSignal?.reason instanceof SteerToolInterrupt)) {
+                                  emitPtcProgress(event);
+                                }
+                              },
                             })
                           : eligiblePtcToolMap;
                       }
@@ -7676,7 +7687,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                        * and re-executed — the blocked output stays blank. */
                       if (toolEndCallback) {
                         try {
-                          onArtifactDeliveryStart?.(tc.id);
+                          onResultAdmissionStart?.(tc.id);
                           await toolEndCallback(
                             {
                               input: tc.args,
@@ -7699,7 +7710,7 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
 
                     if (toolEndCallback) {
-                      onArtifactDeliveryStart?.(tc.id);
+                      onResultAdmissionStart?.(tc.id);
                       await toolEndCallback(
                         {
                           input: tc.args,

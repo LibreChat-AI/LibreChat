@@ -5,9 +5,9 @@ import type {
   EventHandler,
 } from '@librechat/agents';
 
-/** Host-only admission channel; artifacts may still be validating after execution finishes. */
+/** Host-only admission channel for durable claims and completed-output validation. */
 export interface InterruptibleToolBatchRequest extends ToolExecuteBatchRequest {
-  onArtifactDeliveryStart?: (toolCallId: string) => void;
+  onResultAdmissionStart?: (toolCallId: string) => void;
 }
 
 const INTERRUPTED =
@@ -38,7 +38,7 @@ export function interruptToolHandler(
       const signal =
         data.signal == null ? controller.signal : AbortSignal.any([data.signal, controller.signal]);
       const completed = new Map<string, ToolExecuteResult>();
-      const delivering = new Set<string>();
+      const admitted = new Set<string>();
       let interrupted = false;
       let settled = false;
       let unsubscribe: (() => void) | undefined;
@@ -56,12 +56,16 @@ export function interruptToolHandler(
         };
         const fail = (error: Error) => {
           if (settled) return;
+          if (interrupted && error instanceof SteerToolInterrupt && !data.signal?.aborted) {
+            finishInterrupt();
+            return;
+          }
           settled = true;
           data.reject(error);
           reject(error);
         };
         const finishInterrupt = () => {
-          if (!interrupted || delivering.size > 0) return;
+          if (!interrupted || admitted.size > 0) return;
           finish(
             data.toolCalls.map((call) => completed.get(call.id) ?? interruptedToolResult(call.id)),
           );
@@ -91,13 +95,13 @@ export function interruptToolHandler(
           signal,
           resolve: (results) => (interrupted ? finishInterrupt() : finish(results)),
           reject: fail,
-          onArtifactDeliveryStart: (toolCallId) => {
-            if (!settled && !interrupted) delivering.add(toolCallId);
+          onResultAdmissionStart: (toolCallId) => {
+            if (!settled && !interrupted) admitted.add(toolCallId);
           },
           onResult: (result) => {
-            if (settled || (interrupted && !delivering.has(result.toolCallId))) return;
+            if (settled || (interrupted && !admitted.has(result.toolCallId))) return;
             completed.set(result.toolCallId, result);
-            delivering.delete(result.toolCallId);
+            admitted.delete(result.toolCallId);
             data.onResult?.(result);
             finishInterrupt();
           },

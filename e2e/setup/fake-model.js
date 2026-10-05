@@ -758,9 +758,19 @@ function replyResponses(text) {
    * for the user row, then interrupts this whitespace-only stream. */
   const emptySlowName = getMarkerValue(text, EMPTY_SLOW_REPLY_MARKER);
   if (emptySlowName) {
+    let invocation = 0;
     return {
-      responses: [' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)],
+      responses: [''],
       sleep: SLOW_CHUNK_DELAY_MS,
+      resolveInvocation: async (messages) => {
+        invocation += 1;
+        return {
+          response:
+            invocation === 1
+              ? ' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)
+              : `E2E empty reply continued ${emptySlowName} ${steerEchoSuffix(messages)}`,
+        };
+      },
     };
   }
 
