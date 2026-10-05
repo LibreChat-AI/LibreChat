@@ -67,6 +67,8 @@ export * from './types/background';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
+/* artifact apps */
+export * from './artifactApps';
 /* query/mutation keys */
 export * from './keys';
 /* api call helpers */

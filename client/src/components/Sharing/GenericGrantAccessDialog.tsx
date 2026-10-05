@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link, CopyCheck } from 'lucide';
 import { Share2Icon, Users, UserCheck, AlertCircle } from 'lucide-react';
-import { AccessRoleIds, ResourceType, SystemRoles } from 'librechat-data-provider';
+import { AccessRoleIds, PrincipalType, ResourceType, SystemRoles } from 'librechat-data-provider';
 import {
   Alert,
   Label,
@@ -35,6 +35,43 @@ import PublicSharingToggle from './PublicSharingToggle';
 import { SelectedPrincipalsList } from './PeoplePicker';
 import { cn } from '~/utils';
 
+type PeoplePickerPrincipalType = PrincipalType.USER | PrincipalType.GROUP | PrincipalType.ROLE;
+
+const ARTIFACT_APP_SHARE_PRINCIPAL_TYPES: PeoplePickerPrincipalType[] = [
+  PrincipalType.USER,
+  PrincipalType.GROUP,
+];
+
+function peoplePickerTypesForResource(
+  resourceType: ResourceType,
+  typeFilter: Array<PeoplePickerPrincipalType> | null,
+): Array<PeoplePickerPrincipalType> | null {
+  if (resourceType !== ResourceType.ARTIFACT_APP) {
+    return typeFilter;
+  }
+  if (!Array.isArray(typeFilter)) {
+    return [...ARTIFACT_APP_SHARE_PRINCIPAL_TYPES];
+  }
+  return typeFilter.filter((type) => type === PrincipalType.USER || type === PrincipalType.GROUP);
+}
+
+function canManagePrincipalsForResource(
+  resourceType: ResourceType,
+  hasPeoplePickerAccess: boolean,
+  typeFilter: Array<PeoplePickerPrincipalType> | null,
+): boolean {
+  if (!hasPeoplePickerAccess) {
+    return false;
+  }
+  if (resourceType !== ResourceType.ARTIFACT_APP) {
+    return true;
+  }
+  if (!Array.isArray(typeFilter)) {
+    return true;
+  }
+  return typeFilter.some((type) => type === PrincipalType.USER || type === PrincipalType.GROUP);
+}
+
 export default function GenericGrantAccessDialog({
   resourceName,
   resourceDbId,
@@ -44,6 +81,8 @@ export default function GenericGrantAccessDialog({
   disabled = false,
   buttonClassName,
   children,
+  defaultOpen = false,
+  onOpenChange,
 }: {
   resourceDbId?: string | null;
   resourceId?: string | null;
@@ -53,19 +92,27 @@ export default function GenericGrantAccessDialog({
   disabled?: boolean;
   buttonClassName?: string;
   children?: React.ReactNode;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const localize = useLocalize();
   const { user } = useAuthContext();
   const { showToast } = useToastContext();
   const [isCopying, setIsCopying] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(defaultOpen);
   const peopleSectionId = React.useId();
   const ownerErrorId = React.useId();
   const canSharePublic = useCanSharePublic(resourceType);
   const canEditAgentInsights =
     resourceType === ResourceType.AGENT && user?.role === SystemRoles.ADMIN;
   const { hasPeoplePickerAccess, peoplePickerTypeFilter } = usePeoplePickerPermissions();
-  const canManagePrincipals = hasPeoplePickerAccess || canEditAgentInsights;
+  const peoplePickerTypes = useMemo(
+    () => peoplePickerTypesForResource(resourceType, peoplePickerTypeFilter),
+    [resourceType, peoplePickerTypeFilter],
+  );
+  const canManagePrincipals =
+    canManagePrincipalsForResource(resourceType, hasPeoplePickerAccess, peoplePickerTypeFilter) ||
+    canEditAgentInsights;
 
   /** User can use the dialog if they can manage principals or share publicly. */
   const canUseShareDialog = canManagePrincipals || canSharePublic;
@@ -119,6 +166,8 @@ export default function GenericGrantAccessDialog({
     console.error(`Unsupported resource type: ${resourceType}`);
     return null;
   }
+
+  const allowRoleSelection = config.allowRoleSelection !== false;
 
   // Handler for adding users from search (immediate add to unified list)
   const handleAddFromSearch = (newShares: TPrincipal[]) => {
@@ -240,10 +289,15 @@ export default function GenericGrantAccessDialog({
       resetDraft();
     }
     setIsModalOpen(open);
+    onOpenChange?.(open);
   };
 
   // Validation and calculated values
-  const totalCurrentShares = currentShares.length + (currentIsPublic ? 1 : 0);
+  const totalCurrentShares =
+    resourceType === ResourceType.ARTIFACT_APP
+      ? currentShares.filter((share) => share.accessRoleId !== config.defaultOwnerRoleId).length +
+        (currentIsPublic ? 1 : 0)
+      : currentShares.length + (currentIsPublic ? 1 : 0);
 
   // Check if there's at least one owner (user, group, or public with owner role)
   const hasAtLeastOneOwner =
@@ -366,7 +420,7 @@ export default function GenericGrantAccessDialog({
                       onAddPeople={handleAddFromSearch}
                       label={localize('com_ui_search_people_placeholder')}
                       placeholder={localize('com_ui_search_people_placeholder')}
-                      typeFilter={peoplePickerTypeFilter}
+                      typeFilter={peoplePickerTypes}
                       excludeIds={allShares.map((s) => s.idOnTheSource)}
                     />
 
@@ -393,6 +447,7 @@ export default function GenericGrantAccessDialog({
                         principles={allShares}
                         onRemoveHandler={handleRemoveShare}
                         resourceType={resourceType}
+                        allowRoleSelection={allowRoleSelection}
                         onRoleChange={(id, newRole) => handleRoleChange(id, newRole)}
                         showInsightsAccess={canEditAgentInsights}
                         onInsightsAccessChange={handleInsightsChange}
@@ -410,6 +465,7 @@ export default function GenericGrantAccessDialog({
                     onPublicToggle={handlePublicToggle}
                     onPublicRoleChange={handlePublicRoleChange}
                     resourceType={resourceType}
+                    allowRoleSelection={allowRoleSelection}
                   />
                 </div>
               )}
@@ -424,6 +480,7 @@ export default function GenericGrantAccessDialog({
                 onPublicToggle={handlePublicToggle}
                 onPublicRoleChange={handlePublicRoleChange}
                 resourceType={resourceType}
+                allowRoleSelection={allowRoleSelection}
               />
             </section>
           )}
@@ -435,7 +492,9 @@ export default function GenericGrantAccessDialog({
             {resourceId && resourceUrl && (
               <TooltipAnchor
                 description={
-                  isCopying ? config?.getCopyUrlMessage() : localize('com_ui_copy_url_to_clipboard')
+                  isCopying
+                    ? localize(config.copyUrlMessageKey)
+                    : localize('com_ui_copy_url_to_clipboard')
                 }
                 render={
                   <Button
@@ -444,7 +503,7 @@ export default function GenericGrantAccessDialog({
                       if (isCopying) return;
                       if (!copyResourceUrl(setIsCopying)) return;
                       showToast({
-                        message: localize('com_ui_agent_url_copied'),
+                        message: localize(config.copyUrlMessageKey),
                         status: 'success',
                       });
                     }}
@@ -454,7 +513,7 @@ export default function GenericGrantAccessDialog({
                   >
                     <MorphIcon icon={isCopying ? CopyCheck : Link} className="size-4" />
                     {isCopying
-                      ? config?.getCopyUrlMessage()
+                      ? localize(config.copyUrlMessageKey)
                       : localize('com_ui_copy_url_to_clipboard')}
                   </Button>
                 }

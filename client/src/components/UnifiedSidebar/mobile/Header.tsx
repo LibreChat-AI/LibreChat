@@ -2,6 +2,7 @@ import { memo, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
+import ArtifactAppsButton from '~/components/Nav/ArtifactAppsButton';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
@@ -80,6 +81,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
+      <ArtifactAppsButton side="bottom" onNavigate={onClose} />
       <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />

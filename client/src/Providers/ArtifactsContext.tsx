@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { Constants } from 'librechat-data-provider';
 import { useLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { getLatestText } from '~/utils';
 import store from '~/store';
@@ -8,6 +9,7 @@ export interface ArtifactsContextValue {
   isSubmitting: boolean;
   latestMessageId: string | null;
   latestMessageText: string;
+  latestMessageError: boolean;
   conversationId: string | null;
   /** Whether this host offers opening the pane in its own window. The pane
    *  consumes the deployment's `interface.artifactUndocking` rather than
@@ -37,14 +39,31 @@ export function ArtifactsProvider({ children, value }: ArtifactsProviderProps) {
     return getLatestText(latestMessage);
   }, [latestMessage]);
 
+  /**
+   * A tool-call-limit pause also sets `unfinished: true` even though nothing
+   * failed or was cancelled — its distinct `finish_reason` is what excludes
+   * it here, so a paused-but-valid generation still registers its artifacts.
+   */
+  const latestMessageError =
+    latestMessage?.error === true ||
+    (latestMessage?.unfinished === true &&
+      latestMessage.finish_reason !== Constants.TOOL_CALL_LIMIT_FINISH_REASON);
+
   const defaultContextValue = useMemo<Omit<ArtifactsContextValue, 'canUndock'>>(
     () => ({
       isSubmitting,
       conversationId: conversationId ?? null,
       latestMessageText: chatLatestMessageText,
       latestMessageId: latestMessage?.messageId ?? null,
+      latestMessageError,
     }),
-    [isSubmitting, chatLatestMessageText, latestMessage?.messageId, conversationId],
+    [
+      isSubmitting,
+      chatLatestMessageText,
+      latestMessage?.messageId,
+      latestMessageError,
+      conversationId,
+    ],
   );
 
   const contextValue = useMemo<ArtifactsContextValue>(

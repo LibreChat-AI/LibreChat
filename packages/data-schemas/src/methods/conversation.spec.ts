@@ -1,7 +1,14 @@
 import { v4 as uuidv4 } from 'uuid';
 import mongoose, { type FilterQuery } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { EModelEndpoint, RetentionMode, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  PrincipalModel,
+  PrincipalType,
+  ResourceType,
+  RetentionMode,
+  UNSEEN_REPLY_WATERMARK,
+} from 'librechat-data-provider';
 import type {
   Document,
   Filter,
@@ -16,7 +23,12 @@ import type {
   IConversation,
   IMessage,
   AppConfig,
+  IAclEntry,
+  IArtifactApp,
+  IArtifactVersion,
+  IArtifactSourceTombstone,
 } from '../types';
+import { ArtifactAppDeletedError, createArtifactAppMethods } from './artifactApp';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChatProjectMethods } from './chatProject';
@@ -32,6 +44,10 @@ jest.mock('~/config/winston', () => ({
 const MEILI_SEARCH_LIMIT = 1000;
 let mongoServer: InstanceType<typeof MongoMemoryServer>;
 let Conversation: mongoose.Model<IConversation>;
+let ArtifactApp: mongoose.Model<IArtifactApp>;
+let ArtifactVersion: mongoose.Model<IArtifactVersion>;
+let ArtifactSourceTombstone: mongoose.Model<IArtifactSourceTombstone>;
+let AclEntry: mongoose.Model<IAclEntry>;
 let ChatProject: mongoose.Model<IChatProject>;
 let ConversationTag: mongoose.Model<{
   user: string;
@@ -56,6 +72,11 @@ beforeAll(async () => {
   modelsToCleanup = Object.keys(models);
   Object.assign(mongoose.models, models);
   Conversation = mongoose.models.Conversation as mongoose.Model<IConversation>;
+  ArtifactApp = mongoose.models.ArtifactApp as mongoose.Model<IArtifactApp>;
+  ArtifactVersion = mongoose.models.ArtifactVersion as mongoose.Model<IArtifactVersion>;
+  ArtifactSourceTombstone = mongoose.models
+    .ArtifactSourceTombstone as mongoose.Model<IArtifactSourceTombstone>;
+  AclEntry = mongoose.models.AclEntry as mongoose.Model<IAclEntry>;
   ChatProject = mongoose.models.ChatProject as mongoose.Model<IChatProject>;
   ConversationTag = mongoose.models.ConversationTag as mongoose.Model<{
     user: string;
@@ -136,6 +157,10 @@ describe('Conversation Operations', () => {
   beforeEach(async () => {
     // Clear database
     await Conversation.deleteMany({});
+    await ArtifactApp.deleteMany({});
+    await ArtifactVersion.deleteMany({});
+    await ArtifactSourceTombstone.deleteMany({});
+    await AclEntry.deleteMany({});
     await ChatProject.deleteMany({});
     await ConversationTag.deleteMany({});
 
@@ -3831,6 +3856,140 @@ describe('Conversation Operations', () => {
       expect(deletedConvo).toBeNull();
     });
 
+    it('preserves source artifact apps and detaches their deleted conversation link', async () => {
+      const conversationId = mockConversationData.conversationId;
+      await Conversation.create({
+        conversationId,
+        user: 'user123',
+        title: 'Conversation with Artifact',
+        endpoint: EModelEndpoint.openAI,
+      });
+      const [app] = await ArtifactApp.create([
+        {
+          artifactAppId: 'app_conversation_delete',
+          title: 'Conversation Artifact',
+          createdBy: 'user123',
+          activeVersionId: 'ver_conversation_delete',
+          latestVersionNumber: 1,
+          status: 'draft',
+          visibility: 'private',
+          allowEmbed: false,
+          allowFork: false,
+          allowAnonymousView: false,
+          toolPolicy: {
+            enabled: false,
+            allowedServers: [],
+            allowedTools: [],
+            requireConfirmationForWrites: true,
+          },
+          marketplace: {
+            listed: true,
+            featured: false,
+            riskClass: 'none',
+            costClass: 'free',
+          },
+          sourceMetadata: {
+            conversationId,
+            sourceKey: 'artifact:v1:identifier:conversation-delete',
+          },
+        },
+      ]);
+      await ArtifactVersion.create({
+        artifactAppId: 'app_conversation_delete',
+        artifactVersionId: 'ver_conversation_delete',
+        versionNumber: 1,
+        artifactType: 'react',
+        sourceSnapshot: 'export default () => <div>deleted</div>;',
+        runtimeConfig: {},
+        integrity: { sourceHash: 'hash', schemaVersion: 1 },
+        createdBy: 'user123',
+        publication: { state: 'draft' },
+      });
+      await AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalModel: PrincipalModel.USER,
+        principalId: new mongoose.Types.ObjectId(),
+        resourceType: ResourceType.ARTIFACT_APP,
+        resourceId: app._id,
+        permBits: 1,
+      });
+
+      await deleteConvos('user123', { conversationId });
+
+      expect(await ArtifactApp.findOne({ artifactAppId: 'app_conversation_delete' })).toMatchObject(
+        {
+          status: 'draft',
+          activeVersionId: 'ver_conversation_delete',
+          marketplace: { listed: true },
+          sourceMetadata: { sourceKey: 'artifact:v1:identifier:conversation-delete' },
+        },
+      );
+      expect(
+        (await ArtifactApp.findOne({ artifactAppId: 'app_conversation_delete' }))?.sourceMetadata
+          ?.conversationId,
+      ).toBeUndefined();
+      expect(
+        (await ArtifactApp.findOne({ artifactAppId: 'app_conversation_delete' }))?.sourceMetadata
+          ?.detachedConversationId,
+      ).toBe(conversationId);
+      expect(
+        await ArtifactSourceTombstone.findOne({
+          createdBy: 'user123',
+          conversationId,
+        }),
+      ).toMatchObject({ createdBy: 'user123', conversationId });
+      expect(
+        await ArtifactVersion.countDocuments({ artifactAppId: 'app_conversation_delete' }),
+      ).toBe(1);
+      expect(
+        await AclEntry.countDocuments({
+          resourceType: ResourceType.ARTIFACT_APP,
+          resourceId: app._id,
+        }),
+      ).toBe(1);
+    });
+
+    it('writes tenant-scoped tombstones that later sync can see', async () => {
+      const conversationId = mockConversationData.conversationId;
+      const artifactMethods = createArtifactAppMethods(mongoose);
+      await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+        await Conversation.create({
+          conversationId,
+          user: 'user123',
+          title: 'Tenant conversation',
+          endpoint: EModelEndpoint.openAI,
+          tenantId: 'tenant-a',
+        });
+        await deleteConvos('user123', { conversationId });
+        const raw = await mongoose.connection.db
+          ?.collection('artifactsourcetombstones')
+          .findOne({ createdBy: 'user123', conversationId });
+        expect(raw?.tenantId).toBe('tenant-a');
+        expect(
+          await ArtifactSourceTombstone.findOne({ createdBy: 'user123', conversationId }),
+        ).toMatchObject({ tenantId: 'tenant-a', conversationId });
+
+        await expect(
+          artifactMethods.syncArtifactAppWithVersion({
+            createdBy: 'user123',
+            tenantId: 'tenant-a',
+            title: 'Tenant Artifact',
+            visibility: 'private',
+            sourceMetadata: {
+              conversationId,
+              sourceKey: 'artifact:v1:identifier:tenant-delete-sync',
+            },
+            version: {
+              artifactType: 'react',
+              sourceSnapshot: 'export default () => <div>gone</div>;',
+              createdBy: 'user123',
+            },
+          }),
+        ).rejects.toBeInstanceOf(ArtifactAppDeletedError);
+        expect(await ArtifactApp.countDocuments({ createdBy: 'user123' })).toBe(0);
+      });
+    });
+
     it('cascades parent deletion through owner-scoped child-thread lineage', async () => {
       const parentId = uuidv4();
       const childId = uuidv4();
@@ -4019,18 +4178,19 @@ describe('Conversation Operations', () => {
     });
 
     it('supports an idempotent empty recovery sweep without hiding storage failures', async () => {
-      await expect(
-        deleteConvos(
-          'user123',
-          { conversationId: { $in: ['already-absent'] } },
-          { allowEmpty: true },
-        ),
-      ).resolves.toEqual({
-        acknowledged: true,
-        deletedCount: 0,
-        messages: { acknowledged: true, deletedCount: 0 },
-        conversationIds: [],
-      });
+      const result = await deleteConvos(
+        'user123',
+        { conversationId: { $in: ['already-absent'] } },
+        { allowEmpty: true },
+      );
+      expect(result.deletedCount).toBe(0);
+      expect(result.conversationIds).toEqual(['already-absent']);
+      expect(
+        await ArtifactSourceTombstone.findOne({
+          createdBy: 'user123',
+          conversationId: 'already-absent',
+        }),
+      ).toMatchObject({ createdBy: 'user123', conversationId: 'already-absent' });
 
       const find = jest.spyOn(Conversation, 'find').mockImplementationOnce(() => {
         throw new Error('database unavailable');
@@ -4039,6 +4199,59 @@ describe('Conversation Operations', () => {
         'database unavailable',
       );
       find.mockRestore();
+    });
+
+    it('detaches leftover artifact apps when an $in cleanup retry finds no conversations', async () => {
+      const conversationId = uuidv4();
+      const [app] = await ArtifactApp.create([
+        {
+          artifactAppId: 'app_in_retry_detach',
+          title: 'Orphaned Artifact',
+          createdBy: 'user123',
+          activeVersionId: 'ver_in_retry_detach',
+          latestVersionNumber: 1,
+          status: 'draft',
+          visibility: 'private',
+          allowEmbed: false,
+          allowFork: false,
+          allowAnonymousView: false,
+          toolPolicy: {
+            enabled: false,
+            allowedServers: [],
+            allowedTools: [],
+            requireConfirmationForWrites: true,
+          },
+          marketplace: {
+            listed: true,
+            featured: false,
+            riskClass: 'none',
+            costClass: 'free',
+          },
+          sourceMetadata: {
+            conversationId,
+            sourceKey: 'artifact:v1:identifier:in-retry-detach',
+          },
+        },
+      ]);
+
+      const result = await deleteConvos(
+        'user123',
+        { conversationId: { $in: [conversationId] } },
+        { allowEmpty: true },
+      );
+
+      expect(result.conversationIds).toEqual([conversationId]);
+      expect(
+        (await ArtifactApp.findOne({ artifactAppId: app.artifactAppId }))?.sourceMetadata
+          ?.conversationId,
+      ).toBeUndefined();
+      expect(
+        (await ArtifactApp.findOne({ artifactAppId: app.artifactAppId }))?.sourceMetadata
+          ?.detachedConversationId,
+      ).toBe(conversationId);
+      expect(
+        await ArtifactSourceTombstone.findOne({ createdBy: 'user123', conversationId }),
+      ).toMatchObject({ createdBy: 'user123', conversationId });
     });
 
     it('should decrement tag counts for a deleted bookmarked conversation', async () => {

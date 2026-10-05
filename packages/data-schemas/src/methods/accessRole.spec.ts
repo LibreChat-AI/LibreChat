@@ -225,6 +225,9 @@ describe('AccessRole Model Tests', () => {
           AccessRoleIds.SKILL_EDITOR,
           AccessRoleIds.SKILL_OWNER,
           AccessRoleIds.SKILL_VIEWER,
+          AccessRoleIds.ARTIFACT_APP_EDITOR,
+          AccessRoleIds.ARTIFACT_APP_OWNER,
+          AccessRoleIds.ARTIFACT_APP_VIEWER,
         ].sort(),
       );
 
@@ -240,6 +243,18 @@ describe('AccessRole Model Tests', () => {
       const agentOwnerRole = await methods.findRoleByIdentifier(AccessRoleIds.AGENT_OWNER);
       expect(agentOwnerRole).toBeDefined();
       expect(agentOwnerRole?.permBits).toBe(RoleBits.OWNER);
+
+      const artifactViewer = await methods.findRoleByIdentifier(AccessRoleIds.ARTIFACT_APP_VIEWER);
+      expect(artifactViewer?.resourceType).toBe(ResourceType.ARTIFACT_APP);
+      expect(artifactViewer?.permBits).toBe(RoleBits.VIEWER);
+
+      const artifactEditor = await methods.findRoleByIdentifier(AccessRoleIds.ARTIFACT_APP_EDITOR);
+      expect(artifactEditor?.resourceType).toBe(ResourceType.ARTIFACT_APP);
+      expect(artifactEditor?.permBits).toBe(RoleBits.EDITOR);
+
+      const artifactOwner = await methods.findRoleByIdentifier(AccessRoleIds.ARTIFACT_APP_OWNER);
+      expect(artifactOwner?.resourceType).toBe(ResourceType.ARTIFACT_APP);
+      expect(artifactOwner?.permBits).toBe(RoleBits.OWNER);
     });
 
     test('should not modify existing roles when seeding', async () => {

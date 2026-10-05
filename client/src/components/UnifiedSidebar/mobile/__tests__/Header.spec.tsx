@@ -5,6 +5,7 @@ import type { NavLink } from '~/common';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+  useHasAccess: () => true,
 }));
 
 jest.mock('~/hooks/useKeyboardShortcuts', () => ({
@@ -207,10 +208,7 @@ describe('mobile drawer header', () => {
     expect(toggle.querySelector('[data-testid="sidebar-icon"]')).not.toBeNull();
   });
 
-  /** New chat took the marketplace icon's slot. It belongs beside the panel
-   *  switcher because it means the same thing whichever panel is showing, which
-   *  is exactly why it no longer repeats under each panel's contents. */
-  it('carries new chat in the strip, and not the marketplace', () => {
+  it('carries new chat and the artifact catalog in the strip, but not the agent marketplace', () => {
     render(
       <Header
         links={links}
@@ -225,6 +223,7 @@ describe('mobile drawer header', () => {
     );
 
     expect(screen.getByTestId('nav-new-chat-fab')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-artifact-apps-button')).toHaveAttribute('href', '/apps');
     expect(screen.queryByTestId('nav-agents-marketplace-button')).not.toBeInTheDocument();
   });
 });

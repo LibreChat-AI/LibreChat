@@ -5,6 +5,7 @@ const {
   roleDefaults,
   PermissionTypes,
   agentPermissionsSchema,
+  artifactPermissionsSchema,
   promptPermissionsSchema,
   memoryPermissionsSchema,
   mcpServersPermissionsSchema,
@@ -35,6 +36,11 @@ const permissionConfigs = {
     schema: agentPermissionsSchema,
     permissionType: PermissionTypes.AGENTS,
     errorMessage: 'Invalid agent permissions.',
+  },
+  artifacts: {
+    schema: artifactPermissionsSchema,
+    permissionType: PermissionTypes.ARTIFACTS,
+    errorMessage: 'Invalid artifact permissions.',
   },
   memories: {
     schema: memoryPermissionsSchema,
@@ -164,6 +170,9 @@ router.put('/:roleName/prompts', manageRoles, createPermissionUpdateHandler('pro
  * Update agent permissions for a specific role
  */
 router.put('/:roleName/agents', manageRoles, createPermissionUpdateHandler('agents'));
+
+/** Update Artifact Catalog permissions for a specific role. */
+router.put('/:roleName/artifacts', manageRoles, createPermissionUpdateHandler('artifacts'));
 
 /**
  * PUT /api/roles/:roleName/memories

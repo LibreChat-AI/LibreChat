@@ -539,7 +539,7 @@ function findForbiddenTokens(sourceFile: ts.SourceFile): string[] {
   const visit = (node: ts.Node): void => {
     if (
       !isUnjudgedDottedWhere(node) &&
-      (ts.isStringLiteralLike(node) ||
+      ((ts.isStringLiteralLike(node) && !ts.isLiteralTypeNode(node.parent)) ||
         (ts.isIdentifier(node) && !ts.isPropertySignature(node.parent)))
     ) {
       for (const token of FORBIDDEN_TOKENS) {
@@ -1074,6 +1074,9 @@ describe('Amazon DocumentDB compatibility', () => {
           parse('fixture.ts', `interface Doc { $where: Record<string, unknown> }`),
         ),
       ).toEqual([]);
+      /** ...and the indexed-access spelling of the same type member, used to type
+       * the value a save-condition bag holds (`WeakMap<Doc, Doc['$where']>`). */
+      expect(findForbiddenTokens(parse('fixture.ts', `type Filter = Doc['$where'];`))).toEqual([]);
       /** A dotted `$where` is judged only where the syntax is unambiguous. Not
        * claimed either way — Mongoose's document save-condition bag in
        * `tenantIsolation.ts` is read and written exactly like this: */

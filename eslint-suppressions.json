@@ -47,6 +47,33 @@
       "count": 3
     }
   },
+  "client/src/components/ArtifactApps/ArtifactAppsAdminSettings.tsx": {
+    "shadcn/no-restyle": {
+      "count": 10
+    }
+  },
+  "client/src/components/ArtifactApps/ArtifactAppsList.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 3
+    },
+    "shadcn/no-raw-colors": {
+      "count": 5
+    },
+    "shadcn/no-unknown-classes": {
+      "count": 1
+    }
+  },
+  "client/src/components/ArtifactApps/ArtifactAppsSearchBar.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
+    },
+    "shadcn/no-raw-colors": {
+      "count": 1
+    },
+    "shadcn/no-restyle": {
+      "count": 14
+    }
+  },
   "client/src/components/Artifacts/ArtifactCodeEditor.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -1107,6 +1134,11 @@
     },
     "shadcn/no-unknown-classes": {
       "count": 2
+    }
+  },
+  "client/src/components/Nav/ArtifactAppsButton.tsx": {
+    "shadcn/no-restyle": {
+      "count": 1
     }
   },
   "client/src/components/Nav/ExportConversation/ExportModal.tsx": {

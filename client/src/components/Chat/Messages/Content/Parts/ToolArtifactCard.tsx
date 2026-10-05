@@ -1,6 +1,8 @@
 import { memo, useEffect, useId, useLayoutEffect, useRef } from 'react';
+import { useSetAtom } from 'jotai';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { Artifact } from '~/common';
+import { artifactNavigationRequestAtom } from '~/components/ArtifactApps/navigation';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { artifactRowKind, isCodeOnlyArtifact } from '~/utils/artifacts';
 import { displayFilename } from './attachmentTypes';
@@ -64,6 +66,7 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   const ownerMessageId = messageId || attachment.messageId || '';
   const file = attachment as TFile & TAttachmentMetadata;
   const fileId = file.file_id;
+  const setArtifactNavigationRequest = useSetAtom(artifactNavigationRequestAtom);
   const {
     currentArtifactId,
     registered: existingEntry,
@@ -163,6 +166,7 @@ const ToolArtifactCard = memo(({ attachment, artifact }: ToolArtifactCardProps) 
   });
 
   const handleOpen = () => {
+    setArtifactNavigationRequest(null);
     if (isSelected) {
       close();
       return;

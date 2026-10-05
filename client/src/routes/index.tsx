@@ -9,6 +9,8 @@ import {
   TwoFactorSetupScreen,
   RequestPasswordReset,
 } from '~/components/Auth';
+import StandaloneAppView from '~/components/ArtifactApps/StandaloneAppView';
+import ArtifactAppsList from '~/components/ArtifactApps/ArtifactAppsList';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { importWithRecovery } from '~/lib/assets/lazy';
@@ -195,6 +197,18 @@ export const router = createBrowserRouter(
                 {
                   path: 'agents/:category',
                   element: <MarketplaceRoute />,
+                },
+                {
+                  path: 'apps',
+                  element: <ArtifactAppsList />,
+                },
+                {
+                  path: 'apps/:artifactAppId',
+                  element: <StandaloneAppView />,
+                },
+                {
+                  path: 'apps/:artifactAppId/version/:versionId',
+                  element: <StandaloneAppView />,
                 },
               ],
             },

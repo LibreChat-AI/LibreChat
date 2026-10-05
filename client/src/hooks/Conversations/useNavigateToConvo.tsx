@@ -90,6 +90,28 @@ export const supersedeNavigation = () => {
   navigationGeneration++;
 };
 
+function getConversationPath(conversationId: string): string {
+  const path = `/c/${conversationId}`;
+  if (!window.location.pathname.endsWith(path)) {
+    return path;
+  }
+  const currentParams = new URLSearchParams(window.location.search);
+  const artifact = currentParams.get('artifact');
+  if (!artifact) {
+    return path;
+  }
+  const artifactParams = new URLSearchParams({ artifact });
+  const artifactId = currentParams.get('artifactId');
+  const artifactMessageId = currentParams.get('artifactMessageId');
+  if (artifactId) {
+    artifactParams.set('artifactId', artifactId);
+  }
+  if (artifactMessageId) {
+    artifactParams.set('artifactMessageId', artifactMessageId);
+  }
+  return `${path}?${artifactParams.toString()}`;
+}
+
 const useNavigateToConvo = (index = 0) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -230,7 +252,7 @@ const useNavigateToConvo = (index = 0) => {
       return;
     }
     applyConversation(record);
-    navigate(`/c/${conversationId}`);
+    navigate(getConversationPath(conversationId));
   };
 
   const navigateToConvo = (
@@ -320,12 +342,12 @@ const useNavigateToConvo = (index = 0) => {
        * write this navigation makes — what the user sees now is what a send
        * will carry until they change it themselves. */
       applyConversation({ ...cachedConvo, ...convo });
-      navigate(`/c/${convo.conversationId}`);
+      navigate(getConversationPath(convo.conversationId));
       refreshConversationRecord(convo.conversationId);
     } else {
       setConversation(convo);
       requestChatFocus();
-      navigate(`/c/${convo.conversationId ?? Constants.NEW_CONVO}`);
+      navigate(getConversationPath(convo.conversationId ?? Constants.NEW_CONVO));
     }
   };
 

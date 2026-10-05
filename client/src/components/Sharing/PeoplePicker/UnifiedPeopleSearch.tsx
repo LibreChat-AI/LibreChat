@@ -25,13 +25,14 @@ export default function UnifiedPeopleSearch({
   const localize = useLocalize();
   const [searchQuery, setSearchQuery] = useState('');
 
+  const hasExplicitTypeFilter = Array.isArray(typeFilter);
   const searchParams: PrincipalSearchParams = useMemo(
     () => ({
       q: searchQuery,
       limit: 30,
-      ...(typeFilter && typeFilter.length > 0 && { types: typeFilter }),
+      ...(hasExplicitTypeFilter && { types: typeFilter }),
     }),
-    [searchQuery, typeFilter],
+    [searchQuery, typeFilter, hasExplicitTypeFilter],
   );
 
   const {
@@ -39,7 +40,7 @@ export default function UnifiedPeopleSearch({
     isLoading: queryIsLoading,
     error,
   } = useSearchPrincipalsQuery(searchParams, {
-    enabled: searchQuery.length >= 2,
+    enabled: searchQuery.length >= 2 && !(Array.isArray(typeFilter) && typeFilter.length === 0),
   });
 
   const isLoading = searchQuery.length >= 2 && queryIsLoading;

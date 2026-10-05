@@ -2,6 +2,7 @@ jest.mock('~/models', () => ({
   getRoleByName: jest.fn(),
   findMCPServerByObjectId: jest.fn(),
   getSkillById: jest.fn(),
+  getArtifactAppsByIds: jest.fn(),
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -45,7 +46,7 @@ const { updateResourcePermissions } = require('~/server/controllers/PermissionsC
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { canAccessResource } = require('~/server/middleware');
 const accessPermissionsRouter = require('./accessPermissions');
-const { getRoleByName } = require('~/models');
+const { getRoleByName, getArtifactAppsByIds } = require('~/models');
 
 describe('Access permissions share policy', () => {
   let app;
@@ -61,6 +62,17 @@ describe('Access permissions share policy', () => {
       accessRoleId: AccessRoleIds.AGENT_VIEWER,
       middlewareOptions: {
         resourceType: ResourceType.AGENT,
+        requiredPermission: PermissionBits.SHARE,
+        resourceIdParam: 'resourceId',
+      },
+    },
+    {
+      label: 'artifact',
+      resourceType: ResourceType.ARTIFACT_APP,
+      permissionType: PermissionTypes.ARTIFACTS,
+      accessRoleId: AccessRoleIds.ARTIFACT_APP_VIEWER,
+      middlewareOptions: {
+        resourceType: ResourceType.ARTIFACT_APP,
         requiredPermission: PermissionBits.SHARE,
         resourceIdParam: 'resourceId',
       },
@@ -123,6 +135,17 @@ describe('Access permissions share policy', () => {
     getRoleByName.mockResolvedValue({
       permissions: {
         [PermissionTypes.SHARED_LINKS]: {
+          [Permissions.SHARE]: true,
+          [Permissions.SHARE_PUBLIC]: true,
+        },
+      },
+    });
+  };
+
+  const allowArtifactSharing = () => {
+    getRoleByName.mockResolvedValue({
+      permissions: {
+        [PermissionTypes.ARTIFACTS]: {
           [Permissions.SHARE]: true,
           [Permissions.SHARE_PUBLIC]: true,
         },
@@ -316,5 +339,89 @@ describe('Access permissions share policy', () => {
 
     expect(response.status).toBe(200);
     expect(updateResourcePermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks direct Artifact App editor grants', async () => {
+    allowArtifactSharing();
+
+    const response = await request(app)
+      .put(`/api/permissions/${ResourceType.ARTIFACT_APP}/${resourceId}`)
+      .send({
+        updated: [
+          {
+            type: PrincipalType.USER,
+            id: 'target-user',
+            accessRoleId: AccessRoleIds.ARTIFACT_APP_EDITOR,
+          },
+        ],
+        removed: [],
+        public: false,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe('Artifact Apps can only be shared with viewer access');
+    expect(updateResourcePermissions).not.toHaveBeenCalled();
+  });
+
+  it('blocks removing the canonical Artifact App owner', async () => {
+    allowArtifactSharing();
+    getArtifactAppsByIds.mockResolvedValue([{ createdBy: 'artifact-owner' }]);
+
+    const response = await request(app)
+      .put(`/api/permissions/${ResourceType.ARTIFACT_APP}/${resourceId}`)
+      .send({
+        updated: [],
+        removed: [{ type: PrincipalType.USER, id: 'artifact-owner' }],
+        public: false,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe('Artifact App owner permissions cannot be changed');
+    expect(getArtifactAppsByIds).toHaveBeenCalledWith([resourceId]);
+    expect(updateResourcePermissions).not.toHaveBeenCalled();
+  });
+
+  it('allows Artifact App viewer grants for non-owners', async () => {
+    allowArtifactSharing();
+    getArtifactAppsByIds.mockResolvedValue([{ createdBy: 'artifact-owner' }]);
+
+    const response = await request(app)
+      .put(`/api/permissions/${ResourceType.ARTIFACT_APP}/${resourceId}`)
+      .send({
+        updated: [
+          {
+            type: PrincipalType.USER,
+            id: 'target-user',
+            accessRoleId: AccessRoleIds.ARTIFACT_APP_VIEWER,
+          },
+        ],
+        removed: [],
+        public: false,
+      });
+
+    expect(response.status).toBe(200);
+    expect(updateResourcePermissions).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks Artifact App role-wide grants even when public sharing is allowed', async () => {
+    allowArtifactSharing();
+
+    const response = await request(app)
+      .put(`/api/permissions/${ResourceType.ARTIFACT_APP}/${resourceId}`)
+      .send({
+        updated: [
+          {
+            type: PrincipalType.ROLE,
+            id: 'USER',
+            accessRoleId: AccessRoleIds.ARTIFACT_APP_VIEWER,
+          },
+        ],
+        removed: [],
+        public: false,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toBe('Artifact Apps cannot be shared with roles');
+    expect(updateResourcePermissions).not.toHaveBeenCalled();
   });
 });

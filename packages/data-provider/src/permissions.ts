@@ -16,6 +16,8 @@ export enum PermissionTypes {
    * Type for Agent Permissions
    */
   AGENTS = 'AGENTS',
+  /** Type for Artifact Catalog Permissions */
+  ARTIFACTS = 'ARTIFACTS',
   /**
    * Type for Memory Permissions
    */
@@ -82,6 +84,7 @@ export enum PermissionTypes {
 export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> = {
   [PermissionTypes.PROMPTS]: 'prompts',
   [PermissionTypes.AGENTS]: 'agents',
+  [PermissionTypes.ARTIFACTS]: 'artifacts',
   [PermissionTypes.BOOKMARKS]: 'bookmarks',
   [PermissionTypes.MEMORIES]: 'memories',
   [PermissionTypes.MULTI_CONVO]: 'multiConvo',
@@ -192,6 +195,14 @@ export const agentPermissionsSchema = z.object({
 });
 export type TAgentPermissions = z.infer<typeof agentPermissionsSchema>;
 
+export const artifactPermissionsSchema = z.object({
+  [Permissions.USE]: z.boolean().default(true),
+  [Permissions.CREATE]: z.boolean().default(true),
+  [Permissions.SHARE]: z.boolean().default(true),
+  [Permissions.SHARE_PUBLIC]: z.boolean().default(false),
+});
+export type TArtifactPermissions = z.infer<typeof artifactPermissionsSchema>;
+
 export const multiConvoPermissionsSchema = z.object({
   [Permissions.USE]: z.boolean().default(true),
 });
@@ -278,6 +289,7 @@ export const permissionsSchema = z.object({
   [PermissionTypes.BOOKMARKS]: bookmarkPermissionsSchema,
   [PermissionTypes.MEMORIES]: memoryPermissionsSchema,
   [PermissionTypes.AGENTS]: agentPermissionsSchema,
+  [PermissionTypes.ARTIFACTS]: artifactPermissionsSchema,
   [PermissionTypes.MULTI_CONVO]: multiConvoPermissionsSchema,
   [PermissionTypes.TEMPORARY_CHAT]: temporaryChatPermissionsSchema,
   [PermissionTypes.RUN_CODE]: runCodePermissionsSchema,

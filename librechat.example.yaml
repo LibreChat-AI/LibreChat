@@ -596,6 +596,22 @@ actions:
 #     - 'ollama:11434'
 #     - '10.0.0.5:8080'
 
+# Artifact catalog operational limits (all values below are the defaults)
+# artifactApps:
+#   catalogPageSize: 20
+#   versionPageSize: 20
+#   scanBatchSize: 100
+#   aclBatchSize: 100
+#   maxScanBatches: 10
+#   syncLockLeaseMs: 5000
+#   syncLockRetryDelayMs: 50
+#   syncLockRetryAttempts: 100
+#   syncWriteRetryAttempts: 3
+#   clientSyncSettleDelayMs: 500
+#   clientPreviewCaptureTimeoutMs: 5000
+#   clientSyncRetryBaseDelayMs: 1000
+#   clientSyncRetryMaxDelayMs: 30000
+
 # MCP Server domain restrictions for remote transports (SSE, WebSocket, HTTP)
 # SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
 # Prefer `allowedAddresses` for permitting internal targets — adding a private host to

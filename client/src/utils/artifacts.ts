@@ -16,6 +16,7 @@ import type { TStartupConfig, TAttachment, TFile } from 'librechat-data-provider
 import type { PhrasingContent } from 'mdast';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { Artifact } from '~/common';
+import { ARTIFACT_PREVIEW_BRIDGE_SCRIPT } from '~/utils/artifactPreviewCapture';
 import { MERMAID_ARTIFACT_TYPE } from '~/common/artifacts';
 import { getCodeBlockFilename } from './downloadFile';
 
@@ -1286,6 +1287,7 @@ export const sharedFiles = {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Document</title>
+        <script>${ARTIFACT_PREVIEW_BRIDGE_SCRIPT}</script>
         <script src="https://cdn.tailwindcss.com/3.4.17"></script>
         <style>
           ::-webkit-scrollbar{height:.1em;width:.5rem}

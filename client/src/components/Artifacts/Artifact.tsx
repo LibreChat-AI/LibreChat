@@ -1,13 +1,13 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import throttle from 'lodash/throttle';
 import { visit } from 'unist-util-visit';
-import { useSetRecoilState } from 'recoil';
 import { useLocation } from 'react-router-dom';
+import { useRecoilValue, useSetRecoilState } from 'recoil';
 import type { Pluggable } from 'unified';
 import type { Artifact } from '~/common';
+import { artifactByIdSelector, artifactsState } from '~/store/artifacts';
 import { useMessageContext, useArtifactContext } from '~/Providers';
 import { logger, extractContent, isArtifactRoute } from '~/utils';
-import { artifactsState } from '~/store/artifacts';
 import ArtifactButton from './ArtifactButton';
 
 export const artifactPlugin: Pluggable = () => {
@@ -53,6 +53,7 @@ export function Artifact({
 
   const setArtifacts = useSetRecoilState(artifactsState);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
+  const registeredArtifact = useRecoilValue(artifactByIdSelector(artifact?.id ?? ''));
 
   const throttledUpdateRef = useRef(
     throttle((updateFn: () => void) => {
@@ -123,6 +124,29 @@ export function Artifact({
     resetCounter();
     updateArtifact();
   }, [updateArtifact, resetCounter]);
+
+  /**
+   * Conversation hydration can reset the shared artifact map after message content has already
+   * rendered. Re-register the local parsed artifact when its map entry is missing or stale so a
+   * catalog deep link can resolve without requiring the message component to remount.
+   */
+  useEffect(() => {
+    if (!artifact || !isArtifactRoute(location.pathname)) {
+      return;
+    }
+    if (
+      registeredArtifact != null &&
+      registeredArtifact.content === artifact.content &&
+      registeredArtifact.type === artifact.type &&
+      registeredArtifact.title === artifact.title
+    ) {
+      return;
+    }
+    setArtifacts((prevArtifacts) => ({
+      ...(prevArtifacts ?? {}),
+      [artifact.id]: artifact,
+    }));
+  }, [artifact, location.pathname, registeredArtifact, setArtifacts]);
 
   return <ArtifactButton artifact={artifact} />;
 }

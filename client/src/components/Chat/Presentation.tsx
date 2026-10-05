@@ -1,10 +1,13 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useLocation } from 'react-router-dom';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { useRecoilValue, useResetRecoilState } from 'recoil';
 import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import ArtifactCatalogRegistrar from '~/components/ArtifactApps/ArtifactCatalogRegistrar';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
+import { artifactNavigationRequestAtom } from '~/components/ArtifactApps/navigation';
 import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
@@ -30,15 +33,12 @@ export default function Presentation({
   children: React.ReactNode;
   routePending?: boolean;
 }) {
+  const location = useLocation();
   const artifacts = useRecoilValue(store.artifactsState);
   const artifactsVisibility = useRecoilValue(store.artifactsVisibility);
-  // Render-gating the panel on `currentArtifactId != null` (in addition
-  // to visibility + non-empty artifacts) means the side panel only opens
-  // when *something* is actively focused. Conversation navigation
-  // resets `currentArtifactId` to null, so the panel stays closed when
-  // a user revisits an old conversation full of artifacts. New artifacts
-  // arriving via SSE auto-focus through `ToolArtifactCard`'s mount effect
-  // (gated on `isSubmitting`), restoring the legacy streaming UX.
+  // Idle history stays closed unless an artifact is focused. A catalog
+  // deep link temporarily bypasses that gate so `useArtifacts` can resolve
+  // the requested source and focus it after the conversation has rendered.
   const currentArtifactId = useRecoilValue(store.currentArtifactId);
   const conversationId = useRecoilValue(store.conversationIdByIndex(0));
   const conversationEndpoint = useRecoilValue(store.effectiveEndpointByIndex(0));
@@ -49,6 +49,17 @@ export default function Presentation({
   const setSelectedSubagent = useSetAtom(activeSubagentPanel);
   const resetSelectedSubagent = useCallback(() => setSelectedSubagent(null), [setSelectedSubagent]);
   const previousConversationIdRef = useRef<string | null>(null);
+  const artifactNavigationRequest = useAtomValue(artifactNavigationRequestAtom);
+  const resetArtifacts = useResetRecoilState(store.artifactsState);
+  const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
+  const handledArtifactRequestRef = useRef<string | null>(null);
+  const hasStateArtifactRequest =
+    artifactNavigationRequest != null &&
+    location.pathname.endsWith(`/c/${artifactNavigationRequest.conversationId}`);
+  const hasArtifactRequest = useMemo(
+    () => new URLSearchParams(location.search).has('artifact') || hasStateArtifactRequest,
+    [hasStateArtifactRequest, location.search],
+  );
 
   useArtifactsRegistryLifetime(conversationId);
 
@@ -58,6 +69,27 @@ export default function Presentation({
     previousConversationIdRef.current = next;
     if (previous != null && previous !== next) resetSelectedSubagent();
   }, [conversationId, resetSelectedSubagent]);
+
+  useEffect(() => {
+    if (!hasArtifactRequest) {
+      handledArtifactRequestRef.current = null;
+      return;
+    }
+    const requestKey = `${location.key}:${location.search}:${artifactNavigationRequest?.sourceKey ?? ''}`;
+    if (handledArtifactRequestRef.current === requestKey) {
+      return;
+    }
+    handledArtifactRequestRef.current = requestKey;
+    resetArtifacts();
+    resetCurrentArtifactId();
+  }, [
+    hasArtifactRequest,
+    location.key,
+    location.search,
+    resetArtifacts,
+    resetCurrentArtifactId,
+    artifactNavigationRequest?.sourceKey,
+  ]);
 
   const setFilesToDelete = useSetFilesToDelete();
 
@@ -123,8 +155,8 @@ export default function Presentation({
 
   const artifactsElement = useMemo(() => {
     if (
-      artifactsVisibility === true &&
-      currentArtifactId != null &&
+      (artifactsVisibility === true || hasArtifactRequest) &&
+      (currentArtifactId != null || hasArtifactRequest) &&
       Object.keys(artifacts ?? {}).length > 0
     ) {
       return (
@@ -136,7 +168,13 @@ export default function Presentation({
       );
     }
     return null;
-  }, [artifactsVisibility, artifacts, currentArtifactId, artifactsProviderValue]);
+  }, [
+    artifactsVisibility,
+    artifacts,
+    currentArtifactId,
+    hasArtifactRequest,
+    artifactsProviderValue,
+  ]);
 
   /* The two panels are mutually exclusive only while they compete for the same
    * slot. Undocked, the artifacts pane is in its own window and the side panel
@@ -168,6 +206,7 @@ export default function Presentation({
 
   return (
     <DragDropWrapper className="bg-surface-primary-alt relative flex w-full grow overflow-hidden">
+      <ArtifactCatalogRegistrar />
       <AppChatSurface>
         {/* The editor buffer belongs to the pane's session, not to the window
             it happens to be in: hoisted, an undock keeps unsaved edits. */}

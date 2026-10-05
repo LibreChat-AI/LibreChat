@@ -3,6 +3,7 @@ import {
   QueryKeys,
   dataService,
   promptPermissionsSchema,
+  artifactPermissionsSchema,
   skillPermissionsSchema,
   memoryPermissionsSchema,
   mcpServersPermissionsSchema,
@@ -108,6 +109,37 @@ export const useUpdateAgentPermissionsMutation = (
         if (onError != null) {
           onError(...args);
         }
+      },
+      onMutate,
+    },
+  );
+};
+
+export const useUpdateArtifactPermissionsMutation = (
+  options?: t.UpdateArtifactPermOptions,
+): UseMutationResult<
+  t.UpdatePermResponse,
+  t.TError | undefined,
+  t.UpdateArtifactPermVars,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  const { onMutate, onSuccess, onError } = options ?? {};
+  return useMutation(
+    (variables) => {
+      artifactPermissionsSchema.partial().parse(variables.updates);
+      return dataService.updateArtifactPermissions(variables);
+    },
+    {
+      onSuccess: (data, variables, context) => {
+        queryClient.invalidateQueries([QueryKeys.roles, variables.roleName]);
+        onSuccess?.(data, variables, context);
+      },
+      onError: (...args) => {
+        if (args[0] != null) {
+          console.error('Failed to update artifact permissions:', args[0]);
+        }
+        onError?.(...args);
       },
       onMutate,
     },

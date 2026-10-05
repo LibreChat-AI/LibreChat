@@ -6,7 +6,11 @@ const {
   ResourceType,
   PermissionBits,
 } = require('librechat-data-provider');
-const { createAgentAdminPermissionAccess, isAgentPermissionsAdmin } = require('@librechat/api');
+const {
+  createAgentAdminPermissionAccess,
+  createArtifactAppSharingPolicy,
+  isAgentPermissionsAdmin,
+} = require('@librechat/api');
 const {
   getUserEffectivePermissions,
   getAllEffectivePermissions,
@@ -25,6 +29,9 @@ const db = require('~/models');
 const { findMCPServerByObjectId, getSkillById } = db;
 
 const router = express.Router();
+const enforceArtifactAppSharingPolicy = createArtifactAppSharingPolicy({
+  getArtifactAppsByIds: db.getArtifactAppsByIds,
+});
 
 // Apply common middleware
 router.use(requireJwtAuth);
@@ -96,6 +103,12 @@ const checkResourcePermissionAccess = (requiredPermission) =>
       } else if (resourceType === ResourceType.CODE_ENVIRONMENT) {
         middleware = canAccessResource({
           resourceType: ResourceType.CODE_ENVIRONMENT,
+          requiredPermission,
+          resourceIdParam: 'resourceId',
+        });
+      } else if (resourceType === ResourceType.ARTIFACT_APP) {
+        middleware = canAccessResource({
+          resourceType: ResourceType.ARTIFACT_APP,
           requiredPermission,
           resourceIdParam: 'resourceId',
         });
@@ -197,6 +210,7 @@ router.put(
   checkResourcePermissionAccess(PermissionBits.SHARE),
   checkShareAccessUnlessAgentAdmin,
   checkSharePublicAccess,
+  enforceArtifactAppSharingPolicy,
   rejectSharedLinkOwnerPermissionChanges,
   updateResourcePermissions,
 );

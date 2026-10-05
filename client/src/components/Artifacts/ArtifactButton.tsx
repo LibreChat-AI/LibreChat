@@ -3,6 +3,7 @@ import debounce from 'lodash/debounce';
 import { useLocation } from 'react-router-dom';
 import { useRecoilState, useSetRecoilState, useResetRecoilState } from 'recoil';
 import type { Artifact } from '~/common';
+import useClearArtifactNavigationRequest from '~/hooks/Artifacts/useClearArtifactNavigationRequest';
 import ArtifactRow from '~/components/Chat/Messages/Content/Parts/ArtifactRow';
 import { artifactRowKind } from '~/utils/artifacts';
 import { logger, isArtifactRoute } from '~/utils';
@@ -16,6 +17,7 @@ const ArtifactButton = ({ artifact }: { artifact: Artifact | null }) => {
   const resetCurrentArtifactId = useResetRecoilState(store.currentArtifactId);
   const isSelected = artifact?.id === currentArtifactId;
   const [visibleArtifacts, setVisibleArtifacts] = useRecoilState(store.visibleArtifacts);
+  const clearArtifactNavigationRequest = useClearArtifactNavigationRequest();
 
   const debouncedSetVisibleRef = useRef(
     debounce((artifactToSet: Artifact) => {
@@ -52,6 +54,7 @@ const ArtifactButton = ({ artifact }: { artifact: Artifact | null }) => {
   }
 
   const handleOpen = () => {
+    clearArtifactNavigationRequest();
     if (isSelected) {
       resetCurrentArtifactId();
       setVisible(false);

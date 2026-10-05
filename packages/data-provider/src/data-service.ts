@@ -23,6 +23,7 @@ import * as m from './types/mutations';
 import * as ag from './types/agents';
 import * as q from './types/queries';
 import * as sk from './types/skills';
+import * as aa from './artifactApps';
 import * as f from './types/files';
 import * as config from './config';
 import request from './request';
@@ -1548,6 +1549,12 @@ export function updateAgentPermissions(
   return request.put(endpoints.updateAgentPermissions(variables.roleName), variables.updates);
 }
 
+export function updateArtifactPermissions(
+  variables: m.UpdateArtifactPermVars,
+): Promise<m.UpdatePermResponse> {
+  return request.put(endpoints.updateArtifactPermissions(variables.roleName), variables.updates);
+}
+
 export function updateMemoryPermissions(
   variables: m.UpdateMemoryPermVars,
 ): Promise<m.UpdatePermResponse> {
@@ -1847,6 +1854,111 @@ export interface ActiveJobsResponse {
 export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
   return request.get(endpoints.activeJobs());
 };
+
+/* Artifact Apps */
+
+export function publishArtifactApp(
+  payload: aa.TPublishArtifactAppRequest,
+): Promise<aa.TArtifactAppWithVersion> {
+  return request.post(endpoints.artifactApps(), payload);
+}
+
+export function syncArtifactApp(
+  payload: aa.TSyncArtifactAppRequest,
+): Promise<aa.TSyncArtifactAppResponse> {
+  return request.post(endpoints.syncArtifactApp(), payload);
+}
+
+export function restoreArtifactApp(
+  payload: aa.TSyncArtifactAppRequest,
+): Promise<aa.TSyncArtifactAppResponse> {
+  return request.post(endpoints.restoreArtifactApp(), payload);
+}
+
+export function listArtifactApps(
+  params: Partial<aa.TArtifactAppListRequest> = {},
+): Promise<aa.TArtifactAppList> {
+  const query = new URLSearchParams({
+    scope: params.scope ?? 'personal',
+    limit: String(params.limit ?? 20),
+  });
+  if (params.cursor) {
+    query.set('cursor', params.cursor);
+  }
+  if (params.search) {
+    query.set('search', params.search);
+  }
+  return request.get(`${endpoints.artifactApps()}?${query.toString()}`);
+}
+
+export async function getArtifactAppBySource(
+  conversationId: string,
+  sourceKey: string,
+): Promise<aa.TArtifactAppWithVersion> {
+  const response = await request.get<aa.TArtifactAppDetailResponse>(
+    endpoints.artifactAppBySource(conversationId, sourceKey),
+  );
+  return aa.normalizeArtifactAppDetail(response);
+}
+
+export async function getArtifactApp(artifactAppId: string): Promise<aa.TArtifactAppWithVersion> {
+  const response = await request.get<aa.TArtifactAppDetailResponse>(
+    endpoints.artifactAppById(artifactAppId),
+  );
+  return aa.normalizeArtifactAppDetail(response);
+}
+
+export function updateArtifactApp(
+  artifactAppId: string,
+  payload: aa.TUpdateArtifactAppRequest,
+): Promise<aa.TArtifactApp> {
+  return request.patch(endpoints.artifactAppById(artifactAppId), payload);
+}
+
+export function deleteArtifactApp(artifactAppId: string): Promise<{ success: boolean }> {
+  return request.delete(endpoints.artifactAppById(artifactAppId));
+}
+
+export function listArtifactAppVersions(
+  artifactAppId: string,
+  params: Partial<aa.TArtifactVersionListRequest> = {},
+): Promise<aa.TArtifactVersionList> {
+  const query = new URLSearchParams({
+    limit: String(params.limit ?? aa.DEFAULT_ARTIFACT_APPS_CONFIG.versionPageSize),
+  });
+  if (params.cursor) {
+    query.set('cursor', params.cursor);
+  }
+  return request.get(`${endpoints.artifactAppVersions(artifactAppId)}?${query.toString()}`);
+}
+
+export function getArtifactAppVersion(
+  artifactAppId: string,
+  versionId: string,
+): Promise<aa.TArtifactVersion> {
+  return request.get(endpoints.artifactAppVersionById(artifactAppId, versionId));
+}
+
+export function releaseArtifactAppVersion(
+  artifactAppId: string,
+  versionId: string,
+): Promise<aa.TArtifactVersion> {
+  return request.post(endpoints.artifactAppVersionRelease(artifactAppId, versionId), {});
+}
+
+export function activateArtifactAppVersion(
+  artifactAppId: string,
+  versionId: string,
+): Promise<aa.TArtifactApp> {
+  return request.post(endpoints.artifactAppVersionActivate(artifactAppId, versionId), {});
+}
+
+export function withdrawArtifactAppVersion(
+  artifactAppId: string,
+  versionId: string,
+): Promise<aa.TArtifactVersion> {
+  return request.post(endpoints.artifactAppVersionWithdraw(artifactAppId, versionId), {});
+}
 
 export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
   return request.get(endpoints.scheduleMCPConsent(id));

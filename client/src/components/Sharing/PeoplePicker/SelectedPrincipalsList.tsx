@@ -15,6 +15,7 @@ interface SelectedPrincipalsListProps {
   onRoleChange?: (principalKey: string, newRoleId: AccessRoleIds) => void;
   onInsightsAccessChange?: (principalKey: string, enabled: boolean) => void;
   showInsightsAccess?: boolean;
+  allowRoleSelection?: boolean;
   resourceType?: ResourceType;
   className?: string;
 }
@@ -26,6 +27,7 @@ export default function SelectedPrincipalsList({
   onRoleChange,
   onInsightsAccessChange,
   showInsightsAccess = false,
+  allowRoleSelection = true,
   resourceType = ResourceType.AGENT,
 }: SelectedPrincipalsListProps) {
   const localize = useLocalize();
@@ -58,8 +60,10 @@ export default function SelectedPrincipalsList({
           const { displayName, subtitle } = getPrincipalDisplayInfo(share);
           const ownerRoleId = RESOURCE_CONFIGS[resourceType]?.defaultOwnerRoleId;
           const isOwner = share.accessRoleId === ownerRoleId;
-          const isSharedLink = resourceType === ResourceType.SHARED_LINK;
-          const lockOwner = isSharedLink && isOwner;
+          const lockOwner =
+            isOwner &&
+            (resourceType === ResourceType.SHARED_LINK ||
+              resourceType === ResourceType.ARTIFACT_APP);
           const shareKey = principalKey(share);
           const hasAutomaticInsightsAccess = share.isAdmin === true;
           const insightsDescription = localize(
@@ -122,6 +126,7 @@ export default function SelectedPrincipalsList({
                     {localize('com_ui_role_owner')}
                   </span>
                 ) : (
+                  allowRoleSelection &&
                   !!share.accessRoleId &&
                   !!onRoleChange && (
                     <AccessRolesPicker

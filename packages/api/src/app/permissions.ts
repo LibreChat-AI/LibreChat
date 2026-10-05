@@ -27,6 +27,8 @@ function hasExplicitConfig(
       return interfaceConfig?.multiConvo !== undefined;
     case PermissionTypes.AGENTS:
       return interfaceConfig?.agents !== undefined;
+    case PermissionTypes.ARTIFACTS:
+      return interfaceConfig?.artifacts !== undefined;
     case PermissionTypes.TEMPORARY_CHAT:
       return interfaceConfig?.temporaryChat !== undefined;
     case PermissionTypes.RUN_CODE:
@@ -222,24 +224,32 @@ export async function updateInterfacePermissions({
       typeof defaults.prompts === 'boolean' ? defaults.prompts : defaults.prompts?.use;
     const agentsDefaultUse =
       typeof defaults.agents === 'boolean' ? defaults.agents : defaults.agents?.use;
+    const artifactsDefaultUse =
+      typeof defaults.artifacts === 'boolean' ? defaults.artifacts : defaults.artifacts?.use;
     const skillsDefaultUse =
       typeof defaults.skills === 'boolean' ? defaults.skills : defaults.skills?.use;
     const promptsDefaultCreate =
       typeof defaults.prompts === 'object' ? defaults.prompts?.create : undefined;
     const agentsDefaultCreate =
       typeof defaults.agents === 'object' ? defaults.agents?.create : undefined;
+    const artifactsDefaultCreate =
+      typeof defaults.artifacts === 'object' ? defaults.artifacts?.create : undefined;
     const skillsDefaultCreate =
       typeof defaults.skills === 'object' ? defaults.skills?.create : undefined;
     const promptsDefaultShare =
       typeof defaults.prompts === 'object' ? defaults.prompts?.share : undefined;
     const agentsDefaultShare =
       typeof defaults.agents === 'object' ? defaults.agents?.share : undefined;
+    const artifactsDefaultShare =
+      typeof defaults.artifacts === 'object' ? defaults.artifacts?.share : undefined;
     const skillsDefaultShare =
       typeof defaults.skills === 'object' ? defaults.skills?.share : undefined;
     const promptsDefaultPublic =
       typeof defaults.prompts === 'object' ? defaults.prompts?.public : undefined;
     const agentsDefaultPublic =
       typeof defaults.agents === 'object' ? defaults.agents?.public : undefined;
+    const artifactsDefaultPublic =
+      typeof defaults.artifacts === 'object' ? defaults.artifacts?.public : undefined;
     const skillsDefaultPublic =
       typeof defaults.skills === 'object' ? defaults.skills?.public : undefined;
     // `schedules` is intentionally absent from the interface DEFAULTS (it is
@@ -361,6 +371,40 @@ export async function updateInterfacePermissions({
                 getConfigPublic(loadedInterface.agents),
                 defaultPerms[PermissionTypes.AGENTS]?.[Permissions.SHARE_PUBLIC],
                 agentsDefaultPublic,
+              ),
+            }
+          : {}),
+      },
+      [PermissionTypes.ARTIFACTS]: {
+        [Permissions.USE]: getPermissionValue(
+          getConfigUse(loadedInterface.artifacts),
+          defaultPerms[PermissionTypes.ARTIFACTS]?.[Permissions.USE],
+          artifactsDefaultUse,
+        ),
+        ...((typeof interfaceConfig?.artifacts === 'object' &&
+          'create' in interfaceConfig.artifacts) ||
+        !existingPermissions?.[PermissionTypes.ARTIFACTS]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                getConfigCreate(loadedInterface.artifacts),
+                defaultPerms[PermissionTypes.ARTIFACTS]?.[Permissions.CREATE],
+                artifactsDefaultCreate ?? true,
+              ),
+            }
+          : {}),
+        ...((typeof interfaceConfig?.artifacts === 'object' &&
+          ('share' in interfaceConfig.artifacts || 'public' in interfaceConfig.artifacts)) ||
+        !existingPermissions?.[PermissionTypes.ARTIFACTS]
+          ? {
+              [Permissions.SHARE]: getPermissionValue(
+                getConfigShare(loadedInterface.artifacts),
+                defaultPerms[PermissionTypes.ARTIFACTS]?.[Permissions.SHARE],
+                artifactsDefaultShare,
+              ),
+              [Permissions.SHARE_PUBLIC]: getPermissionValue(
+                getConfigPublic(loadedInterface.artifacts),
+                defaultPerms[PermissionTypes.ARTIFACTS]?.[Permissions.SHARE_PUBLIC],
+                artifactsDefaultPublic,
               ),
             }
           : {}),

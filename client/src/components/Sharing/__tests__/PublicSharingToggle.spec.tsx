@@ -9,10 +9,25 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('../AccessRolesPicker', () => ({
   __esModule: true,
-  default: () => <div />,
+  default: () => <div data-testid="access-role-picker" />,
 }));
 
 describe('PublicSharingToggle', () => {
+  it('hides the permission level when public sharing uses a fixed role', () => {
+    render(
+      <PublicSharingToggle
+        isPublic={true}
+        onPublicToggle={jest.fn()}
+        onPublicRoleChange={jest.fn()}
+        allowRoleSelection={false}
+      />,
+    );
+
+    expect(screen.getByRole('switch', { name: 'com_ui_share_everyone' })).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_everyone_permission_level')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('access-role-picker')).not.toBeInTheDocument();
+  });
+
   it('uses the shared auto-height collapse and a transparent permission row', () => {
     const { rerender } = render(
       <PublicSharingToggle
