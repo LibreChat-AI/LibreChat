@@ -524,6 +524,49 @@ describe('subagent code routing', () => {
     ).rejects.toMatchObject({ argument: 'machine', rejection: 'unavailable' });
   });
 
+  it('reserves a default route before initialization so a concurrent call cannot move it', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+
+    const defaultCall = call();
+    const placed = await routing.place({ agent: reviewer, flags, context: defaultCall });
+    const concurrent = routing.place({
+      agent: reviewer,
+      flags,
+      context: call({ machine: 'buildbox' }),
+    });
+    const sameMachine = await routing.place({
+      agent: reviewer,
+      flags,
+      context: call({ machine: 'laptop' }),
+    });
+
+    expect(placed).toEqual({ agent: reviewer });
+    await expect(concurrent).rejects.toMatchObject({
+      argument: 'machine',
+      rejection: 'unavailable',
+    });
+    expect(sameMachine.target?.environmentId).toBe('laptop');
+    expect(routing.routesChildren(defaultCall.executionId)).toBe(false);
+  });
+
+  it('reserves the inherited default a parent machine gives a child', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>({
+      ...request,
+      getInheritedEnvironments: () => new Map([['agent_reviewer', 'buildbox']]),
+    });
+
+    await routing.place({ agent: reviewer, flags, context: call() });
+
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).rejects.toMatchObject({ argument: 'machine' });
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'buildbox' } });
+  });
+
   it('keeps one machine per subagent for the whole request', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);

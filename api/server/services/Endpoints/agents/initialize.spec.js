@@ -2775,6 +2775,79 @@ describe('initializeClient — subagent loading', () => {
       }
     });
 
+    it("routes a routed reviewer's graph members to its machine when they may use it", async () => {
+      const req = await setup();
+      const member = await createAgent({
+        id: 'agent_graph_member',
+        name: 'Graph member',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'user',
+        code_environment_id: LIA_RAG,
+        code_environment_ids: [SKYNET],
+      });
+      await grantView(member);
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+        const initialized = [];
+        mockInitializeAgent.mockImplementation(async (params) => {
+          initialized.push(params.agent);
+          return {
+            ...makeSubagentConfig(params.agent.id),
+            ...(params.agent.id === SUBAGENT_ID
+              ? {
+                  subagents: {
+                    enabled: true,
+                    allowSelf: false,
+                    agent_ids: [],
+                    graphs: [
+                      {
+                        type: 'review_team',
+                        name: 'Review team',
+                        description: 'Reviews together.',
+                        agent_ids: [member.id],
+                        edges: [],
+                        entryAgentId: member.id,
+                        resultAgentId: member.id,
+                      },
+                    ],
+                  },
+                }
+              : {}),
+            codeExecutionContext: {
+              environmentId: params.agent.code_environment_id,
+              environmentType: 'attached',
+            },
+          };
+        });
+
+        const config = await descriptor.resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-routed-graph',
+          hostArgs: { machine: SKYNET },
+        });
+
+        expect(initialized.map((agent) => [agent.id, agent.code_environment_id])).toEqual([
+          [SUBAGENT_ID, SKYNET],
+          [member.id, SKYNET],
+        ]);
+        expect(initialized[1].code_environment_ids).toEqual([SKYNET]);
+        expect(config.subagentGraphConfigs?.[0]?.memberConfigs?.[0]?.id).toBe(member.id);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it('keeps a reviewer that may not use the parent machine on its own default', async () => {
       const req = await setup({ reviewer: { code_environment_ids: [] } });
       const fetchSpy = mockWorkerStatus();

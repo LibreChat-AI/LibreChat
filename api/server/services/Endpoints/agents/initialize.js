@@ -1157,9 +1157,11 @@ const initializeClientWithProvider = async ({
     userId,
     conversationId,
     getAppConfig,
+    getInheritedEnvironments: () => req.codeWorkspaceInheritance,
   });
 
-  const toLazySubagentMetadata = async (agent) => {
+  /** The code flags a lazy subagent runs with in this request. */
+  const getSubagentCodeFlags = (agent) => {
     const configuredCodeEnvironments =
       appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments;
     const attachedEnvironmentOptOut = optsOutOfAttachedCodeEnvironment(
@@ -1187,6 +1189,21 @@ const initializeClientWithProvider = async ({
     ) {
       throw createStatefulCodeEnvironmentPolicyError(statefulCodeEnvironment);
     }
+    return {
+      configuredCodeEnvironments,
+      lazyCodeEnvAvailable,
+      statefulCodeSessions,
+      statefulCodeEnvironment,
+    };
+  };
+
+  const toLazySubagentMetadata = async (agent) => {
+    const {
+      configuredCodeEnvironments,
+      lazyCodeEnvAvailable,
+      statefulCodeSessions,
+      statefulCodeEnvironment,
+    } = getSubagentCodeFlags(agent);
     const codeAvailability = await resolveSubagentCodeAvailability({
       agentId: agent.id,
       codeEnvAvailable: lazyCodeEnvAvailable,
@@ -1600,7 +1617,13 @@ const initializeClientWithProvider = async ({
                 if (!subagentCodeRouting.isRouted(context.executionId)) {
                   graphMemberConfigsById.set(config.id, config);
                 }
-                await resolveGraphSubagentsFor(config, context.signal);
+                await resolveGraphSubagentsFor(
+                  config,
+                  context.signal,
+                  subagentCodeRouting.routesChildren(context.executionId)
+                    ? context.executionId
+                    : undefined,
+                );
                 return config;
               },
             }),
@@ -1705,7 +1728,43 @@ const initializeClientWithProvider = async ({
     return waitForAbort(pending, graphSignal);
   };
 
-  async function resolveGraphSubagentsFor(config, graphSignal = signal) {
+  /** A graph member spawned by a per-call-routed parent follows that parent's machine when it
+   *  may, unless it already initialized on its own route this request. */
+  const loadRoutedGraphMember = async (memberId, parentRunId, graphSignal) => {
+    throwIfAborted(graphSignal);
+    const cached = graphMemberConfigsById.get(memberId);
+    if (cached) return cached;
+    if (skippedAgentIds.has(memberId)) return null;
+    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal);
+    if (!agent || !(await hasSubagentViewAccess(agent, memberId, graphSignal))) {
+      skippedAgentIds.add(memberId);
+      return null;
+    }
+    const executionId = `${parentRunId}:graph:${memberId}`;
+    try {
+      const config = await initializeLoadedSubagent({
+        agent,
+        agentId: memberId,
+        configId: getLazySubagentConfigId(agent),
+        context: { signal: graphSignal, parentRunId, executionId },
+        lazyChildren: [],
+        codeFlags: getSubagentCodeFlags(agent),
+        viewAccessChecked: true,
+      });
+      if (!subagentCodeRouting.isRouted(executionId)) {
+        graphMemberConfigsById.set(memberId, config);
+      }
+      return config;
+    } catch (error) {
+      if (isFatalAgentInitializationError(error, { signal: graphSignal })) {
+        throw error;
+      }
+      logger.error(`[initializeClient] Error initializing routed graph member ${memberId}:`, error);
+      return null;
+    }
+  };
+
+  async function resolveGraphSubagentsFor(config, graphSignal = signal, routedParentRunId) {
     throwIfAborted(graphSignal);
     const definitions =
       subagentsAvailableForRun && config.subagents?.enabled === true
@@ -1733,7 +1792,11 @@ const initializeClientWithProvider = async ({
       }
       const memberConfigs = await Promise.all(
         memberIds.map((memberId) =>
-          initializeGraphMember(() => loadGraphMember(memberId, graphSignal)),
+          initializeGraphMember(() =>
+            routedParentRunId == null
+              ? loadGraphMember(memberId, graphSignal)
+              : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
+          ),
         ),
       );
       throwIfAborted(graphSignal);

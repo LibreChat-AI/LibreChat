@@ -459,11 +459,17 @@ export interface SubagentCodeRouting<TContext> {
   ): TContext | undefined;
   /** Whether an execution was routed per call (its config must not be shared). */
   isRouted(executionId: string | null | undefined): boolean;
+  /** Whether an execution's own subagents (including graph members) inherit a per-call route. */
+  routesChildren(executionId: string | null | undefined): boolean;
 }
 
-export function createSubagentCodeRouting<TContext>(
-  request: SubagentCodeRequest,
-): SubagentCodeRouting<TContext> {
+export function createSubagentCodeRouting<TContext>({
+  getInheritedEnvironments,
+  ...request
+}: SubagentCodeRequest & {
+  /** Request-scoped parent inheritance (#16756), read when a default route is reserved. */
+  getInheritedEnvironments?: () => ReadonlyMap<string, string> | undefined;
+}): SubagentCodeRouting<TContext> {
   const routedContexts = new Map<string, { agentId: string; toolContext: TContext }>();
   const childRoutes = new Map<string, string>();
   /**
@@ -487,6 +493,27 @@ export function createSubagentCodeRouting<TContext>(
     environmentId: agent.code_environment_id,
     environmentIds: agent.code_environment_ids ?? undefined,
   });
+  /** The machine a call that names none lands on, as `initializeAgent` will resolve it. */
+  const defaultRouteOf = (agent: SubagentCodeAgent, flags: SubagentCodeFlags): string | null => {
+    try {
+      const context = resolveCodeExecutionContext({
+        statefulSessions: true,
+        environment: flags.statefulCodeEnvironment,
+        environmentId: agent.code_environment_id,
+        environmentIds: agent.code_environment_ids ?? undefined,
+        allowEnvironmentSelection: request.allowEnvironmentSelection,
+        workspaceSelections: request.persistedSelections ?? request.requestedSelections,
+        inheritedEnvironments: getInheritedEnvironments?.(),
+        environments: request.environments,
+        userId: request.userId,
+        agentId: agent.id,
+        conversationId: request.conversationId,
+      });
+      return context.environmentType === 'attached' ? (context.environmentId ?? null) : null;
+    } catch {
+      return null;
+    }
+  };
   const routeTo = <T extends SubagentCodeAgent>(
     agent: T,
     target: SubagentCodeTarget,
@@ -558,7 +585,14 @@ export function createSubagentCodeRouting<TContext>(
       if (unavailableReason != null) {
         throw new CodeWorkspaceSelectionError(unavailableReason);
       }
+      /** Reserved now, not after initialization, so a concurrent call cannot claim another machine. */
+      if (!routeByAgent.has(agent.id)) {
+        routeByAgent.set(agent.id, { environmentId: defaultRouteOf(agent, flags), routed: false });
+      }
       return { agent };
+    },
+    routesChildren(executionId) {
+      return executionId != null && childRoutes.has(executionId);
     },
     attach(contexts, { agentId, context, placement, codeExecutionContext, toolContext }) {
       const executionId = context?.executionId;
