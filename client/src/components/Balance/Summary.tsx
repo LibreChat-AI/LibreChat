@@ -89,7 +89,7 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
   return (
     <>
       <span
-        className={cn('justify-self-end whitespace-nowrap text-xs font-medium', TONE_TEXT[tone])}
+        className={cn('justify-self-end text-xs font-medium whitespace-nowrap', TONE_TEXT[tone])}
         data-testid="balance-value"
       >
         {value}
@@ -107,7 +107,7 @@ function Reading({ summary, currency }: { summary: BalanceSummary; currency?: Cu
       </span>
       {status != null && (
         <span
-          className={cn('justify-self-end whitespace-nowrap text-xs', TONE_TEXT[tone])}
+          className={cn('justify-self-end text-xs whitespace-nowrap', TONE_TEXT[tone])}
           data-testid="balance-status"
         >
           {status}
