@@ -133,6 +133,13 @@ export default function ToolsSection({ agentId }: Props) {
             shouldDirty: true,
           });
           break;
+        case 'graphs-remove':
+          setValue(
+            'subagents',
+            { ...getValues('subagents'), graphsEnabled: false },
+            { shouldDirty: true },
+          );
+          break;
         case 'handoffs-remove':
           setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
           break;

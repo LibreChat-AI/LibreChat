@@ -252,6 +252,7 @@ export function useAgentItems({
         },
         catalog,
         agentActions,
+        agentsConfig?.capabilities ?? [],
       ),
     [
       subagents,
@@ -268,6 +269,7 @@ export function useAgentItems({
       codeFiles,
       catalog,
       agentActions,
+      agentsConfig,
     ],
   );
 

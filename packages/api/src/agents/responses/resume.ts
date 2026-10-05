@@ -1,4 +1,5 @@
 import {
+  AgentCapabilities,
   checkpointerSchema,
   messageFilterSchema,
   responseReviewDecisionSchema,
@@ -157,7 +158,9 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
     const snapshot = await getResumeAgentSnapshot({
       primaryAgent: agent,
       additionalRoots,
-      subagentsEnabled: true,
+      /** Every participant the paused run could have reached, whatever the deployment allows
+       * now: one that is gone ends the resume below. */
+      capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
       getAgent: (filter) => loadAgent(filter.id),
       appConfig: config,
     });

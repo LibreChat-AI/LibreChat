@@ -6,7 +6,7 @@ import {
   FileSources,
   configSchema,
 } from 'librechat-data-provider';
-import type { Agent, CodeEnvRef, TFile } from 'librechat-data-provider';
+import type { Agent, AgentSubagentsConfig, CodeEnvRef, TFile } from 'librechat-data-provider';
 import type { FileProvisionCommit } from '@librechat/data-schemas';
 import type { SubagentExecutionContext } from '@librechat/agents';
 import type { ProvisionCallbackDeps } from '~/files/provision/callback';
@@ -74,6 +74,9 @@ function harness(
   options: {
     inputs?: TFile[];
     setup?: TFile[];
+    capabilities?: string[];
+    parentSubagents?: AgentSubagentsConfig;
+    maxFiles?: number;
     hasEntityEmbeddings?: jest.Mock;
     adoptLegacySearchEmbeddings?: jest.Mock;
   } = {},
@@ -84,8 +87,14 @@ function harness(
     version: '1.3.9',
     endpoints: {
       agents: {
-        capabilities: [AgentCapabilities.context],
-        fileSharing: { enabled: true },
+        capabilities: options.capabilities ?? [
+          AgentCapabilities.context,
+          AgentCapabilities.subagents,
+        ],
+        fileSharing: {
+          enabled: true,
+          ...(options.maxFiles != null && { maxFiles: options.maxFiles }),
+        },
       },
     },
   });
@@ -107,7 +116,10 @@ function harness(
               file_search: { file_ids: setup.map((entry) => entry.file_id) },
             }
           : undefined,
-      subagents: { enabled: true, shareFiles: true, allowSelf: false, agent_ids: ['worker'] },
+      subagents:
+        id === 'parent' && options.parentSubagents != null
+          ? options.parentSubagents
+          : { enabled: true, shareFiles: true, allowSelf: false, agent_ids: ['worker'] },
     }) as Agent;
   const contexts = new Map<string, RunFileToolContext>(
     ['parent', 'worker'].map((id) => [
@@ -425,26 +437,49 @@ describe('run file execution host', () => {
     ).toEqual(['historical']);
   });
 
-  it('confirms an unrecorded setup embedding instead of embedding it again', async () => {
-    /* A worker's File Search setup file embedded before namespaces were tracked already has
-     * vectors in the worker's namespace; a shared-file run must not store a second copy. */
-    const hasEntityEmbeddings = jest.fn().mockResolvedValue(true);
-    const adoptLegacySearchEmbeddings = jest.fn().mockResolvedValue(['worker-setup']);
-    const h = harness({
-      setup: [file('worker-setup', { context: FileContext.agents, embedded: true })],
-      hasEntityEmbeddings,
-      adoptLegacySearchEmbeddings,
-    });
-    await h.prepare();
-    await h.host.provision(['file_search'], 'worker', h.signal, identity());
+  it.each([false, true])(
+    'confirms an unrecorded setup embedding instead of embedding it again, graph-only=%s',
+    async (graphOnly) => {
+      /* A worker's File Search setup file embedded before namespaces were tracked already has
+       * vectors in the worker's namespace; a shared-file run must not store a second copy. */
+      const hasEntityEmbeddings = jest.fn().mockResolvedValue(true);
+      const adoptLegacySearchEmbeddings = jest.fn().mockResolvedValue(['worker-setup']);
+      const h = harness({
+        setup: [file('worker-setup', { context: FileContext.agents, embedded: true })],
+        hasEntityEmbeddings,
+        adoptLegacySearchEmbeddings,
+        ...(graphOnly && {
+          capabilities: [AgentCapabilities.context, AgentCapabilities.subagent_graphs],
+          parentSubagents: {
+            enabled: false,
+            graphsEnabled: true,
+            shareFiles: true,
+            allowSelf: false,
+            graphs: [
+              {
+                type: 'team',
+                name: 'Team',
+                description: 'Work',
+                agent_ids: ['worker'],
+                edges: [],
+                entry_agent_id: 'worker',
+                result_agent_id: 'worker',
+              },
+            ],
+          },
+        }),
+      });
+      await h.prepare();
+      await h.host.provision(['file_search'], 'worker', h.signal, identity());
 
-    expect(hasEntityEmbeddings).toHaveBeenCalledWith(
-      expect.objectContaining({ file_id: 'worker-setup', entity_id: 'worker' }),
-    );
-    expect(h.provisionToVectorDB.mock.calls.map(([params]) => params.file.file_id)).not.toContain(
-      'worker-setup',
-    );
-  });
+      expect(hasEntityEmbeddings).toHaveBeenCalledWith(
+        expect.objectContaining({ file_id: 'worker-setup', entity_id: 'worker' }),
+      );
+      expect(h.provisionToVectorDB.mock.calls.map(([params]) => params.file.file_id)).not.toContain(
+        'worker-setup',
+      );
+    },
+  );
 
   it('retains only admitted advertised paths when preparing isolated child queues', async () => {
     const current = file('input', { filename: 'data.csv' });
@@ -984,4 +1019,89 @@ describe('run file execution host', () => {
     await expect(h.prepare()).rejects.toThrow('isolated managed');
     expect(h.loadFiles).not.toHaveBeenCalled();
   });
+});
+
+it('the production host applies request capabilities before touching retained graph-sharing inputs', async () => {
+  const parentSubagents = {
+    enabled: false,
+    graphsEnabled: true,
+    shareFiles: true,
+    allowSelf: false,
+    graphs: [
+      {
+        type: 'team',
+        name: 'Team',
+        description: 'Work',
+        agent_ids: ['worker'],
+        edges: [],
+        entry_agent_id: 'worker',
+        result_agent_id: 'worker',
+      },
+    ],
+  };
+  const {
+    host,
+    deps,
+    contexts,
+    input,
+    loadFiles,
+    filterFiles,
+    listPublications,
+    provisionToCodeEnv,
+    publish,
+    encodeMessages,
+  } = harness({
+    inputs: [file('first'), file('second')],
+    maxFiles: 1,
+    capabilities: [AgentCapabilities.context, AgentCapabilities.subagents],
+    parentSubagents,
+  });
+  try {
+    expect(deps.capabilities).toEqual([AgentCapabilities.context, AgentCapabilities.subagents]);
+    expect(host.session.isActive()).toBe(false);
+    expect(contexts.get('parent')?.agent?.subagents).toEqual(parentSubagents);
+    expect(input).toHaveLength(2);
+    for (const callback of [
+      loadFiles,
+      filterFiles,
+      listPublications,
+      provisionToCodeEnv,
+      publish,
+      encodeMessages,
+    ])
+      expect(callback).not.toHaveBeenCalled();
+  } finally {
+    await host.session.close();
+  }
+});
+
+it('the production host enables graph-only sharing only with the graph capability', async () => {
+  const parentSubagents = {
+    enabled: false,
+    graphsEnabled: true,
+    shareFiles: true,
+    allowSelf: false,
+    graphs: [
+      {
+        type: 'team',
+        name: 'Team',
+        description: 'Work',
+        agent_ids: ['worker'],
+        edges: [],
+        entry_agent_id: 'worker',
+        result_agent_id: 'worker',
+      },
+    ],
+  };
+  const { host, prepare, contexts } = harness({
+    capabilities: [AgentCapabilities.context, AgentCapabilities.subagent_graphs],
+    parentSubagents,
+  });
+  try {
+    expect(host.session.isActive()).toBe(true);
+    await expect(prepare()).resolves.toHaveProperty('agentSessions.worker');
+    expect(contexts.get('parent')?.agent?.subagents).toEqual(parentSubagents);
+  } finally {
+    await host.session.close();
+  }
 });
