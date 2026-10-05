@@ -1,4 +1,6 @@
 <p align="center">
+
+[![Deploy to Railyard](https://app.railyard.run/deploy/badge)](https://app.railyard.run/deploy?repo=https://github.com/LibreChat-AI/LibreChat)
   <a href="https://librechat.ai">
     <img src="client/public/assets/logo.svg" height="256">
   </a>
