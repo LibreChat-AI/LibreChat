@@ -1,5 +1,7 @@
 import '@testing-library/jest-dom';
+import { QueryKeys } from 'librechat-data-provider';
 import { render, screen, renderHook, act } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import type { MenuItemProps } from '~/common';
 import useChatOptions from '../useChatOptions';
 
@@ -13,6 +15,8 @@ const mockState = {
   activeJobs: [] as string[],
   startupConfig: undefined as Record<string, unknown> | undefined,
 };
+const mockClient: { current: QueryClient | null } = { current: null };
+const mockCloseMenu = jest.fn();
 const mockPin = jest.fn();
 const mockArchive = jest.fn();
 const mockAssign = jest.fn();
@@ -23,6 +27,7 @@ const mockSetConversation = jest.fn();
 const mockAnnounce = jest.fn();
 
 jest.mock('recoil', () => ({ useRecoilValue: () => mockState.conversation }));
+jest.mock('@tanstack/react-query', () => ({ useQueryClient: () => mockClient.current }));
 jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ conversationId: mockState.route }),
@@ -54,6 +59,7 @@ jest.mock('~/components/Conversations/ConvoOptions', () => ({
 const mockDeleteProps: {
   current?: {
     setShowDeleteDialog: (open: boolean) => void;
+    setMenuOpen: (open: boolean) => void;
     getCurrentConversationId: () => string | undefined;
   };
 } = {};
@@ -79,7 +85,9 @@ jest.mock('../useExportShare', () => ({
 }));
 
 const setup = (readOnly = false) =>
-  renderHook(() => useChatOptions({ isSharedButtonEnabled: true, closeMenu: jest.fn(), readOnly }));
+  renderHook(() =>
+    useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly }),
+  );
 const labels = (items: MenuItemProps[]) =>
   items.filter((item) => item.show !== false && item.separate !== true).map((item) => item.label);
 const find = (items: MenuItemProps[], label: string) => {
@@ -95,6 +103,7 @@ describe('useChatOptions', () => {
     jest.clearAllMocks();
     mockState.conversation = { conversationId: 'convo-1', title: 'Hello', pinned: false };
     mockState.cached = undefined;
+    mockClient.current = new (jest.requireActual('@tanstack/react-query').QueryClient)();
     mockState.route = 'convo-1';
     mockState.activeJobs = [];
     mockState.startupConfig = undefined;
@@ -307,7 +316,7 @@ describe('useChatOptions', () => {
   it('renders no mutating dialog once the thread turns read-only', () => {
     let readOnly = false;
     const { result, rerender } = renderHook(() =>
-      useChatOptions({ isSharedButtonEnabled: true, closeMenu: jest.fn(), readOnly }),
+      useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly }),
     );
 
     act(() => find(result.current.items, 'com_ui_change_project').onClick?.({} as never));
@@ -337,6 +346,7 @@ describe('useChatOptions', () => {
     const first = render(<>{result.current.dialogs}</>);
     const settleEarlierDelete = mockDeleteProps.current?.setShowDeleteDialog;
     first.unmount();
+    mockState.route = 'convo-2';
     mockState.conversation = { conversationId: 'convo-2', title: 'Other' };
     rerender();
     act(() => find(result.current.items, 'com_ui_rename').onClick?.({} as never));
@@ -344,6 +354,66 @@ describe('useChatOptions', () => {
     render(<>{result.current.dialogs}</>);
 
     expect(screen.getByTestId('rename-dialog')).toBeInTheDocument();
+  });
+
+  it('dismisses the menu and dialogs when the route moves before the chat state does', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_rename').onClick?.({} as never));
+    mockCloseMenu.mockClear();
+    mockState.route = 'convo-2';
+    rerender();
+    render(<>{result.current.dialogs}</>);
+
+    expect(mockCloseMenu).toHaveBeenCalled();
+    expect(screen.queryByTestId('rename-dialog')).not.toBeInTheDocument();
+  });
+
+  it('does not let a delete that settles later close the menu of the chat opened since', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_delete').onClick?.({} as never));
+    render(<>{result.current.dialogs}</>);
+    const settleEarlierDelete = mockDeleteProps.current?.setMenuOpen;
+    mockState.route = 'convo-2';
+    mockState.conversation = { conversationId: 'convo-2', title: 'Other' };
+    rerender();
+    mockCloseMenu.mockClear();
+    act(() => settleEarlierDelete?.(false));
+
+    expect(mockCloseMenu).not.toHaveBeenCalled();
+  });
+
+  it('closes the menu when the delete of the open chat settles', () => {
+    const { result } = setup();
+
+    act(() => find(result.current.items, 'com_ui_delete').onClick?.({} as never));
+    render(<>{result.current.dialogs}</>);
+    mockCloseMenu.mockClear();
+    act(() => mockDeleteProps.current?.setMenuOpen(false));
+
+    expect(mockCloseMenu).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers the newest cached copy over an older point entry', () => {
+    const client = mockClient.current as QueryClient;
+    client.setQueryData(
+      [QueryKeys.conversation, 'convo-1'],
+      { conversationId: 'convo-1', pinned: false },
+      { updatedAt: Date.now() - 1000 },
+    );
+    client.setQueryData(
+      [QueryKeys.allConversations],
+      {
+        pages: [{ conversations: [{ conversationId: 'convo-1', pinned: true }], nextCursor: null }],
+        pageParams: [undefined],
+      },
+      { updatedAt: Date.now() },
+    );
+    mockState.cached = { conversationId: 'convo-1', pinned: false };
+    const { result } = setup();
+
+    expect(labels(result.current.items)).toContain('com_ui_unpin');
   });
 
   it('leaves an archived chat for a new one once the archive lands', () => {

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supportsConversationTitleOwnership } from 'librechat-data-provider';
 import {
@@ -25,10 +26,10 @@ import {
   useDuplicateConversationMutation,
   useAssignConversationToProjectMutation,
 } from '~/data-provider';
+import { findConvoInAllQueries, isTemporaryConversation, hasRealTitle } from '~/utils';
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
 import { ProjectButton } from '~/components/Conversations/ConvoOptions';
 import { useLocalize, useNavigateToConvo, useNewConvo } from '~/hooks';
-import { isTemporaryConversation, hasRealTitle } from '~/utils';
 import { useChatContext, useLiveAnnouncer } from '~/Providers';
 import { NotificationSeverity } from '~/common';
 import useExportShare from './useExportShare';
@@ -80,9 +81,14 @@ export default function useChatOptions({
   const conversation = useRecoilValue(store.conversationByIndex(0));
 
   const conversationId = conversation?.conversationId ?? '';
-  /** Pin and project changes land in the query cache, not in the chat's own state. */
+  const queryClient = useQueryClient();
+  /** Pin and project changes land in the query cache, not in the chat's own state. The observer
+   *  re-renders on a change to the point entry; the freshest copy across it and the lists is read
+   *  here, because a revisited chat's point entry can predate an edit the lists already hold. */
   const { data: cached } = useGetConvoIdQuery(conversationId, { enabled: false });
-  const current = cached ?? conversation;
+  const freshest = conversationId ? findConvoInAllQueries(queryClient, conversationId) : undefined;
+  const base = cached ?? conversation;
+  const current = freshest ? { ...base, ...freshest } : base;
   const isPinned = current?.pinned === true;
   const isArchived = current?.isArchived === true;
   const chatProjectId = current?.chatProjectId ?? null;
@@ -101,11 +107,25 @@ export default function useChatOptions({
   /** ChatView stays mounted across a route change, so a dialog is tied to the chat it was opened
    *  for rather than to whichever chat is open when it renders. */
   const [openDialog, setOpenDialog] = useState<{ kind: DialogKind; id: string } | null>(null);
+  /** The route moves before the chat state does, and the menu and dialogs are portaled outside the
+   *  hidden pane, so they are dismissed on either change rather than left aimed at the old chat. */
+  const closeMenuRef = useRef(closeMenu);
+  closeMenuRef.current = closeMenu;
+  const scopeRef = useRef(`${conversationId}|${routeConversationId}|${readOnly}`);
   useEffect(() => {
+    const scope = `${conversationId}|${routeConversationId}|${readOnly}`;
+    if (scopeRef.current === scope) {
+      return;
+    }
+    scopeRef.current = scope;
     setOpenDialog(null);
-  }, [conversationId, readOnly]);
+    closeMenuRef.current();
+  }, [conversationId, routeConversationId, readOnly]);
   const isDialogOpen = (kind: DialogKind) =>
-    !readOnly && openDialog?.kind === kind && openDialog.id === conversationId;
+    !readOnly &&
+    openDialog?.kind === kind &&
+    openDialog.id === conversationId &&
+    (routeConversationId == null || routeConversationId === conversationId);
   const showRename = isDialogOpen('rename');
   const showProject = isDialogOpen('project');
   const showDelete = isDialogOpen('delete');
@@ -307,7 +327,12 @@ export default function useChatOptions({
             retainView={noop}
             triggerRef={deleteRef}
             getCurrentConversationId={() => openConvoIdRef.current}
-            setMenuOpen={closeMenu}
+            setMenuOpen={() => {
+              /** A delete that settles after another chat opened must not close that chat's menu. */
+              if (openConvoIdRef.current === conversationId) {
+                closeMenu();
+              }
+            }}
             conversationId={conversationId}
             showDeleteDialog={showDelete}
             setShowDeleteDialog={setShowDelete}
