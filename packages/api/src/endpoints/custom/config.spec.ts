@@ -69,6 +69,22 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
     },
   );
 
+  it('advertises reasoning for the OpenRouter params endpoint the config loader injects', () => {
+    expect(
+      load({
+        baseURL: 'https://openrouter.ai/api/v1',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [{ key: 'promptCache', default: true }],
+        },
+      }),
+    ).toEqual({
+      defaultParamsEndpoint: 'openrouter',
+      paramDefinitions: [{ key: 'promptCache', default: true }],
+      reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+    });
+  });
+
   it('still advertises reasoning when dropParams removes something else', () => {
     expect(
       load({ baseURL: 'https://openrouter.ai/api/v1', dropParams: ['temperature'] })

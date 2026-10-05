@@ -59,7 +59,9 @@ function withHostReasoning(
   if (
     params.reasoningFormat != null ||
     declaresReasoning === true ||
-    (paramsEndpoint != null && paramsEndpoint !== EModelEndpoint.custom)
+    (paramsEndpoint != null &&
+      paramsEndpoint !== EModelEndpoint.custom &&
+      paramsEndpoint !== ProviderId.openrouter)
   ) {
     return customParams;
   }
