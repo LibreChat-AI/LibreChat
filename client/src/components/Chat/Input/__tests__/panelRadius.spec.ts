@@ -2,11 +2,12 @@ import fs from 'fs';
 import path from 'path';
 
 const CHAT_DIR = path.resolve(__dirname, '../..');
-const SCAN_DIRS = ['Input', 'Menus', 'Messages', 'BackgroundTasks'];
+const SCAN_DIRS = ['Input', 'Menus', 'Messages', 'BackgroundTasks', 'approval'];
 const SOURCE = /\.tsx$/;
 const SKIPPED = /(__tests__|\.spec\.|\.test\.)/;
 const PANEL_TAG =
   /<(?:Ariakit\.(?:Menu|Popover|SelectPopover|ComboboxPopover)|Popover\.Content)\b(?:[^\n]*>$|[\s\S]*?\n\s*\/?>)/gm;
+const PANEL_CLASS = /className="popover\b[^"]*"/g;
 const PANEL_CONSTANT = /const (?:menuClasses|panelClasses|popoverClasses)\b[^;]*;/g;
 const PANEL_ROLE = /\brounded-theme-(?:menu-panel|popover)\b/;
 const DELEGATED = /className=\{[A-Za-z.]+\}/;
@@ -30,7 +31,11 @@ describe('composer menu and popover panels', () => {
   it('finds the panels the theme roles are meant to cover', () => {
     const panels = files.flatMap((file) => {
       const text = fs.readFileSync(file, 'utf8');
-      return [...(text.match(PANEL_TAG) ?? []), ...(text.match(PANEL_CONSTANT) ?? [])];
+      return [
+        ...(text.match(PANEL_TAG) ?? []),
+        ...(text.match(PANEL_CONSTANT) ?? []),
+        ...(text.match(PANEL_CLASS) ?? []),
+      ];
     });
     expect(panels.length).toBeGreaterThanOrEqual(10);
   });
@@ -39,7 +44,11 @@ describe('composer menu and popover panels', () => {
     '%s names a theme radius role on every panel that styles its own corners',
     (_name, file) => {
       const text = fs.readFileSync(file, 'utf8');
-      const strays = [...(text.match(PANEL_TAG) ?? []), ...(text.match(PANEL_CONSTANT) ?? [])]
+      const strays = [
+        ...(text.match(PANEL_TAG) ?? []),
+        ...(text.match(PANEL_CONSTANT) ?? []),
+        ...(text.match(PANEL_CLASS) ?? []),
+      ]
         .filter((panel) => !PANEL_ROLE.test(panel) && !DELEGATED.test(panel))
         .map((panel) => panel.slice(0, 80));
       expect(strays).toEqual([]);
