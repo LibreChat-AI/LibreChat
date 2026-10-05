@@ -8,12 +8,12 @@ import { NEW_CHAT_PATH } from '../helpers';
  * solid by default and a 10% tint under the destructive ink when the theme's `destructiveStyle` is
  * `soft`; `border-inset-medium` is `border-medium` at the inset share, so the prompt editor's form
  * boxes keep their edge in the bundled themes and drop it in ClickHouse; and a markdown table keeps
- * its column rules only while the inset share is above zero. The probes carry the classes the
+ * its column rules only while the inset share is above zero, and always its outer left edge. The probes carry the classes the
  * components compose, so only the roles style them.
  */
 
 type Mode = 'light' | 'dark';
-type Paint = { destructive: string; inset: string; column: string };
+type Paint = { destructive: string; inset: string; column: string; frame: string };
 
 const SOFT_THEME = {
   version: 1,
@@ -80,7 +80,12 @@ function paint(page: Page): Promise<Paint> {
         (node) => getComputedStyle(node).borderTopColor,
       ),
       column: read(
-        '<table><tbody><tr><td>cell</td></tr></tbody></table>',
+        '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
+        (node) => getComputedStyle(node.querySelectorAll('td')[1]).borderLeftColor,
+        'markdown',
+      ),
+      frame: read(
+        '<table><tbody><tr><td>one</td><td>two</td></tr></tbody></table>',
         (node) => getComputedStyle(node.querySelector('td') as Element).borderLeftColor,
         'markdown',
       ),
@@ -98,7 +103,7 @@ const CASES: Array<{
   title: string;
   mode: Mode;
   definition?: { name: string };
-  expects: { [K in keyof Paint]: RegExp };
+  expects: { [K in Exclude<keyof Paint, 'frame'>]: RegExp };
 }> = [
   {
     title:
@@ -144,6 +149,7 @@ test.describe('prompt editor and table surfaces', () => {
       expect(painted.destructive).toMatch(expects.destructive);
       expect(painted.inset).toMatch(expects.inset);
       expect(painted.column).toMatch(expects.column);
+      expect(painted.frame).toMatch(opaque);
     });
   }
 });

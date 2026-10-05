@@ -1288,16 +1288,11 @@ html[data-drawer-nav] body {
   border-bottom-right-radius: 0.375rem;
 }
 
-/* The column rules take the inset share of the edge they were drawn in, so a theme that draws no
- * inset border keeps the row rules and the outer frame only. The selectors outrank the cell rules
- * above, which restate the edge in the same declaration, and leave high contrast to its own. */
-html:not(.high-contrast) .markdown th {
-  border-left-color: rgb(from theme(colors.gray.200) r g b / var(--theme-border-inset-alpha, 1));
-}
-
-html:not(.high-contrast) .markdown th:last-child,
-html:not(.high-contrast) .markdown td,
-html:not(.high-contrast) .markdown td:last-child {
+/* The column rules take the inset share of the border-medium edge, so a theme that draws no inset
+ * border keeps the row rules and the outer frame only. The first cell's left edge is that frame and
+ * stays whole. The selector outranks the cell rules above, which restate the edge in one
+ * declaration, and leaves high contrast to its own. */
+html:not(.high-contrast) .markdown :is(th, td):not(:first-child) {
   border-left-color: rgb(
     var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
   );
