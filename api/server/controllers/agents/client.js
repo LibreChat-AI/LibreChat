@@ -62,6 +62,7 @@ const {
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
   collectAttachedCodeApprovalPolicies,
+  collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   markNativeCodeToolApprovalRequests,
@@ -4585,6 +4586,7 @@ class AgentClient extends BaseClient {
           attachedCodeEnvironmentAgentIds,
           attachedCodeEnvironmentSettings,
           codeApprovalMode,
+          collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);

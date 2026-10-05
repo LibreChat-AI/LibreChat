@@ -28,6 +28,8 @@ export interface CodeFilesAgent {
   statefulCodeEnvironment?: StatefulCodeEnvironment;
   subagentAgentConfigs?: CodeFilesAgent[];
   lazySubagentConfigs?: CodeFilesAgent[];
+  /** Graph members a lazy child initializes only when it is selected. */
+  subagentGraphMemberMetadata?: CodeFilesAgent[];
   subagentGraphConfigs?: Array<{ memberConfigs: CodeFilesAgent[] }>;
 }
 
@@ -44,6 +46,7 @@ function enqueueCodeFilesChildren(
   for (const child of [
     ...(agent.subagentAgentConfigs ?? []),
     ...(agent.lazySubagentConfigs ?? []),
+    ...(agent.subagentGraphMemberMetadata ?? []),
   ]) {
     if (child && !visited.has(child)) queue.push(child);
   }

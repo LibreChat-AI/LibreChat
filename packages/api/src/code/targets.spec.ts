@@ -603,6 +603,24 @@ describe('subagent code routing', () => {
     ).toBe(1);
   });
 
+  it('never claims a machine for a call canceled while its targets resolve', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const controller = new AbortController();
+
+    const canceled = routing.place({
+      agent: reviewer,
+      flags,
+      context: { ...call({ machine: 'buildbox' }), signal: controller.signal },
+    });
+    controller.abort();
+
+    await expect(canceled).rejects.toBeDefined();
+    await expect(
+      routing.place({ agent: reviewer, flags, context: call({ machine: 'laptop' }) }),
+    ).resolves.toMatchObject({ target: { environmentId: 'laptop' } });
+  });
+
   it('attributes a workspace-only conflict to the workspace argument', async () => {
     serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>(request);

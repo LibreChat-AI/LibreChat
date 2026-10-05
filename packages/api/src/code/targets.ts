@@ -409,6 +409,8 @@ export interface SubagentCodeCallContext {
   executionId?: string;
   parentRunId?: string;
   hostArgs?: SubagentHostArgValues;
+  /** Cancels this call; a canceled call never claims a machine. */
+  signal?: AbortSignal;
 }
 
 /** What one lazy child resolution needs to know about its call and parent. */
@@ -461,6 +463,12 @@ export interface SubagentCodeRouting<TContext> {
   isRouted(executionId: string | null | undefined): boolean;
   /** Whether an execution's own subagents (including graph members) inherit a per-call route. */
   routesChildren(executionId: string | null | undefined): boolean;
+}
+
+function throwIfCanceled(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw signal.reason ?? new Error('Subagent resolution was aborted.');
+  }
 }
 
 export function createSubagentCodeRouting<TContext>({
@@ -557,6 +565,7 @@ export function createSubagentCodeRouting<TContext>({
         hostArgs?.[SUBAGENT_MACHINE_ARG] != null || hostArgs?.[SUBAGENT_WORKSPACE_ARG] != null;
       if (requested) {
         const resolution = await resolveSubagentCodeTargets(paramsFor(agent, flags));
+        throwIfCanceled(context?.signal);
         const target = selectSubagentCodeTarget(hostArgs, resolution);
         if (target != null) {
           if (conflicts(agent.id, target.environmentId)) {
@@ -578,6 +587,7 @@ export function createSubagentCodeRouting<TContext>({
       }
       if (inheritedRoute(agent.id, parentEnvironmentId) != null) {
         const { targets } = await resolveSubagentCodeTargets(paramsFor(agent, flags));
+        throwIfCanceled(context?.signal);
         /** Re-read after the await: a concurrent call may have settled this subagent meanwhile. */
         const inherited = inheritedRoute(agent.id, parentEnvironmentId);
         const target =

@@ -4,6 +4,7 @@ import {
   buildAttachedCodeEnvironmentAdmissionHooks,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeApprovalPolicies,
+  collectAttachedCodeRoutePolicies,
   collectAttachedCodeEnvironmentPolicySettings,
   createAttachedCodeEnvironmentPolicyHook,
   isStatefulCodeEnvironmentToolName,
@@ -626,6 +627,44 @@ describe('collectAttachedCodeApprovalPolicies', () => {
     expect(
       resolveAttachedCodeApprovalMode('acceptEdits', collectAttachedCodeApprovalPolicies(agents)),
     ).toBe('acceptEdits');
+  });
+
+  test('lets an asking per-call machine make a permissive-by-default child pause-capable', () => {
+    const agents = [
+      {
+        id: 'reviewer',
+        codeExecutionContext: {
+          ...acceptEditsMachine,
+          codeEnvironmentSettings: {
+            permissions: { fileWrite: 'allow' as const, commandExecution: 'allow' as const },
+          },
+        },
+        codeExecutionChoices: [
+          {
+            environmentType: 'attached',
+            codeEnvironmentConfigSchema: fullAccessSettings.configSchema,
+          },
+        ],
+      },
+    ];
+    const ids = collectAttachedCodeEnvironmentAgentIds(agents);
+    const settings = collectAttachedCodeEnvironmentPolicySettings(agents);
+    const pausing = (hooks: ReturnType<typeof buildAttachedCodeEnvironmentAdmissionHooks>) =>
+      hooks.flatMap((hook) => hook.toolNames ?? []);
+
+    expect(pausing(buildAttachedCodeEnvironmentAdmissionHooks(ids, settings))).not.toContain(
+      'bash_tool',
+    );
+    expect(
+      pausing(
+        buildAttachedCodeEnvironmentAdmissionHooks(
+          ids,
+          settings,
+          undefined,
+          collectAttachedCodeRoutePolicies(agents),
+        ),
+      ),
+    ).toContain('bash_tool');
   });
 
   test('requires every machine a child may be routed to before granting full access', () => {
