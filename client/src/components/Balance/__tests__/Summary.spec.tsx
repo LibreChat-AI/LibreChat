@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import type { TBalanceResponse } from 'librechat-data-provider';
 import type { BalanceState } from '~/hooks/useBalanceSummary';
-import { summarizeBalance } from '~/utils';
+import { summarizeBalance } from '~/utils/balance';
 import Summary from '../Summary';
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');

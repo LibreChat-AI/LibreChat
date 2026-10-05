@@ -1643,6 +1643,21 @@ describe('Balance Reservations', () => {
         expect(resets[0].rawAmount).toBe(-500);
       });
 
+      test('synchronizes a changed allowance before applying a due reset', async () => {
+        const user = new mongoose.Types.ObjectId();
+        await Balance.create({ user, ...resettable, tokenCredits: 500 });
+        expect(
+          (await findBalanceByUser(user.toString(), { applyReset: false }))?.tokenCredits,
+        ).toBe(500);
+        expect(await Transaction.countDocuments({ user })).toBe(0);
+        expect(
+          (await upsertBalanceFields(user.toString(), { refillAmount: 2000 }))?.tokenCredits,
+        ).toBe(2000);
+        const resets = await Transaction.find({ user, context: 'balanceReset' }).lean();
+        expect(resets).toHaveLength(1);
+        expect(resets[0].rawAmount).toBe(1500);
+      });
+
       test('uses current settings if reset mode changes during its fenced write', async () => {
         const user = new mongoose.Types.ObjectId();
         await Balance.create({ user, ...resettable, tokenCredits: 500 });

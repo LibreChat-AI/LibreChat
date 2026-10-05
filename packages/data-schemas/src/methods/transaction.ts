@@ -1,4 +1,4 @@
-import { getRefillEligibilityDate } from 'librechat-data-provider';
+import { isBalanceRefillDue } from 'librechat-data-provider';
 import type { AnyBulkWriteOperation, FilterQuery, Model, Types } from 'mongoose';
 import type {
   BalanceReservationRequest,
@@ -99,7 +99,7 @@ export function createTransactionMethods(
   bulkInsertTransactions: (docs: TransactionData[]) => Promise<void>;
   findBalanceByUser: (
     user: string,
-    options?: { includeReservedCredits?: boolean },
+    options?: { includeReservedCredits?: boolean; applyReset?: boolean },
   ) => Promise<IBalance | null>;
   upsertBalanceFields: (
     user: string,
@@ -288,24 +288,6 @@ export function createTransactionMethods(
       lastError ??
       new Error(
         `Failed to update balance for user ${user} after maximum retries due to persistent conflicts.`,
-      )
-    );
-  }
-
-  function isAutoRefillDue(record: IBalance, now: Date): boolean {
-    if (!record.autoRefillEnabled || !(record.refillAmount > 0)) {
-      return false;
-    }
-    const lastRefill = new Date(record.lastRefill ?? 0);
-    if (isNaN(lastRefill.getTime())) {
-      return true;
-    }
-    return (
-      now >=
-      getRefillEligibilityDate(
-        lastRefill,
-        record.refillIntervalValue ?? 0,
-        record.refillIntervalUnit ?? 'days',
       )
     );
   }
@@ -525,7 +507,7 @@ export function createTransactionMethods(
         refillSettled &&
         !refilled &&
         (record.refillMode === 'reset' || balance - amount <= 0) &&
-        isAutoRefillDue(record, now)
+        isBalanceRefillDue(record, now)
       ) {
         refilled = await applyAutoRefill(record, now);
         continue;
@@ -703,7 +685,7 @@ export function createTransactionMethods(
    */
   async function findBalanceByUser(
     user: string,
-    options?: { includeReservedCredits?: boolean },
+    options?: { includeReservedCredits?: boolean; applyReset?: boolean },
   ): Promise<IBalance | null> {
     const Balance = mongoose.models.Balance as Model<IBalance>;
     const read = () =>
@@ -716,8 +698,9 @@ export function createTransactionMethods(
       return null;
     }
     if (
+      options?.applyReset !== false &&
       record.refillMode === 'reset' &&
-      (record.pendingRefill != null || isAutoRefillDue(record, new Date()))
+      (record.pendingRefill != null || isBalanceRefillDue(record, new Date()))
     ) {
       // Reuse the fenced admission path without holding any credits for a balance read.
       await reserveBalance({ user, reservationId: '', amount: 0, expiresAt: new Date() });
@@ -745,7 +728,7 @@ export function createTransactionMethods(
     insertOnly?: IBalanceUpdate,
   ): Promise<IBalance | null> {
     const record = await upsertBalanceRecord(user, fields, insertOnly);
-    if (record?.refillMode === 'reset' && isAutoRefillDue(record, new Date())) {
+    if (record?.refillMode === 'reset' && isBalanceRefillDue(record, new Date())) {
       return findBalanceByUser(user);
     }
     return record;

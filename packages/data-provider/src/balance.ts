@@ -1,3 +1,5 @@
+import type { TBalanceResponse } from './types';
+
 export const REFILL_INTERVAL_UNITS = [
   'seconds',
   'minutes',
@@ -61,4 +63,33 @@ export function getRefillEligibilityDate(
       return result;
     }
   }
+}
+
+/** Whether the configured refill/reset period has elapsed. */
+export function isBalanceRefillDue(
+  record: Pick<
+    TBalanceResponse,
+    | 'autoRefillEnabled'
+    | 'refillAmount'
+    | 'lastRefill'
+    | 'refillIntervalValue'
+    | 'refillIntervalUnit'
+  >,
+  now: Date,
+): boolean {
+  if (!record.autoRefillEnabled || !(record.refillAmount != null && record.refillAmount > 0)) {
+    return false;
+  }
+  const lastRefill = new Date(record.lastRefill ?? 0);
+  if (isNaN(lastRefill.getTime())) {
+    return true;
+  }
+  return (
+    now >=
+    getRefillEligibilityDate(
+      lastRefill,
+      record.refillIntervalValue ?? 0,
+      record.refillIntervalUnit ?? 'days',
+    )
+  );
 }
