@@ -793,6 +793,58 @@ test.describe('mid-run steering and queuing', () => {
     await expect(queuedRows(page)).toHaveCount(0);
   });
 
+  test('Stop before the first token saves the follow-up from the new composer', async ({
+    page,
+  }) => {
+    const label = uniqueLabel('stop-before-token');
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+
+    let releaseStatus = () => {};
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    await page.route('**/api/agents/chat/status/**', async (route) => {
+      const response = await route.fetch();
+      await statusGate;
+      await route.fulfill({ response });
+    });
+
+    await sendMessage(page, `E2E_PRE_TOKEN_REPLY:${label}`);
+    const [abortResponse] = await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname === '/api/agents/chat/abort',
+      ),
+      page.getByTestId('stop-generation-button').click(),
+    ]);
+    try {
+      expect(abortResponse.ok()).toBeTruthy();
+      await expect(page.getByText('Generating a reply…', { exact: true })).toBeVisible();
+    } finally {
+      releaseStatus();
+    }
+    await expect(page.getByText('Generating a reply…', { exact: true })).toHaveCount(0);
+    await expect(page).toHaveURL(/\/c\/[0-9a-fA-F-]{36}$/);
+    await expect(messageTurns(page)).toHaveCount(2);
+
+    const followUp = replyPrompt(`after-${label}`);
+    const followUpStart = await sendMessage(page, followUp);
+    const { streamId: conversationId } = (await followUpStart.json()) as { streamId: string };
+    await expect(messagesView(page).getByText(replyText(`after-${label}`))).toBeVisible();
+    const persisted = await requestJson<PersistedMessage[]>(page, {
+      path: `/api/messages/${encodeURIComponent(conversationId)}`,
+      token: await getAccessToken(page),
+    });
+    expect(persisted.some((message) => message.isCreatedByUser && message.text === followUp)).toBe(
+      true,
+    );
+    await page.reload();
+    await expect(messageTurns(page)).toHaveCount(4);
+    await expect(messagesView(page).getByText(replyText(`after-${label}`))).toBeVisible();
+  });
+
   for (const startingPoint of ['new', 'existing'] as const) {
     test(`Stop preserves an empty response parent in a ${startingPoint} chat`, async ({ page }) => {
       test.setTimeout(120000);
@@ -850,11 +902,11 @@ test.describe('mid-run steering and queuing', () => {
       ]);
       try {
         expect(abortResponse.ok()).toBeTruthy();
-        await expect(page.getByTestId('stop-generation-button')).toBeVisible();
+        await expect(page.getByText('Generating a reply…', { exact: true })).toBeVisible();
       } finally {
         releaseStatus();
       }
-      await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
+      await expect(page.getByText('Generating a reply…', { exact: true })).toHaveCount(0);
       await sendMessage(page, interruptText);
       const expectedTurns = startingPoint === 'existing' ? 6 : 4;
       await expect(messageTurns(page)).toHaveCount(expectedTurns);
