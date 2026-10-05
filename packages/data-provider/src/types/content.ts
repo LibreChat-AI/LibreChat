@@ -160,6 +160,16 @@ export type PartMetadata = {
    * at render time.
    */
   runStepDurationMs?: number;
+  /** Host-reported close time in epoch milliseconds, when valid. Absent on older content. */
+  runStepClosedAt?: number;
+  /** First observed argument fragment, while this tool call is still being prepared. */
+  toolPreparationStartedAt?: number;
+  /** SDK handoff to direct invocation or host dispatch, not the MCP round trip. */
+  toolDispatchedAt?: number;
+  /** Time from the first observed argument fragment to SDK handoff, if both are known. */
+  toolPreparationDurationMs?: number;
+  /** Time from SDK handoff to this call's result, not database execution time. */
+  toolExecutionDurationMs?: number;
   /**
    * Stamped by the background harvester when a detached task's final output
    * replaces the dispatch handle in `tool_call.output`. The handle JSON and
@@ -169,6 +179,13 @@ export type PartMetadata = {
    * as dispatch time rather than the task's runtime.
    */
   backgrounded?: boolean;
+  /**
+   * Stamped by the server when the run step completes, and only when the call
+   * resolved to the attached-workspace `bash_tool` instance. The sandbox tool
+   * shares that name, so this is the only trustworthy sign that the output
+   * ends in an exit-status trailer; it is never derived from output text.
+   */
+  executor?: 'attached_workspace';
   /**
    * Content index this part occupied while its run streamed. The aggregator
    * writes parts at provider-source indexes, so the streamed array is sparse;

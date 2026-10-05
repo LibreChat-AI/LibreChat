@@ -91,6 +91,12 @@ export interface OpenAIFileBlock {
   };
 }
 
+/** OpenAI-compatible text part carrying a textual document's decoded contents */
+export interface OpenAITextDocumentBlock {
+  type: 'text';
+  text: string;
+}
+
 /** OpenAI Responses API file format */
 export interface OpenAIInputFileBlock {
   type: 'input_file';
@@ -114,6 +120,7 @@ export type DocumentBlock =
   | AnthropicDocumentBlock
   | GoogleDocumentBlock
   | OpenAIFileBlock
+  | OpenAITextDocumentBlock
   | OpenAIInputFileBlock
   | BedrockDocumentBlock;
 

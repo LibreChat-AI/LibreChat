@@ -13,7 +13,6 @@ const {
   isUserSourced,
   createAuthIdentityContext,
   MCPConnection,
-  MCPErrorCodes,
   MCPCatalogCapacityError,
   splitMCPToolKey,
   normalizeServerName,
@@ -21,9 +20,7 @@ const {
   redactServerSecrets,
   sanitizeMcpIconPath,
   redactAllServerSecrets,
-  isMCPDomainNotAllowedError,
-  isMCPInspectionFailedError,
-  isMCPOAuthSecretReentryRequiredError,
+  getMCPErrorResponse,
   prepareMCPServerOAuthDeletion,
   cleanupDeletedMCPServerOAuthUsers,
 } = require('@librechat/api');
@@ -35,6 +32,7 @@ const {
   PermissionTypes,
   MCP_USER_INPUT_FIELDS,
   MCPServerUserInputSchema,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   resolveConfigServers,
@@ -61,50 +59,8 @@ const db = require('~/models');
  * @returns {import('express').Response | null} Response if handled, null if not an MCP error
  */
 function handleMCPError(error, res) {
-  if (isMCPDomainNotAllowedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPInspectionFailedError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  if (isMCPOAuthSecretReentryRequiredError(error)) {
-    return res.status(error.statusCode).json({
-      error: error.code,
-      message: error.message,
-    });
-  }
-
-  // Fallback for legacy string-based error handling (backwards compatibility)
-  if (error.message?.startsWith(MCPErrorCodes.DOMAIN_NOT_ALLOWED)) {
-    return res.status(403).json({
-      error: MCPErrorCodes.DOMAIN_NOT_ALLOWED,
-      message: error.message.replace(/^MCP_DOMAIN_NOT_ALLOWED\s*:\s*/i, ''),
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.INSPECTION_FAILED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.INSPECTION_FAILED,
-      message: error.message,
-    });
-  }
-
-  if (error.message?.startsWith(MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED)) {
-    return res.status(400).json({
-      error: MCPErrorCodes.OAUTH_SECRET_REENTRY_REQUIRED,
-      message: error.message,
-    });
-  }
-
-  return null;
+  const response = getMCPErrorResponse(error);
+  return response ? res.status(response.statusCode).json(response.body) : null;
 }
 
 /** Disposes a stale local connection after its DB-backed config has changed. */
@@ -181,6 +137,16 @@ const getMCPTools = async (req, res) => {
     }
 
     const mcpConfig = await resolveAllMcpConfigs(userId, req.user);
+    const mcpApps = resolveMCPAppsPolicy(
+      req.config?.mcpSettings?.apps,
+      undefined,
+      req.config?.mcpAppSandbox?.maxPersistedAppBytes,
+      req.config?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+      req.config?.mcpAppSandbox?.url,
+      req.config?.mcpAppSandbox?.maxActiveViews,
+      req.config?.mcpAppSandbox?.maxActionPreviewChars,
+      req.config?.mcpAppSandbox?.operationLimits,
+    );
     /**
      * A server whose normalized name is claimed by an earlier server produces
      * IDENTICAL model-facing tool keys — selecting its tools would silently
@@ -231,6 +197,7 @@ const getMCPTools = async (req, res) => {
         oboIdentityContext,
         signal: catalogAbortController.signal,
         recoveryPolicy: req.config?.mcpSettings?.catalogRecovery,
+        mcpApps,
       });
     } finally {
       res.off('close', abortCatalogLoad);

@@ -503,6 +503,16 @@ describe('getMultiplier', () => {
     expect(premiumCache.read).toBeCloseTo(standardCache.read * 2);
   });
 
+  it('should price a GPT point release at its family rate until it has its own entry', () => {
+    for (const model of ['gpt-6.1-sol', 'gpt-6.1-sol-2026-10-01', 'openai/gpt-6.1-sol']) {
+      expect(getValueKey(model)).toBe('gpt-6-sol');
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(tokenValues['gpt-6-sol'].prompt);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(
+        tokenValues['gpt-6-sol'].completion,
+      );
+    }
+  });
+
   it('should resolve gpt-6-astra to its own key rather than a gpt-6 prefix', () => {
     for (const model of [
       'gpt-6-astra',
@@ -2773,11 +2783,11 @@ describe('Claude Model Tests', () => {
     );
   });
 
-  it('should pin Claude Sonnet 5 to introductory $2 / $10 per MTok (through 2026-08-31)', () => {
+  it('should pin Claude Sonnet 5 to its standard $2 / $10 per MTok', () => {
     expect(tokenValues['claude-sonnet-5']).toEqual({ prompt: 2, completion: 10 });
   });
 
-  it('should apply introductory cache rates ($2.50 / $0.20) for Claude Sonnet 5', () => {
+  it('should apply standard cache rates ($2.50 / $0.20) for Claude Sonnet 5', () => {
     expect(cacheTokenValues['claude-sonnet-5']).toEqual({ write: 2.5, read: 0.2 });
   });
 
@@ -2810,6 +2820,33 @@ describe('Claude Model Tests', () => {
     expect(getCacheMultiplier({ model: 'claude-sonnet-5', cacheType: 'read' })).toBe(
       cacheTokenValues['claude-sonnet-5'].read,
     );
+  });
+});
+
+describe('Mistral Large Pricing', () => {
+  it('should price Mistral Large 3 at $0.50 / $1.50 per MTok', () => {
+    const modelVariations = [
+      'mistral-large-2512',
+      'mistral-large-3',
+      'mistral-large-latest',
+      'mistralai/mistral-large-2512',
+    ];
+
+    modelVariations.forEach((model) => {
+      expect(getMultiplier({ model, tokenType: 'prompt' })).toBe(0.5);
+      expect(getMultiplier({ model, tokenType: 'completion' })).toBe(1.5);
+    });
+  });
+
+  it('should keep Mistral Large 2.1 (2411) at $2 / $6 per MTok', () => {
+    expect(getValueKey('mistral-large-2411')).toBe('mistral-large-2411');
+    expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'prompt' })).toBe(2);
+    expect(getMultiplier({ model: 'mistral-large-2411', tokenType: 'completion' })).toBe(6);
+  });
+
+  it('should keep legacy Mistral Large 2402 / 2407 rates', () => {
+    expect(getMultiplier({ model: 'mistral-large-2402', tokenType: 'prompt' })).toBe(4);
+    expect(getMultiplier({ model: 'mistral-large-2407', tokenType: 'prompt' })).toBe(3);
   });
 });
 
@@ -3154,3 +3191,119 @@ describe('vendor-prefixed pricing keys', () => {
 
 // Cross-package sync validation tests (tokens.ts ↔ tx.ts) moved to
 // packages/api tests since they require maxTokensMap from @librechat/api.
+
+describe('Grok 4.7 pricing', () => {
+  it.each(['grok-4.7', 'x-ai/grok-4.7', 'xai/grok-4.7', 'grok-4-7'])(
+    'bills %s at standard and inclusive long-context rates',
+    (model) => {
+      const key = model.split('/').pop()!;
+      for (const inputTokenCount of [199999, 200000, 200001, 500000]) {
+        const rates = inputTokenCount < 200000 ? tokenValues[key] : premiumTokenValues[key];
+        const cache =
+          inputTokenCount < 200000 ? cacheTokenValues[key] : premiumCacheTokenValues[key];
+        expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(rates.prompt);
+        expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+          rates.completion,
+        );
+        expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(cache.read);
+        expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+          cache.write,
+        );
+      }
+    },
+  );
+
+  it('preserves explicit operator billing overrides', () => {
+    const model = 'grok-4.7';
+    const endpointTokenConfig = { [model]: { prompt: 3, completion: 7, read: 0.75, write: 3 } };
+    expect(
+      getMultiplier({ model, tokenType: 'prompt', inputTokenCount: 200000, endpointTokenConfig }),
+    ).toBe(endpointTokenConfig[model].prompt);
+    expect(
+      getCacheMultiplier({
+        model,
+        cacheType: 'read',
+        inputTokenCount: 200000,
+        endpointTokenConfig,
+      }),
+    ).toBe(endpointTokenConfig[model].read);
+  });
+});
+
+describe('Opus 5.5 pricing', () => {
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5.5',
+    'anthropic/claude-opus-5-5',
+    'global.anthropic.claude-opus-5-5',
+  ])('prices %s independently of Opus 5, without a long-context surcharge', (model) => {
+    const key = model.includes('5.5') ? 'claude-opus-5.5' : 'claude-opus-5-5';
+    for (const inputTokenCount of [1000, 200000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues[key].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues[key].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues[key].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues[key].read,
+      );
+    }
+    expect(tokenValues[key].prompt).toBeLessThan(tokenValues['claude-opus-5'].prompt);
+    expect(cacheTokenValues[key].read).toBeLessThan(cacheTokenValues['claude-opus-5'].read);
+  });
+});
+
+describe('Sonnet 5.5 pricing', () => {
+  it.each([
+    'claude-sonnet-5-5',
+    'claude-sonnet-5.5',
+    'anthropic/claude-sonnet-5-5',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('prices %s at the Sonnet 5 rate, without a long-context surcharge', (model) => {
+    for (const inputTokenCount of [1000, 200000, 1000000]) {
+      expect(getMultiplier({ model, tokenType: 'prompt', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].prompt,
+      );
+      expect(getMultiplier({ model, tokenType: 'completion', inputTokenCount })).toBe(
+        tokenValues['claude-sonnet-5'].completion,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].write,
+      );
+      expect(getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })).toBe(
+        cacheTokenValues['claude-sonnet-5'].read,
+      );
+    }
+  });
+});
+
+describe.each([
+  ['gpt-6-sol', 2, 0.2, 2.5, 10],
+  ['gpt-6-luna', 0.1, 0.01, 0.125, 0.5],
+] as const)('%s published pricing', (model, input, read, write, output) => {
+  it.each([272000, 272001])(
+    'applies full-request rates at %i total input tokens',
+    (inputTokenCount) => {
+      const premium = inputTokenCount > 272000;
+      for (const name of [model, `${model}-2026-09-22`, `openai/${model}`]) {
+        expect(getValueKey(name)).toBe(model);
+        expect(getMultiplier({ model: name, tokenType: 'prompt', inputTokenCount })).toBeCloseTo(
+          input * (premium ? 2 : 1),
+        );
+        expect(
+          getMultiplier({ model: name, tokenType: 'completion', inputTokenCount }),
+        ).toBeCloseTo(output * (premium ? 1.5 : 1));
+        expect(getCacheMultiplier({ model: name, cacheType: 'read', inputTokenCount })).toBeCloseTo(
+          read * (premium ? 2 : 1),
+        );
+        expect(
+          getCacheMultiplier({ model: name, cacheType: 'write', inputTokenCount }),
+        ).toBeCloseTo(write * (premium ? 2 : 1));
+      }
+    },
+  );
+});

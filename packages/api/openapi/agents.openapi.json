@@ -2124,6 +2124,14 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           },
+          "code_environment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "maxItems": 128
+          },
           "code_workspace_id": {
             "anyOf": [
               {
@@ -2154,7 +2162,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },
@@ -2264,6 +2271,19 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }
@@ -2561,6 +2581,14 @@
             ],
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           },
+          "code_environment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "maxItems": 128
+          },
           "code_workspace_id": {
             "anyOf": [
               {
@@ -2594,7 +2622,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },
@@ -2704,6 +2731,19 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }
@@ -3025,6 +3065,14 @@
             ],
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
           },
+          "code_environment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "maxItems": 128
+          },
           "code_workspace_id": {
             "anyOf": [
               {
@@ -3058,7 +3106,6 @@
               },
               "email": {
                 "type": "string",
-                "format": "email",
                 "maxLength": 254
               }
             },
@@ -3168,6 +3215,19 @@
                 },
                 "describe_intent": {
                   "type": "boolean"
+                },
+                "approval_mode": {
+                  "type": "string",
+                  "enum": [
+                    "ask",
+                    "allow",
+                    "chat",
+                    "always"
+                  ]
+                },
+                "approval_revision": {
+                  "type": "string",
+                  "format": "uuid"
                 }
               }
             }

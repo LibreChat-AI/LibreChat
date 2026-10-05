@@ -158,6 +158,7 @@ jest.mock('nanoid', () => ({
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
     warn: jest.fn(),
   },
@@ -174,9 +175,14 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
+  resolveApiConversationProject: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').resolveApiConversationProject(...args),
+  ),
   /** Grants both by default; the capability set is what these specs vary. */
   resolveToolRoleGrants: jest.fn(async () => ({
     runCode: true,
@@ -217,21 +223,13 @@ jest.mock('@librechat/api', () => ({
   buildAgentContextAttachmentsByAgentId: (...args) =>
     mockBuildAgentContextAttachmentsByAgentId(...args),
   createChunk: jest.fn().mockReturnValue({}),
+  completeOpenAIToolCalls: jest.requireActual('@librechat/api').completeOpenAIToolCalls,
   buildRunToolSet: jest.fn().mockReturnValue(new Set()),
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   AgentRunEnvelopeError: MockAgentRunEnvelopeError,
   createAgentRunEnvelope: (...args) => mockCreateAgentRunEnvelope(...args),
-  resolveConversationCodeEnvironmentDecision: ({
-    requestedMode,
-    requestedSelections,
-    conversation,
-  }) => {
-    const codeWorkspaces = requestedSelections ?? conversation?.codeWorkspaces;
-    return {
-      mode: requestedMode ?? (codeWorkspaces?.length ? 'attached' : 'without_attached'),
-      ...(codeWorkspaces !== undefined && { codeWorkspaces }),
-    };
-  },
+  resolveAdmittedCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   createMCPRuntimeRequestBody: ({
     messageId,
     conversationId,
@@ -414,6 +412,11 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
 }));
 
+const mockResolveLinkedInstructions = jest.fn();
+jest.mock('~/server/services/Endpoints/agents/linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockResolveLinkedInstructions),
+}));
+
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
@@ -421,8 +424,8 @@ jest.mock('~/cache', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
-  isFatalAgentInitializationError: jest.fn((error) =>
-    ['AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', 'resource_recovery_required'].includes(error?.code),
+  isFatalAgentInitializationError: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').isFatalAgentInitializationError(...args),
   ),
 }));
 
@@ -459,8 +462,8 @@ const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('~/models', () => ({
   getAgent: jest.fn().mockResolvedValue({ id: 'agent-123', name: 'Test Agent' }),
+  getProjectFiles: jest.fn(),
   getFiles: jest.fn(),
-  getUserKey: jest.fn(),
   getMessages: jest.fn(),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
@@ -476,6 +479,7 @@ jest.mock('~/models', () => ({
   getConvoFiles: jest.fn().mockResolvedValue([]),
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
   getConvo: jest.fn().mockResolvedValue(null),
+  readAdmittedConvoCodeEnvironmentDecision: jest.fn().mockResolvedValue(null),
   isSubagentOwnerAdmissible: jest.fn().mockResolvedValue(true),
 }));
 
@@ -516,6 +520,217 @@ describe('OpenAIChatCompletionController', () => {
       once: jest.fn(),
       off: jest.fn(),
     };
+  });
+
+  it.each([true, false])(
+    'keeps SDK- and provider-executed calls out of the mounted endpoint (stream=%s)',
+    async (streaming) => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      req.body.stream = streaming;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      mockProcessStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        expect(handlers.on_run_step).toBeUndefined();
+        expect(handlers.on_run_step_delta).toBeUndefined();
+        expect(handlers.on_run_step_completed).toBeUndefined();
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-internal',
+          agentId: 'agent-123',
+          toolCalls: [
+            { id: 'internal', name: 'get_time', args: { city: 'Madrid' } },
+            { id: 'provider', name: 'web_search', args: { query: 'weather' } },
+          ],
+          toolCallDispositions: ['sdk', 'provider'],
+          invalidToolCalls: [],
+        });
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Both tools completed.' }] },
+        });
+      });
+      try {
+        await OpenAIChatCompletionController(req, res);
+        if (streaming) {
+          const frames = res.write.mock.calls
+            .map(([frame]) => frame)
+            .filter((frame) => frame !== 'data: [DONE]\n\n')
+            .map((frame) => JSON.parse(frame.slice(6)));
+          expect(frames.flatMap((frame) => frame.choices[0].delta.tool_calls ?? [])).toEqual([]);
+          expect(
+            frames.some((frame) => frame.choices[0].delta.content === 'Both tools completed.'),
+          ).toBe(true);
+          expect(frames.at(-1).choices[0].finish_reason).toBe('stop');
+        } else {
+          const choice = res.json.mock.calls[0][0].choices[0];
+          expect(choice.message.content).toBe('Both tools completed.');
+          expect(choice.message.tool_calls).toBeUndefined();
+          expect(choice.finish_reason).toBe('stop');
+        }
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'publishes accepted client calls after text and a model claim (stream=%s)',
+    async (streaming) => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      const names = [
+        'createChunk',
+        'writeSSE',
+        'sendFinalChunk',
+        'buildNonStreamingResponse',
+        'createOpenAIStreamTracker',
+        'createOpenAIContentAggregator',
+      ];
+      const originals = names.map((name) => [name, api[name].getMockImplementation()]);
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      req.body.stream = streaming;
+      api.validateRequest.mockReturnValueOnce({ request: req.body });
+      mockProcessStream.mockImplementationOnce(async () => {
+        const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'discarded',
+          agentId: 'agent-123',
+          messageId: 'claimed-message',
+          toolCalls: [{ id: 'stale', name: 'stale_tool', args: { secret: 'DO_NOT_SEND' } }],
+          toolCallDispositions: ['client'],
+          invalidToolCalls: [],
+        });
+        await handlers.on_model_tools_claimed.handle('on_model_tools_claimed', {
+          type: 'model_tools_claimed',
+          agentId: 'agent-123',
+          messageId: 'claimed-message',
+        });
+        await handlers.on_message_delta.handle('on_message_delta', {
+          delta: { content: [{ type: 'text', text: 'Checking the weather.' }] },
+        });
+        await handlers.on_model_response.handle('on_model_response', {
+          type: 'model_response',
+          id: 'accepted-client',
+          agentId: 'agent-123',
+          toolCalls: [
+            { id: 'a', name: 'get_time', args: { city: 'Madrid' } },
+            { id: 'a', name: 'get_time', args: { city: 'Paris' } },
+          ],
+          toolCallDispositions: ['client', 'client'],
+          invalidToolCalls: [],
+        });
+      });
+      try {
+        await OpenAIChatCompletionController(req, res);
+        if (streaming) {
+          const frames = res.write.mock.calls
+            .map(([frame]) => frame)
+            .filter((frame) => frame !== 'data: [DONE]\n\n')
+            .map((frame) => JSON.parse(frame.slice(6)));
+          expect(
+            frames.some((frame) => frame.choices[0].delta.content === 'Checking the weather.'),
+          ).toBe(true);
+          const calls = frames.flatMap((frame) => frame.choices[0].delta.tool_calls ?? []);
+          expect(calls).toEqual([
+            { index: 0, id: 'a', type: 'function', function: { name: 'get_time', arguments: '' } },
+            { index: 0, function: { arguments: '{"city":"Madrid"}' } },
+            {
+              index: 1,
+              id: 'call_0',
+              type: 'function',
+              function: { name: 'get_time', arguments: '' },
+            },
+            { index: 1, function: { arguments: '{"city":"Paris"}' } },
+          ]);
+          expect(frames.at(-1).choices[0].finish_reason).toBe('tool_calls');
+        } else {
+          const choice = res.json.mock.calls[0][0].choices[0];
+          expect(choice.message.content).toBe('Checking the weather.');
+          expect(choice.message.tool_calls).toEqual([
+            {
+              id: 'a',
+              type: 'function',
+              function: { name: 'get_time', arguments: '{"city":"Madrid"}' },
+            },
+            {
+              id: 'call_0',
+              type: 'function',
+              function: { name: 'get_time', arguments: '{"city":"Paris"}' },
+            },
+          ]);
+          expect(choice.finish_reason).toBe('tool_calls');
+        }
+        expect(JSON.stringify(res.write.mock.calls)).not.toContain('DO_NOT_SEND');
+        expect(JSON.stringify(res.json.mock.calls)).not.toContain('DO_NOT_SEND');
+      } finally {
+        for (const [name, implementation] of originals)
+          api[name].mockImplementation(implementation);
+      }
+    },
+  );
+
+  it('discards client delegation on failure and ignores late accepted responses', async () => {
+    const api = require('@librechat/api');
+    api.validateRequest.mockReturnValueOnce({ request: req.body });
+    mockProcessStream.mockImplementationOnce(async () => {
+      const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+      await handlers.on_model_response.handle('on_model_response', {
+        type: 'model_response',
+        id: 'before-failure',
+        agentId: 'agent-123',
+        toolCalls: [{ id: 'a', name: 'get_time', args: { secret: 'DO_NOT_SEND' } }],
+        toolCallDispositions: ['client'],
+        invalidToolCalls: [],
+      });
+      throw new Error('provider failed');
+    });
+    await OpenAIChatCompletionController(req, res);
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('DO_NOT_SEND');
+    expect(api.buildNonStreamingResponse).not.toHaveBeenCalled();
+    const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+    await handlers.on_model_response.handle('on_model_response', {
+      type: 'model_response',
+      id: 'too-late',
+      agentId: 'agent-123',
+      toolCalls: [{ id: 'late', name: 'get_time', args: { city: 'Late' } }],
+      toolCallDispositions: ['client'],
+      invalidToolCalls: [],
+    });
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('Late');
+  });
+
+  it('fails closed on an invalid accepted client call without returning its arguments', async () => {
+    const api = require('@librechat/api');
+    api.validateRequest.mockReturnValueOnce({ request: req.body });
+    mockProcessStream.mockImplementationOnce(async () => {
+      const { customHandlers: handlers } = api.createRun.mock.calls.at(-1)[0];
+      await handlers.on_model_response.handle('on_model_response', {
+        type: 'model_response',
+        id: 'invalid-client',
+        agentId: 'agent-123',
+        toolCalls: [{ id: 'a', name: '', args: { secret: 'PRIVATE_ARGUMENTS' } }],
+        toolCallDispositions: ['client'],
+        invalidToolCalls: [],
+      });
+    });
+    await OpenAIChatCompletionController(req, res);
+    expect(mockExecution.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Accepted tool call is missing its name' }),
+    );
+    expect(api.buildNonStreamingResponse).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('PRIVATE_ARGUMENTS');
   });
 
   it('enrolls, starts, and settles the remote execution lifecycle', async () => {
@@ -590,6 +805,34 @@ describe('OpenAIChatCompletionController', () => {
 
     expect(mockExecution.abort).not.toHaveBeenCalled();
     expect(mockExecution.beginProviderExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it('includes persistent-memory guidance in an inline agent with no saved memories', async () => {
+    const api = require('@librechat/api');
+    const { memoryInstructions, buildInlineMemoryContext } = jest.requireActual('@librechat/api');
+    const agent = {
+      id: 'agent-123',
+      model: 'gpt-4',
+      model_parameters: {},
+      toolRegistry: {},
+      edges: [],
+      memoryToolsRegistered: true,
+    };
+    api.initializeAgent.mockResolvedValueOnce(agent);
+    mockBuildInlineMemoryContext.mockImplementationOnce(buildInlineMemoryContext);
+
+    await OpenAIChatCompletionController(req, res);
+
+    expect(mockApplyContextToAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agent,
+        sharedRunContext: expect.stringContaining(memoryInstructions),
+      }),
+    );
+    expect(require('~/models').getFormattedMemories).toHaveBeenCalledWith({
+      userId: 'user-123',
+      agentId: undefined,
+    });
   });
 
   it('resolves saved graph subagents for remote chat-completion runs', async () => {
@@ -682,6 +925,7 @@ describe('OpenAIChatCompletionController', () => {
       expect.anything(),
       expect.anything(),
       mockCompletionUsage,
+      true,
     );
   });
 
@@ -693,7 +937,12 @@ describe('OpenAIChatCompletionController', () => {
 
     await OpenAIChatCompletionController(req, res);
 
-    expect(sendFinalChunk).toHaveBeenCalledWith(expect.anything(), 'stop', mockCompletionUsage);
+    expect(sendFinalChunk).toHaveBeenCalledWith(
+      expect.anything(),
+      'stop',
+      mockCompletionUsage,
+      true,
+    );
   });
 
   describe('content filtering', () => {
@@ -1250,11 +1499,19 @@ describe('OpenAIChatCompletionController', () => {
   });
 
   describe('conversation ownership validation', () => {
-    it.each([false, true])(
-      'propagates explicit or owned persisted workspaces: continuation=%s',
-      async (continuation) => {
+    it.each([
+      [false, false],
+      [true, false],
+      [false, true],
+      [true, true],
+    ])(
+      'propagates explicit or owned persisted workspaces: continuation=%s moves=%s',
+      async (continuation, movesEnabled) => {
         const api = require('@librechat/api');
         const selections = [{ environmentId: 'machine', workspaceId: 'project' }];
+        req.config.endpoints.agents.statefulCodeSessions = {
+          conversationMoves: { enabled: movesEnabled },
+        };
         api.validateRequest.mockReturnValueOnce({
           request: {
             model: 'agent-123',
@@ -1268,7 +1525,15 @@ describe('OpenAIChatCompletionController', () => {
             conversationId: 'convo-abc',
             codeWorkspaces: selections,
           });
+        if (continuation && movesEnabled)
+          require('~/models').readAdmittedConvoCodeEnvironmentDecision.mockResolvedValueOnce({
+            conversationId: 'convo-abc',
+            codeWorkspaces: selections,
+          });
         await OpenAIChatCompletionController(req, res);
+        const fencedRead = require('~/models').readAdmittedConvoCodeEnvironmentDecision;
+        if (movesEnabled) expect(fencedRead).toHaveBeenCalledTimes(1);
+        else expect(fencedRead).not.toHaveBeenCalled();
         expect(api.initializeAgent).toHaveBeenCalledWith(
           expect.objectContaining({
             requestBody: expect.objectContaining({ codeWorkspaces: selections }),
@@ -1297,7 +1562,7 @@ describe('OpenAIChatCompletionController', () => {
 
     it('should return 404 when conversation is not owned by user', async () => {
       const { validateRequest } = require('@librechat/api');
-      const { getConvo } = require('~/models');
+      const { getConvo, getAgent } = require('~/models');
       validateRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -1307,9 +1572,98 @@ describe('OpenAIChatCompletionController', () => {
         },
       });
       getConvo.mockResolvedValueOnce(null);
-
+      getAgent.mockRejectedValueOnce(new Error('speculative agent lookup failed'));
       await OpenAIChatCompletionController(req, res);
       expect(getConvo).toHaveBeenCalledWith('user-123', 'convo-abc');
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
+    it('starts the agent read while owner-scoped conversation validation is in flight', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      models.getConvo.mockResolvedValueOnce({ conversationId: 'convo-abc', user: 'user-123' });
+      let resolveAgent;
+      models.getAgent.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveAgent = resolve;
+          }),
+      );
+      api.resolveApiConversationProject.mockImplementationOnce(async (...args) => {
+        expect(models.getAgent).toHaveBeenCalledWith({ id: 'agent-123' });
+        resolveAgent({ id: 'agent-123', name: 'Test Agent' });
+        return jest.requireActual('@librechat/api').resolveApiConversationProject(...args);
+      });
+      api.validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [],
+          stream: false,
+          conversation_id: 'convo-abc',
+        },
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(models.getAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        models.getConvo.mock.invocationCallOrder[0],
+      );
+      expect(api.initializeAgent).toHaveBeenCalled();
+    });
+
+    it('keeps Project-unavailable errors as client not-found responses', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      api.validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [],
+          stream: false,
+          conversation_id: 'convo-abc',
+        },
+      });
+      models.getAgent.mockRejectedValueOnce(new Error('speculative agent lookup failed'));
+      api.resolveApiConversationProject.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        reason: 'unavailable',
+        message: 'Conversation context unavailable',
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      const errorCall = api.createErrorResponse.mock.calls.at(-1);
+      expect(errorCall[1]).toBe('invalid_request_error');
+      expect(errorCall[2]).toBeNull();
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+    });
+
+    it('rechecks conversation existence after enrollment before initializing a provider', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      api.validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [{ role: 'user', content: 'Hello' }],
+          stream: false,
+          conversation_id: 'convo-abc',
+        },
+      });
+      let deleted = false;
+      models.getConvo.mockImplementation(async () =>
+        deleted ? null : { conversationId: 'convo-abc', user: 'user-123' },
+      );
+      mockEnrollAgentExecution.mockImplementationOnce(async () => {
+        deleted = true;
+        return mockExecution;
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(mockEnrollAgentExecution).toHaveBeenCalledTimes(1);
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+      expect(api.createRun).not.toHaveBeenCalled();
+      expect(mockProcessStream).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(404);
     });
 
@@ -1332,7 +1686,7 @@ describe('OpenAIChatCompletionController', () => {
     });
 
     it('should return 500 when getConvo throws a DB error', async () => {
-      const { validateRequest } = require('@librechat/api');
+      const { validateRequest, createErrorResponse } = require('@librechat/api');
       const { getConvo } = require('~/models');
       validateRequest.mockReturnValueOnce({
         request: {
@@ -1346,6 +1700,7 @@ describe('OpenAIChatCompletionController', () => {
 
       await OpenAIChatCompletionController(req, res);
       expect(res.status).toHaveBeenCalledWith(500);
+      expect(createErrorResponse.mock.calls.at(-1)[1]).toBe('server_error');
     });
   });
 
@@ -1355,7 +1710,10 @@ describe('OpenAIChatCompletionController', () => {
       const { loadAgentTools, loadToolsForExecution } = require('~/server/services/ToolService');
       const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 
-      req.config.endpoints.agents.backgroundTasks = { ordinaryToolCancellation: true };
+      req.config.endpoints.agents.backgroundTasks = {
+        ordinaryToolCancellation: true,
+        completionResultMaxChars: 4096,
+      };
       await OpenAIChatCompletionController(req, res);
 
       const [initializeParams, dbMethods] = initializeAgent.mock.calls.at(-1);
@@ -1384,6 +1742,7 @@ describe('OpenAIChatCompletionController', () => {
 
       const toolExecuteOptions = createToolExecuteHandler.mock.calls.at(-1)[0];
       expect(toolExecuteOptions.ordinaryToolCancellation).toBe(true);
+      expect(toolExecuteOptions.backgroundCompletionResultMaxChars).toBe(4096);
       expect(toolExecuteOptions.runSignal).toBe(mockExecution.signal);
       expect(toolExecuteOptions.foregroundRunId).toBe(initializeParams.requestBody.messageId);
       const effectiveSignal = new AbortController().signal;
@@ -1413,6 +1772,63 @@ describe('OpenAIChatCompletionController', () => {
         expect.objectContaining({ signal: undefined }),
       );
     });
+
+    const credentialCases = () => {
+      const {
+        OpenIDReauthRequiredError,
+        MCPAuthenticationRejectedError,
+        MCPAuthenticationRefreshError,
+        OboTokenResolutionError,
+      } = jest.requireActual('@librechat/api');
+      return [
+        [new OpenIDReauthRequiredError('Please sign in again'), 401, undefined],
+        [
+          new MCPAuthenticationRejectedError('private-mcp', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new MCPAuthenticationRefreshError(new Error('temporary failure')),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+        [
+          new OboTokenResolutionError('session_refresh_failed', 'Please sign in again', false),
+          403,
+          'MCP_AUTHENTICATION_REJECTED',
+        ],
+        [
+          new OboTokenResolutionError('exchange_failed', 'Temporary exchange failure', true),
+          503,
+          'MCP_AUTHENTICATION_REFRESH_FAILED',
+        ],
+      ];
+    };
+    it.each(credentialCases())(
+      'preserves remote chat credential response metadata: %s',
+      async (error, status, code) => {
+        const { initializeAgent, createErrorResponse } = require('@librechat/api');
+        const { loadAgentTools } = require('~/server/services/ToolService');
+        loadAgentTools.mockRejectedValueOnce(error);
+        initializeAgent.mockImplementationOnce(async ({ req, res, loadTools, agent }) => {
+          await loadTools({
+            req,
+            res,
+            tools: ['search_mcp_private'],
+            model: agent.model,
+            agentId: agent.id,
+            provider: agent.provider,
+          });
+        });
+        await OpenAIChatCompletionController(req, res);
+        expect(res.status).toHaveBeenCalledWith(status);
+        expect(createErrorResponse).toHaveBeenCalledWith(
+          error.message,
+          status < 500 ? 'invalid_request_error' : 'server_error',
+          code ?? null,
+        );
+      },
+    );
 
     it('returns 503 when an agent expects MCP tools but resolves none', async () => {
       const { initializeAgent } = require('@librechat/api');

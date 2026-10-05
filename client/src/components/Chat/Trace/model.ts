@@ -8,6 +8,26 @@ export type TraceScale = 'sequence' | 'time';
 
 export type TraceSpan = { start: number; end: number };
 
+/**
+ * Spend over a set of records. A total that silently skips a model call without a price, with or
+ * without usage, would under-report, so `costOf` gives one only when every model call has a price.
+ */
+type Spend = { cost: number; priced: number; unpriced: number };
+
+const noSpend = (): Spend => ({ cost: 0, priced: 0, unpriced: 0 });
+
+function spendOn(spend: Spend, record: TTraceRecord): void {
+  if (record.cost != null) {
+    spend.priced++;
+    spend.cost += record.cost;
+  } else if (record.kind === 'generation') {
+    spend.unpriced++;
+  }
+}
+
+const costOf = (spend: Spend): number | undefined =>
+  spend.priced > 0 && spend.unpriced === 0 ? spend.cost : undefined;
+
 export type TraceWindow = TraceSpan;
 
 export type TraceNode = {
@@ -29,6 +49,8 @@ export type TraceNode = {
   stepKey: string | null;
   /** Order among shown records: the record's position on the sequence scale. */
   sequence: number;
+  /** The saved agent the record ran under: its nearest `agent` ancestor's. */
+  agentId?: string;
 };
 
 export type TraceStep = {
@@ -38,6 +60,13 @@ export type TraceStep = {
   index: number;
   origin: 'run' | 'title';
   generationId: string | null;
+  /**
+   * The tool round that ran the step's calls. A model call asks for one round, so a step holding
+   * several is one an approval paused: the round is recorded again when it resumes, with the same
+   * calls, and the last record is the one that ran them.
+   */
+  roundId: string | null;
+  agentId?: string;
   rootIds: string[];
   start: number;
   end: number;
@@ -46,6 +75,8 @@ export type TraceStep = {
   toolCalls: number;
   /** Tool call counts by tool name, in first-call order. */
   toolNames: Map<string, number>;
+  /** What the step's records cost, when every model call among them has a price. */
+  cost?: number;
   sequence: TraceSpan;
 };
 
@@ -61,7 +92,20 @@ export type TraceTurn = {
   recordCount: number;
   errorCount: number;
   generations: number;
+  /** Model calls that wrote an activity label; they are spend, not work of the response. */
+  labels: number;
   toolCalls: number;
+  /**
+   * Some of the response's records hang from a parent that is not loaded. Records load newest
+   * first and a run's root starts first, so this is what a record limit leaves of a response it
+   * cut: its end.
+   */
+  split: boolean;
+  /** Saved agents that ran in the response, each with the record that stands for it. */
+  agents: Array<{ agentId: string; recordId: string }>;
+  /** What the response's records cost, title and label calls included, when every model call has a
+   *  price and the whole response is loaded. */
+  cost?: number;
   sequence: TraceSpan;
 };
 
@@ -69,6 +113,7 @@ export type TraceSummary = {
   duration: number;
   turns: number;
   generations: number;
+  labels: number;
   toolCalls: number;
   errors: number;
   running: number;
@@ -117,6 +162,7 @@ const EMPTY_SUMMARY: TraceSummary = {
   duration: 0,
   turns: 0,
   generations: 0,
+  labels: 0,
   toolCalls: 0,
   errors: 0,
   running: 0,
@@ -151,11 +197,32 @@ const byStart = (nodes: Map<string, TraceNode>) => (a: string, b: string) => {
   );
 };
 
+const LABEL_ROLES: ReadonlySet<TTraceRecord['role']> = new Set([
+  'stepLabel',
+  'reasoningLabel',
+  'phaseLabel',
+]);
+
+/** A model call that wrote one of the activity labels the chat shows while a response runs. */
+export function isLabelRecord(record: TTraceRecord): boolean {
+  return LABEL_ROLES.has(record.role);
+}
+
+/** A model call of the response itself: it starts a step, and the chat's message describes it. */
+export function isModelCall(record: TTraceRecord): boolean {
+  return record.kind === 'generation' && !isLabelRecord(record);
+}
+
+/** A tool, or the round of tool calls a host ran without recording each one. */
+export function isToolWork(record: TTraceRecord): boolean {
+  return record.kind === 'tool' || record.role === 'tools';
+}
+
 /** The records the simple mode lists: what the model did, anything that failed, and the title run. */
 function isSimpleRecord(record: TTraceRecord): boolean {
   return (
     record.kind === 'generation' ||
-    record.kind === 'tool' ||
+    isToolWork(record) ||
     record.status === 'error' ||
     record.origin === 'title'
   );
@@ -163,7 +230,7 @@ function isSimpleRecord(record: TTraceRecord): boolean {
 
 /** The records others hang from: what the model called. A failed wrapper stays visible but holds nothing. */
 function isStepAnchor(record: TTraceRecord): boolean {
-  return record.kind === 'generation' || record.kind === 'tool';
+  return record.kind === 'generation' || isToolWork(record);
 }
 
 function toNode(record: TTraceRecord): TraceNode | null {
@@ -344,7 +411,9 @@ function groupSteps(
   nodes: Map<string, TraceNode>,
   steps: Map<string, TraceStep>,
   rootIds: readonly string[],
-): void {
+  privateWrappers: ReadonlySet<string>,
+): number {
+  let namedCalls = 0;
   const compare = byStart(nodes);
   const rootsByOrigin = new Map<TraceStep['origin'], string[]>();
   for (const id of rootIds) {
@@ -354,6 +423,17 @@ function groupSteps(
     rootsByOrigin.set(origin, roots);
   }
 
+  const unloadedParentOf = (id: string): string | undefined => {
+    const parentId = nodes.get(id)?.record.parentId;
+    return parentId != null && !nodes.has(parentId) ? parentId : undefined;
+  };
+  /**
+   * A record limit cuts a long response's earliest records, its root and graph among them, so a
+   * walk can end at a wrapper that only frames one model call. That wrapper is no lane of its
+   * own: the lane is the unloaded parent it shares with the tool round the model call asked for.
+   */
+  const laneAbove = (id: string): string | undefined =>
+    nodes.get(id)?.record.role === 'plumbing' ? unloadedParentOf(id) : undefined;
   /** A wrapper's branch immediately below its structural root, cached for nested failure rows. */
   const branches = new Map<string, string>();
   const branchOf = (id: string): string => {
@@ -368,8 +448,15 @@ function groupSteps(
       }
       path.push(current);
       const parent = nodes.get(current)?.parentId;
-      if (parent == null || nodes.get(parent)?.parentId == null) {
-        branch = current;
+      if (parent == null) {
+        branch = laneAbove(current) ?? current;
+        break;
+      }
+      if (nodes.get(parent)?.parentId == null) {
+        /** A wrapper framing one model call is never a lane, so when the cut left the graph as
+         *  the topmost loaded record, the lane is that graph, where its tool rounds hang too. */
+        const framing = nodes.get(current)?.record.role === 'plumbing';
+        branch = laneAbove(parent) ?? (framing ? parent : current);
         break;
       }
       current = parent;
@@ -385,29 +472,50 @@ function groupSteps(
     if (node?.parentId != null) {
       return branchOf(node.parentId);
     }
-    const unloaded = node?.record.parentId;
-    return unloaded != null && !nodes.has(unloaded) ? unloaded : '';
+    return unloadedParentOf(id) ?? '';
   };
 
   for (const [origin, roots] of rootsByOrigin) {
     roots.sort(compare);
     const groups: Array<{ rootIds: string[]; lane: string }> = [];
     const latestByLane = new Map<string, { rootIds: string[]; lane: string }>();
+    /** Model calls whose lane is a private wrapper, until the round each asked for arrives. */
+    const waiting = new Set<{ rootIds: string[]; lane: string }>();
     let leading: string[] = [];
     for (const id of roots) {
-      const kind = nodes.get(id)?.record.kind;
+      const record = nodes.get(id)?.record;
       const lane = laneOf(id);
       const current = groups[groups.length - 1];
-      /** A tool whose lane has no model call loaded yet (an older page holds it) leads its own step. */
-      if (kind === 'generation' || (kind === 'tool' && !latestByLane.has(lane))) {
+      /** The cut can fall inside a model call's own wrappers. Its lane is then one of those
+       *  wrappers, which names no lane at all, so the round it asked for, arriving in a lane no
+       *  model call holds, is its round rather than a step of its own. That is only known when
+       *  one such model call is still waiting for its round: with two (parallel agents cut at
+       *  the same place) nothing says which asked, so the round leads a step of its own. */
+      const asked =
+        record != null && isToolWork(record) && !latestByLane.has(lane) && waiting.size === 1
+          ? waiting.values().next().value
+          : undefined;
+      /** A tool whose lane has no model call loaded yet (an older page holds it) leads its own step.
+       *  A label's model call describes a step; it never starts one. */
+      if (
+        record != null &&
+        (isModelCall(record) || (isToolWork(record) && !latestByLane.has(lane) && asked == null))
+      ) {
         const group = { rootIds: [...leading, id], lane };
         groups.push(group);
         latestByLane.set(lane, group);
         leading = [];
+        if (isModelCall(record) && privateWrappers.has(lane)) {
+          waiting.add(group);
+        }
       } else if (current == null) {
         leading.push(id);
       } else {
-        (latestByLane.get(lane) ?? current).rootIds.push(id);
+        (latestByLane.get(lane) ?? asked ?? current).rootIds.push(id);
+        if (asked != null) {
+          latestByLane.set(lane, asked);
+          waiting.delete(asked);
+        }
       }
     }
     if (leading.length > 0) {
@@ -415,6 +523,12 @@ function groupSteps(
     }
     groups.forEach(({ rootIds }, index) => {
       const generationId = rootIds.find(isGenerationId(nodes)) ?? null;
+      let roundId: string | null = null;
+      for (const id of rootIds) {
+        if (nodes.get(id)?.record.role === 'tools') {
+          roundId = id;
+        }
+      }
       const key = stepKey(turn.messageId, origin, generationId ?? rootIds[0]);
       const step: TraceStep = {
         key,
@@ -422,6 +536,8 @@ function groupSteps(
         index: index + 1,
         origin,
         generationId,
+        roundId,
+        agentId: nodes.get(generationId ?? rootIds[0])?.agentId,
         rootIds,
         start: Number.POSITIVE_INFINITY,
         end: Number.NEGATIVE_INFINITY,
@@ -431,6 +547,7 @@ function groupSteps(
         toolNames: new Map(),
         sequence: EMPTY_SPAN,
       };
+      const spend = noSpend();
       const stack = [...rootIds].reverse();
       while (stack.length > 0) {
         const node = nodes.get(stack.pop() ?? '');
@@ -444,14 +561,36 @@ function groupSteps(
         if (node.record.status === 'error') {
           step.errorCount++;
         }
-        if (node.record.kind === 'tool') {
+        /** Names stand in for tools that were never recorded, so only for the round that ran, and
+         *  only when it holds no recorded tool of its own to count instead. */
+        const named =
+          node.record.id === roundId && !node.childIds.some(isToolWorkId(nodes))
+            ? (node.record.tools ?? [])
+            : [];
+        namedCalls += named.length;
+        for (const name of node.record.kind === 'tool' ? [node.record.name] : named) {
           step.toolCalls++;
-          step.toolNames.set(node.record.name, (step.toolNames.get(node.record.name) ?? 0) + 1);
+          step.toolNames.set(name, (step.toolNames.get(name) ?? 0) + 1);
         }
         for (let i = node.viewChildIds.length - 1; i >= 0; i--) {
           stack.push(node.viewChildIds[i]);
         }
       }
+      /** Spend is the whole subtree's, not the listed projection's: the simple mode rolls spans
+       *  and events up out of sight, and any record may carry a cost. */
+      const below = [...rootIds];
+      const counted = new Set<string>();
+      while (below.length > 0) {
+        const id = below.pop() ?? '';
+        const node = nodes.get(id);
+        if (!node || counted.has(id)) {
+          continue;
+        }
+        counted.add(id);
+        spendOn(spend, node.record);
+        below.push(...node.childIds);
+      }
+      step.cost = costOf(spend);
       steps.set(key, step);
       turn.stepKeys.push(key);
     });
@@ -468,10 +607,44 @@ function groupSteps(
       (left?.origin === 'title' ? 1 : 0) - (right?.origin === 'title' ? 1 : 0)
     );
   });
+  return namedCalls;
 }
 
-const isGenerationId = (nodes: Map<string, TraceNode>) => (id: string) =>
-  nodes.get(id)?.record.kind === 'generation';
+const isToolWorkId = (nodes: Map<string, TraceNode>) => (id: string) => {
+  const record = nodes.get(id)?.record;
+  return record != null && isToolWork(record);
+};
+
+const isGenerationId = (nodes: Map<string, TraceNode>) => (id: string) => {
+  const record = nodes.get(id)?.record;
+  return record != null && isModelCall(record);
+};
+
+/** Stamps each record with its nearest `agent` ancestor's saved agent, caching every path walked. */
+function resolveAgents(nodes: Map<string, TraceNode>): void {
+  const resolved = new Map<string, string | undefined>();
+  for (const node of nodes.values()) {
+    const path: TraceNode[] = [];
+    let current: TraceNode | undefined = node;
+    let agentId: string | undefined;
+    while (current != null) {
+      if (resolved.has(current.record.id)) {
+        agentId = resolved.get(current.record.id);
+        break;
+      }
+      path.push(current);
+      if (current.record.agentId != null) {
+        agentId = current.record.agentId;
+        break;
+      }
+      current = current.parentId != null ? nodes.get(current.parentId) : undefined;
+    }
+    for (const visited of path) {
+      resolved.set(visited.record.id, agentId);
+      visited.agentId = agentId;
+    }
+  }
+}
 
 /** Walks a shown subtree in ledger order, setting depth and the sequence position. */
 function numberSubtree(nodes: Map<string, TraceNode>, rootIds: string[], next: number): number {
@@ -498,6 +671,8 @@ function numberSubtree(nodes: Map<string, TraceNode>, rootIds: string[], next: n
 export function buildTraceModel(
   records: readonly TTraceRecord[],
   mode: TraceMode = 'simple',
+  /** Older records are still to load, so the oldest loaded response may not be all there. */
+  hasOlder = false,
 ): TraceModel {
   const nodes = new Map<string, TraceNode>();
   const steps = new Map<string, TraceStep>();
@@ -512,6 +687,7 @@ export function buildTraceModel(
   }
 
   resolveParents(nodes);
+  resolveAgents(nodes);
   const turnsWithWork = turnsWithSimpleRecords(nodes);
   const ancestors = new Map<string, string | null>();
   resolveViewTree(nodes, mode, turnsWithWork, ancestors);
@@ -521,9 +697,8 @@ export function buildTraceModel(
   const summary: TraceSummary = { ...EMPTY_SUMMARY };
   let start = Number.POSITIVE_INFINITY;
   let end = Number.NEGATIVE_INFINITY;
-  let cost = 0;
-  let pricedRecords = 0;
-  let unpricedRecords = 0;
+  const spend = noSpend();
+  const spendByTurn = new Map<string, Spend>();
 
   for (const [id, node] of nodes) {
     const { record } = node;
@@ -548,7 +723,10 @@ export function buildTraceModel(
         recordCount: 0,
         errorCount: 0,
         generations: 0,
+        labels: 0,
         toolCalls: 0,
+        split: false,
+        agents: [],
         sequence: EMPTY_SPAN,
       };
       turnsByMessage.set(record.messageId, turn);
@@ -570,27 +748,61 @@ export function buildTraceModel(
       turn.toolCalls++;
       summary.toolCalls++;
     }
+    if (record.agentId != null && !turn.agents.some((agent) => agent.agentId === record.agentId)) {
+      turn.agents.push({ agentId: record.agentId, recordId: id });
+    }
     if (record.kind === 'generation') {
-      turn.generations++;
-      summary.generations++;
+      if (isLabelRecord(record)) {
+        turn.labels++;
+        summary.labels++;
+      } else {
+        turn.generations++;
+        summary.generations++;
+      }
       const input = record.usage?.input ?? 0;
       const output = record.usage?.output ?? 0;
       const total = record.usage?.total ?? input + output;
       summary.inputTokens += input;
       summary.outputTokens += output;
       summary.totalTokens += total;
-      if (record.cost == null) {
-        unpricedRecords++;
-      }
     }
-    if (record.cost != null) {
-      pricedRecords++;
-      cost += record.cost;
+    spendOn(spend, record);
+    let turnSpend = spendByTurn.get(record.messageId);
+    if (turnSpend == null) {
+      turnSpend = noSpend();
+      spendByTurn.set(record.messageId, turnSpend);
     }
+    spendOn(turnSpend, record);
   }
 
   const compare = byStart(nodes);
   const turns = [...turnsByMessage.values()].sort((a, b) => a.start - b.start);
+  /**
+   * Parents a record limit cut off, and which of them frame a single model call. The SDK wraps
+   * each model call in wrappers of its own, so an unloaded parent whose loaded children are only
+   * such wrappers and a model call is one of those, wherever in the chain the cut fell. A graph
+   * is told apart by what else hangs from it: the tool rounds.
+   */
+  const shared = new Set<string>();
+  const privateWrappers = new Set<string>();
+  for (const node of nodes.values()) {
+    const { parentId, role, origin, messageId } = node.record;
+    if (parentId == null || nodes.has(parentId)) {
+      continue;
+    }
+    if (role === 'plumbing' || role === 'model') {
+      privateWrappers.add(parentId);
+    } else {
+      shared.add(parentId);
+    }
+    const turn = origin == null ? turnsByMessage.get(messageId) : undefined;
+    if (turn != null) {
+      turn.split = true;
+    }
+  }
+  for (const id of shared) {
+    privateWrappers.delete(id);
+  }
   let sequence = 0;
   for (const turn of turns) {
     turn.rootIds.sort(compare);
@@ -606,7 +818,15 @@ export function buildTraceModel(
         stack.push(...node.childIds.map((childId) => ({ id: childId, depth: entry.depth + 1 })));
       }
     }
-    groupSteps(turn, nodes, steps, rootsByTurn.get(turn.messageId) ?? []);
+    const namedCalls = groupSteps(
+      turn,
+      nodes,
+      steps,
+      rootsByTurn.get(turn.messageId) ?? [],
+      privateWrappers,
+    );
+    turn.toolCalls += namedCalls;
+    summary.toolCalls += namedCalls;
     const turnSequenceStart = sequence;
     if (mode === 'simple') {
       for (const key of turn.stepKeys) {
@@ -626,10 +846,20 @@ export function buildTraceModel(
 
   summary.turns = turns.length;
   summary.duration = end - start;
-  /** A total that silently skips a model call without a price, with or without usage, would under-report spend, so there is none. */
-  if (pricedRecords > 0 && unpricedRecords === 0) {
-    summary.cost = cost;
+  const total = costOf(spend);
+  if (total != null) {
+    summary.cost = total;
   }
+  /**
+   * A response that is not all loaded holds only its newest records, and their sum is not its
+   * cost. A missing parent proves a cut (`split`), but a page can also end between a response's
+   * traces, its title run loaded and its own run not, with every parent in place. So while older
+   * records remain, the oldest loaded response is not known to be whole.
+   */
+  turns.forEach((turn, index) => {
+    const partial = turn.split || (hasOlder && index === 0);
+    turn.cost = partial ? undefined : costOf(spendByTurn.get(turn.messageId) ?? noSpend());
+  });
   return { mode, nodes, steps, turns, start, end, count: sequence, summary };
 }
 
@@ -850,10 +1080,10 @@ export function assignLanes(model: TraceModel, laneCount: number): Map<string, n
 
 /** On the sequence scale nothing overlaps, so lanes separate kinds: model calls, tools, the rest. */
 export function sequenceLane(record: TTraceRecord): number {
-  if (record.kind === 'generation') {
+  if (isModelCall(record)) {
     return 0;
   }
-  return record.kind === 'tool' ? 1 : 2;
+  return isToolWork(record) ? 1 : 2;
 }
 
 /** Clamps a zoom window inside the trace and keeps it at least `minSpan` wide. */

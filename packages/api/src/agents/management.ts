@@ -10,15 +10,28 @@ const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 20;
 const MAX_CURSOR_LENGTH = 512;
 
-export type AgentManagementCreate = Omit<z.output<typeof agentCreateSchema>, 'model'> & {
+/**
+ * `instructionsPrompt` (the Builder's link to a native prompt group) is a Builder-only
+ * feature in this slice: the Management API never accepts or returns it, so every
+ * Management type and schema below omits the field entirely, the same way an unknown
+ * top-level field is rejected rather than silently stripped (see the note above
+ * `agentManagementCreateSchema`).
+ */
+export type AgentManagementCreate = Omit<
+  z.output<typeof agentCreateSchema>,
+  'model' | 'instructionsPrompt'
+> & {
   model: string;
 };
-type AgentManagementCreateInput = Omit<z.input<typeof agentCreateSchema>, 'model'> & {
+type AgentManagementCreateInput = Omit<
+  z.input<typeof agentCreateSchema>,
+  'model' | 'instructionsPrompt'
+> & {
   model: string;
 };
 export type AgentManagementUpdate = Omit<
   z.output<typeof agentUpdateSchema>,
-  'name' | 'description' | 'instructions' | 'model' | 'avatar'
+  'name' | 'description' | 'instructions' | 'model' | 'avatar' | 'instructionsPrompt'
 > & {
   name?: string;
   description?: string;
@@ -32,7 +45,7 @@ export type AgentManagementList = {
 };
 export type AgentManagementResponse = Omit<
   z.output<typeof agentUpdateSchema>,
-  'provider' | 'model'
+  'provider' | 'model' | 'instructionsPrompt'
 > & {
   id: string;
   provider: string;
@@ -95,8 +108,9 @@ export const agentManagementCreateSchema: z.ZodType<
   AgentManagementCreate,
   z.ZodTypeDef,
   AgentManagementCreateInput
-> = agentCreateSchema.extend({ model: z.string() }).strict();
+> = agentCreateSchema.omit({ instructionsPrompt: true }).extend({ model: z.string() }).strict();
 export const agentManagementUpdateSchema: z.ZodType<AgentManagementUpdate> = agentUpdateSchema
+  .omit({ instructionsPrompt: true })
   .extend({
     name: z.string().optional(),
     description: z.string().optional(),
@@ -168,8 +182,10 @@ const agentManagementSubagentsResponseSchema: z.ZodType<AgentSubagentsConfig | u
   .strict()
   .optional();
 
-/** The externally supported Agent shape. Persistence and ownership fields are intentionally absent. */
+/** The externally supported Agent shape. Persistence and ownership fields are intentionally
+ *  absent, and so is `instructionsPrompt` — see the note above `agentManagementCreateSchema`. */
 export const agentManagementResponseSchema: z.ZodType<AgentManagementResponse> = agentUpdateSchema
+  .omit({ instructionsPrompt: true })
   .extend({
     id: z.string().min(1),
     provider: z.string(),
@@ -282,6 +298,7 @@ export function projectAgentManagementResponse(
     stateful_code_sessions: source.stateful_code_sessions,
     stateful_code_environment: source.stateful_code_environment,
     code_environment_id: source.code_environment_id,
+    code_environment_ids: source.code_environment_ids,
     code_workspace_id: source.code_workspace_id,
     repositoryInstructions: source.repositoryInstructions,
     git_identity: source.git_identity,

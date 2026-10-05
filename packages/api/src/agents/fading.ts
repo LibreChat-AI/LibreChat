@@ -1,5 +1,6 @@
 import {
   isAgentFadingTier,
+  isCurrentAgentFadingTier,
   isAgentFadingTierEntry,
   isAgentFadingTierEntries,
   AGENT_FADING_TIER_VERSION,
@@ -10,10 +11,13 @@ import type {
   IAgentFadingTier,
 } from '@librechat/data-schemas';
 
-export { isAgentFadingTier, isAgentFadingTierEntries };
+export { isAgentFadingTier, isCurrentAgentFadingTier, isAgentFadingTierEntries };
 
-/** Latched tiers keyed by agent ID, the shape `RunConfig.fadingTiers` takes. */
-export type RunFadingTiers = Record<string, IAgentFadingTier>;
+/** Latched current-version tiers keyed by agent ID for `RunConfig.fadingTiers`. */
+export type RunFadingTiers = Record<
+  string,
+  IAgentFadingTier & { v: typeof AGENT_FADING_TIER_VERSION }
+>;
 
 /**
  * Normalizes the tier a run exposes for persistence, or undefined when there
@@ -26,7 +30,7 @@ export function resolvePersistableFadingTier(tier: unknown): IAgentFadingTier | 
   if (!isAgentFadingTier(tier)) {
     return undefined;
   }
-  return { v: AGENT_FADING_TIER_VERSION, budgetTokens: tier.budgetTokens, masked: tier.masked };
+  return { v: tier.v, budgetTokens: tier.budgetTokens, masked: tier.masked };
 }
 
 /**
@@ -49,19 +53,25 @@ export function resolvePersistableFadingTiers(tiers: unknown): IAgentFadingTierE
 }
 
 /**
- * Rebuilds `RunConfig.fadingTiers` from persisted entries on a null-prototype
- * record, so an agent ID such as `__proto__` stays an own key and can never
- * touch the prototype chain.
+ * Rebuilds `RunConfig.fadingTiers` from current-version entries on a null-prototype
+ * record. Legacy v1 tiers stay readable in storage but must be re-derived because
+ * the SDK changed the exchange-width calculation. An agent ID such as `__proto__`
+ * remains an own key and cannot touch the prototype chain.
  */
 export function resolveRunFadingTiers(entries: unknown): RunFadingTiers | undefined {
   if (!isAgentFadingTierEntries(entries) || entries.length === 0) {
     return undefined;
   }
   const tiers: RunFadingTiers = Object.create(null);
+  let hasCurrentTier = false;
   for (const { agentId, v, budgetTokens, masked } of entries) {
+    if (v !== AGENT_FADING_TIER_VERSION) {
+      continue;
+    }
     tiers[agentId] = { v, budgetTokens, masked };
+    hasCurrentTier = true;
   }
-  return tiers;
+  return hasCurrentTier ? tiers : undefined;
 }
 
 export type RunContextMetaParams = {

@@ -6,6 +6,7 @@ import type { SubagentUpdateEvent } from 'librechat-data-provider';
 import {
   closeParentSubagentProgress,
   reduceSubagentProgress,
+  reduceSubagentReplay,
   registerSubagentProgressKey,
   removeSubagentProgressAtoms,
   subagentParentStreamOpenByToolCallId,
@@ -496,5 +497,844 @@ describe('useSubagentProgress', () => {
 
     expect(subagentProgressByToolCallId(key)).toBe(held);
     expect(store.get(held)).not.toBeNull();
+  });
+});
+
+it('counts an expired rejected interval without discarding later retained pending frames', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `overflow:${sequence}`,
+      activitySequence: sequence,
+      phase: 'message_delta',
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  let progress = reduceSubagentProgress(
+    null,
+    Array.from({ length: 100 }, (_, i) => event(i + 2)),
+    'detached',
+    true,
+  );
+  progress = reduceSubagentProgress(progress, [event(102), event(103)], 'detached', true);
+  progress = reduceSubagentProgress(progress, [event(0), event(1)], 'parent', true);
+  progress = reduceSubagentProgress(progress, [event(104), event(105)], 'detached', true);
+  expect(progress?.activityReplayFrom).toBe(102);
+  expect(progress?.pendingSequencedEvents).toHaveLength(2);
+  progress = reduceSubagentReplay(closeParentSubagentProgress(progress), [], false);
+  expect(progress?.lastActivitySequence).toBe(105);
+  expect(progress?.droppedCount).toBe(2);
+  expect(progress?.activityReplayFrom).toBeUndefined();
+  expect(progress?.contentParts).toEqual([
+    {
+      type: 'text',
+      text: Array.from({ length: 106 }, (_, i) => i)
+        .filter((i) => i !== 102 && i !== 103)
+        .map((i) => `${i},`)
+        .join(''),
+    },
+  ]);
+});
+
+describe('replay prefix projection reconciliation', () => {
+  const event = (sequence: number, phase: SubagentUpdateEvent['phase'] = 'message_delta') =>
+    update({
+      activityEventId: `backfill:${sequence}`,
+      activitySequence: sequence,
+      phase,
+      data:
+        phase === 'reasoning_delta'
+          ? { delta: { content: [{ type: 'think', think: `${sequence},` }] } }
+          : { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  it.each([0, 2, 4])(
+    'preserves a displayed suffix when replay stops at sequence %s',
+    (snapshotEnd) => {
+      let progress = reduceSubagentProgress(
+        null,
+        [event(2), event(3), event(4)],
+        'detached',
+        false,
+      );
+      const replay = Array.from({ length: snapshotEnd + 1 }, (_, i) => event(i));
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,` },
+      ]);
+      expect(progress?.lastActivitySequence).toBe(4);
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,` },
+      ]);
+      progress = reduceSubagentProgress(
+        progress,
+        [{ ...event(4), data: undefined, activityDroppedCount: 4 }],
+        'detached',
+        false,
+      );
+      expect(progress?.droppedCount).toBe(0);
+      progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+      expect(progress?.contentParts).toEqual([
+        { type: 'text', text: `${snapshotEnd === 0 ? '0,' : '0,1,'}2,3,4,5,` },
+      ]);
+    },
+  );
+  it('preserves reasoning and tool output while merging a prefix tool start', () => {
+    const toolResult = {
+      ...event(3),
+      phase: 'run_step_completed' as const,
+      data: {
+        result: {
+          id: 'step',
+          tool_call: {
+            id: 'tool',
+            name: 'execute_code',
+            args: { code: '1' },
+            output: 'success',
+            progress: 1,
+          },
+        },
+      },
+    };
+    let progress = reduceSubagentProgress(
+      null,
+      [event(2, 'reasoning_delta'), toolResult, event(4)],
+      'detached',
+      false,
+    );
+    const toolStart = {
+      ...event(0),
+      phase: 'run_step' as const,
+      data: {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'execute_code', args: { code: '1' } }],
+        },
+      },
+    };
+    progress = reduceSubagentReplay(progress, [toolStart, event(1)], false);
+    expect(progress?.contentParts.map((part) => part.type)).toEqual([
+      'tool_call',
+      'text',
+      'think',
+      'text',
+    ]);
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: { id: 'tool', output: 'success', progress: 1 },
+    });
+    expect(progress?.contentParts[2]).toEqual({ type: 'think', think: '2,' });
+    expect(progress?.contentParts[3]).toEqual({ type: 'text', text: '4,' });
+    progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+    expect(progress?.contentParts[3]).toEqual({ type: 'text', text: '4,5,' });
+    expect(progress?.tickerState.lines.some((line) => line.kind === 'tool_complete')).toBe(true);
+  });
+  it('keeps item and byte limits while prepending a missing prefix', () => {
+    const tool = (sequence: number) => ({
+      ...event(sequence),
+      phase: 'run_step' as const,
+      data: {
+        id: `step-${sequence}`,
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [
+            { id: `tool-${sequence}`, name: 'execute_code', args: { code: 'x'.repeat(2000) } },
+          ],
+        },
+      },
+    });
+    const previous = reduceSubagentProgress(
+      null,
+      Array.from({ length: 80 }, (_, i) => tool(i + 20)),
+      'detached',
+      false,
+    );
+    const progress = reduceSubagentReplay(
+      previous,
+      Array.from({ length: 20 }, (_, i) => tool(i)),
+      false,
+    );
+    expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+    expect(
+      new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+    ).toBeLessThanOrEqual(65_536);
+    expect(progress?.contentParts.at(-1)).toMatchObject({ tool_call: { id: 'tool-99' } });
+  });
+});
+
+describe('disjoint replay coverage', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `coverage:${sequence}`,
+      activitySequence: sequence,
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  it.each(['live', 'replay'])(
+    'keeps an uncovered prefix boundary recoverable through %s',
+    (source) => {
+      const suffix = reduceSubagentProgress(
+        null,
+        [event(2), event(3), event(4)],
+        'detached',
+        false,
+      );
+      let progress = reduceSubagentReplay(suffix, [event(0)], false);
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,2,3,4,' }]);
+      expect(progress?.coverage).toBe('suffix');
+      expect(progress?.replaySegments?.map((segment) => [segment.from, segment.through])).toEqual([
+        [0, 0],
+        [2, 4],
+      ]);
+      const before = JSON.stringify(progress);
+      const next =
+        source === 'live'
+          ? reduceSubagentProgress(progress, [event(1)], 'detached', false)
+          : reduceSubagentReplay(
+              progress,
+              [event(0), event(1), event(2), event(3), event(4)],
+              false,
+            );
+      expect(JSON.stringify(progress)).toBe(before);
+      progress = next;
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,' }]);
+      expect(progress?.coverage).toBe('complete');
+      expect(progress?.replaySegments).toBeUndefined();
+      progress = reduceSubagentProgress(progress, [event(5)], 'detached', false);
+      expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,5,' }]);
+    },
+  );
+  it('tracks multiple disjoint prefix ranges rather than inferring coverage from endpoints', () => {
+    let progress = reduceSubagentProgress(null, [event(6), event(7)], 'detached', false);
+    progress = reduceSubagentReplay(progress, [event(0), event(2), event(4)], false);
+    expect(progress?.coverage).toBe('suffix');
+    progress = reduceSubagentReplay(
+      progress,
+      Array.from({ length: 8 }, (_, i) => event(i)),
+      false,
+    );
+    expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,4,5,6,7,' }]);
+    expect(progress?.coverage).toBe('complete');
+    expect(progress?.replaySegments).toBeUndefined();
+  });
+  it('clears an overflow fence once live frames fill the rejected interval', () => {
+    let progress = reduceSubagentProgress(
+      null,
+      Array.from({ length: 100 }, (_, i) => event(i + 2)),
+      'detached',
+      true,
+    );
+    progress = reduceSubagentProgress(progress, [event(102), event(103)], 'detached', true);
+    progress = reduceSubagentProgress(progress, [event(0), event(1)], 'parent', true);
+    progress = reduceSubagentReplay(progress, [event(100), event(101)], false);
+    expect(progress?.activityReplayFrom).toBe(102);
+    progress = reduceSubagentProgress(progress, [event(102)], 'detached', true);
+    expect(progress?.activityReplayFrom).toBe(102);
+    progress = reduceSubagentProgress(progress, [event(103)], 'detached', true);
+    expect(progress?.activityReplayFrom).toBeUndefined();
+    progress = reduceSubagentProgress(progress, [event(104), event(105)], 'detached', false);
+    progress = reduceSubagentProgress(
+      progress,
+      [{ ...event(108), data: undefined, activityDroppedCount: 3 }],
+      'detached',
+      progress?.activityReplayFrom != null,
+    );
+    expect(progress?.lastActivitySequence).toBe(108);
+    expect(progress?.droppedCount).toBe(3);
+    expect(progress?.pendingSequencedEvents).toBeUndefined();
+  });
+});
+
+describe('legacy event-child invocation coverage', () => {
+  const event = (sequence: number, invocation = 'generation-a') =>
+    update({
+      subagentRunId: 'event-task',
+      activityEventId: `event-task:${invocation}:${sequence}`,
+      activitySequence: undefined,
+      data: { delta: { content: [{ type: 'text', text: `${invocation}:${sequence},` }] } },
+    });
+  it.each([0, 3])('backfills an unsequenced rollout suffix when replay ends at %s', (end) => {
+    let progress = reduceSubagentProgress(null, [event(2), event(3)], 'detached', false);
+    progress = reduceSubagentReplay(
+      progress,
+      Array.from({ length: end + 1 }, (_, i) => event(i)),
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: `generation-a:0,${end === 0 ? '' : 'generation-a:1,'}generation-a:2,generation-a:3,`,
+      },
+    ]);
+    progress = reduceSubagentReplay(progress, [event(0), event(1), event(2), event(3)], false);
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'generation-a:0,generation-a:1,generation-a:2,generation-a:3,' },
+    ]);
+    progress = reduceSubagentProgress(progress, [event(4)], 'detached', false);
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-a:2,generation-a:3,generation-a:4,',
+      },
+    ]);
+    expect(progress?.lastActivitySequence).toBeUndefined();
+  });
+  it('keeps prior and resumed invocations separate while restoring earlier frames within each', () => {
+    let progress = reduceSubagentProgress(
+      null,
+      [event(0), event(1), event(2, 'generation-b'), event(3, 'generation-b')],
+      'detached',
+      false,
+    );
+    progress = reduceSubagentReplay(
+      progress,
+      [event(0, 'generation-b'), event(1, 'generation-b')],
+      false,
+    );
+    progress = reduceSubagentProgress(progress, [event(0, 'generation-c')], 'detached', false);
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-b:0,generation-b:1,generation-b:2,generation-b:3,generation-c:0,',
+      },
+    ]);
+    progress = reduceSubagentReplay(
+      progress,
+      [event(0), event(1), event(0, 'generation-c')],
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      {
+        type: 'text',
+        text: 'generation-a:0,generation-a:1,generation-b:0,generation-b:1,generation-b:2,generation-b:3,generation-c:0,',
+      },
+    ]);
+  });
+});
+
+it('preserves compatibility updates while a numeric coverage gap is open', () => {
+  const event = (sequence: number) =>
+    update({
+      activityEventId: `mixed:${sequence}`,
+      activitySequence: sequence,
+      data: { delta: { content: [{ type: 'text', text: `${sequence},` }] } },
+    });
+  let progress = reduceSubagentProgress(null, [event(2), event(3)], 'detached', false);
+  progress = reduceSubagentReplay(progress, [event(0)], false);
+  progress = reduceSubagentProgress(
+    progress,
+    [
+      update({
+        activityEventId: 'older-provider',
+        activitySequence: undefined,
+        data: { delta: { content: [{ type: 'text', text: 'compat,' }] } },
+      }),
+    ],
+    'detached',
+    false,
+  );
+  progress = reduceSubagentProgress(progress, [event(1)], 'detached', false);
+  expect(progress?.contentParts).toEqual([{ type: 'text', text: '0,1,2,3,compat,' }]);
+});
+
+describe('tool prefix metadata reconciliation', () => {
+  const start = (args: unknown) =>
+    update({
+      activityEventId: 'tool-fields:0',
+      activitySequence: 0,
+      phase: 'run_step',
+      data: {
+        id: 'step',
+        stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'tool', name: 'search', args }] },
+      },
+    });
+  const complete = (fields: { args?: unknown; name?: string }) =>
+    update({
+      activityEventId: 'tool-fields:1',
+      activitySequence: 1,
+      phase: 'run_step_completed',
+      data: {
+        result: { id: 'step', tool_call: { id: 'tool', output: 'found', progress: 1, ...fields } },
+      },
+    });
+  it('preserves recovered inputs and names when completion synthesis omitted both', () => {
+    const end = complete({});
+    const suffix = reduceSubagentProgress(null, [end], 'detached', false);
+    expect(suffix?.contentParts[0]).toMatchObject({
+      tool_call: { argsUnavailable: true, nameUnavailable: true },
+    });
+    const progress = reduceSubagentReplay(suffix, [start({ query: 'release notes' }), end], false);
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: {
+        name: 'search',
+        args: '{"query":"release notes"}',
+        output: 'found',
+        progress: 1,
+      },
+    });
+    expect(progress?.contentParts[0]).toEqual(
+      reduceSubagentProgress(null, [start({ query: 'release notes' }), end], 'detached', false)
+        ?.contentParts[0],
+    );
+  });
+  it('keeps explicitly supplied empty args and a newer name instead of treating them as defaults', () => {
+    const end = complete({ args: {}, name: 'search_v2' });
+    const progress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [end], 'detached', false),
+      [start({ query: 'release notes' }), end],
+      false,
+    );
+    expect(progress?.contentParts[0]).toMatchObject({
+      tool_call: { name: 'search_v2', args: '{}', output: 'found' },
+    });
+  });
+});
+
+describe('cumulative omission receipts independent of projection eviction', () => {
+  const marker = (sequence: number, invocation?: string) =>
+    update({
+      subagentRunId: 'event-task',
+      activityEventId:
+        invocation == null ? `omissions:${sequence}` : `event-task:${invocation}:${sequence}`,
+      activitySequence: invocation == null ? sequence : undefined,
+      activityDroppedCount: 3,
+      phase: 'message_delta',
+      data: undefined,
+    });
+  const text = (sequence: number, invocation?: string) => ({
+    ...marker(sequence, invocation),
+    activityDroppedCount: undefined,
+    data: { delta: { content: [{ type: 'text', text: 'x'.repeat(60_000) }] } },
+  });
+  it.each(['task', 'invocation'])(
+    'retains nine omissions after large %s projections evict earlier markers',
+    (mode) => {
+      let progress = null as ReturnType<typeof reduceSubagentProgress>;
+      for (let index = 0; index < 3; index++) {
+        const invocation = mode === 'invocation' ? `generation-${index}` : undefined;
+        progress = reduceSubagentProgress(
+          progress,
+          [
+            marker(mode === 'task' ? index * 5 : 0, invocation),
+            text(mode === 'task' ? index * 5 + 1 : 1, invocation),
+          ],
+          'detached',
+          false,
+        );
+        expect(progress?.droppedCount).toBe((index + 1) * 3);
+      }
+      const replay = [
+        marker(0, mode === 'invocation' ? 'generation-0' : undefined),
+        text(1, mode === 'invocation' ? 'generation-0' : undefined),
+      ];
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.droppedCount).toBe(9);
+      progress = reduceSubagentReplay(progress, replay, false);
+      expect(progress?.droppedCount).toBe(9);
+      expect(progress?.omissionEventKeys).toHaveLength(3);
+      expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+      expect(
+        new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+      ).toBeLessThanOrEqual(65_536);
+    },
+  );
+});
+
+describe('measured tool timing replay provenance', () => {
+  const events = (identity: 'task' | 'invocation', completedAt = 8_000, completedStep = 'step') => {
+    const event = (
+      sequence: number,
+      phase: SubagentUpdateEvent['phase'],
+      data: SubagentUpdateEvent['data'],
+    ) =>
+      update({
+        subagentRunId: 'event-task',
+        activityEventId:
+          identity === 'task' ? `timing:${sequence}` : `event-task:timing-invocation:${sequence}`,
+        activitySequence: identity === 'task' ? sequence : undefined,
+        phase,
+        data,
+      });
+    return [
+      event(0, 'run_step', {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'search', args: { query: 'release notes' } }],
+        },
+      }),
+      event(1, 'tool_preparation', { id: 'step', toolCallId: 'tool', observed_at: 1_000 }),
+      event(2, 'tool_calls_dispatched', {
+        dispatched_at: 3_000,
+        toolCalls: [{ id: 'tool', stepId: 'step' }],
+      }),
+      event(3, 'run_step_completed', {
+        result: {
+          id: completedStep,
+          completed_at: completedAt,
+          tool_call: { id: 'tool', output: 'found', progress: 1 },
+        },
+      }),
+    ];
+  };
+  it.each(['task', 'invocation'] as const)(
+    'restores preparation and execution intervals from %s prefix replay',
+    (identity) => {
+      const lifecycle = events(identity);
+      const chronological = reduceSubagentProgress(null, lifecycle, 'detached', false);
+      let progress = reduceSubagentProgress(null, [lifecycle[3]], 'detached', false);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { stepId: 'step', toolCompletedAt: 8_000 },
+      });
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolPreparationDurationMs');
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+      const before = JSON.stringify(progress);
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts).toEqual(chronological?.contentParts);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+      });
+      expect(before).toContain('"toolCompletedAt":8000');
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts).toEqual(chronological?.contentParts);
+    },
+  );
+  it.each(['task', 'invocation'] as const)(
+    'keeps %s timing context through partial backfill and interior gap recovery',
+    (identity) => {
+      const lifecycle = events(identity);
+      let progress = reduceSubagentProgress(null, [lifecycle[3]], 'detached', false);
+      progress = reduceSubagentReplay(progress, lifecycle.slice(0, 2), false);
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+      progress = reduceSubagentReplay(progress, lifecycle, false);
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+      });
+      expect(progress?.contentParts).toEqual(
+        reduceSubagentProgress(null, lifecycle, 'detached', false)?.contentParts,
+      );
+    },
+  );
+  it.each(['task', 'invocation'] as const)(
+    'does not present another step completion as measured %s intervals',
+    (identity) => {
+      const lifecycle = events(identity, 8_000, 'other-step');
+      const progress = reduceSubagentReplay(
+        reduceSubagentProgress(null, [lifecycle[3]], 'detached', false),
+        lifecycle,
+        false,
+      );
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolPreparationDurationMs');
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+    },
+  );
+  it.each([NaN, Infinity, -1, 2_000])(
+    'rejects invalid or clock-skewed completion %s instead of inventing elapsed time',
+    (at) => {
+      const lifecycle = events('task', at);
+      const progress = reduceSubagentReplay(
+        reduceSubagentProgress(null, [lifecycle[3]], 'detached', false),
+        lifecycle,
+        false,
+      );
+      expect(progress?.contentParts[0]).toMatchObject({
+        tool_call: { toolPreparationDurationMs: 2_000 },
+      });
+      expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+    },
+  );
+});
+
+describe('covered timing metadata reconciliation', () => {
+  const lifecycle = (identity: 'task' | 'invocation', invocation = 'generation-a') => {
+    const event = (
+      sequence: number,
+      phase: SubagentUpdateEvent['phase'],
+      data: SubagentUpdateEvent['data'],
+    ) =>
+      update({
+        subagentRunId: 'event-task',
+        activityEventId:
+          identity === 'task'
+            ? `covered-timing:${sequence}`
+            : `event-task:${invocation}:${sequence}`,
+        activitySequence: identity === 'task' ? sequence : undefined,
+        phase,
+        data,
+      });
+    return [
+      event(0, 'run_step', {
+        id: 'step',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'tool', name: 'search', args: { query: 'release notes' } }],
+        },
+      }),
+      event(1, 'tool_preparation', { id: 'step', toolCallId: 'tool', observed_at: 1_000 }),
+      event(2, 'tool_calls_dispatched', {
+        dispatched_at: 3_000,
+        toolCalls: [{ id: 'tool', stepId: 'step' }],
+      }),
+      event(3, 'run_step_completed', {
+        result: {
+          id: 'step',
+          completed_at: 8_000,
+          tool_call: { id: 'tool', output: 'found', progress: 1 },
+        },
+      }),
+    ];
+  };
+  it.each(['task', 'invocation'] as const)(
+    'restores discarded %s timing from every partial suffix',
+    (identity) => {
+      const full = lifecycle(identity);
+      const expected = reduceSubagentProgress(null, full, 'detached', false);
+      for (const start of [1, 2, 3]) {
+        let progress = reduceSubagentProgress(null, full.slice(start), 'detached', false);
+        expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+        const original = JSON.stringify(progress);
+        const repaired = reduceSubagentReplay(progress, full, false);
+        expect(JSON.stringify(progress)).toBe(original);
+        progress = repaired;
+        expect(progress?.contentParts).toEqual(expected?.contentParts);
+        expect(progress?.contentParts[0]).toMatchObject({
+          tool_call: { toolPreparationDurationMs: 2_000, toolExecutionDurationMs: 5_000 },
+        });
+        progress = reduceSubagentReplay(progress, full, false);
+        expect(progress?.contentParts).toEqual(expected?.contentParts);
+        const next = {
+          ...full[3],
+          activityEventId: identity === 'task' ? 'covered-timing:4' : `event-task:generation-a:4`,
+          activitySequence: identity === 'task' ? 4 : undefined,
+          phase: 'message_delta' as const,
+          data: { delta: { content: [{ type: 'text', text: 'after' }] } },
+        };
+        progress = reduceSubagentProgress(progress, [next], 'detached', false);
+        expect(progress?.contentParts[0]).toEqual(expected?.contentParts[0]);
+        expect(progress?.contentParts[1]).toEqual({ type: 'text', text: 'after' });
+      }
+    },
+  );
+  it('does not borrow stamps from another event-child resume with reused tool and step IDs', () => {
+    const a = lifecycle('invocation', 'generation-a');
+    const b = lifecycle('invocation', 'generation-b');
+    b[2] = { ...b[2], data: { dispatched_at: 5_000, toolCalls: [{ id: 'tool', stepId: 'step' }] } };
+    let progress = reduceSubagentProgress(null, [...a.slice(2), ...b.slice(2)], 'detached', false);
+    progress = reduceSubagentReplay(progress, a, false);
+    const invocations = progress?.legacyReplayInvocations ?? [];
+    expect(invocations[0].progress.contentParts[0]).toMatchObject({
+      tool_call: { toolExecutionDurationMs: 5_000 },
+    });
+    expect(invocations[1].progress.contentParts[0]).not.toHaveProperty(
+      'tool_call.toolExecutionDurationMs',
+    );
+    progress = reduceSubagentReplay(progress, b, false);
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).toMatchObject({
+      tool_call: { toolExecutionDurationMs: 3_000 },
+    });
+  });
+  it('does not repair timing from another step or a post-completion handoff', () => {
+    const full = lifecycle('task');
+    const mismatched = {
+      ...full[2],
+      data: { dispatched_at: 3_000, toolCalls: [{ id: 'tool', stepId: 'wrong-step' }] },
+    };
+    const late = { ...full[2], activitySequence: 4, activityEventId: 'covered-timing:4' };
+    const original = reduceSubagentProgress(null, [full[3], late], 'detached', false);
+    const progress = reduceSubagentReplay(
+      original,
+      [full[0], full[1], mismatched, full[3], late],
+      false,
+    );
+    expect(progress?.contentParts[0]).not.toHaveProperty('tool_call.toolExecutionDurationMs');
+  });
+});
+
+describe('message-step phase replay provenance', () => {
+  const identity = (
+    sequence: number,
+    mode: 'task' | 'invocation',
+    invocation = 'generation-a',
+  ) => ({
+    subagentRunId: 'event-task',
+    activityEventId:
+      mode === 'task' ? `message-phase:${sequence}` : `event-task:${invocation}:${sequence}`,
+    activitySequence: mode === 'task' ? sequence : undefined,
+  });
+  const declaration = (
+    phase: 'commentary' | 'final_answer',
+    mode: 'task' | 'invocation',
+    step = 'message',
+    invocation = 'generation-a',
+  ) =>
+    update({
+      ...identity(0, mode, invocation),
+      phase: 'run_step',
+      data: { id: step, stepDetails: { type: 'message_creation', message_creation: { phase } } },
+    });
+  const text = (
+    sequence: number,
+    value: string,
+    mode: 'task' | 'invocation',
+    step = 'message',
+    invocation = 'generation-a',
+  ) =>
+    update({
+      ...identity(sequence, mode, invocation),
+      phase: 'message_delta',
+      data: { id: step, delta: { content: [{ type: 'text', text: value }] } },
+    });
+  it.each(['task', 'invocation'] as const)(
+    'recovers %s phase before continuing a Markdown span',
+    (mode) => {
+      for (const phase of ['commentary', 'final_answer'] as const) {
+        const start = declaration(phase, mode);
+        const first = text(1, '**release', mode);
+        const last = text(2, ' notes**', mode);
+        let progress = reduceSubagentProgress(null, [first], 'detached', false);
+        expect(progress?.contentParts[0]).toEqual({
+          type: 'text',
+          text: '**release',
+          stepId: 'message',
+        });
+        const original = JSON.stringify(progress);
+        const repaired = reduceSubagentReplay(progress, [start, first], false);
+        expect(JSON.stringify(progress)).toBe(original);
+        progress = repaired;
+        expect(progress?.contentParts).toEqual([
+          { type: 'text', text: '**release', stepId: 'message', phase },
+        ]);
+        progress = reduceSubagentReplay(progress, [start, first], false);
+        progress = reduceSubagentProgress(progress, [last], 'detached', false);
+        expect(progress?.contentParts).toEqual([
+          { type: 'text', text: '**release notes**', stepId: 'message', phase },
+        ]);
+        expect(progress?.contentParts).toEqual(
+          reduceSubagentProgress(null, [start, first, last], 'detached', false)?.contentParts,
+        );
+      }
+    },
+  );
+  it('repairs a phase split already displayed before reconnect and rebases a following tool', () => {
+    const start = declaration('commentary', 'task');
+    const first = text(1, '**release', 'task');
+    const last = {
+      ...text(2, ' notes**', 'task'),
+      data: {
+        id: 'message',
+        delta: { content: [{ type: 'text', text: ' notes**', phase: 'commentary' }] },
+      },
+    };
+    const tool = update({
+      ...identity(3, 'task'),
+      phase: 'run_step',
+      data: {
+        id: 'tool-step',
+        stepDetails: { type: 'tool_calls', tool_calls: [{ id: 'tool', name: 'search', args: {} }] },
+      },
+    });
+    let progress = reduceSubagentProgress(null, [first, last, tool], 'detached', false);
+    expect(progress?.contentParts).toHaveLength(3);
+    progress = reduceSubagentReplay(progress, [start, first, last, tool], false);
+    expect(progress?.contentParts).toHaveLength(2);
+    expect(progress?.contentParts[0]).toEqual({
+      type: 'text',
+      text: '**release notes**',
+      phase: 'commentary',
+      stepId: 'message',
+    });
+    expect(progress?.aggregatorState.toolCallIndexById.tool).toBe(1);
+    progress = reduceSubagentProgress(
+      progress,
+      [
+        update({
+          ...identity(4, 'task'),
+          phase: 'run_step_completed',
+          data: {
+            result: { id: 'tool-step', tool_call: { id: 'tool', output: 'done', progress: 1 } },
+          },
+        }),
+      ],
+      'detached',
+      false,
+    );
+    expect(progress?.contentParts[1]).toMatchObject({ tool_call: { output: 'done', progress: 1 } });
+  });
+  it('keeps independent message steps and explicit phases separate', () => {
+    const a = text(1, 'A', 'task', 'a');
+    const b = text(2, 'B', 'task', 'b');
+    let progress = reduceSubagentProgress(null, [a, b], 'detached', false);
+    expect(progress?.contentParts).toHaveLength(2);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('commentary', 'task', 'a'), a, b],
+      false,
+    );
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'A', stepId: 'a', phase: 'commentary' },
+      { type: 'text', text: 'B', stepId: 'b' },
+    ]);
+    const explicit = {
+      ...a,
+      data: { id: 'a', delta: { content: [{ type: 'text', text: 'A', phase: 'final_answer' }] } },
+    };
+    const explicitProgress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [explicit], 'detached', false),
+      [declaration('commentary', 'task', 'a'), explicit],
+      false,
+    );
+    expect(explicitProgress?.contentParts[0]).toMatchObject({ phase: 'final_answer' });
+  });
+  it('recovers historical phase without reviving a closed message-step map', () => {
+    const start = declaration('commentary', 'task');
+    const first = text(1, 'first', 'task');
+    const close = update({
+      ...identity(2, 'task'),
+      phase: 'run_step_closed',
+      data: { id: 'message' },
+    });
+    const progress = reduceSubagentReplay(
+      reduceSubagentProgress(null, [first, close], 'detached', false),
+      [start, first, close],
+      false,
+    );
+    expect(progress?.contentParts[0]).toMatchObject({ phase: 'commentary', stepId: 'message' });
+    expect(progress?.aggregatorState.messagePhaseByStepId).not.toHaveProperty('message');
+  });
+  it('scopes recovered phase to its event-child invocation when step IDs are reused', () => {
+    const a = text(1, 'A', 'invocation', 'message', 'generation-a');
+    const b = text(1, 'B', 'invocation', 'message', 'generation-b');
+    let progress = reduceSubagentProgress(null, [a, b], 'detached', false);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('commentary', 'invocation', 'message', 'generation-a'), a],
+      false,
+    );
+    expect(progress?.legacyReplayInvocations?.[0].progress.contentParts[0]).toMatchObject({
+      phase: 'commentary',
+    });
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).not.toHaveProperty(
+      'phase',
+    );
+    expect(progress?.contentParts).toEqual([
+      { type: 'text', text: 'A', stepId: 'message', phase: 'commentary' },
+      { type: 'text', text: 'B', stepId: 'message' },
+    ]);
+    progress = reduceSubagentReplay(
+      progress,
+      [declaration('final_answer', 'invocation', 'message', 'generation-b'), b],
+      false,
+    );
+    expect(progress?.legacyReplayInvocations?.[1].progress.contentParts[0]).toMatchObject({
+      phase: 'final_answer',
+    });
+  });
+  it('includes text provenance in the existing retention budgets', () => {
+    const parts = Array.from({ length: 110 }, (_, i) =>
+      text(i + 1, 'x'.repeat(1_000), 'task', `message-${i}`),
+    );
+    const progress = reduceSubagentProgress(null, parts, 'detached', false);
+    expect(progress?.contentParts.length).toBeLessThanOrEqual(100);
+    expect(
+      new TextEncoder().encode(JSON.stringify(progress?.contentParts)).byteLength,
+    ).toBeLessThanOrEqual(65_536);
+    expect(progress?.contentParts.at(-1)).toMatchObject({ stepId: 'message-109' });
   });
 });

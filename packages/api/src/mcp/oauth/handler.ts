@@ -33,10 +33,11 @@ import {
   inferClientAuthMethod,
 } from './methods';
 import { isSSRFTarget, resolveHostnameSSRF, isOAuthUrlAllowed } from '~/auth';
+import { MCPTokenStorage, MCPTokenRefreshUnavailableError } from './tokens';
 import { probeResourceMetadataHint } from './resourceHint';
 import { createHardenedOAuthFetch } from './hardenedFetch';
 import { sanitizeUrlForLogging } from '~/mcp/utils';
-import { MCPTokenStorage } from './tokens';
+import { getOAuthCallbackUrl } from '~/oauth/url';
 import { getOAuthUrlPort } from './url';
 
 /** Type for the OAuth metadata from the SDK */
@@ -1353,7 +1354,10 @@ export class MCPOAuthHandler {
         ...tokens,
         credential_set_id: randomBytes(16).toString('hex'),
         obtained_at: Date.now(),
-        expires_at: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+        expires_at:
+          typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in)
+            ? Date.now() + tokens.expires_in * 1000
+            : undefined,
       };
 
       /**
@@ -1677,9 +1681,10 @@ export class MCPOAuthHandler {
    */
   private static getDefaultRedirectUri(serverName?: string): string {
     const baseUrl = process.env.DOMAIN_SERVER || 'http://localhost:3080';
-    return serverName
-      ? `${baseUrl}/api/mcp/${serverName}/oauth/callback`
-      : `${baseUrl}/api/mcp/oauth/callback`;
+    const callbackPath = serverName
+      ? `/api/mcp/${serverName}/oauth/callback`
+      : '/api/mcp/oauth/callback';
+    return getOAuthCallbackUrl(baseUrl, callbackPath);
   }
 
   /**
@@ -1711,8 +1716,27 @@ export class MCPOAuthHandler {
       ...tokens,
       obtained_at: Date.now(),
       expires_at:
-        typeof tokens.expires_in === 'number' ? Date.now() + tokens.expires_in * 1000 : undefined,
+        typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in)
+          ? Date.now() + tokens.expires_in * 1000
+          : undefined,
     } as MCPOAuthTokens;
+  }
+
+  /** HTTP outage/rate-limit status is authoritative, even if a proxy body names a bad grant. */
+  private static async assertRefreshEndpointAvailable(
+    response: Response,
+    serverName: string,
+  ): Promise<void> {
+    if (!(response.status === 408 || response.status === 429 || response.status >= 500)) {
+      return;
+    }
+    // Do not feed an outage body into the legacy invalid_client/invalid_grant message classifiers,
+    // or log provider-controlled text that may contain credentials. No automatic redemption retry.
+    await response.body?.cancel().catch(() => undefined);
+    throw new MCPTokenRefreshUnavailableError(
+      serverName,
+      new Error(`Token refresh temporarily unavailable (HTTP ${response.status})`),
+    );
   }
 
   /**
@@ -1742,6 +1766,7 @@ export class MCPOAuthHandler {
       serverName,
     );
     const response = await oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    await this.assertRefreshEndpointAvailable(response, serverName);
     if (response.ok || !body.has('scope')) {
       return response;
     }
@@ -1758,7 +1783,9 @@ export class MCPOAuthHandler {
       `[MCPOAuth] ${serverName} rejected the scope parameter on token refresh (HTTP ${response.status}); retrying without scope per RFC 6749 §6`,
     );
     body.delete('scope');
-    return oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    const retried = await oauthFetch(tokenUrl, { method: 'POST', headers, body, signal });
+    await this.assertRefreshEndpointAvailable(retried, serverName);
+    return retried;
   }
 
   /**
@@ -2180,6 +2207,7 @@ export class MCPOAuthHandler {
         },
       );
 
+      await this.assertRefreshEndpointAvailable(response, metadata.serverName);
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(

@@ -25,6 +25,7 @@ const {
   normalizeExpiresIn,
   createOpenIDSessionIdentity,
   resolveAppConfigForUser,
+  commitPasswordReset,
 } = require('@librechat/api');
 const {
   findUser,
@@ -526,6 +527,7 @@ const requestPasswordReset = async (req) => {
 
   await createToken({
     userId: user._id,
+    email: user.email.toLowerCase(),
     type: AuthTokenTypes.PASSWORD_RESET,
     token: hash,
     createdAt: Date.now(),
@@ -570,20 +572,23 @@ const requestPasswordReset = async (req) => {
  * @returns
  */
 const resetPassword = async (userId, token, password) => {
-  const passwordResetToken = await findPasswordResetToken(userId);
+  const outcome = await commitPasswordReset(
+    {
+      findResetToken: findPasswordResetToken,
+      getUserById,
+      updateUser,
+      deleteTokens,
+      compareToken: (candidate, storedHash) => bcrypt.compareSync(candidate, storedHash),
+      hashPassword: (plain) => bcrypt.hashSync(plain, 10),
+    },
+    { userId, token, password },
+  );
 
-  if (!passwordResetToken) {
+  if (!outcome.ok) {
     return new Error('Invalid or expired password reset token');
   }
 
-  const isValid = bcrypt.compareSync(token, passwordResetToken.token);
-
-  if (!isValid) {
-    return new Error('Invalid or expired password reset token');
-  }
-
-  const hash = bcrypt.hashSync(password, 10);
-  const user = await updateUser(userId, { password: hash });
+  const { user, resetToken: passwordResetToken } = outcome;
 
   if (checkEmailConfig()) {
     await sendEmail({

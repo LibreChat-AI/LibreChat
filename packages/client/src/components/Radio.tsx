@@ -1,4 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
+import { disabledInkClasses } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -145,11 +146,11 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
   if (options.length === 0) {
     return (
       <div
-        className="relative inline-flex items-center rounded-lg bg-surface-tertiary p-1 opacity-50"
+        className="bg-surface-tertiary relative inline-flex items-center rounded-lg p-1 opacity-50"
         role="radiogroup"
         aria-labelledby={ariaLabelledBy}
       >
-        <span className="px-4 py-2 text-xs text-text-secondary">
+        <span className="text-text-secondary px-4 py-2 text-xs">
           {localize('com_ui_no_options')}
         </span>
       </div>
@@ -163,13 +164,13 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       ref={containerRef}
       className={`relative ${fullWidth ? 'flex' : 'inline-flex'} ${
         wrap ? 'flex-wrap' : ''
-      } items-center rounded-lg bg-surface-tertiary px-1 ${className}`}
+      } bg-surface-tertiary items-center rounded-lg px-1 ${className}`}
       role="radiogroup"
       aria-labelledby={ariaLabelledBy}
     >
       {selectedIndex >= 0 && isMounted && (
         <div
-          className={`pointer-events-none absolute left-0 rounded-md border border-border-light bg-surface-primary shadow-sm transition-all duration-300 ease-out ${
+          className={`border-border-light bg-surface-primary pointer-events-none absolute left-0 rounded-md border shadow-xs transition-all duration-300 ease-out ${
             wrap ? 'top-0' : 'inset-y-1'
           }`}
           style={backgroundStyle}
@@ -188,12 +189,12 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
           onClick={() => handleChange(option.value)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           disabled={disabled}
-          className={`relative z-10 flex h-[34px] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary ${
+          className={`focus-visible:ring-focus-control relative z-10 flex h-[2.125rem] items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors duration-150 focus-visible:ring-2 focus-visible:outline-hidden ${
             currentValue === option.value ? 'text-text-primary' : 'text-text-secondary'
-          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''} ${disabledInkClasses} ${fullWidth ? 'flex-1' : ''} ${buttonClassName}`}
         >
           {option.icon && (
-            <span className="flex-shrink-0" aria-hidden="true">
+            <span className="shrink-0" aria-hidden="true">
               {option.icon}
             </span>
           )}

@@ -12,6 +12,7 @@ describe('defaultVertexModels', () => {
     expect(defaultVertexModels).toEqual(
       expect.arrayContaining([
         'claude-opus-5',
+        'claude-opus-5-5',
         'claude-opus-4-8',
         'claude-opus-4-7',
         'claude-opus-4-6',
@@ -45,7 +46,13 @@ describe('validateVertexConfig region gating', () => {
    * Specific regional endpoints serve Sonnet 4.6 and earlier only. Publishing
    * the modern defaults there would advertise models that 404 on first use.
    */
-  const modern = ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5'];
+  const modern = [
+    'claude-opus-5-5',
+    'claude-opus-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-sonnet-5',
+  ];
   const legacy = ['claude-sonnet-4-6', 'claude-3-7-sonnet-20250219', 'claude-3-opus@20240229'];
 
   it('drops multi-region-only defaults on a specific regional endpoint', () => {

@@ -153,6 +153,27 @@ beforeEach(() => {
   mockAccess = {};
 });
 
+describe('LibreChat attachment limits', () => {
+  it('recognizes fractional attachment-size limits', () => {
+    const detail =
+      'This turn exceeds the configured total attachment size limit (128 > 104.8576). Remove some attachments or use smaller files and try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
+  it.each(['attachment count', 'total attachment size', 'extracted document text'])(
+    'does not blame the provider for the local %s limit',
+    (label) => {
+      const detail = `This turn exceeds the configured ${label} limit (11 > 10). Remove some attachments or use smaller files and try again.`;
+      renderError(detail, providerMessage);
+      expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+      expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+      expect(screen.getByText(detail)).toBeVisible();
+    },
+  );
+});
+
 describe('Error — every client-facing error type', () => {
   /** The seeded gallery refuses to run while a member lacks a case; this is the renderer's half. */
   it.each([...Object.values(ErrorTypes), ...Object.values(ViolationTypes)])(
@@ -195,6 +216,43 @@ describe('Error — reader-facing provider and fallback copy', () => {
 
     expect(screen.getByText(catalog[key])).toBeInTheDocument();
     expect(screen.queryByText(/langchain\.com/i)).not.toBeInTheDocument();
+    expectReadable();
+  });
+
+  it.each([
+    [
+      ErrorTypes.MODEL_STREAM_CLOSED,
+      'com_error_model_stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+    [
+      ErrorTypes.MODEL_STREAM_STALLED,
+      'com_error_model_stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+  ])(
+    'localizes a %s error even when it carries older-client fallback prose',
+    (type, key, prose) => {
+      renderError(`${prose}\n${JSON.stringify({ type })}`, providerMessage);
+
+      expect(screen.getByText(catalog[key])).toBeInTheDocument();
+      expect(screen.queryByText(prose)).not.toBeInTheDocument();
+      expect(screen.queryByText(/terminated/i)).not.toBeInTheDocument();
+      expectReadable();
+    },
+  );
+
+  it('keeps fallback prose when an older client cannot recognize the server error type', () => {
+    const prose =
+      'The model provider closed the connection before the response finished. Try again.';
+    renderError(
+      `${prose}\n${JSON.stringify({ type: 'newer_model_stream_failure' })}`,
+      providerMessage,
+    );
+
+    expect(screen.getByText(prose)).toBeInTheDocument();
+    expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('{');
     expectReadable();
   });
 

@@ -33,9 +33,14 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
+const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
+/** A reasoning part long enough that its settled prefix dwarfs the words still fading in. */
+const LONG_THINK_REPLY_MARKER = 'E2E_LONG_THINK_REPLY:';
+const LONG_THINK_WORDS = 400;
+const SLOW_THINK_REPLY_MARKER = 'E2E_SLOW_THINK_REPLY:';
 const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
@@ -45,20 +50,34 @@ const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const MCP_APP_MARKER = 'E2E_MCP_APP:';
+const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
+const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
+const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
+const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
+const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
+/** A three-question batch; the LONG variant gives the first question a maximum-size prompt. */
+const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
+const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+const STREAMING_MARKDOWN_REPLY_MARKER = 'E2E_STREAMING_MARKDOWN_REPLY';
+const HIGHLIGHT_CODE_MARKER = 'E2E_HIGHLIGHT_CODE:';
 const STATEFUL_CODE_MARKER = 'E2E_STATEFUL_CODE:';
 /** Two prose paragraphs, so a spec can select the message's *closing* block. */
 const PARAGRAPHS_REPLY_MARKER = 'E2E_PARAGRAPHS_REPLY';
 const MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_MERMAID_ARTIFACT_REPLY';
 const LARGE_MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_LARGE_MERMAID_ARTIFACT_REPLY';
 const HTML_ARTIFACT_REPLY_MARKER = 'E2E_HTML_ARTIFACT_REPLY';
+const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
@@ -83,12 +102,15 @@ const HANDOFF_TOOL_PREFIX = 'lc_transfer_to_';
 const CREATE_FILE_AUTHORING_FINAL_TEXT = 'E2E file authoring complete';
 const EDIT_FILE_AUTHORING_FINAL_TEXT = 'E2E file edit complete';
 const SKILL_ASSERTION_FINAL_TEXT = 'E2E skill assertion passed';
+/** Summary for a run with no invocable skill yet, but the tool to invoke one it authors. */
+const SKILL_ASSERTION_AUTHORING_ONLY_SUMMARY = 'authoring-only';
 const MANUAL_SKILL_ASSERTION_FINAL_TEXT = 'E2E manual skill assertion passed';
 const SKILL_TOOL_ASSERTION_FINAL_TEXT = 'E2E skill tool assertion passed';
 const PROVIDER_FILE_ASSERTION_FINAL_TEXT = 'E2E provider file assertion passed';
 const AGENT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E agent context assertion passed';
 const HISTORY_ASSERTION_PRESENT_TEXT = 'E2E history assertion present';
 const HISTORY_ASSERTION_ABSENT_TEXT = 'E2E history assertion absent';
+const PROJECT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E project context assertion passed';
 const QUOTE_ASSERTION_FINAL_TEXT = 'E2E quote assertion passed';
 const STEER_TOOL_FINAL_TEXT = 'E2E steer tool reply done';
 const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
@@ -96,9 +118,18 @@ const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
 const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
+const MCP_APP_PHASE_FINAL_TEXT = 'E2E MCP App phase complete';
+const ACTIVITY_FAILED_FINAL_TEXT = 'E2E activity failed reply done';
+const SLOW_ECHO_TOOL_NAME_PREFIX = 'slow_echo';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
+const MCP_APP_TOOL_NAME_PREFIX = 'show_app';
 const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
+/** The highlight cancellation scenario has to open the code card and stop the
+ *  run while its arguments are still arriving. At the ordinary slow cadence
+ *  those ~40 chunks are gone in under two seconds, which is not a window a
+ *  loaded runner can be relied on to hit, so that one variant streams wider. */
+const HIGHLIGHT_CANCEL_CHUNK_DELAY_MS = 200;
 const ORDERED_CHUNK_DELAY_MS = 2;
 const ORDERED_REPLY_PIECES = 64;
 const SLOW_REPLY_CHUNKS = 160;
@@ -237,22 +268,31 @@ function getMarkerValue(text, marker) {
   );
 }
 
-function collectToolNames(agents) {
-  const names = new Set();
-  const add = (name) => {
-    if (typeof name === 'string' && name) {
-      names.add(name);
+/**
+ * Every tool name the run advertises, mapped to the definition the model sees
+ * for it. `toolDefinitions` is the array handed to the provider, so it wins
+ * over a same-named entry in `tools`; registry-only names keep whatever the
+ * earlier sources carried, which may be nothing. Names alone drive most
+ * assertions, but the `skill` tool ships two descriptions for one name, so the
+ * definition has to survive collection.
+ */
+function collectToolDefinitions(agents) {
+  const definitions = new Map();
+  const add = (name, definition) => {
+    if (typeof name !== 'string' || !name) {
+      return;
     }
+    definitions.set(name, definition ?? definitions.get(name));
   };
   for (const agent of agents ?? []) {
     if (!agent) {
       continue;
     }
     for (const tool of agent.tools ?? []) {
-      add(tool?.name);
+      add(tool?.name, tool);
     }
     for (const def of agent.toolDefinitions ?? []) {
-      add(def?.name);
+      add(def?.name, def);
     }
     if (agent.toolRegistry && typeof agent.toolRegistry.keys === 'function') {
       for (const name of agent.toolRegistry.keys()) {
@@ -260,7 +300,11 @@ function collectToolNames(agents) {
       }
     }
   }
-  return names;
+  return definitions;
+}
+
+function collectToolNames(agents) {
+  return new Set(collectToolDefinitions(agents).keys());
 }
 
 async function getStreamAgentView({ graph, messages, options, runManager }) {
@@ -282,10 +326,12 @@ async function getStreamAgentView({ graph, messages, options, runManager }) {
     systemRunnable && typeof systemRunnable.invoke === 'function'
       ? await systemRunnable.invoke(messages)
       : messages;
+  const toolDefinitions = collectToolDefinitions(agentContext ? [agentContext] : []);
   return {
     agentId,
     messages: promptMessages,
-    toolNames: collectToolNames(agentContext ? [agentContext] : []),
+    toolDefinitions,
+    toolNames: new Set(toolDefinitions.keys()),
   };
 }
 
@@ -408,6 +454,44 @@ function agentContextAssertionResponses({ messages, text }) {
   };
 }
 
+function collectSystemPromptText(messages) {
+  return (messages ?? [])
+    .filter((message) => messageType(message) === 'system')
+    .map((message) => getContentText(message.content))
+    .join('\n');
+}
+
+/**
+ * Project probes deliberately inspect only system messages. The user marker
+ * itself and prior human/history messages must never satisfy this assertion.
+ * An optional second token asserts that a value is absent after a detach/move.
+ */
+function projectContextAssertionResponses({ messages, text }) {
+  const markerIndex = text.indexOf(ASSERT_PROJECT_CONTEXT_MARKER);
+  if (markerIndex === -1) {
+    return null;
+  }
+  const [expected, absent] = text
+    .slice(markerIndex + ASSERT_PROJECT_CONTEXT_MARKER.length)
+    .trim()
+    .split(/\s+/, 2);
+  const systemText = collectSystemPromptText(messages);
+  const foundExpected = expected === '-' || (Boolean(expected) && systemText.includes(expected));
+  const foundAbsent = Boolean(absent) && systemText.includes(absent);
+  if (foundExpected && !foundAbsent) {
+    return {
+      responses: [`${PROJECT_CONTEXT_ASSERTION_FINAL_TEXT}: ${expected || 'absent check'}`],
+    };
+  }
+  return {
+    responses: [
+      `E2E project context assertion failed: expected ${expected || 'a marker'}${
+        absent ? ` without ${absent}` : ''
+      }; saw ${systemText || 'no system context'}`,
+    ],
+  };
+}
+
 /**
  * Answers whether a token from an EARLIER turn still reaches the model. Scans
  * every prompt message except the current user turn: the marker line carries
@@ -497,6 +581,22 @@ function replyResponses(text) {
     };
   }
 
+  if (text.includes(TWO_ARTIFACT_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          ':::artifact{identifier="e2e-first" type="text/html" title="E2E First Artifact"}',
+          '<h1>First sandbox fixture</h1>',
+          ':::',
+          '',
+          ':::artifact{identifier="e2e-second" type="text/html" title="E2E Second Artifact"}',
+          '<h1>Second sandbox fixture</h1>',
+          ':::',
+        ].join('\n'),
+      ],
+    };
+  }
+
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [
@@ -512,6 +612,28 @@ function replyResponses(text) {
           '```',
         ].join('\n'),
       ],
+    };
+  }
+  if (text.includes(STREAMING_MARKDOWN_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          '## E2E streaming markdown heading',
+          '',
+          'E2E streaming opening paragraph with 日本語 content.',
+          '',
+          '```javascript',
+          'const e2eIncrementalMarkdown = "complete";',
+          '```',
+          '',
+          '| E2E column | E2E value |',
+          '| --- | --- |',
+          '| completed block | visible |',
+          '',
+          'E2E streaming markdown final paragraph.',
+        ].join('\n'),
+      ],
+      sleep: SLOW_CHUNK_DELAY_MS,
     };
   }
 
@@ -569,12 +691,38 @@ function replyResponses(text) {
     };
   }
 
+  const slowThinkName = getMarkerValue(text, SLOW_THINK_REPLY_MARKER);
+  if (slowThinkName) {
+    /** Three sentences of reasoning, word by word at a readable pace, so a
+     *  spec can watch the live header and the thought peek while it streams. */
+    return {
+      responses: [
+        '<think>First I read the request slowly. Then I gather the evidence with some care. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E slow think reply done ${slowThinkName}`,
+      ],
+      sleep: 120,
+    };
+  }
+
   const thinkName = getMarkerValue(text, THINK_REPLY_MARKER);
   if (thinkName) {
     /** The `<think>` tags are parsed downstream by the agents stream pipeline, so this
      *  yields a reasoning part followed by a text part: two separately editable parts. */
     return {
       responses: [`<think>E2E reasoning ${thinkName}</think>\n\nE2E reply ${thinkName}`],
+    };
+  }
+
+  const longThinkName = getMarkerValue(text, LONG_THINK_REPLY_MARKER);
+  if (longThinkName) {
+    const words = Array.from(
+      { length: LONG_THINK_WORDS },
+      (_, index) => `r${String(index).padStart(3, '0')}`,
+    );
+    return {
+      responses: [
+        `<think>E2E long reasoning ${longThinkName} ${words.join(' ')} end</think>\n\nE2E reply ${longThinkName}`,
+      ],
     };
   }
 
@@ -652,16 +800,25 @@ function replyResponses(text) {
 /**
  * Attaches synthetic usage_metadata on a final empty chunk (the OpenAI
  * streaming pattern) so token-usage SSE events flow end to end in mock runs.
+ * Input is counted over the complete prompt a real provider bills — system
+ * instructions included — since the context snapshot calibrates against it.
  */
 class UsageEmittingFakeChatModel extends FakeChatModel {
-  constructor({ resolveInvocation, resolveOnStream, sleep, ...options }) {
+  constructor({ graph, resolveInvocation, resolveOnStream, sleep, ...options }) {
     super({ ...options, sleep });
+    this.graph = graph;
     this.resolveInvocation = resolveInvocation;
     this.resolveOnStream = resolveOnStream;
     this.streamSleep = sleep ?? CHUNK_DELAY_MS;
   }
 
-  async *streamScriptedResponseChunks({ response, toolCalls, textDeltaBlocks, runManager }) {
+  async *streamScriptedResponseChunks({
+    response,
+    toolCalls,
+    textDeltaBlocks,
+    beforeToolsDelayMs,
+    runManager,
+  }) {
     if (this.emitCustomEvent) {
       await runManager?.handleCustomEvent('some_test_event', {
         someval: true,
@@ -684,16 +841,41 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
     }
 
     if (toolCalls?.length) {
-      await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
-      const toolCallChunks = toolCalls.map((toolCall, index) => ({
-        name: toolCall.name,
-        args: JSON.stringify(toolCall.args),
-        id: toolCall.id,
-        index,
-        type: 'tool_call_chunk',
-      }));
-      yield this._createResponseChunk('', toolCallChunks);
-      void runManager?.handleLLMNewToken('');
+      await new Promise((resolve) => setTimeout(resolve, beforeToolsDelayMs ?? this.streamSleep));
+      if (!toolCalls.some((toolCall) => toolCall.streamArgs)) {
+        const toolCallChunks = toolCalls.map((toolCall, index) => ({
+          name: toolCall.name,
+          args: JSON.stringify(toolCall.args),
+          id: toolCall.id,
+          index,
+          type: 'tool_call_chunk',
+        }));
+        yield this._createResponseChunk('', toolCallChunks);
+        void runManager?.handleLLMNewToken('');
+        return;
+      }
+
+      for (const [index, toolCall] of toolCalls.entries()) {
+        const serializedArgs = JSON.stringify(toolCall.args);
+        const chunks = toolCall.streamArgs
+          ? (serializedArgs.match(/.{1,64}/gs) ?? [''])
+          : [serializedArgs];
+        for (const [chunkIndex, args] of chunks.entries()) {
+          const toolCallChunk = {
+            name: chunkIndex === 0 ? toolCall.name : undefined,
+            args,
+            id: chunkIndex === 0 ? toolCall.id : undefined,
+            index,
+            type: 'tool_call_chunk',
+          };
+          yield this._createResponseChunk('', [toolCallChunk]);
+          void runManager?.handleLLMNewToken('');
+          if (chunkIndex < chunks.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, this.streamSleep));
+          }
+        }
+      }
+      return;
     }
   }
 
@@ -731,6 +913,7 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
         response: scriptedResponse.response ?? '',
         toolCalls: scriptedResponse.toolCalls,
         textDeltaBlocks: scriptedResponse.textDeltaBlocks === true,
+        beforeToolsDelayMs: scriptedResponse.beforeToolsDelayMs,
         runManager,
       });
     } else if (dynamicResponse) {
@@ -747,7 +930,13 @@ class UsageEmittingFakeChatModel extends FakeChatModel {
       outputChars += typeof chunk.text === 'string' ? chunk.text.length : 0;
       yield chunk;
     }
-    const inputChars = (messages ?? []).reduce(
+    const { messages: promptMessages } = await getStreamAgentView({
+      graph: this.graph,
+      messages: messages ?? [],
+      options,
+      runManager,
+    });
+    const inputChars = promptMessages.reduce(
       (sum, message) => sum + getContentText(message?.content).length,
       0,
     );
@@ -798,6 +987,7 @@ function overrideModel({
 
   if (!thrownError) {
     const model = new UsageEmittingFakeChatModel({
+      graph,
       responses,
       sleep: sleep ?? CHUNK_DELAY_MS,
       emitCustomEvent: true,
@@ -913,7 +1103,22 @@ function expectedSkillBodyMarker(skillName) {
   return `# ${skillName}`;
 }
 
-function skillAssertionResponses({ messages, assertion, toolNames }) {
+/**
+ * The `skill` tool's authoring-only wording, from `AUTHORED_SKILL_CONSTRAINTS`
+ * in `packages/api/src/agents/tools.ts`. A run that may write
+ * `skills/{skillName}/SKILL.md` gets that variant instead of the SDK's
+ * catalog-only text, which is what makes the two cases below separable from
+ * the prompt alone.
+ */
+const AUTHORED_SKILL_GUIDANCE = 'a skill you created in this conversation';
+
+function isAuthoringSkillTool(definition) {
+  return typeof definition?.description === 'string'
+    ? definition.description.includes(AUTHORED_SKILL_GUIDANCE)
+    : false;
+}
+
+function skillAssertionResponses({ messages, assertion, toolNames, toolDefinitions }) {
   const failures = [];
   if (assertion.error) {
     failures.push(assertion.error);
@@ -921,10 +1126,23 @@ function skillAssertionResponses({ messages, assertion, toolNames }) {
   const promptText = collectPromptText(messages).join('\n');
   const skillPrimeMessages = collectSkillPrimeMessages(messages);
 
-  if (assertion.required.length > 0 && !toolNames.has(SKILL_TOOL_NAME)) {
+  const skillToolAdvertised = toolNames.has(SKILL_TOOL_NAME);
+  /**
+   * An empty catalog no longer implies an absent `skill` tool: a run that can
+   * author skills keeps the tool bound so the model can invoke one it writes
+   * mid-run, and it gets the authoring variant's description to say so. Both
+   * states still have to be told apart, so the pass text names which one
+   * happened — `none` for no tool at all, `authoring-only` for a tool with
+   * nothing yet to invoke — and neither string contains the other, so a spec
+   * asserting one cannot pass on the other.
+   */
+  const authoringSkillTool =
+    skillToolAdvertised && isAuthoringSkillTool(toolDefinitions?.get(SKILL_TOOL_NAME));
+
+  if (assertion.required.length > 0 && !skillToolAdvertised) {
     failures.push(`${SKILL_TOOL_NAME} tool was not advertised`);
   }
-  if (assertion.required.length === 0 && toolNames.has(SKILL_TOOL_NAME)) {
+  if (assertion.required.length === 0 && skillToolAdvertised && !authoringSkillTool) {
     failures.push(`${SKILL_TOOL_NAME} tool was unexpectedly advertised`);
   }
   for (const name of assertion.required) {
@@ -960,11 +1178,16 @@ function skillAssertionResponses({ messages, assertion, toolNames }) {
   }
   return {
     responses: [
-      `${SKILL_ASSERTION_FINAL_TEXT}: ${
-        assertion.required.length > 0 ? assertion.required.join(', ') : 'none'
-      }`,
+      `${SKILL_ASSERTION_FINAL_TEXT}: ${resolveSkillAssertionSummary(assertion, authoringSkillTool)}`,
     ],
   };
+}
+
+function resolveSkillAssertionSummary(assertion, authoringSkillTool) {
+  if (assertion.required.length > 0) {
+    return assertion.required.join(', ');
+  }
+  return authoringSkillTool ? SKILL_ASSERTION_AUTHORING_ONLY_SUMMARY : 'none';
 }
 
 function manualSkillAssertionResponses({ messages, skillName }) {
@@ -1131,6 +1354,155 @@ function steerToolReplyResponses(label, toolNames) {
       }
       return { response: `${STEER_TOOL_FINAL_TEXT} ${label} ${steerEchoSuffix(messages)}` };
     },
+  };
+}
+
+function mcpAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App unavailable: show_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+/** Two sequential App calls so Provider F creates two labeled activities and
+ *  one enclosing activity phase through the normal graph lifecycle. */
+function mcpAppPhaseResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App phase unavailable: show_app was not advertised.'] };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_alpha_${label}`,
+              name: toolName,
+              args: { label: `phase alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_beta_${label}`,
+              name: toolName,
+              args: { label: `phase beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${MCP_APP_PHASE_FINAL_TEXT}: ${label}` };
+    },
+  };
+}
+
+function mcpLinkAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('show_link_app'));
+  if (!toolName) {
+    return { responses: ['E2E MCP link App unavailable: show_link_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP link App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_link_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function legacyResourceResponses(
+  label,
+  toolNames,
+  { toolPrefix, callIdPrefix, completionPrefix, unavailable },
+) {
+  const candidates = Array.from(toolNames);
+  const toolName =
+    candidates.find((name) => name === toolPrefix) ??
+    candidates.find(
+      (name) =>
+        name.startsWith(toolPrefix) &&
+        (toolPrefix !== 'show_legacy' || !name.startsWith('show_legacy_mimeless')),
+    );
+  if (!toolName) {
+    return { responses: [unavailable] };
+  }
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `${callIdPrefix}_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolResult = findLastToolMessageText(streamMessages, 'UI Resource ID:');
+      const resourceId = toolResult.match(/UI Resource ID: ([a-f0-9]+)/)?.[1];
+      return resourceId ? { responses: [`${completionPrefix}: \\ui{${resourceId}}`] } : null;
+    },
+  };
+}
+
+function mcpLegacyResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy',
+    callIdPrefix: 'call_e2e_mcp_legacy',
+    completionPrefix: 'Legacy MCP-UI',
+    unavailable: 'E2E legacy MCP-UI unavailable: show_legacy was not advertised.',
+  });
+}
+
+function mcpLegacyMimelessResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy_mimeless',
+    callIdPrefix: 'call_e2e_mcp_legacy_mimeless',
+    completionPrefix: 'MIME-less Legacy MCP-UI',
+    unavailable: 'E2E MIME-less legacy MCP-UI unavailable: tool was not advertised.',
+  });
+}
+
+function mcpLegacyActionResponses(toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('legacy_action'));
+  if (!toolName) {
+    return { responses: ['E2E legacy action unavailable: legacy_action was not advertised.'] };
+  }
+  return {
+    responses: ['', 'E2E legacy action complete'],
+    toolCalls: [
+      {
+        id: 'call_e2e_mcp_legacy_action',
+        name: toolName,
+        args: { label: 'legacy-view' },
+        type: 'tool_call',
+      },
+    ],
   };
 }
 
@@ -1354,6 +1726,118 @@ function activityPhaseReplyResponses(label, toolNames) {
   };
 }
 
+/** Short prose remains visible while the real tool/label pipeline forms and
+ * dissolves folds. The pause before calls lets the browser finish the initial
+ * word fade and install its identity/animation observer before that transition. */
+function activityProseReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    throw new Error('Activity prose fixture requires the memory MCP tool');
+  }
+  const prose = [
+    "Let me establish today's date and gather independent signals in parallel.",
+    'Today is **2026-09-29 23:20 UTC**. Two things stand out immediately: a config-structure PR landed yesterday, and an image bump went in today. Let me dig into both.',
+    "Important finding: PR #4079 ships the config **disabled by default**. Let me check today's actual runtime state and the image bump.",
+  ];
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      const batch = invocation++;
+      if (batch < prose.length) {
+        return {
+          response: prose[batch],
+          beforeToolsDelayMs: 2000,
+          toolCalls: [
+            {
+              id: `call_e2e_activity_prose_${label}_${batch}`,
+              name: toolName,
+              args: { fact: `activity prose ${label} ${batch}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+/**
+ * A phase whose middle batch holds a failed call beside a slow one: `slow_echo`
+ * called without its required `text` fails schema validation before the tool
+ * runs, and a second `slow_echo` keeps the batch live for `delay` ms so a spec
+ * can watch the fold while it streams.
+ */
+function activityFailedReplyResponses(label, toolNames) {
+  const rememberTool = Array.from(toolNames).find((name) =>
+    name.startsWith(STEER_TOOL_NAME_PREFIX),
+  );
+  const slowTool = Array.from(toolNames).find((name) =>
+    name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX),
+  );
+  if (!rememberTool || !slowTool) {
+    return {
+      responses: [
+        `E2E activity failed reply unavailable: ${STEER_TOOL_NAME_PREFIX} and ${SLOW_ECHO_TOOL_NAME_PREFIX} tools required.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_alpha_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_broken_${label}`,
+              name: slowTool,
+              args: { delay_ms: 10 },
+              type: 'tool_call',
+            },
+            {
+              id: `call_e2e_activity_failed_slow_${label}`,
+              name: slowTool,
+              args: { text: `activity failed slow ${label}`, delay_ms: 4000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 3) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_failed_beta_${label}`,
+              name: rememberTool,
+              args: { fact: `activity failed beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${ACTIVITY_FAILED_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
 /**
  * Pause a real agent run at the ask_user_question tool. The resume controller
  * rebuilds the graph with an empty input-message list, so the test hook selects
@@ -1385,6 +1869,68 @@ function askUserQuestionResponses(label, toolNames) {
               options: [
                 { label: 'Staging', value: 'staging' },
                 { label: 'Production', value: 'production' },
+              ],
+            },
+          ],
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function askUserQuestionBatchResponses(label, toolNames, { long }) {
+  if (!toolNames.has(ASK_USER_QUESTION_TOOL_NAME)) {
+    return askUserQuestionResponses(label, toolNames);
+  }
+  /** Near the tool's limits: a 2,000-character question and a 4,000-character description. */
+  const longQuestion =
+    `Which environment for ${label}? ${'Explain the deployment target. '.repeat(64)}`
+      .slice(0, 2000)
+      .trim();
+  const longDescription = Array.from(
+    { length: 60 },
+    (_, index) => `Line ${index + 1} of the long clarification for ${label}.`,
+  )
+    .join(' ')
+    .slice(0, 4000);
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `call_e2e_ask_user_questions_${label}`,
+        name: ASK_USER_QUESTION_TOOL_NAME,
+        args: {
+          questions: [
+            {
+              id: 'environment',
+              question: long ? longQuestion : `Which environment for ${label}?`,
+              ...(long ? { description: longDescription } : {}),
+              options: [
+                { label: 'Staging', value: 'staging' },
+                { label: 'Production', value: 'production' },
+                ...(long
+                  ? Array.from({ length: 6 }, (_, index) => ({
+                      label: `Region ${index + 1}: ${'a deliberately long option label '.repeat(4)}`,
+                      value: `region-${index + 1}`,
+                    }))
+                  : []),
+              ],
+            },
+            {
+              id: 'region',
+              question: `Which region for ${label}?`,
+              options: [
+                { label: 'Europe', value: 'europe' },
+                { label: 'Americas', value: 'americas' },
+              ],
+            },
+            {
+              id: 'notes',
+              question: `Anything else for ${label}?`,
+              options: [
+                { label: 'Nothing else', value: 'none' },
+                { label: 'Call me first', value: 'call' },
               ],
             },
           ],
@@ -2677,6 +3223,37 @@ function provisioningToolResponses({ text, toolNames }) {
       toolNames,
     );
   }
+  const highlightLabel = getMarkerValue(text, HIGHLIGHT_CODE_MARKER);
+  if (highlightLabel) {
+    const codeTool = CODE_EXEC_TOOLS.find((tool) => toolNames.has(tool.name));
+    if (!codeTool) {
+      return {
+        responses: [`E2E highlight code unavailable: ${JSON.stringify([...toolNames])}`],
+      };
+    }
+    const command = Array.from({ length: 120 }, (_, index) => `printf 'line-${index}-☃\\n'`).join(
+      '\n',
+    );
+    let args = codeTool.args;
+    if (codeTool.name === 'bash_tool') {
+      args = { command };
+    } else if (codeTool.name === 'execute_code') {
+      args = { lang: 'bash', code: command };
+    }
+    return {
+      responses: ['', `E2E highlighted code complete: ${highlightLabel}`],
+      sleep: highlightLabel === 'cancel' ? HIGHLIGHT_CANCEL_CHUNK_DELAY_MS : SLOW_CHUNK_DELAY_MS,
+      toolCalls: [
+        {
+          id: EXECUTE_CODE_TOOL_CALL_ID,
+          name: codeTool.name,
+          args,
+          streamArgs: true,
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
 
   const codeLabel = getMarkerValue(text, EXECUTE_CODE_MARKER);
   if (codeLabel) {
@@ -2702,7 +3279,6 @@ function provisioningToolResponses({ text, toolNames }) {
       ],
     };
   }
-
   const searchLabel = getMarkerValue(text, FILE_SEARCH_MARKER);
   if (searchLabel) {
     if (!toolNames.has(FILE_SEARCH_TOOL_NAME)) {
@@ -2812,6 +3388,35 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
+  if (mcpAppLabel) {
+    return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
+  if (mcpAppPhaseLabel) {
+    return mcpAppPhaseResponses(mcpAppPhaseLabel, toolNames);
+  }
+
+  const mcpLinkAppLabel = getMarkerValue(text, MCP_LINK_APP_MARKER);
+  if (mcpLinkAppLabel) {
+    return mcpLinkAppResponses(mcpLinkAppLabel, toolNames);
+  }
+
+  const mcpLegacyLabel = getMarkerValue(text, MCP_LEGACY_MARKER);
+  if (mcpLegacyLabel) {
+    return mcpLegacyResponses(mcpLegacyLabel, toolNames);
+  }
+
+  const mcpLegacyMimelessLabel = getMarkerValue(text, MCP_LEGACY_MIMELESS_MARKER);
+  if (mcpLegacyMimelessLabel) {
+    return mcpLegacyMimelessResponses(mcpLegacyMimelessLabel, toolNames);
+  }
+
+  if (text.includes(MCP_LEGACY_ACTION_MARKER)) {
+    return mcpLegacyActionResponses(toolNames);
+  }
+
   const provisioningTool = provisioningToolResponses({ text, toolNames });
   if (provisioningTool) {
     return provisioningTool;
@@ -2837,9 +3442,58 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
   }
 
+  const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
+  if (activityProseLabel) {
+    return activityProseReplyResponses(activityProseLabel, toolNames);
+  }
+
+  const activityFailedLabel = getMarkerValue(text, ACTIVITY_FAILED_REPLY_MARKER);
+  if (activityFailedLabel) {
+    return activityFailedReplyResponses(activityFailedLabel, toolNames);
+  }
+
+  const askBatchLabel = getMarkerValue(text, ASK_USER_QUESTIONS_MARKER);
+  const askLongBatchLabel = getMarkerValue(text, ASK_USER_LONG_QUESTIONS_MARKER);
+  if (askBatchLabel || askLongBatchLabel) {
+    return askUserQuestionBatchResponses(askBatchLabel || askLongBatchLabel, toolNames, {
+      long: Boolean(askLongBatchLabel),
+    });
+  }
+
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
   if (askUserQuestionLabel) {
     return askUserQuestionResponses(askUserQuestionLabel, toolNames);
+  }
+
+  if (text.includes('E2E_PRIVATE_TEXT:')) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: (streamMessages) => {
+        const prompt = JSON.stringify(streamMessages);
+        const protectedText =
+          !prompt.includes('alice@example.com') && /EMAIL_1_[a-f0-9]{32}/.test(prompt);
+        return {
+          responses: [
+            protectedText ? 'E2E private model input verified' : 'E2E private model input failed',
+          ],
+        };
+      },
+    };
+  }
+
+  if (text.includes(ASSERT_PROJECT_CONTEXT_MARKER)) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: async (streamMessages, streamOptions, runManager) => {
+        const agentView = await getStreamAgentView({
+          graph,
+          messages: streamMessages,
+          options: streamOptions,
+          runManager,
+        });
+        return projectContextAssertionResponses({ messages: agentView.messages, text });
+      },
+    };
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
@@ -2882,6 +3536,7 @@ function resolveResponses({ graph, messages, text, toolNames }) {
           messages: agentView.messages,
           assertion: parseSkillAssertion(text, agentView.agentId),
           toolNames: agentView.toolNames,
+          toolDefinitions: agentView.toolDefinitions,
         });
       },
     };

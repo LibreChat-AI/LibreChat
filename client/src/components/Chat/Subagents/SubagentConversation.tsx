@@ -1,12 +1,16 @@
 import { useMemo, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { ChevronDown, CornerDownRight, Radio } from 'lucide-react';
+import { CornerDownRight, Radio } from 'lucide-react';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger } from '@librechat/client';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ChildConversationTurn } from './adapters';
 import type { TranslationKeys } from '~/hooks';
+import SystemEventHeader, {
+  SystemEventIcon,
+  systemEventHeaderClasses,
+} from '~/components/Chat/Messages/ui/SystemEvent';
 import { SubagentActivityContent, SubagentStatus } from './SubagentActivity';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
@@ -29,9 +33,9 @@ const TRIGGER_LABELS = {
 function TriggerIcon({ kind }: { kind: ChildConversationTurn['trigger']['kind'] }) {
   const Icon = kind === 'external_event' ? Radio : CornerDownRight;
   return (
-    <span className="flex size-6 items-center justify-center rounded-full bg-surface-tertiary text-text-secondary">
-      <Icon size={14} aria-hidden />
-    </span>
+    <SystemEventIcon>
+      <Icon size={14} />
+    </SystemEventIcon>
   );
 }
 
@@ -49,47 +53,38 @@ function ExternalEventTrigger({
   let body: ReactNode;
   if (details == null) {
     body = (
-      <div className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-        <TriggerIcon kind="external_event" />
-        <span>{label}</span>
+      <div className="text-text-secondary flex items-center gap-2 py-1 text-sm">
+        <SystemEventHeader icon={<TriggerIcon kind="external_event" />} label={label} />
       </div>
     );
   } else {
     body = (
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-auto min-h-6 w-full justify-start gap-1.5 px-0 text-left text-xs font-medium text-text-secondary hover:bg-transparent hover:text-text-primary"
-          >
-            <TriggerIcon kind="external_event" />
-            <span>{label}</span>
-            <span className="min-w-0 truncate font-normal">
-              {details.eventType} · {details.sourceType}
-            </span>
-            <span className="sr-only">{details.occurredAt}</span>
-            <ChevronDown
-              size={14}
-              aria-hidden
-              className={`ml-auto shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          <Button type="button" variant="ghost" className={systemEventHeaderClasses}>
+            <SystemEventHeader
+              icon={<TriggerIcon kind="external_event" />}
+              label={label}
+              detail={`${details.eventType} · ${details.sourceType}`}
+              expanded={expanded}
             />
+            <span className="sr-only">{details.occurredAt}</span>
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent className="ml-8 border-l border-border-light py-1 pl-3 text-xs text-text-secondary">
+        <CollapsibleContent className="text-text-secondary pt-0.5 pb-1 text-xs">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt>{localize('com_ui_subagent_event_type')}</dt>
-            <dd className="break-words text-text-primary">{details.eventType}</dd>
+            <dd className="text-text-primary break-words">{details.eventType}</dd>
             <dt>{localize('com_ui_subagent_event_source')}</dt>
-            <dd className="break-words text-text-primary">{details.sourceType}</dd>
+            <dd className="text-text-primary break-words">{details.sourceType}</dd>
             <dt>{localize('com_ui_subagent_event_received')}</dt>
-            <dd className="break-words text-text-primary">
+            <dd className="text-text-primary break-words">
               {new Date(details.occurredAt).toLocaleString()}
             </dd>
             {details.expectedActionToolName != null && (
               <>
                 <dt>{localize('com_ui_subagent_event_expected_action')}</dt>
-                <dd className="break-words text-text-primary">{details.expectedActionToolName}</dd>
+                <dd className="text-text-primary break-words">{details.expectedActionToolName}</dd>
               </>
             )}
           </dl>
@@ -107,6 +102,7 @@ function ExternalEventTrigger({
       ariaLabel={label}
       headerPrefix=""
       isCreatedByUser={true}
+      systemLabel={localize('com_ui_system_event')}
       fullWidth={fullWidth}
     >
       {body}
@@ -143,11 +139,11 @@ function TriggerMessage({ turn, fullWidth }: { turn: ChildConversationTurn; full
       ariaLabel={label}
       headerPrefix=""
       isCreatedByUser={true}
+      systemLabel={localize('com_ui_system_event')}
       fullWidth={fullWidth}
     >
-      <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-text-secondary">
-        <TriggerIcon kind={turn.trigger.kind} />
-        <span>{label}</span>
+      <div className="text-text-secondary flex items-center gap-2 py-1 text-sm">
+        <SystemEventHeader icon={<TriggerIcon kind={turn.trigger.kind} />} label={label} />
       </div>
       {content.length > 0 && (
         <ContentParts
@@ -162,7 +158,7 @@ function TriggerMessage({ turn, fullWidth }: { turn: ChildConversationTurn; full
         />
       )}
       {turn.trigger.summaryTruncated === true && (
-        <div className="mt-1 text-xs italic text-text-secondary">
+        <div className="text-text-secondary mt-1 text-xs italic">
           {localize('com_ui_subagent_trigger_truncated')}
         </div>
       )}
@@ -250,10 +246,10 @@ function ChildMessage({
         onCancelControl={onCancelControl}
       />
       {detailsLimited && detailState !== 'loading' && (
-        <div className="mt-2 text-xs text-text-secondary">{limitedNotice}</div>
+        <div className="text-text-secondary mt-2 text-xs">{limitedNotice}</div>
       )}
       {detailState === 'loading' && (
-        <div className="mt-2 text-xs text-text-secondary" aria-live="polite">
+        <div className="text-text-secondary mt-2 text-xs" aria-live="polite">
           {localize('com_ui_loading')}
         </div>
       )}

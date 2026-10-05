@@ -1,11 +1,19 @@
 import React from 'react';
 import { Provider } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
 import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react';
-import type { TMessage, TTracePage, TTraceRecord, TStartupConfig } from 'librechat-data-provider';
+import type {
+  TMessage,
+  TAgentsMap,
+  TTracePage,
+  TTraceRecord,
+  TStartupConfig,
+} from 'librechat-data-provider';
 import { keepNewestTracePage } from '~/data-provider/Traces/queries';
+import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import Viewer from '../Viewer';
 
 jest.mock('librechat-data-provider', () => {
@@ -141,14 +149,16 @@ describe('Trace Viewer', () => {
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_trace_loading');
     expect(await recordRow('llm')).toHaveAttribute('aria-level', '3');
     expect(
-      screen.getByRole('treeitem', { name: recordName('web_search.*com_ui_trace_status_error') }),
+      screen.getByRole('treeitem', {
+        name: recordName('com_ui_tool_name_web_search.*com_ui_trace_status_error'),
+      }),
     ).toBeInTheDocument();
     const turn = screen.getByRole('treeitem', { name: /^com_ui_trace_turn/ });
     expect(turn).toHaveAttribute('aria-level', '1');
-    expect(turn).toHaveAccessibleName(/com_ui_trace_steps_count_one 1/);
+    expect(turn).toHaveAccessibleName(/com_ui_trace_model_calls_count_one 1/);
     expect(turn).toHaveAccessibleName(/com_ui_trace_tool_calls_count_one 1/);
     expect(stepRow(1)).toHaveAttribute('aria-level', '2');
-    expect(stepRow(1)).toHaveAccessibleName(/web_search/);
+    expect(stepRow(1)).toHaveAccessibleName(/com_ui_tool_name_web_search/);
     expect(
       screen.queryByRole('treeitem', { name: recordName('AgentGraph') }),
     ).not.toBeInTheDocument();
@@ -241,12 +251,13 @@ describe('Trace Viewer', () => {
     expect(screen.queryByRole('treeitem', { name: recordName('later-a') })).not.toBeInTheDocument();
   });
 
-  it('withholds previews for a response split across pages until its earlier steps load', async () => {
+  it('previews a response split across pages from its end, then its earlier steps as they load', async () => {
     const generation = (id: string, offset: number) =>
       record({
         id,
         messageId: 'response-2',
         traceId: 'trace-2',
+        parentId: 'wrapper-the-limit-cut',
         name: id,
         kind: 'generation',
         startTime: at(offset),
@@ -276,10 +287,8 @@ describe('Trace Viewer', () => {
         ],
       ),
     );
-    await recordRow('later-2,');
-    expect(
-      screen.queryByRole('treeitem', { name: /later-2: First round/ }),
-    ).not.toBeInTheDocument();
+    expect(await recordRow('later-2: Second round\\.')).toBeInTheDocument();
+    expect(screen.getByRole('treeitem', { name: /^com_ui_trace_step 2,/ })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: 'com_ui_trace_load_older' }));
 
@@ -297,7 +306,9 @@ describe('Trace Viewer', () => {
 
     expect(await recordRow('llm: Let me look that up\\.')).toBeInTheDocument();
     expect(
-      screen.getByRole('treeitem', { name: recordName('web_search: query: weather') }),
+      screen.getByRole('treeitem', {
+        name: recordName('com_ui_tool_name_web_search: query: weather'),
+      }),
     ).toBeInTheDocument();
     expect(dataService.getMessagesByConvoId).not.toHaveBeenCalled();
   });
@@ -322,8 +333,30 @@ describe('Trace Viewer', () => {
     mockStartupConfig = { interface: { traceViewer: { enabled: true }, contextCost: true } };
     renderViewer();
 
-    await recordRow('llm');
-    expect(screen.getByText('com_ui_trace_summary_cost')).toBeInTheDocument();
+    const modelCall = await recordRow('llm');
+    const summary = screen.getByLabelText('com_ui_trace_summary');
+    expect(within(summary).getByText('com_ui_trace_summary_cost').nextSibling).toHaveTextContent(
+      '$0.02',
+    );
+    /** The ledger carries it too: a column, each priced record, and its step and response. */
+    const ledger = screen.getByTestId('trace-ledger');
+    expect(within(ledger).getByText('com_ui_trace_summary_cost')).toBeInTheDocument();
+    expect(within(modelCall).getByText('$0.02')).toBeInTheDocument();
+    /** Rows name themselves, so a screen reader hears the cost only if the name carries it. */
+    expect(modelCall).toHaveAccessibleName(/com_ui_trace_summary_cost \$0\.02/);
+    expect(stepRow(1)).toHaveAccessibleName(/com_ui_trace_summary_cost \$0\.02/);
+    expect(within(stepRow(1)).getByText('$0.02')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('treeitem', { name: /^com_ui_trace_turn/ })).getByText('$0.02'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no cost anywhere while the deployment does not show context cost', async () => {
+    renderViewer();
+
+    expect(await recordRow('llm')).not.toHaveAccessibleName(/com_ui_trace_summary_cost/);
+    expect(screen.queryByText('com_ui_trace_summary_cost')).not.toBeInTheDocument();
+    expect(screen.queryByText('$0.02')).not.toBeInTheDocument();
   });
 
   it('explains a failure by its error code and recovers on retry', async () => {
@@ -403,7 +436,7 @@ describe('Trace Viewer', () => {
   it('shows the error message for a failed record', async () => {
     renderViewer();
 
-    await userEvent.click(await recordRow('web_search'));
+    await userEvent.click(await recordRow('com_ui_tool_name_web_search'));
 
     expect(
       within(screen.getByTestId('trace-inspector')).getByText('Error: search backend unavailable'),
@@ -444,7 +477,9 @@ describe('Trace Viewer', () => {
       expect(screen.queryByRole('treeitem', { name: recordName('llm') })).not.toBeInTheDocument(),
     );
     expect(stepRow(1)).toBeInTheDocument();
-    expect(screen.getByRole('treeitem', { name: recordName('web_search') })).toBeInTheDocument();
+    expect(
+      screen.getByRole('treeitem', { name: recordName('com_ui_tool_name_web_search') }),
+    ).toBeInTheDocument();
 
     await userEvent.clear(screen.getByLabelText('com_ui_trace_search'));
     await userEvent.type(screen.getByLabelText('com_ui_trace_search'), 'nothing matches');
@@ -706,11 +741,11 @@ describe('Trace Viewer', () => {
       within(screen.getByTestId('trace-inspector')).getByRole('heading', { level: 3 });
 
     await userEvent.click(await screen.findByRole('button', { name: 'com_ui_trace_load_older' }));
-    await userEvent.click(await recordRow('web_search'));
+    await userEvent.click(await recordRow('com_ui_tool_name_web_search'));
     act(() => keepNewestTracePage(client, 'convo-1'));
 
     expect(await screen.findByRole('button', { name: 'com_ui_trace_load_older' })).toBeVisible();
-    expect(inspectorHeading()).toHaveTextContent('web_search');
+    expect(inspectorHeading()).toHaveTextContent('com_ui_tool_name_web_search');
 
     await userEvent.click(screen.getByRole('button', { name: 'com_ui_trace_load_older' }));
     await userEvent.click(toggle('com_ui_trace_all_spans'));
@@ -859,5 +894,209 @@ describe('Trace Viewer', () => {
     renderViewer();
 
     expect(screen.getByRole('button', { name: 'com_ui_trace_close' })).toHaveFocus();
+  });
+
+  describe('a run as the agents SDK records it', () => {
+    const scout = { id: 'agent_scout', name: 'Codebase Scout', description: 'Reads the repo.' };
+    const sdkRecords: TTraceRecord[] = [
+      record({ id: 'run', kind: 'agent', role: 'run', name: 'AgentGraph', endTime: at(5000) }),
+      record({
+        id: 'scout',
+        parentId: 'run',
+        role: 'agent',
+        agentId: 'agent_scout',
+        name: 'agent_scout',
+        endTime: at(5000),
+      }),
+      record({
+        id: 'llm-1',
+        parentId: 'scout',
+        kind: 'generation',
+        role: 'model',
+        name: 'llm',
+        startTime: at(100),
+      }),
+      record({
+        id: 'label-1',
+        parentId: 'scout',
+        kind: 'generation',
+        role: 'stepLabel',
+        name: 'StepLabel',
+        startTime: at(1050),
+      }),
+      record({
+        id: 'round-1',
+        parentId: 'scout',
+        role: 'tools',
+        name: 'tool-dispatch',
+        startTime: at(1100),
+        endTime: at(2000),
+      }),
+      record({
+        id: 'llm-2',
+        parentId: 'scout',
+        kind: 'generation',
+        role: 'model',
+        name: 'llm',
+        startTime: at(2100),
+      }),
+    ];
+    const messages = [
+      {
+        messageId: 'user-1',
+        conversationId: 'convo-1',
+        parentMessageId: null,
+        isCreatedByUser: true,
+        text: 'Where does the  trace viewer\nread from?',
+      },
+      {
+        ...responseMessage,
+        content: [
+          { type: ContentTypes.TEXT, text: 'Let me look that up.' },
+          { type: ContentTypes.ACTIVITY_LABEL, activity_label: 'Finding the trace reader' },
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: { name: 'web_search', args: { query: 'weather' }, output: 'Sunny.' },
+          },
+          { type: ContentTypes.TEXT, text: 'It reads from Langfuse.' },
+        ],
+      },
+    ] as unknown as TMessage[];
+
+    function renderSdkRun(listed: TTraceRecord[] = sdkRecords) {
+      jest
+        .spyOn(dataService, 'getConversationTraceRecords')
+        .mockResolvedValue({ records: listed, sourceId: 'tenant-project' });
+      const client = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+        logger: { log: () => undefined, warn: () => undefined, error: () => undefined },
+      });
+      client.setQueryData([QueryKeys.messages, 'convo-1'], messages);
+      return render(
+        <MemoryRouter>
+          <Provider>
+            <QueryClientProvider client={client}>
+              <AgentsMapContext.Provider value={{ agent_scout: scout } as unknown as TAgentsMap}>
+                <Viewer conversationId="convo-1" onClose={jest.fn()} />
+              </AgentsMapContext.Provider>
+            </QueryClientProvider>
+          </Provider>
+        </MemoryRouter>,
+      );
+    }
+
+    it('reads as the chat does: the question, the model, the label it showed and the tools it ran', async () => {
+      renderSdkRun();
+
+      expect(await recordRow('com_ui_model: Let me look that up\\.')).toBeInTheDocument();
+      const turn = screen.getByRole('treeitem', { name: /^com_ui_trace_turn/ });
+      expect(turn).toHaveAccessibleName(/Where does the trace viewer read from\?/);
+      expect(turn).toHaveAccessibleName(/com_ui_trace_model_calls_count 2/);
+      expect(turn).toHaveAccessibleName(/com_ui_trace_tool_calls_count_one 1/);
+      expect(
+        screen.getByRole('treeitem', {
+          name: recordName('com_ui_trace_role_step_label: Finding the trace reader'),
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('treeitem', { name: /tool-dispatch|StepLabel/ })).toBeNull();
+      const summary = screen.getByLabelText('com_ui_trace_summary');
+      expect(within(summary).getByText('com_ui_trace_summary_tools').nextSibling).toHaveTextContent(
+        '1',
+      );
+
+      await userEvent.click(await recordRow('com_ui_tool_name_web_search: query: weather'));
+
+      const inspector = screen.getByTestId('trace-inspector');
+      expect(within(inspector).getByText(/"query": "weather"/)).toBeInTheDocument();
+      expect(within(inspector).getByText('Sunny.')).toBeInTheDocument();
+      expect(within(inspector).getByText('com_ui_trace_from_conversation')).toBeInTheDocument();
+      expect(within(inspector).getByText('tool-dispatch')).toBeInTheDocument();
+      expect(dataService.getConversationTraceRecord).not.toHaveBeenCalled();
+    });
+
+    it('shows a model call as a conversation, newest messages open, with the raw form one click away', async () => {
+      mockStartupConfig = {
+        interface: { traceViewer: { enabled: true, showInputOutput: true } },
+      };
+      const content = (value: string) => ({ value, truncated: false });
+      jest.spyOn(dataService, 'getConversationTraceRecord').mockResolvedValue({
+        record: sdkRecords[2],
+        contentAvailable: true,
+        input: { value: '{"messages":[{"role":"sys', truncated: true },
+        prompt: {
+          total: 40,
+          omitted: 37,
+          tools: ['web_search', 'read_file'],
+          messages: [
+            { role: 'system', text: content('You are Codebase Scout.') },
+            { role: 'user', text: content('Where does it read from?') },
+            { role: 'tool', toolName: 'web_search', text: content('ten results') },
+          ],
+        },
+        reply: {
+          role: 'assistant',
+          text: content('Let me look that up.'),
+          toolCalls: [{ name: 'web_search', args: content('{"query":"weather"}') }],
+        },
+      });
+      renderSdkRun();
+
+      await userEvent.click(await recordRow('com_ui_model: Let me look that up\\.'));
+
+      const inspector = screen.getByTestId('trace-inspector');
+      expect(await within(inspector).findByText('com_ui_trace_reply')).toBeInTheDocument();
+      expect(within(inspector).getByText('Where does it read from?')).toBeVisible();
+      expect(within(inspector).getByText('com_ui_trace_prompt_omitted 37')).toBeInTheDocument();
+      expect(
+        within(inspector).getByText('com_ui_trace_message_tool com_ui_tool_name_web_search'),
+      ).toBeInTheDocument();
+      expect(
+        within(inspector).getByText('com_ui_trace_message_asked_tool com_ui_tool_name_web_search'),
+      ).toBeInTheDocument();
+      expect(
+        within(inspector).getByText('You are Codebase Scout.').closest('details'),
+      ).not.toHaveAttribute('open');
+      expect(within(inspector).queryByText(/"messages":\[/)).not.toBeInTheDocument();
+
+      await userEvent.click(
+        within(inspector).getByRole('button', { name: 'com_ui_trace_view_raw' }),
+      );
+
+      expect(within(inspector).getByText(/"messages":\[/)).toBeInTheDocument();
+      expect(within(inspector).queryByText('com_ui_trace_reply')).not.toBeInTheDocument();
+    });
+
+    it('says a round came from the conversation only when it did', async () => {
+      const namedRound = sdkRecords.map((entry) =>
+        entry.id === 'round-1' ? { ...entry, tools: ['bash_tool'] } : entry,
+      );
+      renderSdkRun(namedRound);
+
+      /** The chat's round called web_search, so the trace's bash_tool round stays unmatched. */
+      await userEvent.click(await recordRow('com_ui_tool_name_code'));
+
+      const inspector = screen.getByTestId('trace-inspector');
+      expect(within(inspector).getAllByText('com_ui_tool_name_code').length).toBeGreaterThan(0);
+      expect(within(inspector).queryByText('com_ui_trace_from_conversation')).toBeNull();
+      expect(within(inspector).queryByText('Sunny.')).toBeNull();
+    });
+
+    it('shows the agent by name with its id to copy and a chat one click away', async () => {
+      renderSdkRun();
+      await recordRow('com_ui_model: Let me look that up\\.');
+
+      await userEvent.click(toggle('com_ui_trace_all_spans'));
+      await userEvent.click(await recordRow('Codebase Scout'));
+
+      const inspector = screen.getByTestId('trace-inspector');
+      expect(within(inspector).getByText('Reads the repo.')).toBeInTheDocument();
+      expect(within(inspector).getByText('agent_scout', { selector: '.select-all' })).toBeVisible();
+      expect(
+        within(inspector).getByRole('link', { name: 'com_ui_trace_chat_with_agent' }),
+      ).toHaveAttribute('href', '/c/new?agent_id=agent_scout');
+      expect(
+        within(inspector).getByRole('button', { name: 'com_ui_trace_copy_agent_id' }),
+      ).toBeInTheDocument();
+    });
   });
 });

@@ -3,6 +3,7 @@ import {
   applyPendingPasteToDraft,
   applyPendingPastesToDraft,
   clearAllDrafts,
+  clearDraft,
   clearComposerDrafts,
   clearFilesDraft,
   decodeBase64,
@@ -945,33 +946,35 @@ describe('migrateTextDraft', () => {
   });
 });
 
-describe('setDraft persistExact', () => {
+describe('setDraft', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('drops a one-character value by default', () => {
-    setDraft({ id: 'convo-1', value: 'x' });
-    expect(getDraft('convo-1')).toBe('');
-  });
+  it.each(['x', '字', ' ', '\n', '🙂', 'line one\nline two'])(
+    'preserves the exact draft %j',
+    (value) => {
+      setDraft({ id: 'convo-1', value });
+      expect(getDraft('convo-1')).toBe(value);
+    },
+  );
 
-  it('keeps a one-character snapshot when persistExact is set', () => {
-    setDraft({ id: 'convo-1', value: 'x', persistExact: true });
-    expect(getDraft('convo-1')).toBe('x');
+  it('clears a draft only when its value is empty', () => {
+    setDraft({ id: 'convo-1', value: 'x' });
+    setDraft({ id: 'convo-1', value: '' });
+    expect(getDraft('convo-1')).toBe('');
   });
 
   it('does not throw when localStorage.setItem fails', () => {
     const setItem = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota exceeded');
     });
-    expect(() =>
-      setDraft({ id: 'convo-1', value: 'draft text', persistExact: true }),
-    ).not.toThrow();
+    expect(() => setDraft({ id: 'convo-1', value: 'draft text' })).not.toThrow();
     setItem.mockRestore();
   });
 
   it('returns empty drafts when localStorage.getItem throws', () => {
-    setDraft({ id: 'convo-1', value: 'draft text', persistExact: true });
+    setDraft({ id: 'convo-1', value: 'draft text' });
     setFilesDraft('convo-1', {
       fileIds: ['file-1'],
       pendingPastes: { 'file-1': { text: 'paste', selectionStart: 0 } },
@@ -1086,5 +1089,34 @@ describe('resolvePendingPasteInsertStart', () => {
         anchorAfter: '',
       }),
     ).toBe(0);
+  });
+});
+
+describe('clearDraft navigation ordering', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cannot delete text written after returning to a cleared conversation', () => {
+    setDraft({ id: 'chat-a', value: 'old draft' });
+    clearDraft('chat-a');
+    expect(getDraft('chat-a')).toBe('');
+    setDraft({ id: 'chat-a', value: 'replacement draft' });
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('replacement draft');
+  });
+
+  it('clears two different conversations without cancelling either deletion', () => {
+    setDraft({ id: 'chat-a', value: 'alpha' });
+    setDraft({ id: 'chat-b', value: 'beta' });
+    clearDraft('chat-a');
+    clearDraft('chat-b');
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('');
+    expect(getDraft('chat-b')).toBe('');
   });
 });

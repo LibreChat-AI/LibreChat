@@ -3,6 +3,7 @@ import { RecoilRoot } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
+import { splitMarkdownIntoBlocks, splitMarkdownIntoBlocksUncached } from './splitMarkdown';
 import { ArtifactProvider, CodeBlockProvider, MessageContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import MarkdownBlocks from './MarkdownBlocks';
@@ -138,6 +139,48 @@ const measure = (
   unmount();
   return result;
 };
+
+describe('splitMarkdownIntoBlocks streaming benchmark (full re-parse vs incremental)', () => {
+  it('reports split cost across a simulated stream', () => {
+    const content = buildMessage(40);
+    const steps = 1500;
+    const prefixes = makePrefixes(content, steps);
+    const iterations = 3;
+
+    const time = (split: (content: string) => void): number => {
+      split('warm up and reset the cache');
+      const start = performance.now();
+      for (const prefix of prefixes) {
+        split(prefix);
+      }
+      return performance.now() - start;
+    };
+
+    time(splitMarkdownIntoBlocksUncached);
+    time(splitMarkdownIntoBlocks);
+    let fullMs = Infinity;
+    let incrementalMs = Infinity;
+    for (let i = 0; i < iterations; i += 1) {
+      fullMs = Math.min(fullMs, time(splitMarkdownIntoBlocksUncached));
+      incrementalMs = Math.min(incrementalMs, time(splitMarkdownIntoBlocks));
+    }
+
+    console.log(
+      [
+        '',
+        '============ splitMarkdownIntoBlocks streaming benchmark ============',
+        `message size: ${content.length} chars, stream steps: ${steps}, iterations: ${iterations}`,
+        `  full re-parse : ${fullMs.toFixed(1)} ms`,
+        `  incremental   : ${incrementalMs.toFixed(1)} ms`,
+        `  speedup       : ${(fullMs / incrementalMs).toFixed(2)}x`,
+        '=====================================================================',
+        '',
+      ].join('\n'),
+    );
+
+    expect(incrementalMs).toBeLessThan(fullMs);
+  });
+});
 
 describe('Markdown streaming benchmark (OLD whole-message vs NEW per-block)', () => {
   it('reports render cost across a simulated stream', () => {

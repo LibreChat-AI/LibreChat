@@ -1,8 +1,12 @@
 import mongoose from 'mongoose';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import type { Filter, Document as MongoDocument } from 'mongodb';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
-import mongoMeili, { MEILI_INDEX_SCHEMA_VERSION } from '~/models/plugins/mongoMeili';
+import mongoMeili, {
+  MEILI_INDEX_SCHEMA_VERSION,
+  buildExcludedIndexedQuery,
+} from '~/models/plugins/mongoMeili';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
 import meiliLogger from '~/config/meiliLogger';
@@ -79,6 +83,7 @@ const mockAddDocumentsInBatches = jest.fn();
 const mockUpdateDocuments = jest.fn();
 const mockDeleteDocument = jest.fn();
 const mockDeleteDocuments = jest.fn();
+const mockSearch = jest.fn();
 const mockGetDocument = jest.fn();
 const mockGetDocuments = jest.fn().mockResolvedValue({ results: [] });
 const mockWaitForTask = jest.fn().mockResolvedValue({ status: 'succeeded' });
@@ -92,6 +97,7 @@ const mockIndex = jest.fn().mockReturnValue({
   deleteDocuments: mockDeleteDocuments,
   getDocument: mockGetDocument,
   getDocuments: mockGetDocuments,
+  search: mockSearch,
 });
 jest.mock('meilisearch', () => {
   return {
@@ -130,6 +136,7 @@ describe('Meilisearch Mongoose plugin', () => {
     mockDeleteDocuments.mockReset().mockResolvedValue({ taskUid: 1 });
     mockGetDocument.mockClear();
     mockGetDocuments.mockReset().mockResolvedValue({ results: [] });
+    mockSearch.mockReset().mockResolvedValue({ hits: [] });
     mockWaitForTask.mockReset().mockResolvedValue({ status: 'succeeded' });
   });
 
@@ -158,6 +165,28 @@ describe('Meilisearch Mongoose plugin', () => {
     } finally {
       mongoose.deleteModel(modelName);
     }
+  });
+
+  test('hydrated message search excludes encrypted originals and all schema-hidden fields', async () => {
+    const Message = createMessageModel(mongoose) as unknown as SchemaWithMeiliMethods;
+    const messageId = new mongoose.Types.ObjectId().toString();
+    const conversationId = new mongoose.Types.ObjectId().toString();
+    await Message.collection.insertOne({
+      messageId,
+      conversationId,
+      user: 'search-owner',
+      text: '[EMAIL_1_private]',
+      isCreatedByUser: true,
+      privacyRevision: 'private',
+      privateText: 'v1:encrypted-original',
+    });
+    mockSearch.mockResolvedValueOnce({ hits: [{ messageId, text: '[EMAIL_1_private]' }] });
+
+    const result = await Message.meiliSearch('EMAIL', { filter: 'user = "search-owner"' }, true);
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]).toMatchObject({ messageId, privacyRevision: 'private' });
+    expect(result.hits[0]).not.toHaveProperty('privateText');
+    expect(result.hits[0]).not.toHaveProperty('_meiliIndex');
   });
 
   test('saving conversation indexes w/ meilisearch', async () => {
@@ -921,11 +950,11 @@ describe('Meilisearch Mongoose plugin', () => {
     expect(conversationIndexes).toContainEqual([
       { _meiliIndex: 1, _meiliCleanupVersion: 1, conversationId: 1 },
       expect.objectContaining({
-        name: 'meili_excluded_legacy_cleanup_v3',
+        name: 'meili_excluded_legacy_cleanup_v4',
         partialFilterExpression: {
           subagentThread: { $exists: true },
           _meiliIndex: { $eq: false },
-          _meiliCleanupVersion: { $exists: false },
+          _meiliCleanupVersion: { $eq: null },
         },
       }),
     ]);
@@ -952,11 +981,11 @@ describe('Meilisearch Mongoose plugin', () => {
     expect(messageIndexes).toContainEqual([
       { _meiliIndex: 1, _meiliCleanupVersion: 1, messageId: 1 },
       expect.objectContaining({
-        name: 'meili_excluded_legacy_cleanup_v3',
+        name: 'meili_excluded_legacy_cleanup_v4',
         partialFilterExpression: {
           subagentTask: { $exists: true },
           _meiliIndex: { $eq: false },
-          _meiliCleanupVersion: { $exists: false },
+          _meiliCleanupVersion: { $eq: null },
         },
       }),
     ]);
@@ -2428,6 +2457,117 @@ describe('Meilisearch Mongoose plugin', () => {
         _meiliIndex: true,
       });
       expect(afterSync.length).toBe(2);
+    });
+  });
+
+  describe('excluded-document cleanup indexes', () => {
+    test('builds every cleanup index the plugin declares', async () => {
+      const messageModel = createMessageModel(mongoose);
+
+      await expect(messageModel.createIndexes()).resolves.toBeUndefined();
+
+      const builtIndexes = await messageModel.collection.listIndexes().toArray();
+      expect(builtIndexes.map((builtIndex) => builtIndex.name)).toEqual(
+        expect.arrayContaining([
+          'meili_excluded_indexed_cleanup_v3',
+          'meili_excluded_attempted_cleanup_v3',
+          'meili_excluded_legacy_cleanup_v4',
+        ]),
+      );
+
+      const legacyCleanup = builtIndexes.find(
+        (builtIndex) => builtIndex.name === 'meili_excluded_legacy_cleanup_v4',
+      );
+      expect(legacyCleanup?.key).toEqual({
+        _meiliIndex: 1,
+        _meiliCleanupVersion: 1,
+        messageId: 1,
+      });
+      /** `$exists: false` is the operator MongoDB rejects in a partial filter, so the
+       *  unstamped state is expressed as a null equality and must stay that way. */
+      expect(legacyCleanup?.partialFilterExpression).toEqual({
+        subagentTask: { $exists: true },
+        _meiliIndex: { $eq: false },
+        _meiliCleanupVersion: { $eq: null },
+      });
+    });
+
+    test('cleans up an excluded document stored before the cleanup version existed', async () => {
+      const messageModel = createMessageModel(mongoose) as unknown as SchemaWithMeiliMethods;
+      const messageId = new mongoose.Types.ObjectId().toString();
+      await messageModel.collection.insertOne({
+        messageId,
+        conversationId: new mongoose.Types.ObjectId().toString(),
+        user: 'user-legacy-cleanup',
+        isCreatedByUser: true,
+        text: 'Indexed before the private child marker existed',
+        subagentTask: { attemptKey: 'attempt-key', status: 'completed' },
+        _meiliIndex: false,
+      });
+
+      await messageModel.cleanupExcludedMeiliIndex();
+
+      expect(mockDeleteDocuments).toHaveBeenCalledWith(expect.arrayContaining([messageId]));
+      const cleaned = await messageModel.collection.findOne({ messageId });
+      expect(cleaned?._meiliCleanupVersion).toBe(1);
+      expect(cleaned?._meiliIndex).toBeUndefined();
+    });
+
+    test('holds only excluded documents still awaiting cleanup', async () => {
+      const messageModel = createMessageModel(mongoose);
+      await messageModel.createIndexes();
+      const conversationId = new mongoose.Types.ObjectId().toString();
+      const awaitingCleanup = new mongoose.Types.ObjectId().toString();
+      const alreadyStamped = new mongoose.Types.ObjectId().toString();
+      await messageModel.collection.insertMany([
+        {
+          messageId: awaitingCleanup,
+          conversationId,
+          user: 'user-index-population',
+          isCreatedByUser: true,
+          text: 'Written before the cleanup version existed',
+          subagentTask: { attemptKey: 'attempt-key', status: 'completed' },
+          _meiliIndex: false,
+        },
+        {
+          messageId: alreadyStamped,
+          conversationId,
+          user: 'user-index-population',
+          isCreatedByUser: true,
+          text: 'Written by the current schema, nothing to clean up',
+          subagentTask: { attemptKey: 'attempt-key', status: 'completed' },
+          _meiliIndex: false,
+          _meiliCleanupVersion: 1,
+        },
+      ]);
+
+      /** Hinting the partial index reaches only the documents it holds, which is the
+       *  invariant that keeps it from growing with every private subagent document. */
+      const indexedMessageIds = await messageModel.collection
+        .find({ user: 'user-index-population' })
+        .hint('meili_excluded_legacy_cleanup_v4')
+        .project({ messageId: 1, _id: 0 })
+        .toArray();
+
+      expect(indexedMessageIds.map((document) => document.messageId)).toEqual([awaitingCleanup]);
+    });
+
+    test('serves the legacy cleanup branch from the index', async () => {
+      const messageModel = createMessageModel(mongoose);
+      await messageModel.createIndexes();
+      const excludedQuery = buildExcludedIndexedQuery('subagentTask');
+      const branches = (excludedQuery?.$or ?? []) as Filter<MongoDocument>[];
+      const legacyBranch = branches.find((branch) => branch._meiliIndex === false);
+      const legacyFilter: Filter<MongoDocument> = {
+        subagentTask: { $exists: true },
+        ...legacyBranch,
+      };
+
+      const plan = await messageModel.collection.find(legacyFilter).explain('queryPlanner');
+
+      expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain(
+        'meili_excluded_legacy_cleanup_v4',
+      );
     });
   });
 });

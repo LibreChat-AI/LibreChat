@@ -1759,6 +1759,41 @@ describe('MCPOAuthHandler - Configurable OAuth Metadata', () => {
       );
     });
 
+    it('normalizes a zero exchange lifetime before persistence', async () => {
+      const flowManager = {
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: 123,
+          metadata: {
+            serverName: 'test-server',
+            codeVerifier: 'verifier',
+            clientInfo: {},
+            metadata: {},
+          },
+        }),
+        completeFlowIfCurrent: jest.fn().mockResolvedValue('updated'),
+      } as unknown as FlowStateManager<MCPOAuthTokens>;
+      mockExchangeAuthorization.mockResolvedValue({
+        access_token: 'expired-token',
+        token_type: 'Bearer',
+        expires_in: 0,
+      });
+      const persist = jest.fn(async (tokens: MCPOAuthTokens) => tokens);
+      const result = await MCPOAuthHandler.completeOAuthFlow(
+        'flow',
+        'code',
+        flowManager,
+        {},
+        persist,
+      );
+      expect(result.expires_at).toEqual(expect.any(Number));
+      expect(result.expires_at).toBeLessThanOrEqual(Date.now());
+      expect(persist).toHaveBeenCalledWith(
+        expect.objectContaining({ expires_in: 0, expires_at: result.expires_at }),
+        expect.any(Function),
+      );
+    });
+
     it('persists exchanged tokens before completing and waking the OAuth flow', async () => {
       const mockFlowManager = {
         getFlowState: jest.fn().mockResolvedValue({

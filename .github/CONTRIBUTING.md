@@ -4,11 +4,48 @@ Thank you to all the contributors who have helped make this project possible! We
 
 ## Contributing Guidelines
 
-If the feature you would like to contribute has not already received prior approval from the project maintainers (i.e., the feature is currently on the [roadmap](https://github.com/users/danny-avila/projects/2)), please submit a request in the [Feature Requests & Suggestions category](https://github.com/danny-avila/LibreChat/discussions/new?category=feature-requests-suggestions) of the discussions board before beginning work on it. The requests should include specific implementation details, including areas of the application that will be affected by the change (including designs if applicable), and any other relevant information that might be required for a speedy review. However, proposals are not required for small changes, bug fixes, or documentation improvements. Small changes and bug fixes should be tied to an [issue](https://github.com/danny-avila/LibreChat/issues) and included in the corresponding pull request for tracking purposes.
+If the feature you would like to contribute has not already received prior approval from the project maintainers (i.e., the feature is currently on the [roadmap](https://github.com/users/danny-avila/projects/2)), please submit a request in the [Feature Requests & Suggestions category](https://github.com/LibreChat-AI/LibreChat/discussions/new?category=feature-requests-suggestions) of the discussions board before beginning work on it. The requests should include specific implementation details, including areas of the application that will be affected by the change (including designs if applicable), and any other relevant information that might be required for a speedy review. However, proposals are not required for small changes, bug fixes, or documentation improvements. Small changes and bug fixes should be tied to an [issue](https://github.com/LibreChat-AI/LibreChat/issues) and included in the corresponding pull request for tracking purposes.
 
 Please note that a pull request involving a feature that has not been reviewed and approved by the project maintainers may be rejected. We appreciate your understanding and cooperation.
 
 If you would like to discuss the changes you wish to make, join our [Discord community](https://discord.librechat.ai), where you can engage with other contributors and seek guidance from the community.
+
+## AI-Assisted Contributions
+
+AI coding agents are welcome here. A good part of this project is written with them, and we do not judge a pull request by whether a model helped write it. What we do ask is that agent-assisted work arrives the same way human work always has: attached to an issue, claimed in the open, and expected by someone.
+
+An agent makes a patch cheap to produce, which moves the whole cost of it onto the person reviewing it. Maintainer review time is the scarce resource in this project, so the rules below are about protecting that, not about which tools you use.
+
+### Claim the work first
+
+1. Find an existing issue, or open one describing the problem.
+2. Say in the issue that you would like to take it, and wait to be assigned.
+3. Open one pull request, linked to that issue, after it is assigned to you.
+
+A pull request that appears unannounced, with no issue, no assignment and no prior conversation, may be closed without review no matter how good the patch is. Features need prior approval as described above; agent assistance does not exempt a feature from the roadmap or the discussions board.
+
+**The one exception is a novel P0/P1 defect**: data loss, a broken release, a crash, or a regression with no workaround, that nobody has reported yet. Open it, and put the impact and the reproduction in the first paragraph. Novel is the operative word. A patch for something already reported, already assigned, or already fixed on `dev` is not an exception, and neither is a cosmetic or speculative change dressed up as urgent.
+
+**Security is never an exception.** Do not open a pull request, an issue, or a public message that describes a vulnerability, even a critical one, and even with a fix attached. A pull request is a public disclosure that explains the attack and points at the affected code. Report it through LibreChat's [private vulnerability reporting form](https://github.com/LibreChat-AI/LibreChat/security/advisories/new) and we will open a private channel and coordinate the fix and its release there. See [SECURITY.md](./SECURITY.md).
+
+### Pull requests generated from issues
+
+A pull request produced by pointing an agent at our issue tracker will be rejected unless the issue it addresses was assigned to you. Sweeping open issues and emitting patches for them is not a contribution; it asks a maintainer to review work they never scoped, on an issue that may already belong to someone else. Being first to a patch does not claim an issue, and an issue assigned to another contributor is not available even if your fix is better.
+
+### What we close on sight
+
+These are patterns we actually receive, not hypotheticals:
+
+- **Batches.** Several unrelated pull requests opened minutes apart, or the same sweep run across many projects at once. One issue, one pull request, one conversation.
+- **Whole-file rewrites.** A one-line fix arriving as a thousand-line diff because the file was reformatted or its line endings were converted. Keep the diff to the lines you changed, and configure your tooling not to rewrite the rest (`git config core.autocrlf input` on Windows). An unreadable diff hides things, including reverts of recent commits your branch predates.
+- **Unverifiable claims.** A description asserting a bug, a root cause, or a passing test suite with nothing a reviewer can reproduce. Say what you ran and what you did not.
+- **A patch you cannot discuss.** You are the author of anything you submit. If you cannot explain in review why the change is correct, what it affects, and why the tests cover it, it is not ready.
+
+### If we continue your work
+
+A maintainer, or one of the agents working alongside us, may push commits to your branch and take a pull request the rest of the way instead of asking you for another round. That is the house style here, and it is meant as help rather than a takeover: the branch stays yours, and so does the authorship.
+
+If you would rather finish the work yourself, say so in the pull request description. One line is enough, and we will keep our suggestions in review instead.
 
 ## Our Standards
 
@@ -45,7 +82,7 @@ Project maintainers have the right and responsibility to remove, edit, or reject
 
 1. Before starting work, sync `dev` from this repository. You are working in a fork, so `origin` is
    your fork — add the canonical remote once and sync from it:
-    - `git remote add upstream https://github.com/danny-avila/LibreChat.git`
+    - `git remote add upstream https://github.com/LibreChat-AI/LibreChat.git`
     - `git fetch upstream dev && git checkout -B dev upstream/dev`
     - `npm run update` is the self-host deployment updater — it checks out `main` and rebuilds your
       containers. Do not use it to refresh a development branch.

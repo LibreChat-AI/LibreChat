@@ -4,15 +4,99 @@ import {
   artifactRowKind,
   buildSandpackOptions,
   getArtifactDownloadFilename,
+  getArtifactFilename,
+  getDependencies,
+  getSvgFiles,
+  getTemplate,
   detectArtifactTypeFromFile,
   fileToArtifact,
   isCodeOnlyArtifact,
   isPreviewOnlyArtifact,
+  isSvgArtifactType,
   languageForFilename,
   TOOL_ARTIFACT_TYPES,
 } from '../artifacts';
 
 const TAILWIND_CDN = 'https://cdn.tailwindcss.com/3.4.17#tailwind.js';
+
+describe('SVG artifact template mapping (#16087)', () => {
+  /* Bare `<svg>` handed to the static template as `index.html` renders
+   * blank. These types must map to a dedicated SVG file (and empty
+   * Sandpack deps) instead of riding `artifactFilename.default`. */
+  it.each(['image/svg+xml', 'image/svg'])(
+    'maps %s to index.svg on the static template, not default index.html',
+    (type) => {
+      expect(getArtifactFilename(type)).toBe('index.svg');
+      expect(getTemplate(type)).toBe('static');
+      expect(getDependencies(type)).toEqual({});
+    },
+  );
+
+  it('wraps a bare SVG in an HTML document for the static preview entry', () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><rect width="800" height="600" fill="#0f172a"/></svg>';
+    const files = getSvgFiles(svg);
+    expect(files['index.svg']).toBe(svg);
+    expect(files['index.html']).toMatch(/<!DOCTYPE html>/i);
+    expect(files['index.html']).toContain('<body');
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('strips an XML declaration so the HTML shell stays a valid HTML document', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>';
+    const files = getSvgFiles(`<?xml version="1.0" encoding="UTF-8"?>\n${svg}`);
+    expect(files['index.html']).not.toMatch(/<\?xml/i);
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('sizes only the root SVG so a nested viewport keeps its own geometry', () => {
+    const originalHead = document.head.innerHTML;
+    const originalBody = document.body.innerHTML;
+    try {
+      const html = getSvgFiles(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+          '<svg id="sprite" width="20" height="20" x="5" y="5"><rect width="20" height="20"/></svg>' +
+          '</svg>',
+      )['index.html'];
+      /* Mount the shell's own generated style and body. CSS overrides SVG
+       * presentation attributes, so an unscoped `svg` rule would stretch the
+       * nested viewport to the panel and corrupt the drawing's layout. */
+      const css = html.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? '';
+      const markup = html.match(/<body>([\s\S]*?)<\/body>/i)?.[1] ?? '';
+      document.head.innerHTML = `<style>${css}</style>`;
+      document.body.innerHTML = markup;
+
+      const root = document.body.querySelector('svg');
+      const nested = document.getElementById('sprite');
+      if (root == null || nested == null) {
+        throw new Error('expected the mounted shell to hold both SVG viewports');
+      }
+      expect(getComputedStyle(root).width).toBe('100%');
+      expect(getComputedStyle(root).height).toBe('100%');
+      expect(getComputedStyle(nested).width).not.toBe('100%');
+      expect(getComputedStyle(nested).height).not.toBe('100%');
+    } finally {
+      document.head.innerHTML = originalHead;
+      document.body.innerHTML = originalBody;
+    }
+  });
+
+  it('recognizes both SVG artifact types and nothing else', () => {
+    expect(isSvgArtifactType('image/svg+xml')).toBe(true);
+    expect(isSvgArtifactType('image/svg')).toBe(true);
+    expect(isSvgArtifactType('image/png')).toBe(false);
+    expect(isSvgArtifactType('text/html')).toBe(false);
+    expect(isSvgArtifactType('')).toBe(false);
+  });
+
+  it('rebuilds both entries so no original source survives an edit', () => {
+    const edited = '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>';
+    const files = getSvgFiles(edited);
+    expect(files['index.svg']).toBe(edited);
+    expect(files['index.html']).toContain(edited);
+    expect(files['index.html']).not.toContain('<rect');
+  });
+});
 
 describe('buildSandpackOptions', () => {
   it('includes externalResources with .js fragment hint for static template', () => {

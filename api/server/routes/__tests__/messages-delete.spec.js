@@ -9,6 +9,7 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (req, res, next) => next()),
   inspectContent: jest.fn(() => null),
   extractFeedbackContent: jest.fn(() => []),

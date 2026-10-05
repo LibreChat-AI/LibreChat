@@ -54,6 +54,7 @@ export default function VersionPanel() {
       name: agentWithVersions.name,
       description: agentWithVersions.description,
       instructions: agentWithVersions.instructions,
+      instructionsPrompt: agentWithVersions.instructionsPrompt,
       artifacts: agentWithVersions.artifacts,
       capabilities: agentWithVersions.capabilities,
       tools: agentWithVersions.tools,
@@ -140,28 +141,32 @@ export default function VersionPanel() {
       : null;
 
   return (
-    <div className="scrollbar-gutter-stable h-full min-h-[40vh] overflow-auto pb-12 text-sm">
-      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2 pb-2 pt-1">
+    <div className="h-full min-h-[40vh] scrollbar-gutter-stable overflow-auto pb-12 text-sm">
+      <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2 pt-1 pb-2">
         <Button
           variant="subtle"
           size="icon"
+          shape="theme"
           onClick={() => setActivePanel(Panel.builder)}
           aria-label={localize('com_ui_back_to_builder')}
-          className="flex-shrink-0 text-text-secondary hover:text-text-primary"
+          className="text-text-secondary hover:text-text-primary shrink-0"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
         </Button>
         <div className="flex flex-col items-center">
-          <h2 className="text-base font-semibold text-text-primary">
+          <h2 className="text-text-primary text-base font-semibold">
             {localize('com_ui_agent_version_history')}
           </h2>
           {countLabel && (
-            <p className="text-xs text-text-secondary" aria-live="polite">
+            <p className="text-text-secondary text-xs" aria-live="polite">
               {countLabel}
             </p>
           )}
         </div>
-        <span aria-hidden="true" className="h-10 w-10" />
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
       </header>
       <div className="flex flex-col px-2 pt-2">
         <VersionContent

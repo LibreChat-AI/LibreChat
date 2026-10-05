@@ -36,13 +36,13 @@ const nextActiveItemMutation = (element: HTMLElement): Promise<void> =>
  * mutation; this unfiltered observer proves delivery happened before the test asserts
  * that the hook did not react.
  */
-const nextAttributeMutation = (element: HTMLElement): Promise<void> =>
+const nextAttributeMutation = (element: HTMLElement, attributeName: string): Promise<void> =>
   new Promise((resolve) => {
     const observer = new MutationObserver(() => {
       observer.disconnect();
       resolve();
     });
-    observer.observe(element, { attributes: true });
+    observer.observe(element, { attributes: true, attributeFilter: [attributeName] });
   });
 
 describe('useIsActiveItem', () => {
@@ -87,7 +87,7 @@ describe('useIsActiveItem', () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
-    const delivered = nextAttributeMutation(probe);
+    const delivered = nextAttributeMutation(probe, 'data-something-else');
     await act(async () => {
       probe.setAttribute('data-something-else', 'x');
       await delivered;

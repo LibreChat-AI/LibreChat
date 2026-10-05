@@ -1,7 +1,13 @@
 import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { Constants, RetentionMode } from 'librechat-data-provider';
+import {
+  backgroundResultMetadata,
+  Constants,
+  RetentionMode,
+  Tools,
+  MCP_APP_MIME_TYPE,
+} from 'librechat-data-provider';
 import type { AppConfig, IMessage } from '..';
 import {
   createMessageMethods,
@@ -11,6 +17,7 @@ import {
   SUBAGENT_TRANSCRIPT_SOURCE_BYTE_LIMIT,
 } from './message';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { MAX_MCP_APP_MESSAGE_BSON_BYTES } from './appSnapshots';
 import { createModels } from '../models';
 import logger from '~/config/winston';
 
@@ -100,6 +107,7 @@ beforeAll(async () => {
   releaseBackgroundToolResultClaims = methods.releaseBackgroundToolResultClaims;
 
   await mongoose.connect(mongoUri);
+  await Message.createIndexes();
 });
 
 afterAll(async () => {
@@ -108,6 +116,12 @@ afterAll(async () => {
 });
 
 describe('Message Operations', () => {
+  it('constructs message methods before the host registers models', () => {
+    const unregistered = new mongoose.Mongoose();
+    expect(unregistered.models.Message).toBeUndefined();
+    expect(() => createMessageMethods(unregistered as unknown as typeof mongoose)).not.toThrow();
+  });
+
   let mockCtx: {
     userId: string;
     isTemporary?: boolean;
@@ -143,7 +157,433 @@ describe('Message Operations', () => {
     };
   });
 
+  const appAttachment = (i: number, bytes: number, toolCallId = 'call_bg') => ({
+    type: Tools.ui_resources,
+    file_id: `app-${i}`,
+    toolCallId,
+    [Tools.ui_resources]: [
+      {
+        uri: `ui://app/${i}`,
+        mimeType: MCP_APP_MIME_TYPE,
+        serverName: 'server',
+        serverBinding: 'authenticated-binding',
+        resourceId: `resource-${i}`,
+        toolName: 'show_app',
+        content: [{ type: 'text', text: 'canonical' }],
+        text: 'x'.repeat(bytes),
+      },
+    ],
+  });
+
+  describe('App admission across writers', () => {
+    it('rebudgets aggregate sub-megabyte blocks on content-only saves', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        attachments: Array.from({ length: 11 }, (_, i) =>
+          appAttachment(i, 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      const content = Array.from({ length: 10 }, () => ({
+        type: 'text',
+        text: 'x'.repeat(700_000),
+      }));
+      await saveMessage(mockCtx, { ...mockMessageData, content, attachments: undefined });
+      const row = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(row?.content).toEqual(content);
+      expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+    }, 60000);
+
+    it('rebudgets every sub-megabyte settle without a new attachment', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: Array.from({ length: 8 }, (_, i) => ({
+          type: 'tool_call',
+          tool_call: { id: `call-${i}`, output: 'pending' },
+        })),
+        attachments: Array.from({ length: 11 }, (_, i) =>
+          appAttachment(i, 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      for (let i = 0; i < 8; i++) {
+        expect(
+          (
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: mockMessageData.conversationId as string,
+              toolCallId: `call-${i}`,
+              output: 'x'.repeat(900_000),
+            })
+          ).matched,
+        ).toBe(true);
+        const row = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(
+          MAX_MCP_APP_MESSAGE_BSON_BYTES,
+        );
+        expect(row?.attachments).toHaveLength(11);
+      }
+    }, 60000);
+
+    it('never propagates caller tenantId through a budget callback or provenance save', async () => {
+      await tenantStorage.run({ tenantId: 'real-tenant' }, async () => {
+        const result = await saveMessage(mockCtx, {
+          ...mockMessageData,
+          tenantId: 'evil-tenant',
+          userSubmittedPaths: ['/text'],
+          attachments: [appAttachment(0, 4096)] as unknown as IMessage['attachments'],
+        });
+        expect(result?.tenantId).toBe('real-tenant');
+      });
+      const row = await runAsSystem(() => Message.findOne({ messageId: 'msg123' }).lean());
+      expect(row?.tenantId).toBe('real-tenant');
+      expect(row?.attachments).toHaveLength(1);
+    });
+
+    it('preserves omitted attachments from the retried row, not a stale preliminary read', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: [{ type: 'tool_call', tool_call: { id: 'call_bg', output: 'pending' } }],
+        attachments: [appAttachment(0, 4096)] as unknown as IMessage['attachments'],
+      });
+      const original = Message.findOneAndUpdate.bind(Message);
+      let inject = true;
+      const spy = jest.spyOn(Message, 'findOneAndUpdate').mockImplementation((...args) => {
+        const query = original(...args);
+        const execute = query.exec.bind(query);
+        query.exec = async () => {
+          if (inject && (args[0] as Record<string, unknown>)?.__v != null) {
+            inject = false;
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: mockMessageData.conversationId as string,
+              toolCallId: 'call_bg',
+              attachments: [appAttachment(1, 4096)],
+            });
+          }
+          return execute();
+        };
+        return query;
+      });
+      try {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          text: 'x'.repeat(1024 * 1024 + 1),
+          attachments: undefined,
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      const row = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(inject).toBe(false);
+      expect(row?.attachments?.map((x) => (x as { file_id: string }).file_id).sort()).toEqual([
+        'app-0',
+        'app-1',
+      ]);
+    });
+
+    it('treats undefined private fields as omissions exactly as MongoDB does', async () => {
+      await saveMessage(mockCtx, mockMessageData);
+      const subagentTranscript = {
+        taskId: 'private',
+        mode: 'append',
+        messagesJson: 'p'.repeat(5 * 1024 * 1024),
+      };
+      await Message.updateOne({ messageId: 'msg123' }, { $set: { subagentTranscript } });
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        subagentTranscript: undefined,
+        attachments: Array.from({ length: 9 }, (_, i) =>
+          appAttachment(i, 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      const row = await Message.findOne({ messageId: 'msg123' })
+        .select('+subagentTranscript')
+        .lean();
+      expect(row?.subagentTranscript).toEqual(subagentTranscript);
+      expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+    }, 60000);
+
+    it.each([
+      ['part agent wins', 'mine', 'other', true],
+      ['different part agent wins', 'other', 'mine', false],
+      ['nested agent fallback', undefined, 'other', false],
+      ['legacy wildcard', undefined, undefined, true],
+    ])('sizes only parts actually updated: %s', async (_name, partAgent, callAgent, matches) => {
+      const content = [
+        { type: 'tool_call', agentId: 'mine', tool_call: { id: 'call_bg', output: 'pending' } },
+        {
+          type: 'tool_call',
+          ...(partAgent != null && { agentId: partAgent }),
+          tool_call: { id: 'call_bg', agentId: callAgent, output: 'p'.repeat(850_000) },
+        },
+      ];
+      let configReads = 0;
+      const methods = createMessageMethods(mongoose, {
+        getMCPAppMessageBudget: async () => {
+          configReads++;
+          return 1024 * 1024;
+        },
+      });
+      await methods.saveMessage(mockCtx, {
+        ...mockMessageData,
+        content,
+        attachments: [appAttachment(0, 150_000)] as unknown as IMessage['attachments'],
+      });
+      const result = await methods.updateToolCallResult({
+        userId: 'user123',
+        messageId: 'msg123',
+        conversationId: mockMessageData.conversationId as string,
+        toolCallId: 'call_bg',
+        agentId: 'mine',
+        output: 'x'.repeat(300_000),
+      });
+      expect(result.matched).toBe(true);
+      const row = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(row?.content?.[1]).toMatchObject({
+        tool_call: { output: matches ? 'x'.repeat(300_000) : 'p'.repeat(850_000) },
+      });
+      const ui = (row?.attachments?.[0] as { ui_resources: Array<{ text?: string }> } | undefined)
+        ?.ui_resources;
+      if (matches) expect(ui?.[0].text).toBeDefined();
+      else expect(ui).toBeUndefined(); // Canonical-only may exceed the App target, never the storage ceiling.
+      expect(configReads).toBeGreaterThan(0);
+    });
+
+    it.each(['record', 'edit', 'bulk', 'text'] as const)(
+      'applies the same configurable limit through the %s writer',
+      async (writer) => {
+        const methods = createMessageMethods(mongoose, {
+          getMCPAppMessageBudget: async () => 150_000,
+        });
+        const base = {
+          ...mockMessageData,
+          attachments: [appAttachment(0, 100_000)] as unknown as IMessage['attachments'],
+        };
+        await methods.saveMessage(mockCtx, base);
+        const text = 'result'.repeat(15_000);
+        if (writer === 'record')
+          await methods.recordMessage({
+            conversationId: mockMessageData.conversationId,
+            user: 'user123',
+            messageId: 'msg123',
+            text,
+          });
+        if (writer === 'edit')
+          await methods.updateMessage('user123', { messageId: 'msg123', text });
+        if (writer === 'bulk')
+          await methods.bulkSaveMessages([{ ...mockMessageData, user: 'user123', text }]);
+        if (writer === 'text')
+          await methods.updateMessageText('user123', { messageId: 'msg123', text });
+        const row = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(row?.text).toBe(text);
+        expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(150_000);
+        expect(
+          (row?.attachments?.[0] as { ui_resources: Array<{ text?: string }> }).ui_resources[0]
+            .text,
+        ).toBeUndefined();
+      },
+    );
+
+    it('preserves bulk import counts and timestamps across ordinary and App-bearing rows', async () => {
+      const methods = createMessageMethods(mongoose, {
+        getMCPAppMessageBudget: async () => 80_000,
+      });
+      const createdAt = new Date('2020-01-01T00:00:00Z');
+      const messages = [
+        { ...mockMessageData, messageId: 'normal', createdAt },
+        {
+          ...mockMessageData,
+          messageId: 'app',
+          createdAt,
+          attachments: [appAttachment(0, 100_000)] as unknown as IMessage['attachments'],
+        },
+      ];
+      const created = await methods.bulkSaveMessages(messages, true);
+      expect(created).toMatchObject({ upsertedCount: 2, modifiedCount: 0 });
+      const modified = await methods.bulkSaveMessages(messages, true);
+      expect(modified).toMatchObject({ upsertedCount: 0, modifiedCount: 2, matchedCount: 2 });
+      const row = await Message.findOne({ messageId: 'app' }).lean();
+      expect(row?.createdAt).toEqual(createdAt);
+      expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(80_000);
+    });
+
+    it('keeps newer-producer fields in the whole BSON estimate without dropping them', async () => {
+      await saveMessage(mockCtx, mockMessageData);
+      await Message.collection.updateOne(
+        { messageId: 'msg123' },
+        { $set: { futurePayload: 'x'.repeat(5 * 1024 * 1024) } },
+      );
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        attachments: Array.from({ length: 9 }, (_, i) =>
+          appAttachment(i, 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      const row = await Message.collection.findOne({ messageId: 'msg123' });
+      expect(row?.futurePayload.length).toBe(5 * 1024 * 1024);
+      expect(mongoose.mongo.BSON.calculateObjectSize(row!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+    }, 60000);
+
+    it('does not resolve App configuration or read a full row on ordinary saves', async () => {
+      const getMCPAppMessageBudget = jest.fn();
+      const methods = createMessageMethods(mongoose, { getMCPAppMessageBudget });
+      const read = jest.spyOn(Message, 'findOne');
+      try {
+        await methods.saveMessage(mockCtx, mockMessageData);
+        await methods.saveMessage(mockCtx, { ...mockMessageData, text: 'updated' });
+        expect(read).not.toHaveBeenCalled();
+        expect(getMCPAppMessageBudget).not.toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+      }
+    });
+  });
+
   describe('saveMessage', () => {
+    it('bounds aggregate App BSON without changing canonical output, even on a later full save', async () => {
+      const content = [{ type: 'text', text: 'canonical message' }];
+      const attachments = Array.from({ length: 17 }, (_, i) =>
+        appAttachment(i, 1024 * 1024 - 2048),
+      );
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content,
+          attachments: attachments as unknown as IMessage['attachments'],
+        });
+        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+        expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+          MAX_MCP_APP_MESSAGE_BSON_BYTES,
+        );
+        const apps =
+          stored?.attachments?.flatMap(
+            (attachment) =>
+              (
+                attachment as {
+                  [Tools.ui_resources]: Array<{ text?: string; serverBinding?: string }>;
+                }
+              )[Tools.ui_resources],
+          ) ?? [];
+        expect(apps).toHaveLength(17);
+        expect(apps.some((app) => app.text === undefined)).toBe(true);
+        expect(apps.every((app) => app.serverBinding === 'authenticated-binding')).toBe(true);
+        expect(stored?.content).toEqual(content);
+      }
+    }, 60000);
+
+    it('re-budgets retained Apps when a later save omits attachments and grows canonical text', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        attachments: Array.from({ length: 3 }, (_, i) =>
+          appAttachment(i, 3 * 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      const text = 'model answer '.repeat(420_000);
+      await saveMessage(mockCtx, { ...mockMessageData, text, attachments: undefined });
+      const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(stored?.text).toBe(text);
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      expect(stored?.attachments).toHaveLength(3);
+      expect(
+        stored?.attachments?.some((attachment) =>
+          (attachment as { [Tools.ui_resources]: Array<{ text?: string }> })[
+            Tools.ui_resources
+          ].some((resource) => resource.text === undefined),
+        ),
+      ).toBe(true);
+    }, 60000);
+
+    it('omits only oversized bound Apps, never legacy UI or canonical message text', async () => {
+      const original = appAttachment(1, 4 * 1024 * 1024);
+      const legacy = { uri: 'ui://legacy', mimeType: 'text/html', text: '<p>legacy</p>' };
+      const canonical = 'ordinary output '.repeat(420_000);
+      const attachment = {
+        ...original,
+        [Tools.ui_resources]: [
+          { ...original[Tools.ui_resources][0], content: [{ type: 'text', text: canonical }] },
+          legacy,
+        ],
+      };
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        text: canonical,
+        attachments: [
+          attachment,
+          { file_id: 'ordinary-file' },
+        ] as unknown as IMessage['attachments'],
+      });
+      const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      expect(stored?.text).toBe(canonical);
+      expect(stored?.attachments).toEqual([
+        expect.objectContaining({ [Tools.ui_resources]: [legacy] }),
+        { file_id: 'ordinary-file' },
+      ]);
+    }, 60000);
+
+    it('accounts for server-private message fields that the chat projection omits', async () => {
+      await saveMessage(mockCtx, mockMessageData);
+      await Message.updateOne(
+        { messageId: 'msg123' },
+        {
+          $set: {
+            subagentTranscript: {
+              taskId: 'private-task',
+              mode: 'append',
+              messagesJson: 'p'.repeat(4 * 1024 * 1024),
+            },
+          },
+        },
+      );
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        attachments: Array.from({ length: 9 }, (_, i) =>
+          appAttachment(i, 1024 * 1024 - 2048),
+        ) as unknown as IMessage['attachments'],
+      });
+      const stored = await Message.findOne({ messageId: 'msg123' })
+        .select('+subagentTranscript')
+        .lean();
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      const apps =
+        stored?.attachments?.flatMap(
+          (item) =>
+            (item as { [Tools.ui_resources]: Array<{ text?: string }> })[Tools.ui_resources],
+        ) ?? [];
+      expect(apps).toHaveLength(9);
+      expect(apps.some((item) => item.text === undefined)).toBe(true);
+    }, 60000);
+
+    it('applies the same App budget when merging user-submitted provenance', async () => {
+      const attachments = Array.from({ length: 17 }, (_, i) =>
+        appAttachment(i, 1024 * 1024 - 2048),
+      );
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: [{ type: 'steer', text: 'user-authored' }],
+        attachments: attachments as unknown as IMessage['attachments'],
+      });
+      const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      expect(stored?.content?.[0]).toMatchObject({ type: 'steer', text: 'user-authored' });
+      expect(stored?.userSubmittedPaths).toContain('/content/0');
+    }, 60000);
+
     it('should save a message for an authenticated user', async () => {
       const result = await saveMessage(mockCtx, mockMessageData);
 
@@ -263,7 +703,7 @@ describe('Message Operations', () => {
         expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
         expect(findOneAndUpdate).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ $unset: { contextMeta: 1 } }),
+          expect.objectContaining({ $unset: expect.objectContaining({ contextMeta: 1 }) }),
           expect.anything(),
         );
         expect(updateOne).not.toHaveBeenCalled();
@@ -297,7 +737,7 @@ describe('Message Operations', () => {
         expect(findOneAndUpdate).toHaveBeenCalledTimes(1);
         expect(findOneAndUpdate).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ $unset: { contextMeta: 1 } }),
+          expect.objectContaining({ $unset: expect.objectContaining({ contextMeta: 1 }) }),
           expect.anything(),
         );
       } finally {
@@ -821,6 +1261,67 @@ describe('Message Operations', () => {
   });
 
   describe('updateToolCallResult', () => {
+    it('preserves a large canonical background result by downgrading existing App HTML', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: [
+          { type: 'tool_call', tool_call: { id: 'call_bg', name: 'show_app', output: 'pending' } },
+        ],
+        attachments: Array.from({ length: 3 }, (_, i) =>
+          appAttachment(i, 3 * 1024 * 1024),
+        ) as unknown as IMessage['attachments'],
+      });
+      const largeOutput = 'result '.repeat(700_000);
+      const patched = await updateToolCallResult({
+        userId: 'user123',
+        messageId: 'msg123',
+        conversationId: mockMessageData.conversationId as string,
+        toolCallId: 'call_bg',
+        output: largeOutput,
+      });
+      expect(patched.matched).toBe(true);
+      const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      expect(stored?.content?.[0]).toMatchObject({ tool_call: { output: largeOutput } });
+      expect(
+        stored?.attachments?.some((attachment) =>
+          (attachment as { [Tools.ui_resources]: Array<{ text?: string }> })[
+            Tools.ui_resources
+          ].some((resource) => resource.text === undefined),
+        ),
+      ).toBe(true);
+    }, 60000);
+
+    it('serializes concurrent App attachment settlements under the shared BSON budget', async () => {
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: [
+          { type: 'tool_call', tool_call: { id: 'call_bg', name: 'show_app', output: 'pending' } },
+        ],
+      });
+      const patch = (i: number) =>
+        updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: mockMessageData.conversationId as string,
+          toolCallId: 'call_bg',
+          output: 'canonical result',
+          attachments: [appAttachment(i, 3 * 1024 * 1024)],
+        });
+      const settled = await Promise.all(Array.from({ length: 5 }, (_, i) => patch(i)));
+      expect(settled.every((item) => item.matched)).toBe(true);
+      const stored = await Message.findOne({ messageId: 'msg123' }).lean();
+      expect(mongoose.mongo.BSON.calculateObjectSize(stored!)).toBeLessThanOrEqual(
+        MAX_MCP_APP_MESSAGE_BSON_BYTES,
+      );
+      expect(stored?.attachments).toHaveLength(5);
+      expect(stored?.content?.[0]).toMatchObject({ tool_call: { output: 'canonical result' } });
+      await patch(0);
+      expect((await Message.findOne({ messageId: 'msg123' }).lean())?.attachments).toHaveLength(5);
+    }, 60000);
+
     const toolCallContent = () => [
       { type: 'text', text: 'intro' },
       {
@@ -860,6 +1361,410 @@ describe('Message Operations', () => {
       expect(content[1].tool_call?.output).toBe('stdout:\nhello');
       expect(content[2].tool_call?.output).toBe('untouched');
       expect(saved?.attachments).toEqual([{ file_id: 'f1', toolCallId: 'call_bg' }]);
+    });
+
+    describe('a step id the persisted part lost', () => {
+      const conversationId = () => mockMessageData.conversationId as string;
+      const partOutputs = async () => {
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        return (
+          saved?.content as Array<{ tool_call?: { id: string; stepId?: string; output?: string } }>
+        )
+          .filter((part) => part.tool_call != null)
+          .map((part) => [
+            part.tool_call?.id,
+            part.tool_call?.stepId ?? null,
+            part.tool_call?.output,
+          ]);
+      };
+
+      it('patches the one part a resumed turn saved without its step id', async () => {
+        await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_before_pause',
+          output: 'stdout:\nfinished during the pause',
+          attachments: [{ file_id: 'report', toolCallId: 'call_bg' }],
+        });
+
+        expect(result).toEqual({ matched: true, unfinished: false });
+        expect(await partOutputs()).toEqual([
+          ['call_bg', null, 'stdout:\nfinished during the pause'],
+          ['call_other', null, 'untouched'],
+        ]);
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.attachments).toEqual([{ file_id: 'report', toolCallId: 'call_bg' }]);
+      });
+
+      it('still prefers the part whose step id matches exactly', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'stepless' },
+            },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', stepId: 'step_b', output: 'handle' },
+            },
+          ],
+        });
+
+        await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_0',
+          stepId: 'step_b',
+          output: 'settled',
+        });
+
+        expect(await partOutputs()).toEqual([
+          ['call_0', null, 'stepless'],
+          ['call_0', 'step_b', 'settled'],
+        ]);
+      });
+
+      it.each([
+        { file_id: 'shared-file' },
+        { filepath: '/api/files/code/download/session/shared-file' },
+      ])('preserves sibling step attachments when merging %j', async (fileKey) => {
+        const siblingAttachment = {
+          ...fileKey,
+          toolCallId: 'call_bg',
+          agentId: 'agent-a',
+          stepId: 'step_b',
+        };
+        const attachment = { ...siblingAttachment, stepId: 'step_a' };
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            ...toolCallContent(),
+            {
+              type: 'tool_call',
+              agentId: 'agent-a',
+              tool_call: { id: 'call_bg', stepId: 'step_b', output: 'sibling' },
+            },
+          ],
+          attachments: [siblingAttachment],
+        });
+        const patch = {
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          agentId: 'agent-a',
+          stepId: 'step_a',
+          output: 'settled',
+          attachments: [attachment],
+        };
+
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.attachments).toEqual([siblingAttachment, attachment]);
+        expect((await partOutputs())[2]).toEqual(['call_bg', 'step_b', 'sibling']);
+      });
+
+      it('retries the exact part after attachment contention without patching its stepless sibling', async () => {
+        const stepless = {
+          type: 'tool_call',
+          agentId: 'agent-a',
+          tool_call: { id: 'call_bg', output: 'stepless' },
+        };
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            stepless,
+            {
+              type: 'tool_call',
+              agentId: 'agent-a',
+              tool_call: { id: 'call_bg', stepId: 'step_b', output: 'handle' },
+            },
+          ],
+          attachments: [],
+        });
+        const patch = {
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_b',
+          agentId: 'agent-a',
+          output: 'settled',
+          attachments: [{ file_id: 'result', toolCallId: 'call_bg', stepId: 'step_b' }],
+          backgroundTask: {
+            taskId: 'task-b',
+            toolName: 'execute_code',
+            status: 'completed' as const,
+            settledAt: new Date(),
+            resultClaim: {
+              kind: 'manual' as const,
+              claimId: 'poll-b',
+              claimedAt: new Date(),
+            },
+          },
+        };
+        const original = Message.collection.findOneAndUpdate.bind(Message.collection);
+        let collisions = 0;
+        const spy = jest
+          .spyOn(Message.collection, 'findOneAndUpdate')
+          .mockImplementation(async (...args) => {
+            if (Object.prototype.hasOwnProperty.call(args[0], 'attachments') && collisions < 8) {
+              collisions += 1;
+              await Message.updateOne(
+                { messageId: 'msg123', user: 'user123' },
+                { $push: { attachments: { file_id: `concurrent-${collisions}` } } },
+              );
+            }
+            return original(...args);
+          });
+        try {
+          expect(await updateToolCallResult(patch)).toEqual({ matched: false, unfinished: false });
+          expect(collisions).toBe(8);
+          const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+          expect(saved?.content?.[0]).toEqual(stepless);
+          expect(saved?.attachments).toHaveLength(8);
+        } finally {
+          spy.mockRestore();
+        }
+
+        expect(await updateToolCallResult(patch)).toEqual({ matched: true, unfinished: false });
+        const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+        expect(saved?.content?.[0]).toEqual(stepless);
+        expect(saved?.content?.[1]).toMatchObject({
+          tool_call: { output: 'settled', backgroundTask: patch.backgroundTask },
+        });
+        expect(saved?.attachments).toHaveLength(9);
+      });
+
+      describe.each([false, true])('fallback with attachments: %s', (withAttachments) => {
+        it.each(['exact', 'ambiguous', 'unfinished', 'claimed'])(
+          'leaves a concurrent %s change intact and retryable',
+          async (change) => {
+            await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+            const claim = { kind: 'manual', claimId: 'concurrent-poll', claimedAt: new Date() };
+            const original = Message.collection.findOneAndUpdate.bind(Message.collection);
+            let raced = false;
+            let concurrentContent: IMessage['content'];
+            const spy = jest
+              .spyOn(Message.collection, 'findOneAndUpdate')
+              .mockImplementation(async (...args) => {
+                if (
+                  !raced &&
+                  (Array.isArray(args[0].content) ||
+                    args[0].content?.$elemMatch?.['tool_call.stepId'] === null)
+                ) {
+                  raced = true;
+                  const filter = { messageId: 'msg123', user: 'user123' };
+                  if (change === 'unfinished') {
+                    await Message.updateOne(filter, { $set: { unfinished: true } });
+                  } else if (change === 'claimed') {
+                    await Message.updateOne(filter, {
+                      $set: { 'content.1.tool_call.backgroundTask.resultClaim': claim },
+                    });
+                  } else {
+                    await Message.updateOne(filter, {
+                      $push: {
+                        content: {
+                          type: 'tool_call',
+                          tool_call: {
+                            id: 'call_bg',
+                            output: 'concurrent',
+                            ...(change === 'exact' ? { stepId: 'step_a' } : {}),
+                          },
+                        },
+                      },
+                    });
+                  }
+                  concurrentContent = (
+                    await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean()
+                  )?.content;
+                }
+                return original(...args);
+              });
+            try {
+              const result = await updateToolCallResult({
+                userId: 'user123',
+                messageId: 'msg123',
+                conversationId: conversationId(),
+                toolCallId: 'call_bg',
+                stepId: 'step_a',
+                output: 'settled',
+                ...(withAttachments
+                  ? { attachments: [{ file_id: 'result', toolCallId: 'call_bg' }] }
+                  : {}),
+                backgroundTask: {
+                  taskId: 'task-a',
+                  toolName: 'execute_code',
+                  status: 'completed',
+                  settledAt: new Date(),
+                  resultClaim: { kind: 'wakeup', claimId: 'wakeup-a', claimedAt: new Date() },
+                },
+              });
+              expect(raced).toBe(true);
+              expect(result).toEqual({ matched: false, unfinished: false });
+              const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+              expect(saved?.content).toEqual(concurrentContent);
+              expect(saved?.attachments ?? []).toEqual([]);
+            } finally {
+              spy.mockRestore();
+            }
+          },
+        );
+      });
+
+      it.each([undefined, null, { kind: 'manual', claimId: 'existing', claimedAt: new Date() }])(
+        'atomically settles a fallback while preserving claim ownership: %j',
+        async (resultClaim) => {
+          await saveMessage(mockCtx, {
+            ...mockMessageData,
+            content: [
+              {
+                type: 'tool_call',
+                tool_call: {
+                  id: 'call_bg',
+                  stepId: null,
+                  output: 'handle',
+                  backgroundTask: { resultClaim },
+                },
+              },
+            ],
+          });
+          const backgroundTask = {
+            taskId: 'task-a',
+            toolName: 'execute_code',
+            status: 'completed' as const,
+            settledAt: new Date(),
+            resultClaim: { kind: 'wakeup' as const, claimId: 'new', claimedAt: new Date() },
+          };
+          expect(
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: conversationId(),
+              toolCallId: 'call_bg',
+              stepId: 'step_a',
+              output: 'settled',
+              backgroundTask,
+            }),
+          ).toEqual({ matched: true, unfinished: false });
+          const saved = await Message.findOne({ messageId: 'msg123', user: 'user123' }).lean();
+          expect(saved?.content?.[0]).toMatchObject({
+            tool_call: {
+              stepId: null,
+              output: 'settled',
+              backgroundTask: {
+                ...backgroundTask,
+                resultClaim: resultClaim ?? backgroundTask.resultClaim,
+              },
+            },
+          });
+        },
+      );
+
+      it.each([
+        { partAgent: 'agent-a', callAgent: 'agent-b', matched: true },
+        { partAgent: 'agent-b', callAgent: 'agent-a', matched: false },
+        { partAgent: null, callAgent: 'agent-a', matched: true },
+        { partAgent: null, callAgent: 'agent-b', matched: false },
+        { partAgent: null, callAgent: null, matched: true },
+      ])(
+        'keeps agent ownership when falling back: %j',
+        async ({ partAgent, callAgent, matched }) => {
+          await saveMessage(mockCtx, {
+            ...mockMessageData,
+            content: [
+              {
+                type: 'tool_call',
+                agentId: partAgent,
+                tool_call: { id: 'call_bg', agentId: callAgent, stepId: null, output: 'handle' },
+              },
+              {
+                type: 'tool_call',
+                agentId: 'agent-b',
+                tool_call: { id: 'call_bg', stepId: 'step_a', output: 'sibling' },
+              },
+            ],
+          });
+          expect(
+            await updateToolCallResult({
+              userId: 'user123',
+              messageId: 'msg123',
+              conversationId: conversationId(),
+              toolCallId: 'call_bg',
+              agentId: 'agent-a',
+              stepId: 'step_a',
+              output: 'settled',
+            }),
+          ).toEqual({ matched, unfinished: false });
+          expect(await partOutputs()).toEqual([
+            ['call_bg', null, matched ? 'settled' : 'handle'],
+            ['call_bg', 'step_a', 'sibling'],
+          ]);
+        },
+      );
+
+      it('does not guess on a row the turn is still writing', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          unfinished: true,
+          content: toolCallContent(),
+        });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_bg',
+          stepId: 'step_not_saved_yet',
+          output: 'settled',
+        });
+
+        expect(result).toEqual({ matched: false, unfinished: false });
+        expect((await partOutputs())[0]).toEqual([
+          'call_bg',
+          null,
+          '{"background_task_id":"task-1"}',
+        ]);
+      });
+
+      it('leaves an ambiguous repeated call id unmatched rather than guessing', async () => {
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'first' },
+            },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call_0', name: 'execute_code', output: 'second' },
+            },
+          ],
+        });
+
+        const result = await updateToolCallResult({
+          userId: 'user123',
+          messageId: 'msg123',
+          conversationId: conversationId(),
+          toolCallId: 'call_0',
+          stepId: 'step_lost',
+          output: 'settled',
+        });
+
+        expect(result).toEqual({ matched: false, unfinished: false });
+        expect(await partOutputs()).toEqual([
+          ['call_0', null, 'first'],
+          ['call_0', null, 'second'],
+        ]);
+      });
     });
 
     it('appends to existing attachments instead of replacing them', async () => {
@@ -1025,7 +1930,16 @@ describe('Message Operations', () => {
     });
 
     it('reports no match when the targeted tool-call part is absent', async () => {
-      await saveMessage(mockCtx, { ...mockMessageData, content: toolCallContent() });
+      /** The call was saved under a different, stamped step: a real mismatch, not
+       * a part that lost its step id. */
+      await saveMessage(mockCtx, {
+        ...mockMessageData,
+        content: toolCallContent().map((part) =>
+          part.tool_call?.id === 'call_bg'
+            ? { ...part, tool_call: { ...part.tool_call, stepId: 'other-step' } }
+            : part,
+        ),
+      });
 
       await expect(
         updateToolCallResult({
@@ -1200,6 +2114,7 @@ describe('Message Operations', () => {
     });
 
     it('lets a same-generation manual poll claim an anchored terminal receipt', async () => {
+      const settledAt = new Date('2026-09-22T09:00:00.000Z');
       await saveMessage(mockCtx, {
         ...mockMessageData,
         unfinished: true,
@@ -1216,7 +2131,7 @@ describe('Message Operations', () => {
                 taskId: 'task-same-generation',
                 toolName: 'slow_tool',
                 status: 'completed',
-                settledAt: new Date(),
+                settledAt,
                 completionWakeup: true,
               },
             },
@@ -1264,6 +2179,8 @@ describe('Message Operations', () => {
             status: 'completed',
             output: 'settled output',
             agentId: 'agent-a',
+            /** Carried through so a poll can report when the task settled. */
+            settledAt,
           },
         ],
       });
@@ -1388,6 +2305,7 @@ describe('Message Operations', () => {
             status: 'completed',
             output: 'durable result',
             agentId: 'agent-a',
+            settledAt: expect.any(Date),
           },
         ],
       };
@@ -1597,6 +2515,7 @@ describe('Message Operations', () => {
             toolName: 'bash_tool',
             status: 'cancelled',
             output: 'Background task cancellation requested',
+            settledAt: expect.any(Date),
           },
         ],
       });
@@ -1643,6 +2562,7 @@ describe('Message Operations', () => {
             status: 'completed',
             output: 'one',
             agentId: 'agent-a',
+            settledAt: expect.any(Date),
           },
           {
             taskId: 'task-2',
@@ -1651,6 +2571,7 @@ describe('Message Operations', () => {
             status: 'completed',
             output: 'two',
             agentId: 'agent-a',
+            settledAt: expect.any(Date),
           },
         ],
       });
@@ -1681,6 +2602,118 @@ describe('Message Operations', () => {
         status: 'claimed',
         claim: { kind: 'wakeup', claimId: 'delivery-1' },
       });
+      /** V1 producers have no completionReceipt marker, but the V1 resolver
+       * acquires resultClaim before delivery. A later batch must exclude it. */
+      await expect(
+        claimBackgroundToolResults({
+          userId: 'user123',
+          conversationId: mockMessageData.conversationId as string,
+          messageId: 'msg123',
+          taskId: 'task-3',
+          kind: 'wakeup',
+          claimId: 'delivery-2',
+        }),
+      ).resolves.toMatchObject({
+        status: 'acquired',
+        results: [{ taskId: 'task-3', output: 'three' }],
+      });
+    });
+
+    it.each([true, false])(
+      'keeps independent receipt ownership out of message batches (root=%s)',
+      async (receiptRoot) => {
+        const terminal = (taskId: string, receipt: boolean) => ({
+          type: 'tool_call',
+          tool_call: {
+            id: taskId,
+            output: taskId,
+            backgroundTask: {
+              taskId,
+              toolName: 'tool',
+              status: 'completed',
+              completionWakeup: true,
+              ...(receipt ? { completionReceipt: true } : {}),
+            },
+          },
+        });
+        await saveMessage(mockCtx, {
+          ...mockMessageData,
+          content: [
+            terminal('root', receiptRoot),
+            terminal('independent', true),
+            terminal('message-only', false),
+          ],
+        });
+        const input = {
+          userId: 'user123',
+          conversationId: mockMessageData.conversationId as string,
+          messageId: 'msg123',
+          taskId: 'root',
+          kind: 'wakeup' as const,
+          claimId: 'delivery',
+          limit: 16,
+        };
+        const claim = await claimBackgroundToolResults(input);
+        expect(claim.status).toBe('acquired');
+        if (claim.status !== 'acquired') throw new Error('Expected acquired claim');
+        expect(claim.results.map((r) => r.taskId)).toEqual(
+          receiptRoot ? ['root'] : ['root', 'message-only'],
+        );
+        await expect(claimBackgroundToolResults({ ...input, limit: 1 })).resolves.toEqual(claim);
+        await expect(
+          claimBackgroundToolResults({ ...input, taskId: 'independent', claimId: 'other' }),
+        ).resolves.toMatchObject({
+          status: 'acquired',
+          results: [{ taskId: 'independent' }],
+        });
+      },
+    );
+
+    it('bounds escaped metadata before claiming and freezes membership across competing same-owner preparations', async () => {
+      const ids = Array.from({ length: 16 }, (_, i) => `${i}${'\u0001'.repeat(250)}`);
+      const terminal = (id: string) => ({
+        type: 'tool_call',
+        tool_call: {
+          id,
+          output: 'done',
+          backgroundTask: {
+            taskId: id,
+            toolName: '\u0001'.repeat(256),
+            status: 'completed',
+            completionWakeup: true,
+          },
+        },
+      });
+      await saveMessage(mockCtx, { ...mockMessageData, content: ids.map(terminal) });
+      const input = {
+        userId: 'user123',
+        conversationId: mockMessageData.conversationId as string,
+        messageId: 'msg123',
+        taskId: ids[15],
+        kind: 'wakeup' as const,
+        claimId: 'delivery',
+        limit: 16,
+        maxMetadataChars: 16 * 1024 - 256,
+      };
+      const attempts = await Promise.all([
+        claimBackgroundToolResults(input),
+        claimBackgroundToolResults(input),
+      ]);
+      const claim = attempts.find((result) => result.status === 'acquired');
+      if (claim?.status !== 'acquired') throw new Error('No claim elected');
+      expect(claim.results.some((r) => r.taskId === ids[15])).toBe(true);
+      expect(claim.results.length).toBeLessThan(16);
+      expect(
+        JSON.stringify(claim.results.map(backgroundResultMetadata)).length,
+      ).toBeLessThanOrEqual(input.maxMetadataChars);
+      await Message.updateOne(
+        { messageId: 'msg123', user: 'user123' },
+        { $push: { content: terminal('late') } },
+      );
+      await expect(claimBackgroundToolResults({ ...input, limit: 1 })).resolves.toEqual(claim);
+      await expect(
+        claimBackgroundToolResults({ ...input, taskId: 'late', claimId: 'later' }),
+      ).resolves.toMatchObject({ status: 'acquired' });
     });
 
     it('revalidates each sibling inside the atomic batch claim', async () => {
@@ -1842,6 +2875,7 @@ describe('Message Operations', () => {
             status: 'completed',
             output: 'a',
             agentId: 'agent-a',
+            settledAt: expect.any(Date),
           },
         ],
       });
@@ -3458,6 +4492,30 @@ describe('Message Operations', () => {
       expect(result?.expiredAt).toBeNull();
     });
 
+    it('should force temporary message and set expiredAt when retentionMode is EPHEMERAL even if isTemporary is false', async () => {
+      mockCtx.isTemporary = false;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveMessage(mockCtx, mockMessageData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).toBeInstanceOf(Date);
+    });
+
+    it('should force temporary message when retentionMode is EPHEMERAL and isTemporary is omitted', async () => {
+      mockCtx.isTemporary = undefined;
+      mockCtx.interfaceConfig = {
+        temporaryChatRetention: 24,
+        retentionMode: RetentionMode.EPHEMERAL,
+      };
+      const result = await saveMessage(mockCtx, mockMessageData);
+      expect(result?.isTemporary).toBe(true);
+      expect(result?.expiredAt).toBeDefined();
+      expect(result?.expiredAt).toBeInstanceOf(Date);
+    });
+
     it('should handle missing config gracefully', async () => {
       // Simulate missing config - should use default retention period
       delete mockCtx.interfaceConfig;
@@ -4930,6 +5988,97 @@ describe('Message Operations', () => {
           claimId: 'poll-1',
         }),
       ).resolves.toEqual({ status: 'not_found' });
+    });
+  });
+});
+
+describe('receipt-backed claim release before projection', () => {
+  it('allows a missing message only when the receipt owner explicitly opts in', async () => {
+    const input = {
+      userId: new mongoose.Types.ObjectId().toString(),
+      conversationId: 'missing-conversation',
+      messageId: 'missing-parent',
+      kind: 'wakeup' as const,
+      claimId: 'batch-root',
+    };
+    await expect(releaseBackgroundToolResultClaims(input)).resolves.toBe(false);
+    await expect(
+      releaseBackgroundToolResultClaims({ ...input, allowMissingMessage: true }),
+    ).resolves.toBe(true);
+  });
+});
+
+describe('receipt batch projection epochs', () => {
+  it('does not let delayed cleanup remove a successor claim on the same logical request', async () => {
+    await Message.create({
+      messageId: 'epoch-parent',
+      conversationId: 'epoch-conversation',
+      user: 'epoch-owner',
+      isCreatedByUser: false,
+      unfinished: false,
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: {
+            id: 'epoch-call',
+            output: 'done',
+            backgroundTask: {
+              taskId: 'epoch-task',
+              toolName: 'tool',
+              status: 'completed',
+              completionWakeup: true,
+              completionReceipt: true,
+            },
+          },
+        },
+      ],
+    });
+    const input = {
+      userId: 'epoch-owner',
+      conversationId: 'epoch-conversation',
+      messageId: 'epoch-parent',
+      taskId: 'epoch-task',
+      kind: 'wakeup' as const,
+      claimId: 'logical-root',
+      limit: 1,
+    };
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'old' })).status).toBe(
+      'acquired',
+    );
+    let pause: () => void = () => undefined;
+    let resume: () => void = () => undefined;
+    const paused = new Promise<void>((resolve) => {
+      pause = resolve;
+    });
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const update = Message.findOneAndUpdate.bind(Message);
+    const oldCleanup = jest.spyOn(Message, 'findOneAndUpdate').mockImplementationOnce((...args) => {
+      const query = update(...args);
+      const execute = query.exec.bind(query);
+      jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+        pause();
+        await barrier;
+        return execute();
+      });
+      return query;
+    });
+    const predecessor = releaseBackgroundToolResultClaims({ ...input, batchId: 'old' });
+    await paused;
+    expect(await releaseBackgroundToolResultClaims({ ...input, batchId: 'old' })).toBe(true);
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'new' })).status).toBe(
+      'acquired',
+    );
+    resume();
+    expect(await predecessor).toBe(true);
+    oldCleanup.mockRestore();
+    expect((await claimBackgroundToolResults({ ...input, batchId: 'new' })).status).toBe(
+      'acquired',
+    );
+    expect(await claimBackgroundToolResults({ ...input, batchId: 'old' })).toMatchObject({
+      status: 'claimed',
+      claim: { batchId: 'new' },
     });
   });
 });

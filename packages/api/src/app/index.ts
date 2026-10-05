@@ -1,4 +1,5 @@
 export * from './service';
+export * from './loader';
 export * from './config';
 export * from './metrics';
 export * from './permissions';
@@ -11,3 +12,4 @@ export * from './origin';
 export * from './agents';
 export { resolveBuildInfo } from './build';
 export type { BuildInfo } from './build';
+export { buildPreLoginInterface } from './interface';

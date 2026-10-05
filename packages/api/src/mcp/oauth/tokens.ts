@@ -362,7 +362,56 @@ export class MCPTokenStorage {
     };
   }
 
-  /** Returns whether storage contains a currently usable, generation-bound authorization. */
+  /** Records upstream rejection without invalidating a newer refresh or interactive authorization. */
+  static async markAuthorizationRejected({
+    userId,
+    serverName,
+    credentialSetId,
+    findToken,
+    updateToken,
+    flowManager,
+    persistenceWaitTimeoutMs,
+  }: {
+    userId: string;
+    serverName: string;
+    credentialSetId: string;
+    findToken: TokenMethods['findToken'];
+    updateToken: TokenMethods['updateToken'];
+    flowManager?: Pick<FlowStateManager, 'acquireLease'>;
+    persistenceWaitTimeoutMs?: number;
+  }): Promise<void> {
+    const lease = flowManager
+      ? await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName), {
+          waitMs: this.resolvePersistenceWaitMs(persistenceWaitTimeoutMs),
+        })
+      : undefined;
+    if (flowManager && !lease) {
+      throw new MCPTokenStorageUnavailableError(
+        serverName,
+        new Error('OAuth persistence fence unavailable'),
+      );
+    }
+    const scope = {
+      userId,
+      type: 'mcp_oauth_client',
+      identifier: `mcp:${serverName}:client`,
+      metadataCredentialSetId: credentialSetId,
+    };
+    try {
+      const client = await findToken(scope);
+      if (!client || getTokenMetadata(client).rejected_credential_set_id === credentialSetId) {
+        return;
+      }
+      await updateToken(
+        { ...scope, token: client.token },
+        { metadata: { ...getTokenMetadata(client), rejected_credential_set_id: credentialSetId } },
+      );
+    } finally {
+      if (lease) await this.releaseRefreshFlight(lease, this.getLogPrefix(userId, serverName));
+    }
+  }
+
+  /** Returns whether storage contains a usable, generation-bound authorization not rejected upstream. */
   static async hasStoredAuthorization({
     userId,
     serverName,
@@ -384,6 +433,12 @@ export class MCPTokenStorage {
         findToken({ userId, type: 'mcp_oauth_client', identifier: `${identifier}:client` }),
       ]);
       const clientCredentialSetId = getCredentialSetId(clientInfoData);
+      if (
+        clientCredentialSetId &&
+        getTokenMetadata(clientInfoData).rejected_credential_set_id === clientCredentialSetId
+      ) {
+        return false;
+      }
       const accessCredentialSetId = getCredentialSetId(accessTokenData);
       let hasUsableAuthorization = false;
       if (accessTokenData) {
@@ -726,12 +781,18 @@ export class MCPTokenStorage {
 
       let accessTokenExpiry: Date;
       let expiresInSeconds: number;
-      if ('expires_at' in tokens && tokens.expires_at) {
+      // Zero is a stated lifetime, not an omitted one. Only unknown/invalid lifetimes
+      // use the default; never turn an elapsed known lifetime into a year of validity.
+      if (
+        'expires_at' in tokens &&
+        typeof tokens.expires_at === 'number' &&
+        Number.isFinite(tokens.expires_at)
+      ) {
         /** MCPOAuthTokens format - already has calculated expiry */
         logger.debug(`${logPrefix} Using expires_at: ${tokens.expires_at}`);
         accessTokenExpiry = new Date(tokens.expires_at);
         expiresInSeconds = Math.floor((accessTokenExpiry.getTime() - Date.now()) / 1000);
-      } else if (tokens.expires_in) {
+      } else if (typeof tokens.expires_in === 'number' && Number.isFinite(tokens.expires_in)) {
         /** Standard OAuthTokens format - use expires_in directly to avoid lossy Date round-trip */
         logger.debug(`${logPrefix} Using expires_in: ${tokens.expires_in}`);
         expiresInSeconds = tokens.expires_in;
@@ -756,12 +817,18 @@ export class MCPTokenStorage {
         }
       }
 
-      logger.debug(`${logPrefix} Calculated expiry date: ${accessTokenExpiry.toISOString()}`);
-
       if (isNaN(accessTokenExpiry.getTime())) {
         logger.error(`${logPrefix} Invalid expiry date calculated, using default`);
         accessTokenExpiry = new Date(Date.now() + defaultTTL * 1000);
         expiresInSeconds = defaultTTL;
+      }
+
+      logger.debug(`${logPrefix} Calculated expiry date: ${accessTokenExpiry.toISOString()}`);
+
+      if (expiresInSeconds <= 0) {
+        logger.info(
+          `${logPrefix} Stored access token is already expired (expires_at: ${accessTokenExpiry.toISOString()}); the next read refreshes it`,
+        );
       }
 
       const accessTokenData = {
@@ -769,7 +836,7 @@ export class MCPTokenStorage {
         type: 'mcp_oauth',
         identifier,
         token: encryptedAccessToken,
-        expiresIn: expiresInSeconds > 0 ? expiresInSeconds : defaultTTL,
+        expiresIn: expiresInSeconds,
         metadata: tokenMetadata,
       };
 
@@ -1009,7 +1076,18 @@ export class MCPTokenStorage {
     const inflight = this.inflightRefreshes.get(refreshKey);
     if (inflight) {
       logger.debug(`${logPrefix} Joining in-flight token refresh`);
-      return this.raceWithAbort(inflight, signal);
+      if (!params.rejectedCredentialSetId || !params.updateToken) {
+        return this.raceWithAbort(inflight, signal);
+      }
+      const rejection = this.recordRefreshRejection(params);
+      const joined = (async () => {
+        try {
+          return await inflight;
+        } finally {
+          await rejection;
+        }
+      })();
+      return this.raceWithAbort(joined, signal);
     }
 
     if (!refreshTokens) {
@@ -1044,6 +1122,10 @@ export class MCPTokenStorage {
       if (this.refreshTeardownCounts.has(ownerKey)) {
         logger.debug(`${logPrefix} Skipping token refresh during OAuth teardown`);
         return null;
+      }
+      if (params.rejectedCredentialSetId && params.updateToken) {
+        await this.recordRefreshRejection(params);
+        if (executionController.signal.aborted) return null;
       }
       /** Serialize with the redemptions other replicas may be running for this credential. */
       let flight: MCPRefreshFlight | null = null;
@@ -1182,6 +1264,27 @@ export class MCPTokenStorage {
     this.inflightRefreshControllers.set(refreshKey, executionController);
     this.inflightRefreshOwners.set(refreshKey, ownerKey);
     return this.raceWithAbort(refreshPromise, signal);
+  }
+
+  /** Records rejection inside the common refresh lifetime, without blocking entry-point coalescing. */
+  private static async recordRefreshRejection(params: GetTokensParams): Promise<void> {
+    if (!params.rejectedCredentialSetId || !params.updateToken) return;
+    try {
+      await this.markAuthorizationRejected({
+        userId: params.userId,
+        serverName: params.serverName,
+        credentialSetId: params.rejectedCredentialSetId,
+        findToken: params.findToken,
+        updateToken: params.updateToken,
+        flowManager: params.flowManager,
+        persistenceWaitTimeoutMs: params.persistenceWaitTimeoutMs,
+      });
+    } catch (error) {
+      logger.warn(
+        `${this.getLogPrefix(params.userId, params.serverName)} Failed to record upstream OAuth rejection`,
+        error,
+      );
+    }
   }
 
   /**
@@ -1646,6 +1749,9 @@ export class MCPTokenStorage {
       try {
         newTokens = await refreshTokens(decryptedRefreshToken, metadata, signal);
       } catch (error) {
+        if (error instanceof MCPTokenRefreshUnavailableError) {
+          throw error;
+        }
         // These endpoint responses reject the refresh request permanently; a new grant can recover.
         // Classify only provider failures here, never a similarly worded persistence failure.
         const message = error instanceof Error ? error.message : String(error);
@@ -1695,10 +1801,10 @@ export class MCPTokenStorage {
           deleteTokens,
           findToken,
           clientInfo,
+          /** Rejection evidence may change during redemption; read its rollback snapshot under the lease. */
           existingTokens: {
             accessToken: existingAccessToken ?? undefined,
             refreshToken: refreshTokenData,
-            clientInfoToken: clientInfoData,
           },
           metadata: storedClientMetadata,
           expectedCredentialSetId: refreshCredentialSetId,
@@ -1731,7 +1837,10 @@ export class MCPTokenStorage {
       return storedTokens;
     } catch (refreshError) {
       logger.error(`${logPrefix} Failed to refresh tokens`, refreshError);
-      if (refreshError instanceof ReauthenticationRequiredError) {
+      if (
+        refreshError instanceof ReauthenticationRequiredError ||
+        refreshError instanceof MCPTokenRefreshUnavailableError
+      ) {
         throw refreshError;
       }
       if (

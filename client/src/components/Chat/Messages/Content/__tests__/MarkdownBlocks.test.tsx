@@ -73,7 +73,12 @@ jest.mock('~/components/Messages/Content/CodeBlock', () => ({
 /** The real splitter, observed: whether a render paid for the block-boundary parse. */
 jest.mock('../splitMarkdown', () => {
   const actual = jest.requireActual<typeof import('../splitMarkdown')>('../splitMarkdown');
-  return { ...actual, splitMarkdownIntoBlocks: jest.fn(actual.splitMarkdownIntoBlocks) };
+  const splitSpy = jest.fn(actual.splitMarkdownIntoBlocks);
+  return {
+    ...actual,
+    splitMarkdownIntoBlocks: splitSpy,
+    createMarkdownSplitter: jest.fn(() => jest.fn((content: string) => splitSpy(content))),
+  };
 });
 
 const splitSpy = jest.mocked(splitMarkdownIntoBlocks);
@@ -282,6 +287,32 @@ describe('MarkdownBlocks code-block index parity', () => {
       ]);
     },
   );
+});
+
+describe('MarkdownBlocks provisional boundaries', () => {
+  it.each([
+    ['Intro\n***', 'Intro\n***important***.'],
+    ['Intro\n#', 'Intro\n#hashtag'],
+    ['Intro\n```', 'Intro\n```inline```'],
+    ['- item\n***', '- item\n***important***.'],
+    ['> quote\n***', '> quote\n***important***.'],
+  ])('matches a fresh render after streaming past %j', (prefix, content) => {
+    const view = (text: string, submitting: boolean) => (
+      <TestProviders>
+        <LiveMarkdown content={text} submitting={submitting} />
+      </TestProviders>
+    );
+    const { container, rerender } = render(view(prefix, true));
+    rerender(view(content, true));
+    rerender(view(content, false));
+
+    const { container: fresh } = render(
+      <TestProviders>
+        <OldMarkdown content={content} />
+      </TestProviders>,
+    );
+    expect(normalizeHtml(container.innerHTML)).toBe(normalizeHtml(fresh.innerHTML));
+  });
 });
 
 describe('MarkdownBlocks finished and streamed messages', () => {

@@ -9,6 +9,7 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(2),
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
   sendFeedbackScore: jest.fn().mockResolvedValue(undefined),
   traceIdForMessage: jest.fn((messageId) => `trace-${messageId}`),
@@ -22,6 +23,7 @@ jest.mock('@librechat/api', () => ({
   CHILD_THREAD_READ_ONLY_ERROR: 'Child thread is view-only.',
   isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
   requireFeedbackEnabled: (req, res, next) => next(),
+  applyForcedRetention: jest.fn(),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
@@ -37,6 +39,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('~/models', () => ({
+  saveConvo: jest.fn(),
+  saveMessage: jest.fn(),
   getMessages: jest.fn(),
   updateMessage: jest.fn(),
 }));
@@ -56,7 +60,7 @@ jest.mock('~/server/middleware', () => ({
 
 describe('PUT /:conversationId/:messageId content edit', () => {
   let app;
-  const { getMessages, updateMessage } = require('~/models');
+  const { getMessages, saveConvo, saveMessage, updateMessage } = require('~/models');
   const { assertStoredMessageMutationAllowed } = require('@librechat/api');
 
   beforeAll(() => {
@@ -73,6 +77,8 @@ describe('PUT /:conversationId/:messageId content edit', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     updateMessage.mockResolvedValue({ messageId: 'message-1' });
+    saveMessage.mockResolvedValue({ messageId: 'message-1', conversationId: 'conversation-1' });
+    saveConvo.mockResolvedValue({ conversationId: 'conversation-1' });
   });
 
   it('preserves content-part metadata when editing its text', async () => {

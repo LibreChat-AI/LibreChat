@@ -5,8 +5,17 @@ import {
   isEphemeralAgentId,
   getAllowedCodeApprovalModes,
   CODE_APPROVAL_MODES,
+  resolveCodeEnvironmentSelection,
+  resolveCodeWorkspaceInheritance,
 } from 'librechat-data-provider';
-import type { Agent, TAgentsMap, TConfig, TPublicCodeEnvironment } from 'librechat-data-provider';
+import type {
+  Agent,
+  TAgentsMap,
+  TConfig,
+  TPublicCodeEnvironment,
+  CodeWorkspaceSelection,
+  CodeWorkspaceRoutingAgent,
+} from 'librechat-data-provider';
 import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
 import { useCodeApprovalModePreference } from './codeApprovalPreference';
 import useAgentToolPermissions from './useAgentToolPermissions';
@@ -38,6 +47,8 @@ export default function useCodeApprovalMode(
       ]),
     [addedAgent, agentsMap, primaryAgent, conversation?.agent_id, addedConversation?.agent_id],
   );
+  /** Approval modes intersect every machine an agent could run on, including a subagent's own
+   *  default it may no longer use once it follows its parent: offering fewer modes is safe. */
   const codeEnvironments = useMemo(
     () =>
       reachable.agents
@@ -45,8 +56,20 @@ export default function useCodeApprovalMode(
           (agent) =>
             agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code),
         )
-        .map((agent) => findExecutionEnvironment(agent, environments)),
-    [environments, reachable],
+        .map((agent) =>
+          findExecutionEnvironment(
+            agent,
+            environments,
+            statefulCodeSessions?.allowEnvironmentSelection,
+            conversation?.codeWorkspaces,
+          ),
+        ),
+    [
+      environments,
+      reachable,
+      statefulCodeSessions?.allowEnvironmentSelection,
+      conversation?.codeWorkspaces,
+    ],
   );
   const attachedEnvironments = useMemo(
     () =>
@@ -103,13 +126,90 @@ export default function useCodeApprovalMode(
   return { available, modes, selected };
 }
 
+/** The same per-agent eligibility gate is used for routing and draft discovery. Missing
+ * explicit defaults may recover to an allowed machine; managed defaults never opt in. */
+export function getCodeEnvironmentChoiceIds(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+): string[] | undefined {
+  const defaultEnvironment = agent.code_environment_id
+    ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
+    : environments?.find((candidate) => candidate.default === true);
+  if (
+    allowEnvironmentSelection !== true ||
+    !agent.code_environment_ids?.length ||
+    !(
+      defaultEnvironment?.type === 'attached' ||
+      (defaultEnvironment == null && Boolean(agent.code_environment_id))
+    )
+  ) {
+    return undefined;
+  }
+  return [
+    ...new Set([
+      agent.code_environment_id ?? defaultEnvironment?.id,
+      ...agent.code_environment_ids,
+    ]),
+  ].filter((id): id is string => id != null);
+}
+
 export function findExecutionEnvironment(
   agent: Agent,
   environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
+  inheritedEnvironmentId?: string,
 ): TPublicCodeEnvironment | undefined {
-  return agent.code_environment_id
+  const defaultEnvironment = agent.code_environment_id
     ? environments?.find((candidate) => candidate.id === agent.code_environment_id)
     : environments?.find((candidate) => candidate.default === true);
+  const allowSelection =
+    getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null;
+  const selection = resolveCodeEnvironmentSelection({
+    agentId: agent.id,
+    environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
+    environmentIds: agent.code_environment_ids,
+    allowSelection,
+    /** A draft's machine for its parent is selected on submission, before the reader picks it. */
+    selections:
+      inheritedEnvironmentId != null &&
+      !selections?.some(({ environmentId }) => environmentId === inheritedEnvironmentId)
+        ? [...(selections ?? []), { environmentId: inheritedEnvironmentId, workspaceId: 'draft' }]
+        : selections,
+    inheritedEnvironmentId,
+  });
+  if (!selection.valid) return undefined;
+  const resolved = selection.environmentId
+    ? environments?.find((candidate) => candidate.id === selection.environmentId)
+    : defaultEnvironment;
+  return allowSelection && resolved?.type !== 'attached' ? undefined : resolved;
+}
+
+/** Discovery can expose an authorized recovery target after a default disappears. This never
+ * admits execution: a saved chat must explicitly replace its sealed decision before using it. */
+export function findCodeWorkspaceDiscoveryEnvironment(
+  agent: Agent,
+  environments?: TPublicCodeEnvironment[],
+  allowEnvironmentSelection?: boolean,
+  selections?: CodeWorkspaceSelection[],
+  inheritedEnvironmentId?: string,
+): TPublicCodeEnvironment | undefined {
+  return (
+    findExecutionEnvironment(
+      agent,
+      environments,
+      allowEnvironmentSelection,
+      selections,
+      inheritedEnvironmentId,
+    ) ??
+    findExecutionEnvironment(agent, environments) ??
+    environments?.find(
+      ({ id, type }) =>
+        type === 'attached' &&
+        getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection)?.includes(id),
+    )
+  );
 }
 
 export function collectReachableAgents(
@@ -148,4 +248,106 @@ export function collectReachableAgents(
     }
   }
   return { agents, complete };
+}
+
+function getLinkedAgentIds(agent: Agent): string[] {
+  const edgeIds = agent.edges?.flatMap((edge) => [
+    ...(Array.isArray(edge.from) ? edge.from : [edge.from]),
+    ...(Array.isArray(edge.to) ? edge.to : [edge.to]),
+  ]);
+  return [...(agent.agent_ids ?? []), ...(edgeIds ?? [])];
+}
+
+function toCodeWorkspaceRoutingAgent(
+  agent: Agent,
+  environments: TPublicCodeEnvironment[] | undefined,
+  allowEnvironmentSelection: boolean | undefined,
+): CodeWorkspaceRoutingAgent {
+  return {
+    id: agent.id,
+    routesCode:
+      agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code) === true,
+    environmentId:
+      agent.code_environment_id ?? environments?.find(({ default: isDefault }) => isDefault)?.id,
+    environmentIds: agent.code_environment_ids,
+    allowSelection:
+      getCodeEnvironmentChoiceIds(agent, environments, allowEnvironmentSelection) != null,
+    subagentIds:
+      agent.subagents?.enabled === true
+        ? [
+            ...(agent.subagents.agent_ids ?? []),
+            ...(agent.subagents.graphs ?? []).flatMap((graph) => graph.agent_ids ?? []),
+          ].filter((id) => id.length > 0 && id !== agent.id)
+        : undefined,
+  };
+}
+
+/**
+ * Mirrors the server's subagent machine inheritance for the composer. Conversation agents and
+ * the agents they hand off to are roots; explicit subagents follow their parent's machine when
+ * `resolveCodeWorkspaceInheritance` allows it, so the composer neither asks for a workspace a
+ * subagent will not use nor rejects a graph the server will route.
+ */
+export function resolveReachableCodeWorkspaceInheritance(
+  roots: Array<Agent | undefined>,
+  agentsMap: TAgentsMap | undefined,
+  environments: TPublicCodeEnvironment[] | undefined,
+  allowEnvironmentSelection: boolean | undefined,
+  selections: CodeWorkspaceSelection[] | undefined,
+  /** The chat has not decided yet, so the submission will also select each root's machine. */
+  draft = false,
+): Map<string, string> {
+  if (!draft && !selections?.length) return new Map();
+  const lookup = (id: string): Agent | undefined =>
+    roots.find((root) => root?.id === id) ?? agentsMap?.[id];
+  const agents = new Map<string, CodeWorkspaceRoutingAgent>();
+  const rootIds: string[] = [];
+  const pendingRoots = roots.filter((agent): agent is Agent => agent != null);
+  while (pendingRoots.length > 0) {
+    const agent = pendingRoots.shift() as Agent;
+    if (agents.has(agent.id)) continue;
+    agents.set(
+      agent.id,
+      toCodeWorkspaceRoutingAgent(agent, environments, allowEnvironmentSelection),
+    );
+    rootIds.push(agent.id);
+    for (const id of getLinkedAgentIds(agent)) {
+      const linked = agents.has(id) ? undefined : lookup(id);
+      if (linked != null) pendingRoots.push(linked);
+    }
+  }
+  const pending = rootIds.flatMap((id) => agents.get(id)?.subagentIds ?? []);
+  while (pending.length > 0) {
+    const id = pending.shift() as string;
+    const agent = agents.has(id) ? undefined : lookup(id);
+    if (agent == null) continue;
+    const node = toCodeWorkspaceRoutingAgent(agent, environments, allowEnvironmentSelection);
+    agents.set(id, node);
+    pending.push(...(node.subagentIds ?? []));
+  }
+  /** A sendable draft selects a workspace on every machine a root runs on, so a subagent can follow
+   *  its parent there before the reader picks one; requiring its own default would ask for a
+   *  workspace the submitted decision never uses. */
+  const prospective = draft
+    ? rootIds.reduce<CodeWorkspaceSelection[]>((planned, id) => {
+        const root = lookup(id);
+        const environment =
+          root != null && agents.get(id)?.routesCode === true
+            ? findExecutionEnvironment(root, environments, allowEnvironmentSelection, selections)
+            : undefined;
+        return environment?.type === 'attached' &&
+          !planned.some(({ environmentId }) => environmentId === environment.id)
+          ? [...planned, { environmentId: environment.id, workspaceId: 'draft' }]
+          : planned;
+      }, selections ?? [])
+    : selections;
+  return resolveCodeWorkspaceInheritance({
+    selections: prospective,
+    rootIds,
+    agents,
+    isAttachedEnvironment: (id) =>
+      environments?.some(
+        (environment) => environment.id === id && environment.type === 'attached',
+      ) === true,
+  });
 }

@@ -2,8 +2,9 @@ import React, { memo, useMemo, useState, useLayoutEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
+import type { MarkdownSplitter } from './splitMarkdown';
 import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
-import { splitMarkdownIntoBlocks } from './splitMarkdown';
+import { createMarkdownSplitter } from './splitMarkdown';
 import { createFadePlugin } from './animate';
 
 type SharedProps = {
@@ -109,11 +110,11 @@ type BlockEntry = {
  * a block before existing code or artifacts remounts the blocks it shifted, while
  * append-only streaming keeps completed blocks mounted.
  */
-const toBlockEntries = (content: string): BlockEntry[] => {
+const toBlockEntries = (content: string, splitMarkdown: MarkdownSplitter): BlockEntry[] => {
   let codeBaseIndex = 0;
   let artifactBaseIndex = 0;
   let mermaidBaseIndex = 0;
-  return splitMarkdownIntoBlocks(content).map((block, index) => {
+  return splitMarkdown(content).map((block, index) => {
     const entry = {
       key: `${index}-${codeBaseIndex}-${artifactBaseIndex}-${mermaidBaseIndex}`,
       raw: block.raw,
@@ -166,16 +167,17 @@ const MarkdownBlocks = memo(function MarkdownBlocks({
   animate,
   hydrated,
 }: MarkdownBlocksProps) {
+  const splitMarkdown = useMemo(() => createMarkdownSplitter(), []);
   const [mountedContent] = useState(content);
   const [hasChanged, setHasChanged] = useState(streaming);
   const changing = streaming || content !== mountedContent;
   if (changing && !hasChanged) {
     setHasChanged(true);
   }
-  const perBlock = hasChanged || changing;
   const blocks = useMemo(
-    () => (perBlock ? toBlockEntries(content) : toWholeMessage(content)),
-    [content, perBlock],
+    () =>
+      hasChanged || changing ? toBlockEntries(content, splitMarkdown) : toWholeMessage(content),
+    [content, hasChanged, changing, splitMarkdown],
   );
 
   return (

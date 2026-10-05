@@ -7,6 +7,7 @@ import type {
   TTraceRecordDetail,
 } from './types/traces';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -206,8 +207,11 @@ export const listSharedLinks = async (
   return request.get(endpoints.getSharedLinks(pageSize, sortBy, sortDirection, search, cursor));
 };
 
-export function getSharedLink(conversationId: string): Promise<t.TSharedLinkGetResponse> {
-  return request.get(endpoints.getSharedLink(conversationId));
+export function getSharedLink(
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<t.TSharedLinkGetResponse> {
+  return request.get(endpoints.getSharedLink(conversationId), signal ? { signal } : undefined);
 }
 
 export function createSharedLink(
@@ -328,6 +332,18 @@ export const resetPassword = (payload: t.TResetPassword) => {
 
 export const verifyEmail = (payload: t.TVerifyEmail): Promise<t.VerifyEmailResponse> => {
   return request.post(endpoints.verifyEmail(), payload);
+};
+
+export const requestEmailChange = (
+  payload: t.TRequestEmailChange,
+): Promise<t.TEmailChangeResponse> => {
+  return request.post(endpoints.requestEmailChange(), payload);
+};
+
+export const confirmEmailChange = (
+  payload: t.TConfirmEmailChange,
+): Promise<t.TEmailChangeResponse> => {
+  return request.post(endpoints.confirmEmailChange(), payload);
 };
 
 export const resendVerificationEmail = (
@@ -552,6 +568,11 @@ export const callTool = <T extends m.ToolId>({
   );
 };
 
+export const resetToolApprovalGrants = (params: {
+  agentId: string;
+  toolName?: string;
+}): Promise<{ reset: true }> => request.post(endpoints.resetToolApprovalGrants(), params);
+
 export const getToolCalls = (params: q.GetToolCallParams): Promise<q.ToolCallResults> => {
   return request.get(
     endpoints.agents({
@@ -563,8 +584,11 @@ export const getToolCalls = (params: q.GetToolCallParams): Promise<q.ToolCallRes
 
 /* Files */
 
-export const getFiles = (): Promise<f.TFile[]> => {
-  return request.get(endpoints.files());
+export const getFiles = (params?: { limit?: number }): Promise<f.TFile[]> => {
+  return request.get(
+    endpoints.files(),
+    params?.limit != null ? { params: { limit: params.limit } } : undefined,
+  );
 };
 
 /**
@@ -758,17 +782,9 @@ export const getAgentCategories = (): Promise<t.TMarketplaceCategory[]> => {
 /**
  * Unified marketplace agents endpoint with query string controls
  */
-export const getMarketplaceAgents = (params: {
-  requiredPermission: number;
-  category?: string;
-  search?: string;
-  limit?: number;
-  cursor?: string;
-  promoted?: 0 | 1;
-}): Promise<ag.AgentListResponse> => {
+export const getMarketplaceAgents = (params: ag.AgentListParams): Promise<ag.AgentListResponse> => {
   return request.get(
     endpoints.agents({
-      // path: 'marketplace',
       options: params,
     }),
   );
@@ -995,8 +1011,8 @@ export function getConversations(cursor: string): Promise<t.TGetConversationsRes
   return request.get(endpoints.conversations({ cursor }));
 }
 
-export function getConversationById(id: string): Promise<s.TConversation> {
-  return request.get(endpoints.conversationById(id));
+export function getConversationById(id: string, signal?: AbortSignal): Promise<s.TConversation> {
+  return request.get(endpoints.conversationById(id), signal ? { signal } : undefined);
 }
 
 export function updateConversation(
@@ -1036,6 +1052,31 @@ export function deleteProject(projectId: string): Promise<t.TDeleteChatProjectRe
   return request.delete(endpoints.projectById(projectId));
 }
 
+export function getProjectFiles(projectId: string): Promise<t.TChatProjectFile[]> {
+  return request.get(endpoints.projectFiles(projectId));
+}
+
+export function getAvailableProjectFiles(
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+): Promise<q.ProjectAvailableFilesResponse> {
+  return request.get(endpoints.projectAvailableFiles(projectId, params));
+}
+
+export function addProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.post(endpoints.projectFiles(payload.projectId), { file_id: payload.file_id });
+}
+
+export function removeProjectFile(payload: {
+  projectId: string;
+  file_id: string;
+}): Promise<t.TChatProject> {
+  return request.delete(endpoints.projectFile(payload.projectId, payload.file_id));
+}
+
 export function assignConversationToProject(
   payload: t.TAssignConversationToProjectRequest,
 ): Promise<t.TAssignConversationToProjectResponse> {
@@ -1049,6 +1090,18 @@ export function pinConversation(
   payload: t.TPinConversationRequest,
 ): Promise<t.TPinConversationResponse> {
   return request.post(endpoints.pinConversation(), { arg: payload });
+}
+
+export function markConversationSeen(
+  payload: t.TMarkConversationSeenRequest,
+): Promise<t.TMarkConversationSeenResponse> {
+  return request.post(endpoints.markConversationSeen(), { arg: payload });
+}
+
+export function markConversationUnread(
+  payload: t.TMarkConversationUnreadRequest,
+): Promise<t.TMarkConversationUnreadResponse> {
+  return request.post(endpoints.markConversationUnread(), { arg: payload });
 }
 
 export function genTitle(payload: m.TGenTitleRequest): Promise<m.TGenTitleResponse> {
@@ -1095,6 +1148,21 @@ export const branchMessage = async (
   return request.post(endpoints.messagesBranch(), payload);
 };
 
+export interface OwnerMessageText {
+  canonicalText: string;
+  messageId: string;
+  revision: string;
+  text?: string;
+}
+
+/** Private display data; never merge into ordinary message/query-cache objects. */
+export function getOwnerMessageTexts(
+  conversationId: string,
+  messageIds: string[],
+): Promise<{ messages: OwnerMessageText[] }> {
+  return request.post(`${endpoints.messages({ conversationId })}/owner-text`, { messageIds });
+}
+
 export function getMessagesByConvoId(conversationId: string): Promise<s.TMessage[]> {
   if (
     conversationId === config.Constants.NEW_CONVO ||
@@ -1128,6 +1196,17 @@ export function controlSubagentTask(
   body: t.SubagentControlRequest,
 ): Promise<t.SubagentControlResponse> {
   return request.post(endpoints.subagentControl(parentConversationId, threadId), body);
+}
+
+export function getBackgroundTasks(conversationId: string): Promise<t.BackgroundTaskIndex> {
+  return request.get(endpoints.backgroundTasks(conversationId));
+}
+
+export function cancelBackgroundTasks(
+  conversationId: string,
+  body: t.BackgroundTaskCancelRequest,
+): Promise<t.BackgroundTaskCancelResponse> {
+  return request.post(endpoints.backgroundTasksCancel(conversationId), body);
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
@@ -1211,10 +1290,30 @@ export function getSchedules(): Promise<sch.TSchedulesResponse> {
   return request.get(endpoints.schedules());
 }
 
-export function enqueueAgentQueuedTurn(
+export async function enqueueAgentQueuedTurn(
   payload: qt.TEnqueueAgentQueuedTurnRequest,
 ): Promise<qt.TEnqueueAgentQueuedTurnResponse> {
-  return request.post(endpoints.agentQueuedTurns(), payload);
+  if (payload.codeApprovalMode == null) {
+    return request.post(endpoints.agentQueuedTurns(), payload);
+  }
+  const unsupported = () =>
+    Object.assign(new Error('Queued approval snapshots require protocol v2'), {
+      response: { status: 409, data: { code: 'QUEUED_TURN_PROTOCOL_REQUIRED' } },
+    });
+  try {
+    // The versioned URL is the capability gate. Do not preflight with a list:
+    // retries must reach receipt lookup even when mutable access has changed.
+    return await request.post(endpoints.agentQueuedTurns(2), payload);
+  } catch (error) {
+    const response = (error as { response?: { status?: number; data?: { code?: unknown } } })
+      ?.response;
+    const status = response?.status;
+    // Structured origin responses (notably priority fallback) are authoritative.
+    if ((status === 404 || status === 501) && typeof response?.data?.code !== 'string') {
+      throw unsupported();
+    }
+    throw error;
+  }
 }
 
 export function listAgentQueuedTurns(
@@ -1274,6 +1373,12 @@ export function listSkillFiles(skillId: string): Promise<sk.TListSkillFilesRespo
 }
 
 export function uploadSkillFile(skillId: string, formData: FormData): Promise<sk.TSkillFile> {
+  const relativePath = formData.get('relativePath');
+  // Conditional edits use a new route: older servers must reject the request,
+  // not silently ignore expectedFileId and perform an unconditional replacement.
+  if (formData.has('expectedFileId') && typeof relativePath === 'string') {
+    return request.postMultiPart(endpoints.skillFile(skillId, relativePath), formData);
+  }
   return request.postMultiPart(endpoints.skillFiles(skillId), formData);
 }
 
@@ -1533,6 +1638,30 @@ export function enableTwoFactor(payload?: t.TEnable2FARequest): Promise<t.TEnabl
   return request.post(endpoints.enableTwoFactor(), payload);
 }
 
+export function enableTwoFactorSetup(
+  payload: t.TEnable2FASetupRequest,
+): Promise<t.TEnable2FAResponse> {
+  return request.post(endpoints.enableTwoFactorSetup(), payload);
+}
+
+export function confirmTwoFactorSetup(
+  payload: t.TConfirm2FASetupRequest,
+): Promise<t.TConfirm2FASetupResponse> {
+  return request.post(endpoints.confirmTwoFactorSetup(), payload);
+}
+
+export function acknowledgeTwoFactorSetup(
+  payload: t.TAcknowledge2FASetupRequest,
+): Promise<t.TAcknowledge2FASetupResponse> {
+  return request.post(endpoints.acknowledgeTwoFactorSetup(), payload);
+}
+
+export function finalizeTwoFactorSetup(
+  payload: t.TFinalize2FASetupRequest,
+): Promise<t.TFinalize2FASetupResponse> {
+  return request.post(endpoints.finalizeTwoFactorSetup(), payload);
+}
+
 export function verifyTwoFactor(payload: t.TVerify2FARequest): Promise<t.TVerify2FAResponse> {
   return request.post(endpoints.verifyTwoFactor(), payload);
 }
@@ -1555,6 +1684,47 @@ export function verifyTwoFactorTemp(
   payload: t.TVerify2FATempRequest,
 ): Promise<t.TVerify2FATempResponse> {
   return request.post(endpoints.verifyTwoFactorTemp(), payload);
+}
+
+// Passkeys (WebAuthn)
+export function getPasskeys(): Promise<t.TPasskeysResponse> {
+  return request.get(endpoints.passkeys());
+}
+
+export function getPasskeyRegistrationOptions(
+  payload: t.TPasskeyRegistrationOptionsRequest,
+): Promise<t.TPasskeyCreationOptions> {
+  return request.post(endpoints.passkeyRegistrationOptions(), payload);
+}
+
+export function verifyPasskeyRegistration(
+  payload: t.TVerifyPasskeyRegistrationRequest,
+): Promise<t.TPasskeyResponse> {
+  return request.post(endpoints.passkeyRegistrationVerify(), payload);
+}
+
+export function getPasskeyLoginOptions(): Promise<t.TPasskeyAuthenticationOptionsResponse> {
+  return request.post(endpoints.passkeyLoginOptions(), {});
+}
+
+export function verifyPasskeyLogin(
+  payload: t.TVerifyPasskeyLoginRequest,
+): Promise<t.TLoginResponse> {
+  return request.post(endpoints.passkeyLoginVerify(), payload);
+}
+
+export function renamePasskey({
+  passkeyId,
+  name,
+}: t.TRenamePasskeyRequest): Promise<t.TPasskeyResponse> {
+  return request.patch(endpoints.passkey(passkeyId), { name });
+}
+
+export function deletePasskey({
+  passkeyId,
+  password,
+}: t.TDeletePasskeyRequest): Promise<{ message: string }> {
+  return request.deleteWithOptions(endpoints.passkey(passkeyId), { data: { password } });
 }
 
 /* Memories */
@@ -1769,4 +1939,19 @@ export function withdrawArtifactAppVersion(
   versionId: string,
 ): Promise<aa.TArtifactVersion> {
   return request.post(endpoints.artifactAppVersionWithdraw(artifactAppId, versionId), {});
+}
+
+export function getScheduleMCPConsent(id: string): Promise<ScheduleMCPConsentView> {
+  return request.get(endpoints.scheduleMCPConsent(id));
+}
+export function confirmScheduleMCPConsent(
+  id: string,
+  payload: ConfirmScheduleMCPConsent,
+): Promise<ScheduleMCPConsentView> {
+  return request.post(endpoints.scheduleMCPConsent(id), payload);
+}
+export function revokeScheduleMCPConsent(id: string, expectedRevision: string): Promise<void> {
+  return request.deleteWithOptions(endpoints.scheduleMCPConsent(id), {
+    data: { expectedRevision },
+  });
 }

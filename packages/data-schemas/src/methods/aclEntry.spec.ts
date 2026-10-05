@@ -7,7 +7,11 @@ import {
   PermissionBits,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
-import { createAclEntryMethods, permissionBitSupersets } from './aclEntry';
+import {
+  OWNER_ACL_PERMISSION_BITS,
+  createAclEntryMethods,
+  permissionBitSupersets,
+} from './aclEntry';
 import aclEntrySchema from '~/schema/aclEntry';
 
 let mongoServer: MongoMemoryServer;
@@ -1277,6 +1281,85 @@ describe('AclEntry Model Tests', () => {
     });
   });
 
+  describe('getFirstOwnerIdsByResource', () => {
+    test('answers with the earliest owner when a transfer left two owner entries behind', async () => {
+      const formerOwner = new mongoose.Types.ObjectId();
+      const currentOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        formerOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+      await methods.grantPermission(
+        PrincipalType.USER,
+        currentOwner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(formerOwner.toString());
+    });
+
+    /* Granting Agent Insights ORs VIEW_INSIGHTS into the owner's role bits, so an owner
+       entry is not always exactly OWNER_ACL_PERMISSION_BITS. */
+    test('recognises an owner whose entry also carries the insights bit', async () => {
+      const owner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        owner,
+        ResourceType.AGENT,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS | PermissionBits.VIEW_INSIGHTS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.get(resourceId.toString())).toBe(owner.toString());
+    });
+
+    /* An agent and its remote counterpart share one id, so a lookup that ignored the
+       resource type would let a revoked remote owner decide the agent's public author. */
+    test('ignores an owner entry stored against another resource type with the same id', async () => {
+      const remoteOwner = new mongoose.Types.ObjectId();
+      await methods.grantPermission(
+        PrincipalType.USER,
+        remoteOwner,
+        ResourceType.MCPSERVER,
+        resourceId,
+        OWNER_ACL_PERMISSION_BITS,
+        grantedById,
+      );
+
+      const owners = await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId]);
+
+      expect(owners.size).toBe(0);
+    });
+
+    test('ignores a viewer and asks nothing of the database for an empty page', async () => {
+      await methods.grantPermission(
+        PrincipalType.USER,
+        userId,
+        ResourceType.AGENT,
+        resourceId,
+        PermissionBits.VIEW,
+        grantedById,
+      );
+
+      expect(
+        (await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [resourceId])).size,
+      ).toBe(0);
+      expect((await methods.getFirstOwnerIdsByResource(ResourceType.AGENT, [])).size).toBe(0);
+    });
+  });
+
   /**
    * These cases exercise the application-layer bitwise filtering that replaced
    * the `$bitsAllSet` query operator (which is not supported by MongoDB forks
@@ -1682,6 +1765,113 @@ describe('AclEntry Model Tests', () => {
    * `permBits: { $in: permissionBitSupersets(X) }`), so it warrants direct
    * coverage independent of the higher-level parity and behavior specs.
    */
+  describe('modifyPermissionBits (atomic guarded writes, issue #16163)', () => {
+    const principal = new mongoose.Types.ObjectId();
+    const resource = new mongoose.Types.ObjectId();
+    const INSIGHTS = PermissionBits.VIEW_INSIGHTS;
+
+    const seed = (permBits: number) =>
+      AclEntry.create({
+        principalType: PrincipalType.USER,
+        principalId: principal,
+        principalModel: PrincipalModel.USER,
+        resourceType: ResourceType.AGENT,
+        resourceId: resource,
+        permBits,
+        grantedBy: grantedById,
+      });
+
+    const modify = (add?: number | null, remove?: number | null) =>
+      methods.modifyPermissionBits(
+        PrincipalType.USER,
+        principal,
+        ResourceType.AGENT,
+        resource,
+        add,
+        remove,
+      );
+
+    test('adds bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+    });
+
+    test('removes bits, leaving independently administered bits alone', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(null, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+
+    test('applies an add and a remove in one stored value', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT | INSIGHTS);
+      const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('changes bits in one guarded write and never emits $bit', async () => {
+      await seed(PermissionBits.VIEW);
+      const spy = jest.spyOn(AclEntry, 'bulkWrite');
+      try {
+        await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][0]).toHaveLength(1);
+        expect(spy.mock.calls[0][0][0]).toMatchObject({
+          updateOne: {
+            filter: { permBits: PermissionBits.VIEW },
+            update: { $set: { permBits: PermissionBits.EDIT } },
+          },
+        });
+        expect(JSON.stringify(spy.mock.calls)).not.toContain('$bit');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('retries a concurrent Insights grant without overwriting it', async () => {
+      await seed(PermissionBits.VIEW | PermissionBits.EDIT);
+      const real = AclEntry.bulkWrite.bind(AclEntry);
+      const race = (async (...args: Parameters<typeof real>) => {
+        await AclEntry.updateMany({ principalId: principal }, { $set: { permBits: 19 } });
+        return real(...args);
+      }) as unknown as typeof AclEntry.bulkWrite;
+      const spy = jest.spyOn(AclEntry, 'bulkWrite').mockImplementationOnce(race);
+      try {
+        const updated = await modify(PermissionBits.SHARE, PermissionBits.EDIT);
+        expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test('removes a bit named in both masks, matching the prior precedence', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(PermissionBits.EDIT | PermissionBits.SHARE, PermissionBits.EDIT);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | PermissionBits.SHARE | INSIGHTS);
+    });
+
+    test('initializes an absent permission field without inheriting anything', async () => {
+      await seed(PermissionBits.VIEW);
+      await mongoose.models.AclEntry.collection.updateMany(
+        { principalId: principal },
+        { $unset: { permBits: '' } },
+      );
+      const updated = await modify(PermissionBits.EDIT, PermissionBits.VIEW);
+      expect(updated?.permBits).toBe(PermissionBits.EDIT);
+    });
+
+    test('returns null when no entry matches', async () => {
+      expect(await modify(PermissionBits.EDIT, PermissionBits.VIEW)).toBeNull();
+    });
+
+    test('returns the entry unchanged when neither side is requested', async () => {
+      await seed(PermissionBits.VIEW | INSIGHTS);
+      const updated = await modify(null, null);
+      expect(updated?.permBits).toBe(PermissionBits.VIEW | INSIGHTS);
+    });
+  });
+
   describe('permissionBitSupersets', () => {
     test('requiredBits=0 matches every permBits value in [0, 31]', () => {
       const result = permissionBitSupersets(0);

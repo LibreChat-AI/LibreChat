@@ -2,11 +2,13 @@ import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from '
 import { createArtifactSourceTombstoneModel } from './artifactSourceTombstone';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
+import { getTenantIndexMigrationHint } from '~/migrations/tenantIndexes';
 import { createSkillSyncCredentialModel } from './skillSyncCredential';
 import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createToolApprovalGrantModel } from './toolApprovalGrant';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
@@ -30,6 +32,7 @@ import { createToolCallModel } from './toolCall';
 import { createAclEntryModel } from './aclEntry';
 import { createAuditLogModel } from './auditLog';
 import { createSessionModel } from './session';
+import { createPasskeyModel } from './passkey';
 import { createBalanceModel } from './balance';
 import { createMessageModel } from './message';
 import { createActionModel } from './action';
@@ -53,8 +56,10 @@ import logger from '~/config/winston';
  */
 export function createModels(mongoose: typeof import('mongoose')): {
   User: ReturnType<typeof createUserModel>;
+  ToolApprovalGrant: ReturnType<typeof createToolApprovalGrantModel>;
   Token: ReturnType<typeof createTokenModel>;
   Session: ReturnType<typeof createSessionModel>;
+  Passkey: ReturnType<typeof createPasskeyModel>;
   Balance: ReturnType<typeof createBalanceModel>;
   Conversation: ReturnType<typeof createConversationModel>;
   ChatProject: ReturnType<typeof createChatProjectModel>;
@@ -105,8 +110,10 @@ export function createModels(mongoose: typeof import('mongoose')): {
 } {
   const models = {
     User: createUserModel(mongoose),
+    ToolApprovalGrant: createToolApprovalGrantModel(mongoose),
     Token: createTokenModel(mongoose),
     Session: createSessionModel(mongoose),
+    Passkey: createPasskeyModel(mongoose),
     Balance: createBalanceModel(mongoose),
     Conversation: createConversationModel(mongoose),
     ChatProject: createChatProjectModel(mongoose),
@@ -165,6 +172,11 @@ export function createModels(mongoose: typeof import('mongoose')): {
       model.on('index', (error?: Error) => {
         if (error) {
           logger.error(`Index build failed for "${model.modelName}": ${error.message}`);
+          // eslint-disable-next-line no-restricted-syntax -- Collection name metadata only, no raw driver operations.
+          const hint = getTenantIndexMigrationHint(model.collection.collectionName, error);
+          if (hint) {
+            logger.warn(hint);
+          }
         }
       });
     }

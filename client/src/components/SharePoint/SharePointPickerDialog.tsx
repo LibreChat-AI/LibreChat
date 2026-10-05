@@ -63,7 +63,8 @@ export default function SharePointPickerDialog({
        *  it never reached the screen. The dialog is opaque, so nothing here
        *  needed a scrim of its own: it takes the theme's. */}
       <OGDialogContent
-        className="sharepoint-picker-bg fixed left-1/2 top-1/2 z-50 h-[680px] max-h-[90vh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-surface-dialog p-2 shadow-lg focus:outline-none"
+        focusOutline="hidden"
+        className="sharepoint-picker-bg bg-surface-dialog fixed top-1/2 left-1/2 z-50 h-[42.5rem] max-h-[90vh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border p-2 shadow-lg"
         showCloseButton={true}
       >
         <OGDialogTitle className="sr-only">
@@ -73,35 +74,35 @@ export default function SharePointPickerDialog({
           {/* SharePoint iframe will be injected here by the hook */}
 
           {isDownloading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/30 backdrop-blur-sm">
-              <div className="mx-4 w-full max-w-sm rounded-lg bg-surface-primary p-6 shadow-lg">
+            <div className="bg-surface-overlay/30 absolute inset-0 z-10 flex items-center justify-center rounded-lg backdrop-blur-xs">
+              <div className="bg-surface-primary mx-4 w-full max-w-sm rounded-lg p-6 shadow-lg">
                 <div className="text-center">
-                  <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-b-2 border-blue-600"></div>
-                  <h3 className="mb-2 text-lg font-semibold text-text-primary">
+                  <div className="border-status-info mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-b-2"></div>
+                  <h3 className="text-text-primary mb-2 text-lg font-semibold">
                     {localize('com_files_downloading')}
                   </h3>
                   {downloadProgress && (
                     <div className="space-y-2">
-                      <p className="text-sm text-text-secondary">
+                      <p className="text-text-secondary text-sm">
                         {localize('com_files_download_progress', {
                           0: downloadProgress.completed,
                           1: downloadProgress.total,
                         })}
                       </p>
                       {downloadProgress.currentFile && (
-                        <p className="truncate text-xs text-text-tertiary">
+                        <p className="text-text-tertiary truncate text-xs">
                           {downloadProgress.currentFile}
                         </p>
                       )}
-                      <div className="h-2 w-full rounded-full bg-surface-tertiary">
+                      <div className="bg-surface-tertiary h-2 w-full rounded-full">
                         <div
-                          className="h-2 rounded-full bg-blue-600 transition-all duration-300"
+                          className="bg-status-info h-2 rounded-full transition-all duration-300"
                           style={{
                             width: `${Math.round((downloadProgress.completed / downloadProgress.total) * 100)}%`,
                           }}
                         ></div>
                       </div>
-                      <p className="text-xs text-text-tertiary">
+                      <p className="text-text-tertiary text-xs">
                         {localize('com_files_download_percent_complete', {
                           0: Math.round(
                             (downloadProgress.completed / downloadProgress.total) * 100,
@@ -109,7 +110,7 @@ export default function SharePointPickerDialog({
                         })}
                       </p>
                       {downloadProgress.failed.length > 0 && (
-                        <p className="text-xs text-text-destructive">
+                        <p className="text-text-destructive text-xs">
                           {localize('com_files_download_failed', {
                             0: downloadProgress.failed.length,
                           })}
@@ -118,7 +119,7 @@ export default function SharePointPickerDialog({
                     </div>
                   )}
                   {!downloadProgress && (
-                    <p className="text-sm text-text-secondary">
+                    <p className="text-text-secondary text-sm">
                       {localize('com_files_preparing_download')}
                     </p>
                   )}

@@ -3,7 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import type { SubagentUpdateEvent, SubagentIdentity } from 'librechat-data-provider';
+import type { SubagentUpdateEvent, SubagentIdentity, PartMetadata } from 'librechat-data-provider';
 import type {
   SubagentAggregatorState,
   SubagentContentPart,
@@ -23,7 +23,10 @@ import {
 } from '~/components/Chat/Subagents/state';
 import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
+import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
+import { FOLD_GLYPH_SELECTOR } from '../../rows';
+import { litFoldPath } from '../../rail';
 
 const mockMCPServerNames: string[] = [];
 
@@ -121,6 +124,7 @@ function renderWithState(args: {
   output?: string;
   toolArgs?: Record<string, unknown>;
   subagentIdentity?: SubagentIdentity;
+  runStepStatus?: PartMetadata['runStepStatus'];
 }) {
   const setter = { current: null as null | ((next: SubagentProgress | null) => void) };
   let selection: ActiveSubagentPanel | null = null;
@@ -137,7 +141,7 @@ function renderWithState(args: {
     selection = useAtomValue(activeSubagentPanel);
     return null;
   };
-  const rendered = render(
+  const tree = (tick: number) => (
     <MemoryRouter>
       <ChatSurfaceHarness>
         <RecoilRoot>
@@ -150,24 +154,29 @@ function renderWithState(args: {
               isExpanded: false,
             }}
           >
-            <SubagentCall
-              toolCallId={args.toolCallId}
-              initialProgress={args.initialProgress}
-              isSubmitting={args.isSubmitting ?? false}
-              args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
-              output={args.output}
-              subagentIdentity={args.subagentIdentity}
-            />
+            <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+              <SubagentCall
+                toolCallId={args.toolCallId}
+                initialProgress={args.initialProgress}
+                isSubmitting={args.isSubmitting ?? false}
+                args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
+                output={args.output}
+                runStepStatus={args.runStepStatus}
+                subagentIdentity={args.subagentIdentity}
+              />
+            </FailedRevealContext.Provider>
           </MessageContext.Provider>
         </RecoilRoot>
       </ChatSurfaceHarness>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+  const rendered = render(tree(0));
   act(() => setter.current?.(args.progress ?? null));
   return {
     ...rendered,
     getSelection: () => selection,
     setProgress: (next: SubagentProgress | null) => act(() => setter.current?.(next)),
+    reveal: () => rendered.rerender(tree(1)),
   };
 }
 
@@ -185,6 +194,35 @@ const event = (
 });
 
 describe('SubagentCall', () => {
+  it('registers its existing header glyph for both containing fold rails', () => {
+    renderWithState({ toolCallId: 'fold-glyph', initialProgress: 1 });
+    const row = screen.getByRole('button', { name: 'Ran agent' }).cloneNode(true) as HTMLElement;
+    const glyph = row.querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+    expect(glyph).not.toBeNull();
+    expect(glyph).toHaveClass('h-5', 'w-5');
+    expect(glyph).not.toHaveClass('min-w-6');
+    glyph!.getBoundingClientRect = () => ({ top: 150, height: 20 }) as DOMRect;
+    const root = document.createElement('div');
+    let parent = root;
+    const rails: HTMLElement[] = [];
+    for (const top of [40, 104]) {
+      const panel = document.createElement('div');
+      panel.setAttribute('data-fold-panel', '');
+      const rail = document.createElement('button');
+      rail.setAttribute('data-fold-rail', '');
+      rail.getBoundingClientRect = () => ({ top }) as DOMRect;
+      panel.append(rail);
+      parent.append(panel);
+      parent = panel;
+      rails.push(rail);
+    }
+    parent.append(row);
+    expect(litFoldPath(root, row, 155)).toEqual([
+      { rail: rails[1], length: 54, end: true },
+      { rail: rails[0], length: 118, end: false },
+    ]);
+  });
+
   it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
       toolCallId: 'identity',
@@ -258,6 +296,37 @@ describe('SubagentCall', () => {
             }),
     });
     expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it.each([
+    { output: 'Error: tool call failed: child crashed', runStepStatus: 'completed' as const },
+    { output: 'Partial output', runStepStatus: 'failed' as const },
+  ])('opens a failed subagent panel from its parent reveal (%p)', (failure) => {
+    const rendered = renderWithState({
+      toolCallId: 'failed-child',
+      initialProgress: 1,
+      ...failure,
+    });
+    expect(screen.getByRole('button', { name: 'Agent errored' })).toBeInTheDocument();
+    expect(rendered.getSelection()).toBeNull();
+
+    rendered.reveal();
+
+    expect(rendered.getSelection()).toEqual(
+      expect.objectContaining({ toolCallId: 'failed-child' }),
+    );
+  });
+
+  it('does not reveal a cancelled subagent with error-shaped output', () => {
+    const rendered = renderWithState({
+      toolCallId: 'cancelled-child',
+      initialProgress: 1,
+      output: 'Error: tool call failed: abort',
+      runStepStatus: 'cancelled',
+    });
+    expect(screen.getByRole('button', { name: 'Cancelled agent' })).toBeInTheDocument();
+    rendered.reveal();
+    expect(rendered.getSelection()).toBeNull();
   });
 
   it('keeps the compact semantic ticker while selecting the shared panel', async () => {

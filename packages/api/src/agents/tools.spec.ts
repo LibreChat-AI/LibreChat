@@ -13,13 +13,35 @@ jest.mock('@librechat/agents', () => ({
     parameters: {
       type: 'object',
       properties: {
+        intent: { type: 'string', description: 'SDK read intent' },
         path: {
           type: 'string',
           description: 'For skill files: "{skillName}/{path}".',
         },
       },
+      required: ['path'],
     },
     responseFormat: 'content',
+  },
+  SkillToolDefinition: {
+    name: 'skill',
+    description: `Invoke a skill from the user's library.
+
+CONSTRAINTS:
+- Do not invoke a skill that is already active in this conversation.
+- Skill names come from the catalog only. Do not guess names.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', description: 'intent' },
+        skillName: {
+          type: 'string',
+          description: 'Must match a name from the "Available Skills" section.',
+        },
+        args: { type: 'string', description: 'Optional freeform arguments string.' },
+      },
+      required: ['skillName'],
+    },
   },
   BashExecutionToolDefinition: {
     name: 'bash_tool',
@@ -47,7 +69,9 @@ jest.mock('@librechat/agents', () => ({
     enableToolOutputReferences === true ? 'bash {{tool<idx>turn<turn>}}' : 'bash',
 }));
 
-import { CODE_EXECUTION_TOOLS } from '@librechat/agents';
+import fs from 'fs';
+import path from 'path';
+import { CODE_EXECUTION_TOOLS, ReadFileToolDefinition } from '@librechat/agents';
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import { CODE_WORKSPACE_OPERATIONS, Constants } from 'librechat-data-provider';
 import {
@@ -60,10 +84,17 @@ import {
   FILE_AUTHORING_TOOL_NAMES,
   isFileAuthoringToolDefinition,
   isCodeSessionToolName,
+  isSkillToolAvailable,
+  getSkillToolDefinition,
+  buildAuthoringSkillToolDescription,
+  buildAuthoringSkillToolParameters,
 } from './tools';
 
 /** Portable ceiling for OpenAI-compatible tool description validators. */
 const TOOL_DESCRIPTION_ADVISORY_MAX_LENGTH = 1024;
+
+const ATTACHED_SKILL_FILE_SENTENCE =
+  'Skill files are not on the attached machine, so bash_tool cannot run them by path; to run a skill script there, read it and write it into the workspace first.';
 
 function filePathDescription(tool?: LCTool): string {
   const parameters = tool?.parameters as
@@ -342,6 +373,16 @@ describe('buildHistoricalToolNames', () => {
     ).toEqual(new Set(['read_file']));
   });
 
+  it('exposes the skill invocation tool on an authoring run with an empty catalog', () => {
+    expect(
+      buildHistoricalToolNames({
+        skillsAvailable: false,
+        skillFileAccessAvailable: false,
+        skillAuthoringAvailable: true,
+      }),
+    ).toEqual(new Set(['skill', 'read_file', 'create_file', 'edit_file']));
+  });
+
   it('normalizes Action names and their options', () => {
     expect(
       buildHistoricalToolNames({
@@ -430,6 +471,222 @@ describe('buildHistoricalToolNames', () => {
   });
 });
 
+describe('isSkillToolAvailable', () => {
+  it('registers for a visible catalog, for an authoring run, and for neither', () => {
+    expect(isSkillToolAvailable({ modelInvocableSkillsAvailable: true })).toBe(true);
+    expect(isSkillToolAvailable({ skillAuthoringAvailable: true })).toBe(true);
+    expect(
+      isSkillToolAvailable({ modelInvocableSkillsAvailable: true, skillAuthoringAvailable: true }),
+    ).toBe(true);
+    expect(
+      isSkillToolAvailable({
+        modelInvocableSkillsAvailable: false,
+        skillAuthoringAvailable: false,
+      }),
+    ).toBe(false);
+    expect(isSkillToolAvailable({})).toBe(false);
+  });
+});
+
+describe('getSkillToolDefinition', () => {
+  function skillNameDescription(definition: LCTool): string {
+    const parameters = definition.parameters as
+      | { properties?: { skillName?: { description?: string } } }
+      | undefined;
+    return parameters?.properties?.skillName?.description ?? '';
+  }
+
+  it('keeps the catalog-only guidance when the run cannot author skills', () => {
+    const definition = getSkillToolDefinition(false);
+
+    expect(definition.name).toBe('skill');
+    expect(definition.description).toContain('Skill names come from the catalog only');
+    expect(skillNameDescription(definition)).toBe(
+      'Must match a name from the "Available Skills" section.',
+    );
+  });
+
+  it('accepts a skill authored during the run when the run can author skills', () => {
+    const definition = getSkillToolDefinition(true);
+
+    expect(definition.description).not.toContain('Skill names come from the catalog only');
+    expect(definition.description).toContain('a skill you created in this conversation');
+    expect(definition.description).toContain('Creating a skill does not load it');
+    expect(definition.description).toContain(
+      'Do not invoke a skill that is already active in this conversation.',
+    );
+    expect(skillNameDescription(definition)).toContain(
+      'the name of a skill you created in this conversation',
+    );
+  });
+
+  it('leaves the rest of the schema and the non-authoring definition untouched', () => {
+    const authoring = getSkillToolDefinition(true);
+    const parameters = authoring.parameters as {
+      type?: string;
+      required?: string[];
+      properties?: Record<string, { description?: string }>;
+    };
+
+    expect(parameters.type).toBe('object');
+    expect(parameters.required).toEqual(['skillName']);
+    expect(Object.keys(parameters.properties ?? {})).toEqual(['intent', 'skillName', 'args']);
+    expect(parameters.properties?.args?.description).toBe('Optional freeform arguments string.');
+    expect(skillNameDescription(getSkillToolDefinition(false))).toBe(
+      'Must match a name from the "Available Skills" section.',
+    );
+    expect(getSkillToolDefinition(true)).toBe(authoring);
+  });
+});
+
+describe('buildAuthoringSkillToolDescription', () => {
+  it('rewrites the catalog-only constraint in place, keeping every other one', () => {
+    const base = [
+      'Invoke a skill.',
+      '',
+      'CONSTRAINTS:',
+      '- Do not invoke a skill that is already active in this conversation.',
+      '- Skill names come from the catalog only. Do not guess names.',
+    ].join('\n');
+
+    const result = buildAuthoringSkillToolDescription(base);
+
+    expect(result).not.toContain('Skill names come from the catalog only');
+    expect(result).toContain(
+      '- Do not invoke a skill that is already active in this conversation.',
+    );
+    expect(result).toContain('a skill you created in this conversation');
+    /* Rewritten in place, so the guidance stays inside CONSTRAINTS rather than
+       trailing after it. */
+    expect(
+      result.endsWith(
+        'Creating a skill does not load it. Invoke it here when you want to follow its instructions.',
+      ),
+    ).toBe(true);
+  });
+
+  it('appends the guidance when the SDK no longer carries that sentence', () => {
+    /* Drift branch: the sentence was reworded or dropped upstream. The authored
+       -skill guidance must still reach the model, appended rather than lost. */
+    const drifted = [
+      'Invoke a skill.',
+      '',
+      'CONSTRAINTS:',
+      '- Do not invoke a skill that is already active in this conversation.',
+    ].join('\n');
+
+    const result = buildAuthoringSkillToolDescription(drifted);
+
+    expect(result.startsWith(drifted)).toBe(true);
+    expect(result).toContain('a skill you created in this conversation');
+    expect(result).toContain('Creating a skill does not load it');
+  });
+});
+
+describe('buildAuthoringSkillToolParameters', () => {
+  it('retargets skillName guidance while preserving the rest of the schema', () => {
+    const base = {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', description: 'intent' },
+        skillName: { type: 'string', description: 'catalog only' },
+      },
+      required: ['skillName'],
+    } as unknown as LCTool['parameters'];
+
+    const result = buildAuthoringSkillToolParameters(base) as unknown as {
+      type?: string;
+      required?: string[];
+      properties?: Record<string, { type?: string; description?: string }>;
+    };
+
+    expect(result.properties?.skillName?.description).toContain(
+      'a skill you created in this conversation',
+    );
+    /* The property keeps its own non-description fields, and its siblings are
+       untouched. */
+    expect(result.properties?.skillName?.type).toBe('string');
+    expect(result.properties?.intent?.description).toBe('intent');
+    expect(result.type).toBe('object');
+    expect(result.required).toEqual(['skillName']);
+  });
+
+  it('returns the schema unchanged when the SDK has no skillName property', () => {
+    /* Drift branch: the installed package disagrees with the types it shipped.
+       Losing the authored-skill hint beats failing the packages/api import,
+       which is what an unguarded dereference at module load would do. */
+    const base = {
+      type: 'object',
+      properties: { intent: { type: 'string' } },
+    } as unknown as LCTool['parameters'];
+
+    expect(buildAuthoringSkillToolParameters(base)).toBe(base);
+  });
+});
+
+describe('installed @librechat/agents skill tool canary', () => {
+  /**
+   * The two things the authoring variant reads off the real SDK export. This
+   * suite mocks `@librechat/agents`, so these assertions deliberately reach
+   * past the mock to the installed package.
+   *
+   * When either fails, do not "fix" the test: the authoring variant is silently
+   * degraded against that version. A moved sentence leaves the reworded
+   * catalog-only constraint standing beside guidance that contradicts it (the
+   * append branch above), and a moved `skillName` property drops the authored
+   * -skill wording from the parameter. Re-point `CATALOG_ONLY_SKILL_CONSTRAINT`
+   * in `tools.ts` at the new text instead.
+   */
+  it('still ships the constraint sentence and skillName property the variant rewrites', () => {
+    const { SkillToolDefinition } = jest.requireActual('@librechat/agents') as {
+      SkillToolDefinition: {
+        description: string;
+        parameters: { properties?: Record<string, { description?: string } | undefined> };
+      };
+    };
+
+    expect(SkillToolDefinition.description).toContain(
+      '- Skill names come from the catalog only. Do not guess names.',
+    );
+    expect(SkillToolDefinition.parameters.properties?.skillName).toBeDefined();
+  });
+});
+
+describe('e2e skill assertion harness agreement', () => {
+  /**
+   * `e2e/setup/fake-model.js` tells an authoring run apart from a skills-off run
+   * by grepping the advertised `skill` description for one sentence. Both runs
+   * can reach the model with nothing in the catalog, and only that sentence
+   * separates them, so the harness reports `authoring-only` for one and `none`
+   * for the other. Reword the description without this test and the harness
+   * silently calls every authoring run skills-off, which reads as an
+   * `agent-skills.spec.ts` failure with no mention of the rewording.
+   *
+   * The literal is read from the harness rather than repeated here: a copy
+   * would keep passing after the harness changed.
+   */
+  const guidance = (() => {
+    const harness = fs.readFileSync(
+      path.resolve(__dirname, '../../../../e2e/setup/fake-model.js'),
+      'utf8',
+    );
+    const match = /const AUTHORED_SKILL_GUIDANCE = '([^']+)';/.exec(harness);
+    if (!match) {
+      throw new Error('AUTHORED_SKILL_GUIDANCE was not found in e2e/setup/fake-model.js');
+    }
+    return match[1];
+  })();
+
+  it('ships the sentence the harness greps for, only on the authoring variant', () => {
+    const { SkillToolDefinition } = jest.requireActual('@librechat/agents') as {
+      SkillToolDefinition: { description: string };
+    };
+
+    expect(buildAuthoringSkillToolDescription(SkillToolDefinition.description)).toContain(guidance);
+    expect(SkillToolDefinition.description).not.toContain(guidance);
+  });
+});
+
 describe('registerCodeExecutionTools', () => {
   it('advertises selected named actions to the model', () => {
     const result = registerCodeExecutionTools({
@@ -452,6 +709,109 @@ describe('registerCodeExecutionTools', () => {
     });
     expect(bash?.description).toContain('owner/app');
   });
+
+  it('tells the model to route worktree commands through cwd only when lanes are available', () => {
+    const cwdDescription = (workspaceLinkedWorktrees: boolean): string | undefined => {
+      const bash = registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['execute_command']),
+        workspaceLinkedWorktrees,
+      }).toolDefinitions.find((def) => def.name === 'bash_tool');
+      return (bash?.parameters as { properties?: { cwd?: { description?: string } } })?.properties
+        ?.cwd?.description;
+    };
+
+    expect(cwdDescription(true)).toContain('.worktrees/<name>');
+    expect(cwdDescription(true)).toContain('Any other call, with or without cwd, is checkout-wide');
+    expect(cwdDescription(false)).not.toContain('.worktrees');
+    expect(cwdDescription(false)).not.toContain('checkout-wide');
+    for (const lanes of [true, false]) {
+      expect(cwdDescription(lanes)).toContain('The command starts there; do not also cd into it.');
+    }
+  });
+
+  it('describes the read-only native sandbox filesystem only when the worker advertises it', () => {
+    const bashDescription = (workspaceNativeSandbox?: boolean): string | undefined =>
+      registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(['execute_command']),
+        workspaceNativeSandbox,
+      }).toolDefinitions.find((def) => def.name === 'bash_tool')?.description;
+
+    const scratch =
+      '/ and /tmp are read-only; write scratch files to $TMPDIR or the workspace. Programs that hardcode /tmp fail.';
+    expect(bashDescription(true)).toContain(scratch);
+    expect(bashDescription(false)).not.toContain(scratch);
+    expect(bashDescription()).not.toContain(scratch);
+    expect(bashDescription(false)).toContain(
+      'temp files, and background processes are not durable',
+    );
+  });
+
+  it.each([
+    {
+      operations: ['read_file', 'execute_command'],
+      includeBash: true,
+      lines: undefined,
+      warns: true,
+    },
+    { operations: ['read_file', 'execute_command'], includeBash: true, lines: 50, warns: true },
+    { operations: ['execute_command'], includeBash: true, lines: undefined, warns: true },
+    {
+      operations: ['read_file', 'execute_command'],
+      includeBash: false,
+      lines: undefined,
+      warns: false,
+    },
+    { operations: ['read_file'], includeBash: true, lines: undefined, warns: false },
+    { operations: ['read_file'], includeBash: true, lines: 50, warns: false },
+    { operations: ['list_files', 'write_file'], includeBash: true, lines: undefined, warns: false },
+  ] as const)(
+    'names bash_tool in the skill-file warning only when it is registered: %j',
+    ({ operations, includeBash, lines, warns }) => {
+      const result = registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash,
+        includeSkillFileInstructions: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(operations),
+        workspaceReadFileDefaultLines: lines,
+      });
+      const names = result.toolDefinitions.map((def) => def.name);
+      const readFile = result.toolDefinitions.find((def) => def.name === 'read_file');
+
+      expect(names.includes('bash_tool')).toBe(warns);
+      expect(readFile?.description).toContain('skills/{skillName}/...');
+      expect(readFile?.description?.includes(ATTACHED_SKILL_FILE_SENTENCE)).toBe(warns);
+    },
+  );
+
+  it.each([
+    { includeSkillFileInstructions: false, workspaceTools: true },
+    { includeSkillFileInstructions: true, workspaceTools: false },
+  ])(
+    'omits the skill-file warning outside attached skill runs: %j',
+    ({ includeSkillFileInstructions, workspaceTools }) => {
+      const readFile = registerCodeExecutionTools({
+        toolRegistry: undefined,
+        toolDefinitions: [],
+        includeBash: true,
+        includeSkillFileInstructions,
+        workspaceTools,
+        workspaceOperations: new Set(['read_file', 'execute_command']),
+      }).toolDefinitions.find((def) => def.name === 'read_file');
+
+      expect(readFile?.description).not.toContain('Skill files are not on');
+    },
+  );
+
   const makeRegistry = (): LCToolRegistry => new Map() as unknown as LCToolRegistry;
 
   describe('fresh run (no pre-existing defs or registry entries)', () => {
@@ -494,17 +854,60 @@ describe('registerCodeExecutionTools', () => {
       });
 
       const readFile = result.toolDefinitions.find((d) => d.name === 'read_file');
-      expect(readFile?.description).toContain('code-execution sandbox');
+      expect(readFile?.description).toContain('code-sandbox');
       expect(readFile?.description).toContain('/mnt/data/');
       expect(readFile?.description).toContain('Do not run ls/find');
-      expect(readFile?.description).toContain('/tmp is per-call scratch');
-      expect(readFile?.description).toContain('truncate around 256KB');
-      expect(readFile?.description).toContain('images (png, jpeg, gif, webp)');
-      expect(readFile?.description).toContain('true filesystem discovery');
+      expect(readFile?.description).toContain('only retained files under /mnt/data');
+      expect(readFile?.description).toContain('$HOME');
+      expect(readFile?.description).toContain('/tmp');
+      expect(readFile?.description).toContain('global installs');
+      expect(readFile?.description).toContain('background processes are call-local');
+      expect(readFile?.description).toContain('truncates around 256KB');
+      expect(readFile?.description).toContain('png, jpeg, gif, and webp images');
+      expect(readFile?.description).toContain('filesystem discovery');
       expect(readFile?.description).not.toContain('{skillName}');
       expect(readFile?.description).not.toContain('SKILL.md');
       expect(JSON.stringify(readFile?.parameters)).not.toContain('{skillName}');
     });
+
+    it.each([false, true])(
+      'extends the skill read schema locally, workspaceTools=%s',
+      (workspaceTools) => {
+        const result = registerCodeExecutionTools({
+          toolRegistry: makeRegistry(),
+          toolDefinitions: [],
+          includeBash: false,
+          includeSkillFileInstructions: true,
+          workspaceTools,
+          workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+        });
+        const def = result.toolDefinitions.find(({ name }) => name === 'read_file');
+        expect(def?.parameters).toMatchObject({
+          properties: {
+            start_line: {
+              type: 'integer',
+              minimum: 1,
+              description: expect.stringContaining('skill'),
+            },
+            max_lines: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 500,
+              description: expect.stringContaining('skill'),
+            },
+          },
+        });
+        expect(def?.description).toContain('Omit both range parameters');
+        expect(def?.parameters?.properties?.path).toBeDefined();
+        expect(def?.parameters?.properties?.intent).toEqual({
+          type: 'string',
+          description: 'SDK read intent',
+        });
+        expect(def?.parameters?.required).toEqual(['path']);
+        expect(ReadFileToolDefinition.parameters).not.toHaveProperty('properties.start_line');
+        expect(ReadFileToolDefinition.parameters).not.toHaveProperty('properties.max_lines');
+      },
+    );
 
     it('advertises explicit workspace paths and pagination for attached environments', () => {
       const result = registerCodeExecutionTools({
@@ -526,6 +929,10 @@ describe('registerCodeExecutionTools', () => {
       );
       expect(readFile?.description).toContain('workspace/');
       expect(readFile?.description).toContain('attached');
+      expect(readFile?.description).toContain(
+        'Only the registered workspace persists for attached commands',
+      );
+      expect(readFile?.description).toContain('operator-managed');
       expect(readFile?.parameters).toMatchObject({
         properties: {
           start_line: { type: 'integer' },
@@ -534,7 +941,7 @@ describe('registerCodeExecutionTools', () => {
       });
       expect(bashTool?.description).toContain('selected attached environment');
       expect(bashTool?.description).toContain('empty directory');
-      expect(bashTool?.description).toContain('Network access follows the sandbox policy');
+      expect(bashTool?.description).toContain('Network and file access follow the sandbox policy');
       expect(bashTool?.description).not.toContain('/mnt/data');
       expect(bashTool?.parameters).toMatchObject({
         properties: {
@@ -587,6 +994,66 @@ describe('registerCodeExecutionTools', () => {
       ).toMatchObject({
         parameters: {
           properties: { timeoutMs: { minimum: 1, maximum: 120_000 } },
+        },
+      });
+    });
+
+    it('advertises configured defaults without changing shared definitions or skill upgrades', () => {
+      const toolRegistry = makeRegistry();
+      const options = {
+        toolRegistry,
+        includeBash: true,
+        includeSkillFileInstructions: false,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+        workspaceCommandTimeoutMaxMs: 80_000,
+        workspaceCommandTimeoutDefaultMs: 60_000,
+        workspaceReadFileDefaultLines: 500,
+      };
+      const configured = registerCodeExecutionTools({ ...options, toolDefinitions: [] });
+      const upgraded = registerCodeExecutionTools({
+        ...options,
+        toolDefinitions: configured.toolDefinitions,
+        includeBash: false,
+        includeSkillFileInstructions: true,
+      });
+      const readFile = upgraded.toolDefinitions.find(({ name }) => name === 'read_file');
+      expect(readFile?.description).toContain('skills/{skillName}/');
+      expect(readFile?.parameters).toMatchObject({
+        properties: {
+          max_lines: { maximum: 500, description: expect.stringContaining('Defaults to 500') },
+        },
+      });
+      expect(toolRegistry.get('read_file')).toBe(readFile);
+      expect(
+        upgraded.toolDefinitions.find(({ name }) => name === 'bash_tool')?.parameters,
+      ).toMatchObject({
+        properties: {
+          timeoutMs: {
+            maximum: 80_000,
+            description: expect.stringContaining('Defaults to 60000 for foreground calls'),
+          },
+        },
+      });
+      const legacy = registerCodeExecutionTools({
+        toolRegistry: makeRegistry(),
+        toolDefinitions: [],
+        includeBash: true,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+      });
+      expect(
+        legacy.toolDefinitions.find(({ name }) => name === 'read_file')?.parameters,
+      ).toMatchObject({
+        properties: { max_lines: { description: expect.stringContaining('Defaults to 200') } },
+      });
+      expect(
+        legacy.toolDefinitions.find(({ name }) => name === 'bash_tool')?.parameters,
+      ).toMatchObject({
+        properties: {
+          timeoutMs: {
+            description: expect.stringContaining('Defaults to 30000 for foreground calls'),
+          },
         },
       });
     });
@@ -701,11 +1168,33 @@ describe('registerCodeExecutionTools', () => {
         includeSkillFileInstructions: false,
         enableToolOutputReferences: false,
       });
+      const attachedWithoutRefs = registerCodeExecutionTools({
+        toolRegistry: makeRegistry(),
+        toolDefinitions: [],
+        includeBash: true,
+        includeSkillFileInstructions: false,
+        enableToolOutputReferences: false,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+      });
+
+      const attachedNativeSandboxWithoutRefs = registerCodeExecutionTools({
+        toolRegistry: makeRegistry(),
+        toolDefinitions: [],
+        includeBash: true,
+        includeSkillFileInstructions: false,
+        enableToolOutputReferences: false,
+        workspaceTools: true,
+        workspaceOperations: new Set(CODE_WORKSPACE_OPERATIONS),
+        workspaceNativeSandbox: true,
+      });
 
       expect(
         maxToolDescriptionLength([
           ...skillAwareWithRefs.toolDefinitions,
           ...codeOnlyWithoutRefs.toolDefinitions,
+          ...attachedWithoutRefs.toolDefinitions,
+          ...attachedNativeSandboxWithoutRefs.toolDefinitions,
         ]),
       ).toBeLessThanOrEqual(TOOL_DESCRIPTION_ADVISORY_MAX_LENGTH);
     });

@@ -1,11 +1,12 @@
 import '@testing-library/jest-dom';
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
 import type { ThemeDefinition } from '../theme/types';
 import type { MeterSegment } from './SegmentedMeter';
 import { resolveTheme, validateThemeDefinition, THEME_VERSION } from '../theme/registry';
 import { applyResolvedTheme, clearAppliedTheme } from '../theme/utils/applyTheme';
 import { SegmentedMeter, MeterSwatch, SERIES_SLOT_COUNT } from './SegmentedMeter';
-import { createTailwindColors } from '../theme/utils/createTailwindColors';
 
 const segments: MeterSegment[] = [
   { id: 'a', value: 500, slot: 1, outlined: true },
@@ -23,7 +24,7 @@ const children = () => Array.from(screen.getByTestId('meter').children) as HTMLE
 const sizing = (el: HTMLElement): { fraction: number; gapShare: number } => {
   const width = el.style.width;
   const fraction = Number(/([\d.]+)%/.exec(width)?.[1]) / 100;
-  const gapShare = Number(/-\s*([\d.]+)px/.exec(width)?.[1] ?? 0);
+  const gapShare = Number(/-\s*([\d.]+)rem/.exec(width)?.[1] ?? 0);
   return { fraction, gapShare };
 };
 
@@ -38,17 +39,17 @@ describe('SegmentedMeter', () => {
   it('takes the gaps out of the fill, not out of the free track', () => {
     renderMeter();
 
-    /** Three segments touch across two 2px gaps. Each gives up its share of that
-     *  4px, so fills + gaps span exactly the 76% that is actually used — a bar
-     *  reading three-quarters full means three-quarters of the window is gone. */
+    /** Three segments touch across two 0.125rem gaps. Each gives up its share of
+     *  that 0.25rem, so fills + gaps span exactly the 76% that is actually used:
+     *  a bar reading three-quarters full means three-quarters of the window is gone. */
     const parts = children().map(sizing);
     const filled = parts.reduce((sum, part) => sum + part.fraction, 0);
     const surrendered = parts.reduce((sum, part) => sum + part.gapShare, 0);
 
     /** Shares are rounded to 3dp on the way into the declaration. */
     expect(filled).toBeCloseTo(0.76, 5);
-    expect(surrendered).toBeCloseTo(4, 2);
-    parts.forEach((part) => expect(part.gapShare).toBeCloseTo((4 * part.fraction) / filled, 2));
+    expect(surrendered).toBeCloseTo(0.25, 2);
+    parts.forEach((part) => expect(part.gapShare).toBeCloseTo((0.25 * part.fraction) / filled, 2));
   });
 
   it('reserves no gap share for a lone segment', () => {
@@ -60,7 +61,7 @@ describe('SegmentedMeter', () => {
   it('floors every rendered segment so a present category cannot vanish', () => {
     renderMeter({ segments: [{ id: 'tiny', value: 1, slot: 3 }], max: 1_000_000 });
 
-    expect(children()[0].style.minWidth).toBe('2px');
+    expect(children()[0].style.minWidth).toBe('0.125rem');
   });
 
   it('drops segments that contribute nothing', () => {
@@ -161,7 +162,7 @@ describe('MeterSwatch', () => {
   });
 });
 
-/** CLAUDE.md requires a deliberately different reference theme, to prove the
+/** AGENTS.md requires a deliberately different reference theme, to prove the
  *  component follows theme data rather than the bundled LibreChat values. */
 const referenceTheme: ThemeDefinition = {
   version: THEME_VERSION,
@@ -216,7 +217,7 @@ describe('reference theme', () => {
     expect(markup).not.toMatch(/#[0-9a-f]{3,8}\b/i);
     expect(markup).not.toMatch(/\brgba?\((?!var\()/);
 
-    const colours = createTailwindColors();
+    const tokens = readFileSync(join(__dirname, '../theme/tokens.css'), 'utf8');
     const meter = screen.getByTestId('meter');
     const slotOf = (el: Element) => /\bbg-series-(\d)\b/.exec(el.className)?.[1];
 
@@ -224,7 +225,7 @@ describe('reference theme', () => {
       const slot = slotOf(el) ?? /\bbg-series-(\d)\/25\b/.exec(el.className)?.[1];
       expect(slot).toBeDefined();
       /** The utility the mark wears resolves to the variable the theme just set. */
-      expect(colours[`series-${slot}`]).toBe(`rgb(var(--series-${slot}) / <alpha-value>)`);
+      expect(tokens).toContain(`--color-series-${slot}: rgb(var(--series-${slot}));`);
     });
   });
 });

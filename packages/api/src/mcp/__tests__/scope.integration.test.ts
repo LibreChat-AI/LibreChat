@@ -11,6 +11,7 @@ import type { FlowStateManager } from '~/flow/manager';
 import type { MCPRequestContext } from '~/mcp/request';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { getFreePort } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -118,6 +119,10 @@ async function createRequestScopedTestServer(): Promise<RequestScopedTestServer>
         toolCalls += 1;
         return { content: [{ type: 'text', text: value }] };
       });
+      mcp.tool('write', 'Legacy mutation', {}, async () => {
+        toolCalls += 1;
+        return { content: [{ type: 'text', text: 'write performed' }] };
+      });
       await mcp.connect(transport);
     }
 
@@ -223,6 +228,7 @@ describe('request-scoped MCP lifecycle integration', () => {
     server = await createRequestScopedTestServer();
     manager = createManager();
     jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn(async () => ({
         allowedDomains: null,
         allowedAddresses: null,
@@ -245,6 +251,213 @@ describe('request-scoped MCP lifecycle integration', () => {
     contexts.add(context);
     return context;
   }
+
+  it('sends enrolled reads once and never sends a revoked child/resume retry to the real server', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const invoke = (agentId: string) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: f.invocation(agentId),
+      });
+    try {
+      await invoke('root');
+      await invoke('child');
+      expect(server.toolCallCount()).toBe(2);
+      await f.revoke();
+      await expect(invoke('child')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked', automaticReplay: false },
+      });
+      await expect(invoke('root')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(2);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+    }
+    MCPConnection.clearCooldown('warehouse');
+  });
+
+  it.each(['snapshot', 'consent'] as const)(
+    'never dispatches an enrolled operation when %s authorization storage fails',
+    async (phase) => {
+      const context = createContext();
+      const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+      const connection = await manager.getConnection({
+        user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const catalog = await connection.fetchToolsSnapshot();
+      const f = await executionFixture(
+        'resume',
+        catalog.tools.find(({ name }) => name === 'echo')!,
+        server.url,
+      );
+      const active = await manager.getConnection({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const internal = new Error('PRIVATE principal/configuration/consent read');
+      if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
+      else jest.spyOn(f.service.authority, 'authorize').mockRejectedValue(internal);
+      const call = (agentId: string) =>
+        manager.callTool({
+          user: f.user,
+          serverName: 'warehouse',
+          serverConfig: config,
+          toolName: 'echo',
+          toolArguments: { value: 'read' },
+          provider: 'openai',
+          requestScopedConnections: context,
+          flowManager,
+          scheduledMCPInvocation: f.invocation(agentId),
+        });
+      try {
+        for (const agentId of ['root', 'child']) {
+          await expect(call(agentId)).rejects.toMatchObject({
+            failure: { reason: 'dependency_unavailable', automaticReplay: false },
+            outcomes: [{ server: 'warehouse', agentId, reason: 'dependency_unavailable' }],
+          });
+        }
+        expect(server.toolCallCount()).toBe(0);
+      } finally {
+        await Promise.all([connection.disconnect(), active.disconnect()]);
+        MCPConnection.clearCooldown('warehouse');
+      }
+    },
+  );
+
+  it('dispatches a paused enrolled manual read without permitting an automatic call', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    f.snapshot.enabled = false;
+    const manual = (await f.factory.resolve(f.identity, 'resume', { manual: true }))!;
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = (guard: ReturnType<typeof manual.bind>) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: guard,
+      });
+    try {
+      await expect(call(f.invocation('root'))).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch' },
+      });
+      expect(server.toolCallCount()).toBe(0);
+      await call(manual.bind('child', 'echo'));
+      expect(server.toolCallCount()).toBe(1);
+      await f.revoke();
+      await expect(call(manual.bind('child', 'echo'))).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
+
+  it('fences a cached legacy MCP write immediately after narrower enrollment', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const echo = catalog.tools.find(({ name }) => name === 'echo')!;
+    const f = await executionFixture('invoke', echo, server.url);
+    f.snapshot.enrollment = null;
+    const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
+    const cachedWrite = legacy.bind('root', 'write');
+    const active = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = () =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'write',
+        toolArguments: {},
+        provider: 'openai',
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: cachedWrite,
+      });
+    try {
+      await call();
+      expect(server.toolCallCount()).toBe(1);
+      const offer = await f.service.view(f.identity);
+      await f.service.confirm(f.identity, {
+        offerDigest: offer.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), active.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
 
   it('coalesces a concurrent burst, tears down the run, and isolates the next run', async () => {
     const config = createServerConfig(server.url);

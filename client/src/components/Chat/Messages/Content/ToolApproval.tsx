@@ -1,10 +1,20 @@
-import { useEffect, useMemo } from 'react';
+import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
-import { Check, X, Pencil, MessageSquare, TriangleAlert } from 'lucide-react';
+import {
+  X,
+  Check,
+  Pencil,
+  CheckCheck,
+  MessageSquare,
+  ShieldQuestion,
+  TriangleAlert,
+} from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
+import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
 import { boundApprovalLabel } from '~/components/Chat/approval/preview';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
+import { ChatContext } from '~/Providers/ChatContext';
 import { useLocalize } from '~/hooks';
 import { cn, logger } from '~/utils';
 
@@ -69,22 +79,39 @@ function seedArgs(args: string | Record<string, unknown> | undefined): string {
  * Renders approve / reject / edit / respond controls for a paused tool call,
  * scoped to the decisions the server allows. Records its decision in the
  * batch {@link useApprovalContext}; the lead card additionally renders the
- * single submit button covering every paused call in the action.
+ * single submit button covering every paused call in the action. While the
+ * composer's review panel is open on the same action, a thread card renders
+ * only the record of the request: the panel owns the decisions and the submit,
+ * and it overlays the tail of the thread where this card sits.
  */
 export default function ToolApproval({
   approval,
   toolCallId,
   args,
-  showSubmit = true,
+  surface = 'thread',
 }: {
   approval: NonNullable<Agents.ToolCall['approval']>;
   toolCallId: string;
   args: string | Record<string, unknown> | undefined;
-  /** The composer owns one batch submit; timeline cards keep the historical lead button. */
-  showSubmit?: boolean;
+  /** The composer panel owns one batch submit; thread cards keep the lead button. */
+  surface?: 'thread' | 'composer';
 }) {
   const localize = useLocalize();
+  const invalidJsonId = useId();
+  const allowAlwaysHintId = useId();
   const { actionId, allowed_decisions: allowedDecisions, description } = approval;
+  const rememberScope = approval.remember_scope;
+  const rememberUnavailable = approval.remember_unavailable;
+  const unavailableLabels: Record<NonNullable<typeof rememberUnavailable>, TranslationKeys> = {
+    connection: 'com_ui_tool_approval_connection_unavailable',
+    disabled: 'com_ui_tool_approval_remember_disabled',
+    storage: 'com_ui_tool_approval_storage_unavailable',
+    background: 'com_ui_tool_approval_background_unavailable',
+  };
+  const conversationId = useContext(ChatContext)?.conversation?.conversationId;
+  const composerPresents = useComposerPresentsApproval(conversationId, actionId);
+  const deferToComposer = surface === 'thread' && composerPresents;
+  const canAllowAlways = approval.allow_always === true && allowedDecisions.includes('approve');
   const {
     registerToolCall,
     unregisterToolCall,
@@ -110,12 +137,14 @@ export default function ToolApproval({
       : seedArgs(args);
   const decisionDraft = getDecisionDraft(actionId, toolCallId) ?? {
     active: initialDecision?.decision ?? null,
+    allowAlways: canAllowAlways && initialDecision?.scope === 'session',
     editText: initialEditText,
     responseText:
       initialDecision?.decision === 'respond' ? (initialDecision.responseText ?? '') : '',
     reason: initialDecision?.decision === 'reject' ? (initialDecision.reason ?? '') : '',
   };
   const { active, editText, responseText, reason } = decisionDraft;
+  const allowAlways = canAllowAlways && active === 'approve' && decisionDraft.allowAlways === true;
   const updateDecisionDraft = (updates: Partial<typeof decisionDraft>) =>
     setDecisionDraft(actionId, toolCallId, { ...decisionDraft, ...updates });
 
@@ -142,7 +171,11 @@ export default function ToolApproval({
       return;
     }
     if (active === 'approve') {
-      setDecision(actionId, toolCallId, { tool_call_id: toolCallId, decision: 'approve' });
+      setDecision(actionId, toolCallId, {
+        tool_call_id: toolCallId,
+        decision: 'approve',
+        ...(allowAlways && { scope: 'session' }),
+      });
       return;
     }
     if (active === 'reject') {
@@ -178,7 +211,17 @@ export default function ToolApproval({
         setDecision(actionId, toolCallId, null);
       }
     }
-  }, [active, editText, responseText, reason, locked, setDecision, actionId, toolCallId]);
+  }, [
+    active,
+    allowAlways,
+    editText,
+    responseText,
+    reason,
+    locked,
+    setDecision,
+    actionId,
+    toolCallId,
+  ]);
 
   const editIsValid = useMemo(() => {
     if (active !== 'edit') {
@@ -209,26 +252,61 @@ export default function ToolApproval({
     return null;
   }
 
+  const descriptionNode = safeDescription != null && safeDescription.length > 0 && (
+    <p className="text-text-secondary text-sm">{safeDescription}</p>
+  );
+
+  if (deferToComposer) {
+    return (
+      <div
+        className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2 rounded-lg border p-3"
+        data-testid="tool-approval"
+        data-tool-call-id={toolCallId}
+      >
+        {descriptionNode}
+        <p className="text-text-secondary flex items-center gap-1.5 text-xs">
+          <ShieldQuestion className="size-4 shrink-0" aria-hidden="true" />
+          {localize('com_ui_approval_review_in_composer')}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
-      className="my-2 flex w-full flex-col gap-2 rounded-lg border border-border-light bg-surface-secondary p-3"
+      className="border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2 rounded-lg border p-3"
       data-testid="tool-approval"
       data-tool-call-id={toolCallId}
     >
-      {safeDescription != null && safeDescription.length > 0 && (
-        <p className="text-sm text-text-secondary">{safeDescription}</p>
+      {descriptionNode}
+      {rememberUnavailable && (
+        <p className="text-text-warning text-xs" role="status">
+          {localize(unavailableLabels[rememberUnavailable])}
+        </p>
+      )}
+      {rememberScope && (
+        <p className="text-text-secondary text-xs">
+          {localize(
+            rememberScope === 'chat'
+              ? 'com_ui_tool_approval_remember_chat'
+              : 'com_ui_tool_approval_remember_always',
+          )}
+        </p>
       )}
       <div className="flex flex-wrap gap-2">
         {allowedDecisions.map((decision) => {
           const Icon = DECISION_ICON[decision];
+          const pressed = active === decision && (decision !== 'approve' || !allowAlways);
           return (
             <Button
               key={decision}
               size="sm"
-              variant={active === decision ? 'default' : 'outline'}
+              variant={pressed ? 'default' : 'outline'}
               disabled={locked}
-              aria-pressed={active === decision}
-              onClick={() => updateDecisionDraft({ active: active === decision ? null : decision })}
+              aria-pressed={pressed}
+              onClick={() =>
+                updateDecisionDraft({ active: pressed ? null : decision, allowAlways: false })
+              }
               className="inline-flex items-center gap-1.5"
             >
               <Icon className="h-4 w-4" aria-hidden="true" />
@@ -236,7 +314,33 @@ export default function ToolApproval({
             </Button>
           );
         })}
+        {canAllowAlways && (
+          <Button
+            size="sm"
+            variant={allowAlways ? 'default' : 'outline'}
+            disabled={locked}
+            aria-pressed={allowAlways}
+            aria-describedby={allowAlwaysHintId}
+            onClick={() =>
+              updateDecisionDraft({
+                active: allowAlways ? null : 'approve',
+                allowAlways: !allowAlways,
+              })
+            }
+          >
+            <CheckCheck className="h-4 w-4" aria-hidden="true" />
+            {localize('com_ui_approve_always')}
+          </Button>
+        )}
       </div>
+      {canAllowAlways && (
+        <p
+          id={allowAlwaysHintId}
+          className={cn('text-text-secondary text-xs', !allowAlways && 'sr-only')}
+        >
+          {localize('com_ui_approve_always_hint')}
+        </p>
+      )}
 
       {active === 'edit' && (
         <div className="flex flex-col gap-1">
@@ -246,11 +350,15 @@ export default function ToolApproval({
             onChange={(e) => updateDecisionDraft({ editText: e.target.value })}
             minRows={3}
             maxRows={16}
-            className={cn(fieldClasses, 'font-mono text-xs', !editIsValid && 'border-red-500')}
+            className={cn(fieldClasses, 'font-mono text-xs')}
             aria-label={localize('com_ui_edit')}
+            aria-invalid={!editIsValid}
+            aria-describedby={editIsValid ? undefined : invalidJsonId}
           />
           {!editIsValid && (
-            <span className="text-xs text-text-warning">{localize('com_ui_invalid_json')}</span>
+            <span id={invalidJsonId} className="text-text-warning text-xs">
+              {localize('com_ui_invalid_json')}
+            </span>
           )}
         </div>
       )}
@@ -281,7 +389,7 @@ export default function ToolApproval({
         />
       )}
 
-      {showSubmit && isLead && (
+      {surface === 'thread' && isLead && (
         <div className="mt-1 flex items-center gap-3">
           <Button
             size="sm"
@@ -292,13 +400,13 @@ export default function ToolApproval({
             {submitLabel}
           </Button>
           {status === 'expired' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_expired')}
             </span>
           )}
           {status === 'error' && (
-            <span className="flex items-center text-xs text-text-warning">
+            <span className="text-text-warning flex items-center text-xs">
               <TriangleAlert className="mr-1.5 h-4 w-4" aria-hidden="true" />
               {localize('com_ui_approval_error')}
             </span>

@@ -3,10 +3,14 @@ import { InMemorySubagentTaskStore } from '@librechat/agents';
 import type {
   LCTool,
   LCToolRegistry,
+  SubagentTaskClaim,
   SubagentTaskConfig,
   SubagentTaskRuntime,
+  SubagentUpdateEvent,
+  SubagentTaskSnapshot,
 } from '@librechat/agents';
 import type { HostSubagentTaskConfig } from './subagentDelivery';
+import type { ActivitySnapshot } from './digest';
 import {
   isBackgroundEligibleToolName,
   isBackgroundRequested,
@@ -26,11 +30,18 @@ import {
   CHECK_BACKGROUND_TASK_NAME,
   RUN_IN_BACKGROUND_ARG,
 } from './background';
+import {
+  SUBAGENT_POLL_GUIDANCE,
+  SUBAGENT_WAKEUP_GUIDANCE,
+  SUBAGENT_COMPLETION_DELIVERY,
+  SUBAGENT_POLL_WAKEUP_GUIDANCE,
+} from './subagentDelivery';
+import { parseBackgroundTaskOutput } from '../../../../client/src/components/Chat/Messages/Content/Parts/background';
 import { parseBackgroundHandle } from '../../../../client/src/components/Chat/Messages/Content/Parts/handle';
-import { SUBAGENT_COMPLETION_DELIVERY, SUBAGENT_WAKEUP_GUIDANCE } from './subagentDelivery';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { TOOL_SELECTION_WILDCARD } from './selection';
 import { toolOptionsSchema } from './validation';
+import { ActivityRecorder } from './digest';
 
 const mcpDef = (name: string): LCTool =>
   ({
@@ -52,6 +63,42 @@ async function waitForSubagentTaskToSettle(
   }
   throw new Error('Timed out waiting for the detached subagent task.');
 }
+
+describe('manual reconciliation restoration', () => {
+  it('upgrades only the confirmed local owner and preserves the marker on replay', () => {
+    const registry = new BackgroundTaskRegistryClass();
+    const created = registry.create({
+      userId: 'marker-user',
+      conversationId: 'marker-convo',
+      toolCallId: 'marker-call',
+      toolName: 'tool',
+    });
+    if ('atCapacity' in created) throw new Error('Unexpected capacity');
+    registry.complete('marker-user', 'marker-convo', created.task.id, { content: 'done' });
+    const claim = { kind: 'manual' as const, claimId: 'poll' };
+    expect(registry.claimResult('marker-user', 'marker-convo', created.task.id, claim)).toBe(
+      'acquired',
+    );
+    expect(
+      registry.claimResult('marker-user', 'marker-convo', created.task.id, {
+        ...claim,
+        claimId: 'foreign',
+        receiptReconciled: true,
+      }),
+    ).toBe('claimed');
+    expect(created.task.resultClaim?.receiptReconciled).toBeUndefined();
+    expect(
+      registry.claimResult('marker-user', 'marker-convo', created.task.id, {
+        ...claim,
+        receiptReconciled: true,
+      }),
+    ).toBe('replay');
+    expect(registry.claimResult('marker-user', 'marker-convo', created.task.id, claim)).toBe(
+      'replay',
+    );
+    expect(created.task.resultClaim?.receiptReconciled).toBe(true);
+  });
+});
 
 describe('isBackgroundEligibleToolName', () => {
   it('excludes direct-path, host-special, and machinery tools', () => {
@@ -433,6 +480,18 @@ describe('registerBackgroundTaskTool', () => {
     expect(automatic.toolDefinitions[0].description).toContain(
       'Ordinary tool execution remains process-local',
     );
+    expect(automatic.toolDefinitions[0].description).toContain(
+      'A task is outstanding until its result is delivered',
+    );
+    expect(automatic.toolDefinitions[0].description).toContain(
+      'Polling or cancelling a finished task retires its pending delivery',
+    );
+    for (const description of [manualDescription, automatic.toolDefinitions[0].description ?? '']) {
+      expect(description).toContain('Pass since: activity.cursor');
+      expect(description).toContain('expand:');
+      /** OpenAI-compatible validators reject longer tool descriptions. */
+      expect(description.length).toBeLessThan(1024);
+    }
   });
 });
 
@@ -1368,6 +1427,54 @@ describe('BackgroundTaskRegistryClass', () => {
     created.task.updatedAt = Date.now() - 61 * 60 * 1000;
     expect(registry.get('u1', 'c1', created.task.id)).toBeUndefined();
   });
+
+  it.each(['completed', 'error', 'cancelled', 'blocked'] as const)(
+    'preserves pending %s results through both TTLs and releases protection afterward',
+    async (status) => {
+      jest.useFakeTimers();
+      try {
+        const registry = new BackgroundTaskRegistryClass();
+        const created = registry.create({
+          userId: 'u',
+          conversationId: 'c',
+          toolCallId: 'call',
+          toolName: 'execute_code',
+          harvestStarted: true,
+        });
+        if ('atCapacity' in created) throw new Error('Unexpected capacity rejection');
+        if (status === 'cancelled') registry.cancel('u', 'c', created.task.id, 'cancelled');
+        else if (status === 'error') registry.fail('u', 'c', created.task.id, 'failed');
+        else
+          registry.complete('u', 'c', created.task.id, { content: 'result', harvestStarted: true });
+        registry.markCompletionPersistencePending('u', 'c', created.task.id);
+        registry.finishHarvest('u', 'c', created.task.id, [{ file_id: 'file' }]);
+        if (status === 'blocked') registry.blockArtifact('u', 'c', created.task.id, 'blocked');
+        registry.claimResult('u', 'c', created.task.id, { kind: 'manual', claimId: 'poll' });
+        await jest.advanceTimersByTimeAsync(7 * 60 * 60_000);
+        expect(registry.get('u', 'c', created.task.id)).toMatchObject({
+          completionPersistencePending: true,
+        });
+        registry.markCompletionPersistenceFinished('u', 'c', created.task.id);
+        expect(
+          registry.get('u', 'c', created.task.id)?.completionPersistencePending,
+        ).toBeUndefined();
+        if (status === 'blocked')
+          expect(registry.get('u', 'c', created.task.id)).toMatchObject({
+            artifactBlocked: true,
+            artifact: undefined,
+          });
+        if (status === 'completed')
+          expect(registry.get('u', 'c', created.task.id)).toMatchObject({
+            result: 'result',
+            resultClaim: { kind: 'manual', claimId: 'poll' },
+          });
+        await jest.advanceTimersByTimeAsync(61 * 60_000);
+        expect(registry.get('u', 'c', created.task.id)).toBeUndefined();
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
 
   it('caps concurrent running tasks per conversation', () => {
     const registry = new BackgroundTaskRegistryClass();
@@ -2310,7 +2417,77 @@ describe('runCheckBackgroundTask (singleton)', () => {
     );
   });
 
-  it('lets a later poll collect a receipt without inheriting an abandoned local claim', async () => {
+  it('reports ISO dispatch and settlement stamps with the elapsed span', async () => {
+    const nowSpy = jest.spyOn(Date, 'now');
+    try {
+      const created = backgroundTaskRegistry.create({
+        userId: 'timing_user',
+        conversationId: 'timing_convo',
+        toolCallId: 'call_timing',
+        toolName: 'search_mcp_docs',
+      });
+      if ('atCapacity' in created) {
+        throw new Error('unexpected capacity');
+      }
+      /** The dispatch stamp is monotonic per process, so it is whatever the registry
+       * assigned rather than the clock at this instant; drive the clock from it. */
+      const dispatchedAt = created.task.createdAt;
+
+      nowSpy.mockReturnValue(dispatchedAt + 90_000);
+      const running = JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'timing_user',
+          conversationId: 'timing_convo',
+          args: { background_task_id: created.task.id },
+        }),
+      );
+      expect(running).toMatchObject({
+        status: 'running',
+        started_at: new Date(dispatchedAt).toISOString(),
+        elapsed_ms: 90_000,
+      });
+      /** A running task has not settled, so it must not claim a terminal stamp. */
+      expect(running.settled_at).toBeUndefined();
+
+      nowSpy.mockReturnValue(dispatchedAt + 120_000);
+      backgroundTaskRegistry.complete('timing_user', 'timing_convo', created.task.id, {
+        content: 'RESULT',
+      });
+
+      nowSpy.mockReturnValue(dispatchedAt + 600_000);
+      const settled = JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'timing_user',
+          conversationId: 'timing_convo',
+          args: { background_task_id: created.task.id },
+        }),
+      );
+      /** The span freezes at settlement instead of growing with every later poll. */
+      expect(settled).toMatchObject({
+        status: 'completed',
+        started_at: new Date(dispatchedAt).toISOString(),
+        settled_at: new Date(dispatchedAt + 120_000).toISOString(),
+        elapsed_ms: 120_000,
+      });
+
+      const listed = JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'timing_user',
+          conversationId: 'timing_convo',
+          args: {},
+        }),
+      );
+      expect(listed.tasks[0]).toMatchObject({
+        started_at: new Date(dispatchedAt).toISOString(),
+        settled_at: new Date(dispatchedAt + 120_000).toISOString(),
+        elapsed_ms: 120_000,
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('lets a later-generation poll collect a receipt without inheriting an abandoned local claim', async () => {
     const created = backgroundTaskRegistry.create({
       userId: 'claim_user',
       conversationId: 'claim_convo',
@@ -2341,7 +2518,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
       args: { background_task_id: created.task.id },
       agentId: 'agent_parent_1',
       runId: 'poll-run',
-      generationId: 'response-claim',
+      generationId: 'response-later-poll',
       claimBackgroundToolResult,
     };
 
@@ -2359,7 +2536,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
     expect(laterPoll).toMatchObject({ status: 'completed', result: 'CLAIMED RESULT' });
     expect(
       backgroundTaskRegistry.get('claim_user', 'claim_convo', created.task.id)?.resultClaim,
-    ).toMatchObject({ kind: 'manual', generationId: 'response-claim' });
+    ).toMatchObject({ kind: 'manual', generationId: 'response-later-poll' });
     expect(retire).toHaveBeenCalledTimes(1);
     expect(retire).toHaveBeenCalledWith('completion claimed by same-generation manual poll', {
       onlyIfUnclaimed: true,
@@ -2369,10 +2546,61 @@ describe('runCheckBackgroundTask (singleton)', () => {
         messageId: 'response-claim',
         taskId: created.task.id,
         kind: 'manual',
-        generationId: 'response-claim',
+        generationId: 'response-later-poll',
         allowUnfinished: true,
       }),
     );
+  });
+
+  it('delivers a completed result inside its originating generation before the response row finalizes', async () => {
+    const created = backgroundTaskRegistry.create({
+      userId: 'originating_user',
+      conversationId: 'originating_convo',
+      toolCallId: 'call_originating',
+      toolName: 'search_mcp_docs',
+      messageId: 'response-originating',
+    });
+    if ('atCapacity' in created) {
+      throw new Error('unexpected capacity');
+    }
+    backgroundTaskRegistry.complete('originating_user', 'originating_convo', created.task.id, {
+      content: 'ORIGINATING RESULT',
+    });
+    const retire = jest.fn(async () => true);
+    backgroundTaskRegistry.markCompletionWakeup(
+      'originating_user',
+      'originating_convo',
+      created.task.id,
+      { renew: jest.fn(async () => true), retire },
+    );
+    const claimBackgroundToolResult = jest.fn(async () => ({ status: 'not_ready' as const }));
+    const request = {
+      userId: 'originating_user',
+      conversationId: 'originating_convo',
+      args: { background_task_id: created.task.id },
+      toolCallId: 'poll-originating',
+      runId: 'originating-run',
+      generationId: 'response-originating',
+      claimBackgroundToolResult,
+    };
+
+    const result = JSON.parse(await runCheckBackgroundTask(request));
+    const replay = JSON.parse(await runCheckBackgroundTask(request));
+
+    expect(result).toMatchObject({ status: 'completed', result: 'ORIGINATING RESULT' });
+    expect(replay).toMatchObject({ status: 'completed', result: 'ORIGINATING RESULT' });
+    expect(retire).toHaveBeenCalledTimes(1);
+    expect(retire).toHaveBeenCalledWith('completion claimed by same-generation manual poll', {
+      onlyIfUnclaimed: true,
+    });
+    expect(claimBackgroundToolResult).toHaveBeenCalledTimes(2);
+    expect(
+      backgroundTaskRegistry.get('originating_user', 'originating_convo', created.task.id)
+        ?.resultClaim,
+    ).toMatchObject({
+      kind: 'manual',
+      generationId: 'response-originating',
+    });
   });
 
   it('reclaims a dead manual delivery after its owning generation is gone', async () => {
@@ -2515,6 +2743,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
     { status: 'completed' as const, field: 'result', output: 'RECOVERED RESULT' },
     { status: 'error' as const, field: 'error', output: 'RECOVERED FAILURE' },
   ])('recovers a durable $status receipt after process-local state is lost', async (terminal) => {
+    const settledAt = new Date('2026-09-22T09:00:00.000Z');
     const claimBackgroundToolResult = jest.fn(async () => ({
       status: 'acquired' as const,
       messageId: 'response-recovered',
@@ -2525,6 +2754,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
           toolName: 'slow_tool',
           status: terminal.status,
           output: terminal.output,
+          settledAt,
         },
       ],
     }));
@@ -2544,7 +2774,11 @@ describe('runCheckBackgroundTask (singleton)', () => {
       status: terminal.status,
       background_task_id: 'task-recovered',
       [terminal.field]: terminal.output,
+      /** The receipt records settlement only, so a recovered poll reports no span. */
+      settled_at: settledAt.toISOString(),
     });
+    expect(result.started_at).toBeUndefined();
+    expect(result.elapsed_ms).toBeUndefined();
     expect(claimBackgroundToolResult).toHaveBeenCalledWith(
       expect.not.objectContaining({ messageId: expect.anything() }),
     );
@@ -2864,6 +3098,13 @@ describe('runCheckBackgroundTask (singleton)', () => {
     expect(second).toEqual(expect.objectContaining({ status: 'claimed', result_claimed: true }));
     expect(second.result).toBeUndefined();
     expect(claimBackgroundToolResult).not.toHaveBeenCalled();
+
+    /** A subagent task reports the same timings as an ordinary one. */
+    for (const polled of [first, second]) {
+      expect(Number.isNaN(Date.parse(polled.started_at))).toBe(false);
+      expect(Date.parse(polled.settled_at)).toBeGreaterThanOrEqual(Date.parse(polled.started_at));
+      expect(polled.elapsed_ms).toBe(Date.parse(polled.settled_at) - Date.parse(polled.started_at));
+    }
   });
 
   it('falls through cleanly when neither background store recognizes a poll id', async () => {
@@ -2923,6 +3164,69 @@ describe('runCheckBackgroundTask (singleton)', () => {
     expect(claimBackgroundToolResult).toHaveBeenCalledTimes(1);
   });
 
+  it('counts a finished subagent as outstanding until its result is delivered', async () => {
+    const store = new InMemorySubagentTaskStore();
+    const subagentTasks: HostSubagentTaskConfig = {
+      store,
+      scopeId: 'owner:settled-subagent-parent',
+      completionDelivery: SUBAGENT_COMPLETION_DELIVERY,
+    };
+    const started = store.start({
+      scopeId: subagentTasks.scopeId,
+      idempotencyKey: 'parent-run:parent-agent:call-settled',
+      parentRunId: 'parent-run',
+      parentAgentId: 'parent-agent',
+      parentToolCallId: 'call-settled',
+      input: 'Research this.',
+      subagentKind: 'agent',
+      subagentType: 'researcher',
+      run: async () => ({ content: 'research done' }),
+    });
+    if (!started.accepted) {
+      throw new Error('Expected subagent task to start.');
+    }
+    for (
+      let i = 0;
+      i < 50 && store.get(subagentTasks.scopeId, started.task.taskId)?.status === 'running';
+      i++
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const listWithWakeups = async (subagentWakeups: string[]) =>
+      JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'owner',
+          conversationId: 'settled-subagent-parent',
+          agentId: 'agent_parent',
+          args: {},
+          subagentTasks,
+          pendingCompletions: {
+            list: jest.fn(async () => ({ completions: [], dead: [], complete: true })),
+            listSubagentWakeups: jest.fn(async () => ({
+              taskIds: subagentWakeups,
+              complete: true,
+            })),
+            discard: jest.fn(async () => 'not_pending' as const),
+            settleClaimed: jest.fn(async () => false),
+          },
+        }),
+      );
+
+    /** No durable wake-up (admitted poll-only): nothing will arrive, so nothing is pending. */
+    const pollOnly = await listWithWakeups([]);
+    expect(pollOnly.tasks[0].delivery).toBeUndefined();
+    expect(pollOnly.outstanding).toBe(0);
+
+    const listed = await listWithWakeups([started.task.taskId]);
+    expect(listed.tasks[0]).toEqual(
+      expect.objectContaining({ status: 'completed', result_available: true, delivery: 'pending' }),
+    );
+    expect(listed.outstanding).toBe(1);
+    expect(listed.message).toContain('Some finished subagents have not been delivered yet');
+    expect(listed.message).not.toContain('cancel');
+  });
+
   it('tells a wakeup-enabled parent to yield on an unchanged running subagent', async () => {
     const store = new InMemorySubagentTaskStore();
     const subagentTasks: HostSubagentTaskConfig = {
@@ -2961,7 +3265,8 @@ describe('runCheckBackgroundTask (singleton)', () => {
     );
     expect(polled).toMatchObject({
       status: 'running',
-      message: SUBAGENT_WAKEUP_GUIDANCE,
+      message: SUBAGENT_POLL_WAKEUP_GUIDANCE,
+      next_check_s: 30,
     });
 
     const listed = JSON.parse(
@@ -2986,7 +3291,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
       }),
     );
     expect(ephemeralPoll.status).toBe('running');
-    expect(ephemeralPoll.message).toBeUndefined();
+    expect(ephemeralPoll.message).toBe(SUBAGENT_POLL_GUIDANCE);
 
     store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
@@ -3022,8 +3327,12 @@ describe('runCheckBackgroundTask (singleton)', () => {
         subagentTasks,
       }),
     );
-    expect(polled).toMatchObject({ status: 'running' });
-    expect(polled.message).toBeUndefined();
+    expect(polled).toMatchObject({
+      status: 'running',
+      message: SUBAGENT_POLL_GUIDANCE,
+      next_check_s: 30,
+    });
+    expect(polled.message).not.toContain('resumes you automatically');
 
     store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
@@ -3275,5 +3584,704 @@ describe('toolOptionsSchema', () => {
       bogus: 'x',
     } as Record<string, unknown>);
     expect(parsed).toEqual({ run_in_background: true });
+  });
+});
+
+describe('runCheckBackgroundTask delivery semantics', () => {
+  const pendingControls = (
+    overrides: {
+      list?: () => Promise<unknown[]>;
+      complete?: boolean;
+      dead?: unknown[];
+      subagentWakeups?: string[];
+      discard?: () => Promise<string>;
+    } = {},
+  ) =>
+    ({
+      list: jest.fn(async () => ({
+        completions: await (overrides.list ?? (async () => []))(),
+        dead: overrides.dead ?? [],
+        complete: overrides.complete ?? true,
+      })),
+      listSubagentWakeups: jest.fn(async () => ({
+        taskIds: overrides.subagentWakeups ?? [],
+        complete: true,
+      })),
+      discard: jest.fn(overrides.discard ?? (async () => 'not_pending')),
+      settleClaimed: jest.fn(async () => true),
+    }) as never;
+
+  function completedWithWakeup(userId: string, conversationId: string, toolCallId: string) {
+    const created = backgroundTaskRegistry.create({
+      userId,
+      conversationId,
+      toolCallId,
+      toolName: 'bash_tool',
+      messageId: `${toolCallId}-message`,
+    });
+    if ('atCapacity' in created) {
+      throw new Error('unexpected capacity');
+    }
+    backgroundTaskRegistry.markCompletionWakeup(userId, conversationId, created.task.id, {
+      renew: jest.fn(async () => true),
+      retire: jest.fn(async () => true),
+    });
+    backgroundTaskRegistry.complete(userId, conversationId, created.task.id, {
+      content: 'finished output',
+    });
+    return created.task.id;
+  }
+
+  it('counts a finished task as outstanding until its result is delivered', async () => {
+    const taskId = completedWithWakeup('outstanding-user', 'outstanding-convo', 'outstanding-call');
+
+    const before = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'outstanding-user',
+        conversationId: 'outstanding-convo',
+        args: {},
+      }),
+    );
+    expect(before.tasks[0]).toEqual(
+      expect.objectContaining({
+        background_task_id: taskId,
+        status: 'completed',
+        delivery: 'pending',
+      }),
+    );
+    expect(before.outstanding).toBe(1);
+    expect(before.message).toContain('have not been delivered yet');
+
+    expect(
+      backgroundTaskRegistry.claimResult('outstanding-user', 'outstanding-convo', taskId, {
+        kind: 'wakeup',
+        claimId: 'automatic-delivery',
+      }),
+    ).toBe('acquired');
+    const after = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'outstanding-user',
+        conversationId: 'outstanding-convo',
+        args: {},
+      }),
+    );
+    expect(after.tasks[0].delivery).toBe('delivered');
+    expect(after.outstanding).toBe(0);
+    expect(after.message).toBeUndefined();
+  });
+
+  it('counts running work as outstanding without claiming undelivered results', async () => {
+    const created = backgroundTaskRegistry.create({
+      userId: 'running-user',
+      conversationId: 'running-convo',
+      toolCallId: 'running-call',
+      toolName: 'bash_tool',
+    });
+    if ('atCapacity' in created) {
+      throw new Error('unexpected capacity');
+    }
+
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'running-user',
+        conversationId: 'running-convo',
+        args: {},
+      }),
+    );
+    expect(listed.tasks[0]).toEqual(expect.objectContaining({ status: 'running' }));
+    expect(listed.tasks[0].delivery).toBeUndefined();
+    expect(listed.outstanding).toBe(1);
+    expect(listed.message).toBeUndefined();
+  });
+
+  it('lists undelivered results the process-local registry no longer holds', async () => {
+    const localTaskId = completedWithWakeup('durable-user', 'durable-convo', 'durable-local');
+    const pendingCompletions = pendingControls({
+      list: async () => [
+        {
+          taskId: localTaskId,
+          toolCallId: `call-${localTaskId}`,
+          toolName: 'bash_tool',
+          dispatchedAt: new Date('2026-09-24T12:00:00Z'),
+          result: { status: 'completed', settledAt: new Date('2026-09-24T12:01:00Z') },
+          claimedByWakeup: false,
+        },
+        {
+          taskId: 'earlier-turn-task',
+          toolCallId: 'call-earlier-turn-task',
+          toolName: 'slow_task',
+          dispatchedAt: new Date('2026-09-24T11:00:00Z'),
+          result: { status: 'error', settledAt: new Date('2026-09-24T11:05:00Z') },
+          claimedByWakeup: false,
+        },
+        {
+          taskId: 'other-replica-task',
+          toolCallId: 'call-other-replica-task',
+          toolName: 'slow_task',
+          dispatchedAt: new Date('2026-09-24T11:30:00Z'),
+          claimedByWakeup: false,
+        },
+      ],
+    });
+
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'durable-user',
+        conversationId: 'durable-convo',
+        args: {},
+        pendingCompletions,
+      }),
+    );
+
+    expect(
+      listed.tasks.map((task: { background_task_id: string }) => task.background_task_id),
+    ).toEqual([localTaskId, 'earlier-turn-task', 'other-replica-task']);
+    expect(listed.tasks[1]).toEqual(
+      expect.objectContaining({
+        status: 'error',
+        delivery: 'pending',
+        started_at: '2026-09-24T11:00:00.000Z',
+        settled_at: '2026-09-24T11:05:00.000Z',
+      }),
+    );
+    expect(listed.tasks[2]).toEqual(
+      expect.objectContaining({ status: 'running', delivery: 'pending', progress: 0 }),
+    );
+    expect(listed.tasks[1].result).toBeUndefined();
+    expect(listed.outstanding).toBe(3);
+  });
+
+  it('keeps listing local work when the durable view is unavailable', async () => {
+    const taskId = completedWithWakeup('degraded-user', 'degraded-convo', 'degraded-call');
+    const pendingCompletions = pendingControls({
+      list: async () => {
+        throw new Error('delivery store unavailable');
+      },
+    });
+
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'degraded-user',
+        conversationId: 'degraded-convo',
+        args: {},
+        pendingCompletions,
+      }),
+    );
+
+    expect(
+      listed.tasks.map((task: { background_task_id: string }) => task.background_task_id),
+    ).toEqual([taskId]);
+    expect(listed.partial).toBe(true);
+    expect(listed.warning).toContain('Undelivered results from earlier turns could not be listed');
+  });
+
+  it.each([
+    ['discarded', 'cancelled', 'will not arrive as a new turn'],
+    ['running', 'unavailable', 'cannot be stopped from here'],
+    ['delivering', 'delivery_scheduled', 'already being delivered'],
+  ])(
+    'reports a %s undelivered completion this process does not hold',
+    async (outcome, status, message) => {
+      const pendingCompletions = pendingControls({ discard: async () => outcome });
+
+      const cancelled = JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'discard-user',
+          conversationId: 'discard-convo',
+          args: { background_task_id: 'earlier-turn-task', action: 'cancel' },
+          pendingCompletions,
+        }),
+      );
+
+      expect(cancelled).toEqual(
+        expect.objectContaining({ status, background_task_id: 'earlier-turn-task' }),
+      );
+      expect(cancelled.message).toContain(message);
+    },
+  );
+
+  it('reports a local task delivered once the durable store no longer holds its delivery', async () => {
+    const delivered = completedWithWakeup('reconcile-user', 'reconcile-convo', 'reconcile-done');
+    const waiting = completedWithWakeup('reconcile-user', 'reconcile-convo', 'reconcile-waiting');
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'reconcile-user',
+        conversationId: 'reconcile-convo',
+        args: {},
+        pendingCompletions: pendingControls({
+          list: async () => [
+            {
+              taskId: waiting,
+              toolCallId: `call-${waiting}`,
+              toolName: 'bash_tool',
+              dispatchedAt: new Date('2026-09-24T12:00:00Z'),
+              result: { status: 'completed', settledAt: new Date('2026-09-24T12:01:00Z') },
+              claimedByWakeup: false,
+            },
+          ],
+        }),
+      }),
+    );
+
+    const byId = new Map(
+      listed.tasks.map((task: { background_task_id: string; delivery?: string }) => [
+        task.background_task_id,
+        task.delivery,
+      ]),
+    );
+    expect(byId.get(delivered)).toBe('delivered');
+    expect(byId.get(waiting)).toBe('pending');
+    expect(listed.outstanding).toBe(1);
+  });
+
+  it('reports a local task whose automatic delivery dead-lettered as failed, not delivered', async () => {
+    const taskId = completedWithWakeup('dead-user', 'dead-convo', 'dead-call');
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'dead-user',
+        conversationId: 'dead-convo',
+        args: {},
+        pendingCompletions: pendingControls({
+          dead: [
+            {
+              taskId,
+              toolCallId: `call-${taskId}`,
+              toolName: 'bash_tool',
+              dispatchedAt: new Date('2026-09-24T12:00:00Z'),
+              claimedByWakeup: false,
+            },
+            {
+              taskId: 'restored-dead-task',
+              toolCallId: 'call-restored-dead-task',
+              toolName: 'slow_task',
+              dispatchedAt: new Date('2026-09-24T11:00:00Z'),
+              result: { status: 'completed', settledAt: new Date('2026-09-24T11:01:00Z') },
+              claimedByWakeup: false,
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(listed.tasks[0]).toEqual(
+      expect.objectContaining({ background_task_id: taskId, delivery: 'failed' }),
+    );
+    /** A dead letter this process no longer holds is listed from the durable store. */
+    expect(listed.tasks[1]).toEqual(
+      expect.objectContaining({
+        background_task_id: 'restored-dead-task',
+        status: 'completed',
+        delivery: 'failed',
+      }),
+    );
+    expect(listed.outstanding).toBe(2);
+    expect(listed.message).toContain('Automatic delivery failed');
+  });
+
+  it('retires the pending delivery when a local poll claims the durable result', async () => {
+    const created = backgroundTaskRegistry.create({
+      userId: 'local-claim-user',
+      conversationId: 'local-claim-convo',
+      toolCallId: 'local-claim-call',
+      toolName: 'bash_tool',
+      messageId: 'local-claim-message',
+    });
+    if ('atCapacity' in created) {
+      throw new Error('unexpected capacity');
+    }
+    const retire = jest.fn(async () => true);
+    backgroundTaskRegistry.markCompletionWakeup(
+      'local-claim-user',
+      'local-claim-convo',
+      created.task.id,
+      {
+        renew: jest.fn(async () => true),
+        retire,
+      },
+    );
+    backgroundTaskRegistry.complete('local-claim-user', 'local-claim-convo', created.task.id, {
+      content: 'finished output',
+    });
+
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'local-claim-user',
+        conversationId: 'local-claim-convo',
+        args: { background_task_id: created.task.id },
+        claimBackgroundToolResult: jest.fn(async () => ({
+          status: 'acquired' as const,
+          results: [],
+        })) as never,
+      }),
+    );
+
+    expect(polled.status).toBe('completed');
+    expect(retire).toHaveBeenCalledWith('completion claimed by manual poll', {
+      onlyIfUnclaimed: true,
+    });
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'local-claim-user',
+        conversationId: 'local-claim-convo',
+        args: {},
+      }),
+    );
+    expect(listed.tasks[0].delivery).toBe('delivered');
+    expect(listed.outstanding).toBe(0);
+  });
+
+  it('keeps the local view and warns when the durable listing is incomplete', async () => {
+    const taskId = completedWithWakeup('truncated-user', 'truncated-convo', 'truncated-call');
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'truncated-user',
+        conversationId: 'truncated-convo',
+        args: {},
+        pendingCompletions: pendingControls({ complete: false }),
+      }),
+    );
+
+    expect(listed.tasks[0]).toEqual(
+      expect.objectContaining({ background_task_id: taskId, delivery: 'pending' }),
+    );
+    expect(listed.outstanding).toBe(1);
+    expect(listed.partial).toBe(true);
+    expect(listed.warning).toContain('result list may be incomplete');
+  });
+
+  it('lets a finished local task be cancelled without the live-cancellation policy', async () => {
+    const taskId = completedWithWakeup(
+      'settled-cancel-user',
+      'settled-cancel-convo',
+      'settled-cancel',
+    );
+
+    const cancelled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'settled-cancel-user',
+        conversationId: 'settled-cancel-convo',
+        args: { background_task_id: taskId, action: 'cancel' },
+      }),
+    );
+
+    expect(cancelled.status).not.toBe('invalid');
+    expect(cancelled).toEqual(
+      expect.objectContaining({ background_task_id: taskId, status: 'completed' }),
+    );
+  });
+
+  it('retires the pending delivery of a remote task a manual poll just claimed', async () => {
+    const pendingCompletions = pendingControls();
+    const claimBackgroundToolResult = jest.fn(async () => ({
+      status: 'acquired' as const,
+      results: [
+        {
+          taskId: 'remote-task',
+          toolName: 'slow_task',
+          status: 'completed' as const,
+          output: 'remote result',
+          settledAt: new Date('2026-09-24T12:00:00Z'),
+        },
+      ],
+    }));
+
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'remote-user',
+        conversationId: 'remote-convo',
+        args: { background_task_id: 'remote-task' },
+        claimBackgroundToolResult: claimBackgroundToolResult as never,
+        pendingCompletions,
+      }),
+    );
+
+    expect(polled).toEqual(
+      expect.objectContaining({ status: 'completed', result: 'remote result' }),
+    );
+    expect(
+      (pendingCompletions as unknown as { settleClaimed: jest.Mock }).settleClaimed,
+    ).toHaveBeenCalledWith({
+      userId: 'remote-user',
+      conversationId: 'remote-convo',
+      taskId: 'remote-task',
+    });
+  });
+
+  it('reports a failed discard lookup only when nothing else claims the task', async () => {
+    const cancelled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'discard-user',
+        conversationId: 'discard-convo',
+        args: { background_task_id: 'unknown-task', action: 'cancel' },
+        pendingCompletions: pendingControls({
+          discard: async () => {
+            throw new Error('delivery store unavailable');
+          },
+        }),
+      }),
+    );
+
+    expect(cancelled).toEqual(expect.objectContaining({ status: 'unavailable' }));
+    expect(cancelled.message).toContain('could not be discarded right now');
+  });
+
+  it('falls through to the ordinary lookup when nothing is pending for the task', async () => {
+    const pendingCompletions = pendingControls({ discard: async () => 'not_pending' });
+
+    const cancelled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'discard-user',
+        conversationId: 'discard-convo',
+        args: { background_task_id: 'unknown-task', action: 'cancel' },
+        pendingCompletions,
+      }),
+    );
+
+    expect(cancelled).toEqual(expect.objectContaining({ status: 'not_found' }));
+  });
+});
+
+describe('runCheckBackgroundTask subagent activity', () => {
+  /** The host task store decorates claims and lists with the owner's progress tree;
+   * this store does the same over the SDK store so the poll path runs end to end. */
+  class ActivityTaskStore extends InMemorySubagentTaskStore {
+    readonly recorders = new Map<string, ActivityRecorder>();
+
+    override claim(scopeId: string, taskId: string): SubagentTaskClaim {
+      const claim = super.claim(scopeId, taskId);
+      const recorder = this.recorders.get(taskId);
+      if (claim.status === 'not_found' || recorder == null) {
+        return claim;
+      }
+      const task: ActivitySnapshot = { ...claim.task, activity: recorder.snapshot() };
+      return { ...claim, task };
+    }
+
+    override list(scopeId: string): SubagentTaskSnapshot[] {
+      return super.list(scopeId).map((task): ActivitySnapshot => {
+        const recorder = this.recorders.get(task.taskId);
+        return recorder == null ? task : { ...task, activitySummary: recorder.summary() };
+      });
+    }
+  }
+
+  const update = (phase: SubagentUpdateEvent['phase'], data: unknown): SubagentUpdateEvent => ({
+    runId: 'root-run',
+    subagentRunId: 'child-run',
+    subagentType: 'pr-reviewer',
+    subagentAgentId: 'agent-reviewer',
+    phase,
+    data,
+    timestamp: new Date().toISOString(),
+  });
+
+  const toolCall = (id: string, name: string, intent: string) =>
+    update('run_step', {
+      id: `step-${id}`,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id, name, args: { intent, secret: 'sk-1' } }],
+      },
+    });
+
+  const toolResult = (id: string, name: string, output: string) =>
+    update('run_step_completed', {
+      result: { type: 'tool_call', tool_call: { id, name, output } },
+    });
+
+  let reviewers = 0;
+
+  function startReviewer(release?: Promise<{ content: string }>) {
+    const store = new ActivityTaskStore();
+    const subagentTasks: HostSubagentTaskConfig = {
+      store,
+      scopeId: 'owner:digest-parent',
+      completionDelivery: SUBAGENT_COMPLETION_DELIVERY,
+    };
+    const recorder = new ActivityRecorder();
+    reviewers += 1;
+    const started = store.start({
+      scopeId: subagentTasks.scopeId,
+      idempotencyKey: `parent-run:parent-agent:reviewer-${reviewers}`,
+      parentRunId: 'parent-run',
+      parentAgentId: 'parent-agent',
+      parentToolCallId: 'call-reviewer',
+      input: 'Review the PR.',
+      subagentKind: 'agent',
+      subagentType: 'pr-reviewer',
+      run: (runtime: SubagentTaskRuntime) =>
+        release ??
+        new Promise((_, reject) => {
+          runtime.signal.addEventListener('abort', () => reject(runtime.signal.reason), {
+            once: true,
+          });
+        }),
+    });
+    if (!started.accepted) {
+      throw new Error('Expected subagent task to start.');
+    }
+    store.recorders.set(started.task.taskId, recorder);
+    for (let index = 1; index <= 8; index++) {
+      const name = index % 2 === 1 ? 'bash_tool' : 'read_file';
+      recorder.record(toolCall(`call-${index}`, name, `Step ${index}`));
+      recorder.record(
+        toolResult(
+          `call-${index}`,
+          name,
+          index === 3 ? 'Error: tool call failed: exit 1' : 'API_KEY=leak',
+        ),
+      );
+    }
+    recorder.record(toolCall('call-9', 'bash_tool', 'Running the jest suite'));
+    const poll = async (args: Record<string, unknown> = {}) =>
+      JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'owner',
+          conversationId: 'digest-parent',
+          agentId: 'agent_parent',
+          args: { background_task_id: started.task.taskId, ...args },
+          subagentTasks,
+        }),
+      );
+    return { store, subagentTasks, recorder, taskId: started.task.taskId, poll };
+  }
+
+  const paths = (digest: { nodes: Array<{ path: string }> }): string[] =>
+    digest.nodes.map((node) => node.path);
+
+  it('returns a folded, navigable digest for a running subagent', async () => {
+    const { store, subagentTasks, taskId, poll, recorder } = startReviewer();
+    const polled = await poll();
+    expect(polled).toMatchObject({
+      status: 'running',
+      message: SUBAGENT_POLL_WAKEUP_GUIDANCE,
+      next_check_s: 30,
+      activity: { turns: 9, tools: 9, errors: 1, active: '9.1', cursor: '8.1' },
+    });
+    expect(polled.progress_detail).toBeUndefined();
+    expect(paths(polled.activity)).toEqual(['1-3', '4', '5', '6', '7', '8', '9', '9.1']);
+    expect(JSON.stringify(polled)).not.toContain('leak');
+    expect(JSON.stringify(polled)).not.toContain('sk-1');
+
+    const unchanged = await poll({ since: polled.activity.cursor });
+    expect(paths(unchanged.activity)).toEqual(['9', '9.1']);
+    recorder.record(toolResult('call-9', 'bash_tool', 'PASS'));
+    recorder.record(toolCall('call-10', 'read_file', 'Reading the diff'));
+    const advanced = await poll({ since: unchanged.activity.cursor });
+    expect(advanced.activity).toMatchObject({ since: '8.1', cursor: '9.1', active: '10.1' });
+    expect(paths(advanced.activity)).toEqual(['9', '9.1', '10', '10.1']);
+
+    const expanded = await poll({ expand: '1-3' });
+    expect(expanded.activity.expanded).toBe('1-3');
+    expect(expanded.activity.nodes).toEqual([
+      expect.objectContaining({ path: '1', summary: 'bash_tool' }),
+      expect.objectContaining({ path: '2', summary: 'read_file' }),
+      expect.objectContaining({ path: '3', status: 'error', errors: 1 }),
+    ]);
+
+    const display = parseBackgroundTaskOutput(JSON.stringify(polled));
+    expect(display?.kind === 'task' ? display.task.activity?.nodes : undefined).toHaveLength(8);
+
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('rejects malformed navigation without touching the task', async () => {
+    const { store, subagentTasks, taskId, poll } = startReviewer();
+    expect(await poll({ expand: 'turn three' })).toEqual({
+      status: 'invalid',
+      background_task_id: taskId,
+      message: expect.stringContaining('expand must be a node path'),
+    });
+    expect(await poll({ since: '1', expand: '2' })).toMatchObject({ status: 'invalid' });
+    expect(store.get(subagentTasks.scopeId, taskId)?.status).toBe('running');
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('lists running subagents with counts and only the node in flight', async () => {
+    const { store, subagentTasks, taskId } = startReviewer();
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'owner',
+        conversationId: 'digest-parent',
+        agentId: 'agent_parent',
+        args: {},
+        subagentTasks,
+      }),
+    );
+    expect(listed.tasks[0].activity).toEqual({
+      turns: 9,
+      tools: 9,
+      errors: 1,
+      active: '9.1',
+      nodes: [
+        expect.objectContaining({
+          path: '9.1',
+          name: 'bash_tool',
+          label: 'Running the jest suite',
+          status: 'running',
+        }),
+      ],
+    });
+    expect(listed.message).toBe(SUBAGENT_WAKEUP_GUIDANCE);
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('returns the result with its activity when a finished, undelivered task is polled', async () => {
+    let finish = (_value: { content: string }): void => undefined;
+    const release = new Promise<{ content: string }>((resolve) => (finish = resolve));
+    const { store, subagentTasks, taskId, poll, recorder } = startReviewer(release);
+    recorder.record(toolResult('call-9', 'bash_tool', 'PASS'));
+    recorder.settle('completed');
+    finish({ content: 'Two findings.' });
+    await waitForSubagentTaskToSettle(store, subagentTasks.scopeId, taskId);
+
+    const collected = await poll();
+    expect(collected).toMatchObject({
+      status: 'completed',
+      result: 'Two findings.',
+      activity: { turns: 9, tools: 9, errors: 1, cursor: '9.1' },
+    });
+    expect(collected.activity.active).toBeUndefined();
+    expect(collected.activity.idle_ms).toBeUndefined();
+    expect(collected.next_check_s).toBeUndefined();
+    expect(collected.message).toBeUndefined();
+  });
+
+  it('keeps the legacy progress label when the owner sends no activity', async () => {
+    const store = new InMemorySubagentTaskStore();
+    const subagentTasks: SubagentTaskConfig = { store, scopeId: 'owner:legacy-parent' };
+    const started = store.start({
+      scopeId: subagentTasks.scopeId,
+      idempotencyKey: 'parent-run:parent-agent:legacy',
+      parentRunId: 'parent-run',
+      parentAgentId: 'parent-agent',
+      parentToolCallId: 'call-legacy',
+      input: 'Research this.',
+      subagentKind: 'agent',
+      subagentType: 'researcher',
+      run: (runtime: SubagentTaskRuntime) => {
+        runtime.reportProgress(update('message_delta', { delta: { content: [] } }));
+        return new Promise((_, reject) => {
+          runtime.signal.addEventListener('abort', () => reject(runtime.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    });
+    if (!started.accepted) {
+      throw new Error('Expected subagent task to start.');
+    }
+    await Promise.resolve();
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'owner',
+        conversationId: 'legacy-parent',
+        args: { background_task_id: started.task.taskId, since: '3' },
+        subagentTasks,
+      }),
+    );
+    expect(polled.activity).toBeUndefined();
+    expect(polled.progress_detail).toMatchObject({ phase: 'message_delta' });
+    store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
 });

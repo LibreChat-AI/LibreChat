@@ -57,6 +57,7 @@ function MessageParts(props: TMessageProps) {
   } = useMessageHelpers(props, searchResults);
 
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
+  const autoExpandTools = useRecoilValue(store.autoExpandTools);
   const showThinking = useAtomValue(showThinkingAtom);
   const { messageId = null, isCreatedByUser } = message ?? {};
 
@@ -161,7 +162,6 @@ function MessageParts(props: TMessageProps) {
                 isEditing={edit}
                 message={message}
                 enterEdit={enterEdit}
-                isSubmitting={isSubmitting}
                 conversation={conversation ?? null}
                 regenerate={() => regenerateMessage()}
                 copyToClipboard={copyToClipboard}
@@ -185,10 +185,12 @@ function MessageParts(props: TMessageProps) {
                 searchResults={searchResults}
                 manualSkills={message.manualSkills}
                 messageId={message.messageId}
+                renderOwnerId={message.clientQueueParentMessageId}
                 authorHeader={isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
                 setSiblingIdx={setSiblingIdx}
                 isCreatedByUser={message.isCreatedByUser}
                 conversationId={conversation?.conversationId}
+                foldLiveActivity={!autoExpandTools}
                 showThinking={showThinking}
                 isLatestMessage={messageId === latestMessageId}
                 content={message.content as Array<TMessageContentParts | undefined>}

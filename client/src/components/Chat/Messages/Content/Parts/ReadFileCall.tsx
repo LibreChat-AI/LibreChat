@@ -103,7 +103,7 @@ export default function ReadFileCall({
     runStepStatus,
   });
 
-  const highlighted = useLazyHighlight(hasOutput ? output : undefined, lang);
+  const highlighted = useLazyHighlight(showCode && hasOutput ? output : undefined, lang);
 
   return (
     <>
@@ -121,7 +121,7 @@ export default function ReadFileCall({
           icon={
             <FileText
               className={cn(
-                'size-4 shrink-0 text-text-secondary',
+                'text-text-secondary size-4 shrink-0',
                 phase === 'running' && 'animate-pulse',
               )}
               aria-hidden="true"
@@ -137,11 +137,11 @@ export default function ReadFileCall({
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
               <CodeWindowHeader language={fileName} code={output} />
-              <pre className="max-h-[300px] overflow-auto bg-surface-chat p-4 font-mono text-xs dark:bg-surface-primary-alt">
+              <pre className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs">
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? output}
                 </code>

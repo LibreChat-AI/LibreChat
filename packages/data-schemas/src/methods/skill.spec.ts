@@ -1861,6 +1861,141 @@ describe('Skill CRUD methods', () => {
 });
 
 describe('SkillFile methods', () => {
+  it('allows exactly one conditional writer and rejects a stale or deleted revision', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/race.md',
+      file_id: 'original',
+      filename: 'race.md',
+      filepath: '/tmp/original',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    const results = await Promise.allSettled(
+      ['a', 'b'].map((revision) =>
+        methods.upsertSkillFile({ ...input, expectedFileId: 'original', file_id: revision }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'SKILL_FILE_CONFLICT' },
+    });
+    const current = await methods.getSkillFileByPath(skill._id, input.relativePath);
+    expect(['a', 'b']).toContain(current?.file_id);
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 1 });
+
+    // An unconditional authoring/agent write also invalidates a captured editor revision.
+    await methods.upsertSkillFile({ ...input, file_id: 'agent' });
+    await expect(
+      methods.upsertSkillFile({
+        ...input,
+        expectedFileId: current!.file_id,
+        file_id: 'stale-editor',
+      }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    await methods.deleteSkillFile(skill._id, input.relativePath);
+    await expect(
+      methods.upsertSkillFile({
+        ...input,
+        expectedFileId: 'agent',
+        file_id: 'resurrected',
+      }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toBeNull();
+  });
+
+  it('creates only absent skill files and leaves the winner intact when creation races', async () => {
+    await SkillFile.init();
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const original = {
+      skillId: skill._id,
+      relativePath: 'references/new.md',
+      file_id: 'browser',
+      filename: 'new.md',
+      filepath: '/tmp/browser',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 7,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(original);
+    await expect(
+      methods.upsertSkillFile({ ...original, createOnly: true, file_id: 'late-agent' }),
+    ).rejects.toMatchObject({ code: 'SKILL_FILE_CONFLICT' });
+    expect(await methods.getSkillFileByPath(skill._id, original.relativePath)).toMatchObject({
+      file_id: 'browser',
+      filepath: '/tmp/browser',
+    });
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 2, fileCount: 1 });
+
+    const results = await Promise.allSettled(
+      ['first', 'second'].map((id) =>
+        methods.upsertSkillFile({
+          ...original,
+          relativePath: 'references/concurrent.md',
+          filename: 'concurrent.md',
+          filepath: `/tmp/${id}`,
+          file_id: id,
+          createOnly: true,
+        }),
+      ),
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'SKILL_FILE_CONFLICT' },
+    });
+    expect(['first', 'second']).toContain(
+      (await methods.getSkillFileByPath(skill._id, 'references/concurrent.md'))?.file_id,
+    );
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ version: 3, fileCount: 2 });
+  });
+
+  it('does not let a delayed read cache old bytes on a replaced file', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    const input = {
+      skillId: skill._id,
+      relativePath: 'references/cache.md',
+      file_id: 'before',
+      filename: 'cache.md',
+      filepath: '/tmp/before',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 10,
+      author: owner._id,
+    };
+    await methods.upsertSkillFile(input);
+    await methods.upsertSkillFile({ ...input, expectedFileId: 'before', file_id: 'after' });
+    await methods.updateSkillFileContent(
+      skill._id,
+      input.relativePath,
+      {
+        content: 'stale read',
+        isBinary: false,
+      },
+      'before',
+    );
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).not.toHaveProperty(
+      'content',
+    );
+    await methods.updateSkillFileContent(
+      skill._id,
+      input.relativePath,
+      {
+        content: 'new bytes',
+        isBinary: false,
+      },
+      'after',
+    );
+    expect(await methods.getSkillFileByPath(skill._id, input.relativePath)).toMatchObject({
+      file_id: 'after',
+      content: 'new bytes',
+    });
+  });
+
   it('upsertSkillFile bumps parent skill version and updates fileCount', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     expect(skill.version).toBe(1);

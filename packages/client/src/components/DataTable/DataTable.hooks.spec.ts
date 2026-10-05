@@ -1,11 +1,12 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
+import type { TableColumn } from './DataTable.types';
 import {
   useDebounced,
   useOptimizedRowSelection,
   useColumnStyles,
   useKeyboardNavigation,
+  useTableRowHeight,
 } from './DataTable.hooks';
-import type { TableColumn } from './DataTable.types';
 
 describe('DataTable Hooks', () => {
   describe('useDebounced', () => {
@@ -466,5 +467,32 @@ describe('DataTable Hooks', () => {
 
       expect(result.current.focusedRowIndex).toBe(7);
     });
+  });
+});
+
+describe('useTableRowHeight', () => {
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--theme-table-cell-space-y');
+    document.documentElement.style.removeProperty('--theme-table-row-stroke');
+  });
+
+  it('is 40px dense, 36px compact and 48px titled without a theme, the heights the tables drew', () => {
+    expect(renderHook(() => useTableRowHeight('dense')).result.current).toBe(40);
+    expect(renderHook(() => useTableRowHeight('compact')).result.current).toBe(36);
+    expect(renderHook(() => useTableRowHeight('titled')).result.current).toBe(48);
+  });
+
+  it('follows a theme that repaints the cell space and rules its rows', async () => {
+    const { result } = renderHook(() => useTableRowHeight('dense'));
+    const titled = renderHook(() => useTableRowHeight('titled'));
+
+    act(() => {
+      document.documentElement.style.setProperty('--theme-table-cell-space-y', '8px');
+      document.documentElement.style.setProperty('--theme-table-row-stroke', '1px');
+    });
+
+    await waitFor(() => expect(result.current).toBe(37));
+    /** The title cell's fixed height is a border box, so the rule sits inside it. */
+    expect(titled.result.current).toBe(32);
   });
 });

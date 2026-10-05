@@ -1,3 +1,4 @@
+import { errors } from 'undici';
 import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata } from './terminal';
 
 describe('terminal agent-run error logging', () => {
@@ -217,13 +218,111 @@ describe('terminal agent-run error logging', () => {
     );
   });
 
+  it.each([
+    [
+      'stalled',
+      new errors.BodyTimeoutError(),
+      'model_stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+    [
+      'closed',
+      new errors.SocketError('other side closed'),
+      'model_stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+  ])(
+    'names a %s model stream instead of the bare transport error',
+    (failure, cause, type, prose) => {
+      const logger = { error: jest.fn() };
+      const observer = createTerminalRunErrorObserver({
+        logger,
+        source: '[Agent API]',
+        protectionEnabled: false,
+      });
+      const transportError = new TypeError('terminated', { cause });
+      observer.modelCallback.handleLLMError(transportError);
+      const terminalError = new Error('graph failed', { cause: transportError });
+
+      expect(observer.getUserFacingError(terminalError, () => 'fallback')).toBe(
+        `${prose}\n${JSON.stringify({ type })}`,
+      );
+      observer.log(terminalError);
+      expect(logger.error).toHaveBeenCalledWith(
+        '[Agent API] Upstream model error',
+        expect.objectContaining({ errorType: `stream_${failure}` }),
+      );
+    },
+  );
+
+  it.each([
+    ['a response header timeout', new errors.HeadersTimeoutError()],
+    ['a pre-response socket close', new errors.SocketError('other side closed')],
+  ])('keeps %s on the generic upstream path', (_label, cause) => {
+    const logger = { error: jest.fn() };
+    const observer = createTerminalRunErrorObserver({
+      logger,
+      source: '[Agent API]',
+      protectionEnabled: true,
+    });
+    const transportError = new TypeError('fetch failed', { cause });
+    observer.modelCallback.handleLLMError(transportError);
+
+    expect(observer.getUserFacingError(transportError, () => 'fallback')).toBe(
+      'The model provider could not complete this request.\n' +
+        JSON.stringify({ type: 'upstream_model_error' }),
+    );
+    observer.log(transportError);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[Agent API] Upstream model error',
+      expect.objectContaining({ errorType: '_OTHER' }),
+    );
+  });
+
+  it.each([
+    [200, 'stream_stalled', 'model_stream_stalled'],
+    [502, '502', 'upstream_model_error'],
+  ])('keeps HTTP %i and a body timeout in their correct categories', (status, errorType, type) => {
+    const logger = { error: jest.fn() };
+    const observer = createTerminalRunErrorObserver({
+      logger,
+      source: '[Agent API]',
+      protectionEnabled: true,
+    });
+    const failure = Object.assign(
+      new TypeError('terminated', { cause: new errors.BodyTimeoutError() }),
+      { response: { status } },
+    );
+    observer.modelCallback.handleLLMError(failure);
+
+    const userError = observer.getUserFacingError(failure, () => 'fallback');
+    expect(userError).toContain(JSON.stringify({ type, ...(status >= 400 ? { status } : {}) }));
+    expect(userError).not.toContain('terminated');
+    observer.log(failure);
+    expect(logger.error).toHaveBeenCalledWith(
+      '[Agent API] Upstream model error',
+      expect.objectContaining({ errorType, status }),
+    );
+  });
+
+  it('keeps an untracked transport failure off the upstream model path', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: false,
+    });
+    const transportError = new TypeError('terminated', { cause: new errors.BodyTimeoutError() });
+
+    expect(observer.getUserFacingError(transportError, () => 'fallback')).toBe('fallback');
+  });
+
   it('preserves a more specific localized model classification', () => {
     const observer = createTerminalRunErrorObserver({
       logger: { error: jest.fn() },
       source: '[Agent API]',
       protectionEnabled: false,
     });
-    const providerError = new Error('provider failed');
+    const providerError = new TypeError('terminated', { cause: new errors.BodyTimeoutError() });
     const terminalError = Object.assign(new Error('rate limited', { cause: providerError }), {
       lc_error_code: 'MODEL_RATE_LIMIT',
     });

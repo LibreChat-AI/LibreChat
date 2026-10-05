@@ -14,7 +14,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 // without requiring a database or identity provider. It does not simulate an active model run.
 test(
   'an old tab retains its bundle identity and draft across a worker update',
-  { timeout: 30000 },
+  /** Allow a slow CI browser launch plus both activations; individual browser waits remain bounded. */
+  { timeout: 90000 },
   async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), 'librechat-builds-'));
     const appHtml = await readFile(path.join(root, 'client/index.html'), 'utf8');
@@ -55,7 +56,10 @@ test(
          window.__lcRumPush('before-bootstrap');
          installRumBootstrap(window);
          window.fixtureVersion = ${JSON.stringify(version)};
-         navigator.serviceWorker.register('/sw.js');`,
+         navigator.serviceWorker.register('/sw.js').then(
+           registration => { window.fixtureRegistration = registration; },
+           error => { window.fixtureWorkerError = String(error); },
+         );`,
         );
         await build({
           root: fixture,
@@ -71,14 +75,27 @@ test(
         );
       }
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-      browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL });
+      browser = await chromium.launch({
+        headless: true,
+        channel: process.env.PLAYWRIGHT_CHANNEL,
+        // CI runners can take longer than 10s to start Chrome under contention.
+        // Keep startup independently bounded; page/worker waits still use 10s.
+        timeout: 30000,
+      });
       const page = await browser.newPage();
       page.setDefaultTimeout(10000);
       const url = `http://127.0.0.1:${server.address().port}`;
       await page.goto(`${url}/c/example`);
       await page.waitForFunction(() => window.fixtureVersion === 'A');
-      await page.evaluate(() => navigator.serviceWorker.ready);
-      await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+      /** `ready` has no timeout and a controller can still be activating. Finish
+       *  A's handshake before clearing its events or requesting another worker. */
+      await page.waitForFunction(
+        () =>
+          window.fixtureWorkerError ||
+          (window.fixtureRegistration?.active?.state === 'activated' &&
+            navigator.serviceWorker.controller?.state === 'activated'),
+      );
+      assert.equal(await page.evaluate(() => window.fixtureWorkerError), undefined);
       await page.getByLabel('Draft').fill('Keep my unsent text');
       const firstId = await page.evaluate(() => window.__lcRumQueue[0].attributes.clientBuildId);
       assert.match(firstId, /^index\..+\.js$/);
@@ -93,15 +110,30 @@ test(
 
       await page.evaluate(() => {
         window.__lcRumQueue.length = 0;
+        window.fixturePreviousController = navigator.serviceWorker.controller;
       });
       serving = 'B';
-      await page.evaluate(async () => {
-        const registration = await navigator.serviceWorker.getRegistration();
-        await registration.update();
+      /** `evaluate` does not bound an awaited update promise. Observe its result
+       *  through the timed wait, and require B's activation, not a late A ping. */
+      await page.evaluate(() => {
+        window.fixtureRegistration.update().then(
+          () => {
+            window.fixtureUpdateFinished = true;
+          },
+          (error) => {
+            window.fixtureWorkerError = String(error);
+          },
+        );
       });
-      await page.waitForFunction(() =>
-        window.__lcRumQueue.some((event) => event.type === 'sw-ping'),
+      await page.waitForFunction(
+        () =>
+          window.fixtureWorkerError ||
+          (window.fixtureUpdateFinished &&
+            navigator.serviceWorker.controller !== window.fixturePreviousController &&
+            navigator.serviceWorker.controller?.state === 'activated' &&
+            window.__lcRumQueue.some((event) => event.type === 'sw-ping')),
       );
+      assert.equal(await page.evaluate(() => window.fixtureWorkerError), undefined);
       // Outlive the worker's unresponsive-client deadline to catch an unwanted navigation.
       await page.waitForTimeout(2000);
       assert.equal(await page.getByLabel('Draft').inputValue(), 'Keep my unsent text');
@@ -129,6 +161,85 @@ test(
       );
       assert.notEqual(nextId, firstId);
       assert.match(nextId, /^index\..+\.js$/);
+    } finally {
+      await browser?.close();
+      await new Promise((resolve) => server.close(resolve));
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
+// Optional diagnostics catch their own failures. Only an explicitly required import heals the page.
+test(
+  'optional preload failures do not reload or consume recovery for a required chunk',
+  { timeout: 60000 },
+  async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), 'librechat-import-policy-'));
+    const appHtml = await readFile(path.join(root, 'client/index.html'), 'utf8');
+    const guards = [...appHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+      .map((match) => match[0])
+      .join('\n');
+    let browser;
+    const server = createServer(async (req, res) => {
+      const pathname = new URL(req.url, 'http://localhost').pathname;
+      try {
+        const file = pathname.startsWith('/assets/') ? pathname.slice(1) : 'index.html';
+        if (file.includes('..')) {
+          res.writeHead(400).end();
+          return;
+        }
+        const content = await readFile(path.join(temporary, 'dist', file));
+        res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : 'text/html');
+        res.end(content);
+      } catch {
+        res.writeHead(404).end();
+      }
+    });
+    try {
+      await writeFile(
+        path.join(temporary, 'index.html'),
+        `<html><head>${guards}</head><body><input aria-label="Draft"><script type="module" src="/entry.js"></script></body></html>`,
+      );
+      await writeFile(
+        path.join(temporary, 'entry.js'),
+        `
+      import { importWithRecovery } from ${JSON.stringify(path.join(root, 'client/src/lib/assets/lazy.ts'))};
+      window.optional = () => import('./optional.js').catch(() => { window.optionalFailed = true; });
+      window.required = () => importWithRecovery(() => import('./required.js')).catch(() => {});
+    `,
+      );
+      await writeFile(
+        path.join(temporary, 'optional.js'),
+        "import './optional.css'; export const value = 1;",
+      );
+      await writeFile(path.join(temporary, 'optional.css'), 'body { color: inherit; }');
+      await writeFile(path.join(temporary, 'required.js'), 'export const value = 2;');
+      await build({ root: temporary, configFile: false, logLevel: 'silent' });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      browser = await chromium.launch({
+        headless: true,
+        channel: process.env.PLAYWRIGHT_CHANNEL,
+        timeout: 30000,
+      });
+      const page = await browser.newPage();
+      page.setDefaultTimeout(10000);
+      await page.route(/\/(?:optional|required)-[^/]+\.(?:js|css)$/, (route) => route.abort());
+      await page.goto(`http://127.0.0.1:${server.address().port}`);
+      await page.waitForFunction(() => typeof window.optional === 'function');
+      await page.getByLabel('Draft').fill('Keep my unsent text');
+      await page.evaluate(() => window.optional());
+      assert.equal(await page.evaluate(() => window.optionalFailed), true);
+      assert.equal(await page.getByLabel('Draft').inputValue(), 'Keep my unsent text');
+      assert.equal(await page.evaluate(() => sessionStorage.getItem('lc-asset-recovery-at')), null);
+      const reloaded = page.waitForEvent('load');
+      await page.evaluate(() => {
+        window.required();
+      });
+      await reloaded;
+      await page.waitForFunction(() => typeof window.required === 'function');
+      assert.ok(
+        (await page.evaluate(() => Number(sessionStorage.getItem('lc-asset-recovery-at')))) > 0,
+      );
     } finally {
       await browser?.close();
       await new Promise((resolve) => server.close(resolve));

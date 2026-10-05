@@ -20,7 +20,7 @@ function renderWithMessage(message: Partial<TMessage> | null) {
   mockUseLatestMessage.mockReturnValue(message);
   return render(
     <RecoilRoot>
-      <ArtifactsProvider>
+      <ArtifactsProvider value={{ canUndock: false }}>
         <TestConsumer />
       </ArtifactsProvider>
     </RecoilRoot>,

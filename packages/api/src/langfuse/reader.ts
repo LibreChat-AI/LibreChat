@@ -15,12 +15,15 @@ import type {
 } from '@librechat/data-schemas';
 import type { LangfuseScoreDestination } from './destinations';
 import type { TraceQuery, TraceReader } from '~/traces/types';
+import { TOOL_ROUND_NAME, resolveTraceRole } from './roles';
 import { exportsInternalTraceUserId } from './identity';
+import { toTracePrompt, toTraceReply } from './prompt';
 import { getScoreDestinations } from './destinations';
 import { TraceReadError } from '~/traces/types';
 import { mergeHeaders } from '~/utils/headers';
 import { redirectPolicyFor } from './utils';
 import { traceIdForMessage } from './trace';
+import { toolRoundNames } from './rounds';
 
 const OBSERVATIONS_PATH = '/api/public/v2/observations';
 const MAX_PAGE_SIZE = 1000;
@@ -33,6 +36,16 @@ const NAME_MAX_LENGTH = 200;
 const STATUS_MESSAGE_MAX_LENGTH = 1000;
 const LIST_FIELDS = 'core,basic,time,model,usage';
 const DETAIL_FIELDS = `${LIST_FIELDS},io,metadata`;
+const ROUND_FIELDS = 'core,io';
+/**
+ * Bounds on naming tool rounds. Langfuse cannot return a round's input without its output, and
+ * a round the SDK found no calls for keeps the whole graph state as its input, so the rounds are
+ * read a few at a time and the read stops at a byte budget: the newest rounds are named and the
+ * rest are left to the chat's messages. These are safety caps on a best-effort addition, as
+ * `MAX_PAGE_SIZE` is, not limits an operator tunes; `showToolNames` is the lever.
+ */
+const ROUND_PAGE_SIZE = 50;
+const ROUND_BYTES_BUDGET = 8 * 1024 * 1024;
 const DESTINATION_PREFERENCE: Record<LangfuseScoreDestination['name'], number> = {
   connection: 0,
   tenant: 1,
@@ -65,6 +78,8 @@ const pageSchema = z.object({
   data: z.array(z.unknown()),
   meta: z.object({ cursor: z.string().nullish() }).partial().nullish(),
 });
+
+const roundSchema = z.object({ id: z.string().min(1), input: z.unknown() });
 
 type LangfuseObservation = z.infer<typeof observationSchema>;
 /** The response that owns a trace, and whether the trace is its title run rather than the run itself. */
@@ -117,6 +132,35 @@ const KIND_BY_TYPE: Record<string, TTraceRecordKind> = {
 /** Node's fetch returns a connection to its pool only once the body is consumed or cancelled. */
 async function release(response: Response): Promise<void> {
   await response.body?.cancel().catch(() => undefined);
+}
+
+type ByteBudget = { remaining: number };
+
+/**
+ * Parses a JSON body while holding no more of it than the budget has left. `Response.json()`
+ * buffers whatever the backend sends, which for a read that returns content is not ours to bound
+ * any other way.
+ */
+async function readBounded(response: Response, budget: ByteBudget): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (reader == null) {
+    return undefined;
+  }
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    budget.remaining -= value.byteLength;
+    if (budget.remaining < 0) {
+      await reader.cancel().catch(() => undefined);
+      throw new TraceReadError('upstream_error', 'Langfuse returned more than the read allows');
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return JSON.parse(text + decoder.decode());
 }
 
 function clamp(value: string, maxLength: number): string {
@@ -184,12 +228,14 @@ function toRecord(
   const model = (observation.model ?? observation.providedModelName)?.trim();
   const usage = toUsage(observation.usageDetails);
   const cost = toCost(observation);
+  const kind = KIND_BY_TYPE[type] ?? 'span';
   return {
     id: observation.id,
     traceId: observation.traceId,
     messageId,
     parentId: observation.parentObservationId || null,
-    kind: KIND_BY_TYPE[type] ?? 'span',
+    kind,
+    ...resolveTraceRole(kind, name),
     name: clamp(name, NAME_MAX_LENGTH),
     startTime: new Date(observation.startTime).toISOString(),
     status,
@@ -485,6 +531,8 @@ export function createLangfuseTraceReader({
     params: URLSearchParams,
     query: TraceQuery,
     hasCursor: boolean,
+    /** Spends the body's bytes from this budget, refusing the rest of a body that outruns it. */
+    budget?: ByteBudget,
   ): Promise<z.infer<typeof pageSchema>> {
     const url = `${destination.baseUrl.replace(/\/+$/, '')}${OBSERVATIONS_PATH}?${params.toString()}`;
     const timeout = AbortSignal.timeout(query.settings.requestTimeoutMs);
@@ -520,8 +568,11 @@ export function createLangfuseTraceReader({
     }
     let body: unknown;
     try {
-      body = await response.json();
+      body = budget == null ? await response.json() : await readBounded(response, budget);
     } catch (error) {
+      if (error instanceof TraceReadError) {
+        throw error;
+      }
       throw failed(
         error,
         new TraceReadError('upstream_error', 'Langfuse returned an invalid response'),
@@ -876,6 +927,82 @@ export function createLangfuseTraceReader({
       }
 
       /** Reads a segment from its project until its records or this request's record budget run out. */
+      /**
+       * Names the tools of the listed tool rounds from the rounds' own input, in one read scoped to
+       * those rounds. A list read carries no input, and asking for it on every record would return
+       * each model call's whole conversation. The names are an addition to a page already read, so
+       * a failure here leaves the rounds unnamed instead of failing the page.
+       */
+      async function nameToolRounds(
+        destination: LangfuseScoreDestination,
+        traceIds: string[],
+        records: TTraceRecord[],
+      ): Promise<void> {
+        if (!query.settings.showToolNames) {
+          return;
+        }
+        const rounds = new Map<string, TTraceRecord>();
+        let from: string | undefined;
+        let to: string | undefined;
+        for (const record of records) {
+          if (record.role !== 'tools') {
+            continue;
+          }
+          rounds.set(record.id, record);
+          from = from == null || record.startTime < from ? record.startTime : from;
+          to = to == null || record.startTime > to ? record.startTime : to;
+        }
+        if (from == null || to == null) {
+          return;
+        }
+        const filter = JSON.stringify([
+          ...scopeFilter(traceIds),
+          { type: 'string', column: 'name', operator: '=', value: TOOL_ROUND_NAME },
+          { type: 'datetime', column: 'startTime', operator: '>=', value: from },
+          { type: 'datetime', column: 'startTime', operator: '<=', value: to },
+        ]);
+        let unnamed = rounds.size;
+        const budget: ByteBudget = { remaining: ROUND_BYTES_BUDGET };
+        let cursor: string | undefined;
+        const followed = new Set<string>();
+        try {
+          while (unnamed > 0 && budget.remaining > 0) {
+            const params = new URLSearchParams({
+              fields: ROUND_FIELDS,
+              limit: String(ROUND_PAGE_SIZE),
+              filter,
+            });
+            if (cursor) {
+              params.set('cursor', cursor);
+            }
+            const page = await requestPage(destination, params, query, cursor != null, budget);
+            for (const row of page.data) {
+              const parsed = roundSchema.safeParse(row);
+              const round = parsed.success ? rounds.get(parsed.data.id) : undefined;
+              const tools = parsed.success ? toolRoundNames(parsed.data.input) : undefined;
+              if (round != null && round.tools == null) {
+                unnamed--;
+              }
+              if (round != null && tools != null) {
+                round.tools = tools;
+              }
+            }
+            const next = page.meta?.cursor || undefined;
+            if (!next || page.data.length === 0 || followed.has(next)) {
+              break;
+            }
+            followed.add(next);
+            cursor = next;
+          }
+        } catch (error) {
+          if (query.signal?.aborted) {
+            throw error;
+          }
+          const reason = error instanceof TraceReadError ? error.code : 'unknown';
+          logger.debug(`[traces] Tool rounds could not be named: ${reason}`);
+        }
+      }
+
       async function readFrom(
         destination: LangfuseScoreDestination,
         traceIds: string[],
@@ -903,6 +1030,7 @@ export function createLangfuseTraceReader({
           remaining -= page.data.length;
           const next = page.meta?.cursor || undefined;
           if (!next || page.data.length === 0) {
+            await nameToolRounds(destination, traceIds, records);
             return { records };
           }
           /** A cursor that repeats would hand every later page the same records. */
@@ -911,6 +1039,7 @@ export function createLangfuseTraceReader({
           }
           followed.add(next);
           if (remaining <= 0) {
+            await nameToolRounds(destination, traceIds, records);
             return { records, next };
           }
           cursor = next;
@@ -1088,9 +1217,14 @@ export function createLangfuseTraceReader({
       const input = toContent(observation.input, maxLength);
       const output = toContent(observation.output, maxLength);
       const metadata = toContent(observation.metadata, maxLength);
+      const isModelCall = record.kind === 'generation';
+      const prompt = isModelCall ? toTracePrompt(observation.input, maxLength) : undefined;
+      const reply = isModelCall ? toTraceReply(observation.output, maxLength) : undefined;
       return {
         record,
         contentAvailable: true,
+        ...(prompt ? { prompt } : {}),
+        ...(reply ? { reply } : {}),
         ...(input ? { input } : {}),
         ...(output ? { output } : {}),
         ...(metadata ? { metadata } : {}),

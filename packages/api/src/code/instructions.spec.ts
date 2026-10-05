@@ -37,6 +37,72 @@ const response = () =>
   );
 
 describe('repository instruction loading', () => {
+  it('does not retry a typed 429 when the configured Code API wait budget is zero', async () => {
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: 'rate_limited', retry_after_seconds: 0 }), {
+          status: 429,
+          headers: { 'Retry-After': '0' },
+        }),
+      )
+      .mockResolvedValueOnce(response());
+
+    const result = await createRepositoryInstructionLoader()({
+      enabled: true,
+      context,
+      principalId: 'alice',
+      authHeaders: async () => ({}),
+      assertContent: jest.fn(),
+      codeApiMaxRetryWaitMs: 0,
+      fetchImpl,
+    });
+
+    expect(result).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes instruction-read authorization for a typed 429 retry', async () => {
+    jest.useFakeTimers();
+    try {
+      const fetchImpl = jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: 'rate_limited' }), {
+            status: 429,
+            headers: { 'Retry-After': '0' },
+          }),
+        )
+        .mockResolvedValueOnce(response());
+      let minted = 0;
+      const authHeaders = jest.fn(async () => ({ Authorization: `Bearer token-${++minted}` }));
+      const load = createRepositoryInstructionLoader();
+      const input = {
+        enabled: true,
+        context,
+        principalId: 'alice',
+        authHeaders,
+        fetchImpl,
+        codeApiMaxRetryWaitMs: 100,
+        timeoutMs: 500,
+        assertContent: jest.fn(),
+      };
+      const result = load(input);
+      await jest.advanceTimersByTimeAsync(100);
+      await expect(result).resolves.toContain('Use the project test command.');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls.map((call) => call[1]?.headers.Authorization)).toEqual([
+        'Bearer token-1',
+        'Bearer token-2',
+      ]);
+      await expect(load(input)).resolves.toContain('Use the project test command.');
+      expect(authHeaders).toHaveBeenCalledTimes(3);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('bounds optional authorization waits and preserves explicit cancellation', async () => {
     jest.useFakeTimers();
     try {
@@ -101,6 +167,38 @@ describe('repository instruction loading', () => {
     expect(await load({ ...input, mode: 'off' })).toBeUndefined();
     expect(await load({ ...input, enabled: false })).toBeUndefined();
     expect(await load({ ...input, mode: 'defer' })).toContain('unless they conflict');
+  });
+
+  it('reads and caches instructions within the resolved conversation worktree', async () => {
+    const load = createRepositoryInstructionLoader();
+    let requestBody: string | undefined;
+    const fetchImpl = jest.fn(
+      async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        requestBody = init?.body as string | undefined;
+        return response();
+      },
+    );
+    const workspaceInstanceId = 'f'.repeat(64);
+    const scopedContext = {
+      ...context,
+      codeWorkspace: { ...context.codeWorkspace!, workspaceInstanceId },
+    };
+    const input = {
+      enabled: true,
+      context: scopedContext,
+      principalId: 'alice',
+      fetchImpl,
+      authHeaders: async () => ({}),
+      assertContent: jest.fn(),
+    };
+
+    await load(input);
+    await load(input);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(requestBody!)).toMatchObject({
+      workspaceInstanceId,
+    });
   });
 
   it('omits changed, missing and unauthorized instruction snapshots', async () => {

@@ -117,6 +117,43 @@ describe('mongoMeili findOneAndUpdate with includeResultMetadata (saveConvo path
     }
   };
 
+  test('skips indexing for an internal admission fence without disabling later content updates', async () => {
+    const { withoutMeiliIndexing } = await import('./mongoMeili');
+    const conversationId = new mongoose.Types.ObjectId().toString();
+    const user = new mongoose.Types.ObjectId().toString();
+    await conversationModel.create({
+      conversationId,
+      user,
+      title: 'Original Title',
+      endpoint: EModelEndpoint.openAI,
+    });
+    await waitForIndexAcknowledgment(conversationId);
+    const before = await conversationModel.collection.findOne({ conversationId });
+    mockAddDocuments.mockClear();
+    mockUpdateDocuments.mockClear();
+    const result = await withoutMeiliIndexing(
+      conversationModel.findOneAndUpdate(
+        { conversationId, user },
+        { $inc: { codeEnvironmentRevision: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('conversationId codeWorkspaces')
+      .lean();
+    expect(result).toHaveProperty('conversationId', conversationId);
+    expect(result).not.toHaveProperty('codeEnvironmentRevision');
+    const after = await conversationModel.collection.findOne({ conversationId });
+    expect(after?.codeEnvironmentRevision).toBe(1);
+    expect(after?.updatedAt).toEqual(before?.updatedAt);
+    expect(after?._meiliIndexVersion).toEqual(before?._meiliIndexVersion);
+    expect(after?._meiliIndex).toBe(true);
+    expect(mockAddDocuments).not.toHaveBeenCalled();
+    expect(mockUpdateDocuments).not.toHaveBeenCalled();
+    await updateTitle(conversationId, user, 'New title');
+    await waitForMock(mockAddDocuments);
+    expect(mockAddDocuments).toHaveBeenCalledTimes(1);
+  });
+
   test('re-indexes the updated title when the raw result wrapper is returned', async () => {
     const conversationId = new mongoose.Types.ObjectId().toString();
     const user = new mongoose.Types.ObjectId().toString();

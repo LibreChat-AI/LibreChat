@@ -47,6 +47,7 @@ await enqueueAgentTrigger(
 ## Guarantees
 
 - Mongo owns queue state, leases, retry history, and dead letters across restarts and replicas.
+- Each replica retains bounded Mongo polling even when idle. See **Idle recovery** below for wake-ups, deadlines, and configuration.
 - A fresh token fences every claim, including reclaims by the same process.
 - A delivery is at-least-once. Fire, continue, and steer admission reuse the envelope's stable idempotency
   identity, so ambiguous retries do not duplicate accepted work.
@@ -70,6 +71,48 @@ await enqueueAgentTrigger(
 
 `getAgentTriggerDeadLetters` and `requeueAgentTrigger` are intentionally trusted in-process
 operations. Exposing them through an admin API requires a separate authorization and audit layer.
+
+## Idle recovery
+
+Queued-turn and maintenance scans start at a 30-second cadence and double the next idle wait
+up to two minutes after confirmed-empty discovery. Inspected reservations, reconciliation
+candidates, outstanding cleanup markers, full legacy-receipt pages, and failed scans do not
+count as empty. A failed discovery waits for its sibling Mongo operation to settle before a
+new pass or shutdown can complete; successfully acquired work still gets processed.
+
+Local failed publication and requeue, unfinished terminal finalization, and purge markers wake
+maintenance without waiting for an idle timer. A committed root success or dead letter remains
+authoritative when its inline cleanup fails. Healthy terminal writes do not wake a full sweep.
+Known reconciliation deadlines cap the next wait, including deadlines that expire while a scan
+is in flight. Notifications coalesce behind one active scan; shutdown prevents a follow-up.
+
+Every replica still scans without notifications, so a crashed producer or a missed cross-replica
+wake cannot strand durable work. The cap limits **idle sleep**, not end-to-end recovery time:
+scan duration, pagination, active leases, and persistence failures can add time. Delivery claims
+retain their separate 15-second idle cap and immediate local enqueue/requeue wake-ups.
+
+Configure `endpoints.agents.eventDriven.idlePolling` in `librechat.yaml`, for either standard or
+experimental clustered startup:
+
+| Setting | Default (ms) | Allowed range (ms) |
+| --- | ---: | ---: |
+| `queuedTurnMaxIntervalMs` | 120000 | 30000–300000 |
+| `maintenanceMaxIntervalMs` | 120000 | 30000–300000 |
+| `deliveryMaxIntervalMs` | 15000 | 1000–300000 |
+| `completionWaitMaxIntervalMs` | 60000 | 5000–300000 |
+
+`completionWaitMaxIntervalMs` caps how long a background or subagent completion waits between
+readiness checks while its result or parent turn is not ready. It backs off from 5 seconds by a tenth
+of its age; a durable result and a settled generation expedite it, so the cap bounds missed signals.
+Parent settlement expedites completion deliveries only in that conversation. A child's durable
+terminal result expedites only its task, plus the original task when recovering an abandoned
+attempt. Terminal replays signal readiness after registering their delivery, without executing the
+child again. A held delivery consumes its wake marker in the same fenced write that releases it
+for ordering or defers readiness. These writes use classic operators for DocumentDB compatibility;
+older workers can ignore the optional marker and fall back to the configured polling interval.
+
+Setting a recovery cap to `30000` restores its original fixed recovery frequency. No stored-data
+migration is needed; optional activity reporting preserves the existing numeric/boolean results.
 
 ## Remote event ingress
 
@@ -226,3 +269,96 @@ event whose individual timing or acknowledgment is actionable. `fire`, `steer`, 
 `continue` deliveries reject the option instead of silently weakening their semantics. Deliveries
 with `expectedAction` also reject coalescing because one generation cannot prove several distinct
 action fences.
+
+## Background receipt batches
+
+Ordinary background tool and code completions use `background_tool_completion_batch_v3`.
+Older workers cannot claim these rows; v2 receipts retain task-local delivery. Subagent
+completions do not join receipt batches. The existing `completionResultBatchSize` bounds
+selection, with no collection window. Scope is owner, tenant, conversation, launching
+parent message, and target agent. Results launched on different parent messages remain
+separate even when their branches later converge.
+
+The root persists candidate keys before per-result claims, then freezes only successful
+claims in `backgroundToolResultBatch.members`. Retries use that same list. Each member's
+message projection is reconciled before dispatch. A first definite rejection releases the unadmitted plan. Once a handoff may have been
+admitted, later transport failures retain frozen ownership and the same idempotency key. Admission proof is stored before followers settle, and copied to each
+receipt so root retention cannot strand a follower.
+
+Followers defer without consuming attempts. A dead or retired root is recovered through
+the generation-admission fence before claims are released. Losing collectors release
+claims they cannot dispatch. Concurrent roots can still split the ready set; batching is
+opportunistic, not one-turn-per-conversation election.
+
+`triggerDelivery.spec.ts` includes a real-Mongo collecting barrier, crash/lost-reply
+injection, rolling-upgrade isolation, and an 8-conversation × 4-result storage stress
+harness. Its latency measures receipt admission, not model turns or deployment latency.
+
+Receipt batching is on by default. An explicit `completionReceiptBatching: false` stops
+new v3 production; new receipts are then admitted as v2 with task-local delivery.
+
+**Rolling upgrades.** No fleet-wide gate decides when v3 is safe. Replicas from releases
+before receipt batching never advertise what they can read, so a new replica cannot prove
+they are gone. Queue capability fencing keeps them from claiming v3 rows, but they still
+serve manual polls, pending-task listings, and conversation deletion for any
+conversation, and those paths read only v2 rows. While old and new replicas serve traffic together:
+
+- An old replica's manual poll cannot see the v3 receipt, so its manual claim on the
+  message projection looks uncontested and it returns the result. Old polls never mark
+  receipt reconciliation, so the v3 collector treats that claim as speculative: once the
+  polling generation is no longer active, it releases the claim and delivers the result
+  again in a wake-up. The model sees one result twice.
+- Old pending-task listings omit v3 deliveries.
+- Conversation deletion on an old replica neither erases nor fences v3 receipts. Their
+  stored output remains until the delivery row expires.
+
+No result is lost on these paths; new replicas still deliver every v3 receipt.
+Single-instance deployments and stop-then-start rollouts never mix versions. For a rolling
+upgrade from a release without receipt batching, keep it off until every replica runs a
+release that has it, then remove the override in a second rollout:
+
+```yaml
+endpoints:
+  agents:
+    backgroundTasks:
+      completionReceiptBatching: false
+```
+
+Older manual-poll workers cannot read v3 ownership. Queue capability fencing alone does
+not protect that path. Disabling batching stops new v3 production, not existing
+ownership. Do not downgrade poll consumers while v3 receipts remain, including delivered
+receipts. Because batching is the default, this applies to any deployment that ran with
+it unset. A successor lease resumes interrupted cleanup before dispatch.
+
+Every plan, receipt claim, and message claim carries a physical batch identity. Cleanup
+matches that identity; its final plan deletion also matches a release identity and the
+queue lease. A durable dispatch counter prevents a definite retry failure from releasing
+an earlier ambiguous handoff. Native recovery fences distinguish unadmitted tombstones
+from actual generation admission. Proven admissions settle followers, never re-present
+results.
+
+Retired owners do not expire while a batch still needs claim release or per-receipt
+admission proof. Cleanup restores the ordinary retention deadline only after every
+member is safe without the owner. Retirement also closes publication and dispatch.
+
+A failed receipt write is repaired from its durable terminal message projection.
+Manual polling marks receipt reconciliation before automatic delivery can settle that
+handoff; speculative manual ownership only defers the automatic delivery.
+
+Manual confirmation resolves a lost reply by reading the exact committed claim.
+Failed confirmation rolls back only unreconciled ownership. If rollback is unavailable,
+automatic delivery invokes manual-generation recovery after that owner is no longer active.
+Its release CAS excludes committed manual handoffs, including confirmation after a stale
+snapshot. Explicit manual recovery keeps its existing generation-fenced contract.
+
+Manual reconciliation survives registry restoration and final response persistence.
+Collecting plans acquire the root before siblings, so empty retirement can clear an
+unowned plan without orphaning claims. Native `started` recovery fences confirm admission
+even when a custom store cannot read historical claims after job cleanup.
+
+Exact durable replays read the current claim without rewriting its handoff proof.
+Applied followers finish interrupted owner proof copying before they settle, including
+retired roots removed from the delivery queue.
+
+Manual polls carry the observed physical batch ID through recovery. A released owner’s
+late projection is cleared by that exact ID; successor epochs and manual claims remain owned.

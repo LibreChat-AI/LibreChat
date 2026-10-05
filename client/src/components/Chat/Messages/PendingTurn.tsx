@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TMessageIcon } from '~/common';
 import { buildRevealedMessage, hasRevealSuccessor } from '~/hooks/Chat/useQueuedTurnReveal';
+import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import { messageFooterClasses } from '~/components/Chat/Messages/styles';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
@@ -25,9 +26,9 @@ const FOLLOW_THRESHOLD_PX = 160;
 
 /**
  * The queued follow-up the server is about to admit, drawn as the user turn
- * after the completed response it follows. It is not a message: it holds no
- * hover actions, anchors no send, and leaves the thread the moment the thread
- * gains a turn after that response (see `useQueuedTurnReveal`).
+ * after the completed response it follows. It is not persisted: its actions
+ * come from the composer that owns the queue, and it leaves as soon as the
+ * thread gains a turn after that response.
  */
 export default function PendingTurn({
   scrollableRef,
@@ -43,6 +44,8 @@ export default function PendingTurn({
   const { conversation, latestMessageId } = useChatContext();
   const conversationId = conversation?.conversationId ?? '';
   const reveal = useAtomValue(revealedQueuedTurnFamily(conversationId));
+  const setPortalTarget = useQueuedTurnPortal()?.setTarget;
+  const clientRequestId = reveal?.clientRequestId;
   const usernameDisplay = useRecoilValue(store.UsernameDisplay);
   const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
   const rowRef = useRef<HTMLDivElement | null>(null);
@@ -59,6 +62,16 @@ export default function PendingTurn({
     reveal != null &&
     reveal.parentMessageId === latestMessageId &&
     !successorSeen;
+  const setActionsTarget = useCallback(
+    (element: HTMLSpanElement | null) => {
+      setPortalTarget?.(
+        element == null || clientRequestId == null
+          ? null
+          : { element, conversationId, clientRequestId },
+      );
+    },
+    [setPortalTarget, conversationId, clientRequestId],
+  );
 
   /** A reader resting at the end of the thread was following the response;
    *  bring the turn that replaces it into view the way its streaming did.
@@ -95,7 +108,7 @@ export default function PendingTurn({
   return (
     <div
       ref={rowRef}
-      className="w-full border-0 bg-transparent text-text-primary"
+      className="text-text-primary w-full border-0 bg-transparent"
       data-testid="pending-turn"
     >
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
@@ -108,17 +121,20 @@ export default function PendingTurn({
           isCreatedByUser
           fullWidth={maximizeChatSpace}
           footer={
-            <SubRow classes={cn(messageFooterClasses, 'justify-end')}>
-              <span className="text-xs text-text-secondary" role="status">
+            <SubRow
+              classes={cn(messageFooterClasses, 'flex-wrap items-center justify-end gap-1.5')}
+            >
+              <span className="text-text-secondary text-xs" role="status">
                 {localize('com_ui_queued_turn_starting')}
               </span>
+              <span ref={setActionsTarget} className="flex items-center gap-1" />
             </SubRow>
           }
         >
           <Container message={message}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words text-text-primary',
+                'markdown prose message-content dark:prose-invert light text-text-primary w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
               )}
             >

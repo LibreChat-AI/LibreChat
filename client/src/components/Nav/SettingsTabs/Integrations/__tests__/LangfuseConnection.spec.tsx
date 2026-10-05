@@ -110,7 +110,6 @@ describe('LangfuseConnection', () => {
       'com_ui_langfuse_status_not_configured',
     );
     expect(screen.queryByText('com_ui_langfuse_description')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_more_info' })).toBeVisible();
     expect(
       screen.queryByRole('button', { name: 'com_ui_langfuse_enable' }),
     ).not.toBeInTheDocument();
@@ -140,7 +139,7 @@ describe('LangfuseConnection', () => {
     render(<LangfuseConnection />);
 
     expect(screen.queryByText('com_ui_langfuse_description')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'com_ui_more_info' }));
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_langfuse_beta_info' }));
 
     expect(await screen.findByText('com_ui_langfuse_beta_info')).toBeVisible();
   });

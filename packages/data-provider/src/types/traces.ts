@@ -6,6 +6,24 @@
 
 export type TTraceRecordKind = 'agent' | 'generation' | 'tool' | 'span' | 'event';
 
+/**
+ * What a record did in the run, in the application's own terms, so a client never reads a tracing
+ * backend's span names. Absent on a record the backend did not describe: it is listed by `kind`.
+ * `run` is a whole agent run, `agent` the named agent inside it, `plumbing` a wrapper that only
+ * frames a model call, `model` a model call of the response, `tools` one round of tool calls, and
+ * the label roles are the model calls that wrote the activity labels the chat shows while a
+ * response runs.
+ */
+export type TTraceRecordRole =
+  | 'run'
+  | 'agent'
+  | 'plumbing'
+  | 'model'
+  | 'tools'
+  | 'stepLabel'
+  | 'reasoningLabel'
+  | 'phaseLabel';
+
 /** `running` marks a record with no end time yet; it has a start but no duration. */
 export type TTraceStatus = 'ok' | 'warning' | 'error' | 'running';
 
@@ -26,6 +44,11 @@ export type TTraceRecord = {
   /** `null` for a root; may name a record that is not loaded (or does not exist). */
   parentId: string | null;
   kind: TTraceRecordKind;
+  role?: TTraceRecordRole;
+  /** The saved agent a `role: 'agent'` record ran; absent for an agent that was never saved. */
+  agentId?: string;
+  /** The tools a `role: 'tools'` round called, in order, as the backend recorded the round. */
+  tools?: string[];
   name: string;
   model?: string;
   /** ISO-8601 timestamps. */
@@ -94,10 +117,47 @@ export type TTraceContent = {
   truncated: boolean;
 };
 
+export type TTraceMessageRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export type TTraceToolCall = {
+  name: string;
+  args?: TTraceContent;
+};
+
+/** One message of a model call's conversation, each bounded on its own so a long one hides no other. */
+export type TTraceMessage = {
+  role: TTraceMessageRole;
+  text?: TTraceContent;
+  /** The tool a `tool` message answers for. */
+  toolName?: string;
+  /** The tools an `assistant` message asked for. */
+  toolCalls?: TTraceToolCall[];
+  /** Parts that are not text (an image, a file), by their type. */
+  attachments?: string[];
+};
+
+/**
+ * What a model call was given, as a conversation. A long one keeps its system
+ * message and its newest messages, which are what the call answered, and
+ * `omitted` counts the older ones left out between them.
+ */
+export type TTracePrompt = {
+  messages: TTraceMessage[];
+  /** Every message the call was given, listed or not. */
+  total: number;
+  omitted: number;
+  /** Names of the tools the model could call. */
+  tools?: string[];
+};
+
 export type TTraceRecordDetail = {
   record: TTraceRecord;
   /** False when the deployment withholds input, output and metadata. */
   contentAvailable: boolean;
+  /** Set when the input is a conversation the backend could read as one; `input` stays the raw form. */
+  prompt?: TTracePrompt;
+  /** Set when the output is a message the backend could read as one; `output` stays the raw form. */
+  reply?: TTraceMessage;
   input?: TTraceContent;
   output?: TTraceContent;
   metadata?: TTraceContent;

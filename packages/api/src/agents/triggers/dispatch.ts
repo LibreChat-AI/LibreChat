@@ -11,6 +11,9 @@ export interface AgentTriggerDispatchContext {
   /** Durable delivery attempt metadata, when dispatched by the queue engine. */
   attempt?: number;
   maxAttempts?: number;
+  /** Exact queue lease that owns this preparation. */
+  deliveryClaimToken?: string;
+  requiredWorkerCapability?: string;
   signal?: AbortSignal;
 }
 
@@ -44,7 +47,13 @@ export interface AgentTriggerDispatchHandlers<FireResult, ContinueResult, SteerR
 export function dispatchAgentTrigger<FireResult, ContinueResult, SteerResult>(
   envelope: unknown,
   handlers: AgentTriggerDispatchHandlers<FireResult, ContinueResult, SteerResult>,
-  options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+  options?: {
+    signal?: AbortSignal;
+    attempt?: number;
+    maxAttempts?: number;
+    deliveryClaimToken?: string;
+    requiredWorkerCapability?: string;
+  },
 ): Promise<ContinueResult | FireResult | SteerResult> {
   let normalized: AgentTriggerEnvelope;
   try {
@@ -56,6 +65,10 @@ export function dispatchAgentTrigger<FireResult, ContinueResult, SteerResult>(
     idempotencyKey: getAgentTriggerIdempotencyKey(normalized),
     ...(options?.attempt != null && { attempt: options.attempt }),
     ...(options?.maxAttempts != null && { maxAttempts: options.maxAttempts }),
+    ...(options?.deliveryClaimToken != null && { deliveryClaimToken: options.deliveryClaimToken }),
+    ...(options?.requiredWorkerCapability != null && {
+      requiredWorkerCapability: options.requiredWorkerCapability,
+    }),
     ...(options?.signal != null && { signal: options.signal }),
   };
   if (normalized.mode === 'fire') {
