@@ -1,9 +1,19 @@
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes } from 'librechat-data-provider';
-import type { IUser, UserMethods } from '@librechat/data-schemas';
+import type {
+  IUser,
+  UserMethods,
+  UserRecord,
+  NewUserData,
+  BalanceConfig,
+  CreateUserIfAbsentResult,
+  AppConfig,
+} from '@librechat/data-schemas';
 import type { FilterQuery } from 'mongoose';
-import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
 import type { OpenIDUserLookupResult } from '~/app/metrics';
+import { isMetricsConfigured, recordOpenIDUserLookup } from '~/app/metrics';
+import { resolveAppConfigForUser } from '~/app/resolve';
+import { isEmailDomainAllowed } from './domain';
 
 export type OpenIdEmailClaims = {
   email?: unknown;
@@ -20,6 +30,17 @@ export type OpenIdIssuerSource = {
 
 type OpenIdLookupField = 'openidId' | 'idOnTheSource';
 type OpenIdUserResolution = { user: IUser | null; error: string | null; migration: boolean };
+
+/** The account fields an OpenID login writes from the current callback's claims. */
+export type OpenIDProfile = {
+  openidId: string;
+  openidIssuer?: string;
+  username: string;
+  name: string;
+  email?: string;
+  emailVerified: boolean;
+  idOnTheSource?: string;
+};
 
 const OPENID_DISCOVERY_PATH = '/.well-known/openid-configuration';
 const LEGACY_ISSUER_FILTERS: Array<FilterQuery<IUser>['openidIssuer']> = [
@@ -296,4 +317,113 @@ export async function findOpenIDUser({
     }
     throw error;
   }
+}
+
+/** Returns `user` carrying the current callback's claims, as every OpenID login refreshes them. */
+export function applyOpenIDProfile<T extends UserRecord>(user: T, profile: OpenIDProfile): T {
+  const updated = {
+    ...user,
+    provider: 'openid',
+    openidId: profile.openidId,
+    username: profile.username,
+    name: profile.name,
+    idOnTheSource: profile.idOnTheSource,
+  };
+  if (profile.openidIssuer) {
+    updated.openidIssuer = profile.openidIssuer;
+  }
+  if (profile.email && profile.email !== user.email) {
+    updated.email = profile.email;
+    updated.emailVerified = profile.emailVerified;
+  }
+  return updated;
+}
+
+/** Whether new users start with a balance record (the condition data-schemas credits it under). */
+function hasStartBalance(balanceConfig?: BalanceConfig | null): boolean {
+  return Boolean(balanceConfig?.enabled && balanceConfig.startBalance);
+}
+
+/**
+ * Creates a first-login OpenID user. Concurrent first logins for one identity all miss
+ * `findOpenIDUser`, and `createUserIfAbsent` reports `user_exists` for every insert but the
+ * first; a rejected request repeats the lookup, with its provider and issuer checks, and
+ * continues as the account that won, admitted and refreshed exactly as if its first lookup had
+ * found it: a tenant account resolves its tenant config and that config's email-domain policy
+ * applies, and the account carries this callback's claims. Returns the account with the config
+ * the login continues under (`appConfig` for a user this request created).
+ *
+ * It continues only once the winner finished provisioning that account: when the account's own
+ * config (the one login balance sync initializes from) sets a start balance, the balance must
+ * exist. `createUserIfAbsent` writes it before the user, but a winner on an earlier release
+ * credits it after its insert, and login balance sync would otherwise initialize it in between;
+ * such a login fails as it did before recovery existed. A conflict the lookup cannot account
+ * for throws.
+ */
+export async function createOpenIDUser({
+  lookup,
+  profile,
+  appConfig,
+  getAppConfig,
+  getBalanceConfig,
+  createUserIfAbsent,
+  findBalanceByUser,
+}: {
+  lookup: Parameters<typeof findOpenIDUser>[0];
+  profile: OpenIDProfile;
+  appConfig: AppConfig;
+  getAppConfig: Parameters<typeof resolveAppConfigForUser>[0];
+  getBalanceConfig: (appConfig: AppConfig) => BalanceConfig | null | undefined;
+  createUserIfAbsent: (
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ) => Promise<CreateUserIfAbsentResult>;
+  findBalanceByUser: (userId: string) => Promise<object | null>;
+}): Promise<{ user: UserRecord; appConfig: AppConfig }> {
+  const created = await createUserIfAbsent(
+    {
+      provider: 'openid',
+      openidId: profile.openidId,
+      username: profile.username,
+      email: profile.email || '',
+      emailVerified: profile.emailVerified,
+      name: profile.name,
+      idOnTheSource: profile.idOnTheSource,
+      openidIssuer: profile.openidIssuer,
+    },
+    getBalanceConfig(appConfig) ?? undefined,
+  );
+  if (created.ok) return { user: created.value, appConfig };
+
+  const strategyName = lookup.strategyName ?? 'openid';
+  const resolution = await findOpenIDUser(lookup);
+  if (resolution.error) throw new Error(ErrorTypes.AUTH_FAILED);
+  if (!resolution.user) {
+    throw new Error(
+      `[${strategyName}] New user conflicts with an account the lookup cannot resolve`,
+    );
+  }
+
+  const userId = resolution.user._id.toString();
+  const accountConfig = resolution.user.tenantId
+    ? await resolveAppConfigForUser(getAppConfig, resolution.user)
+    : appConfig;
+  if (!isEmailDomainAllowed(profile.email ?? '', accountConfig?.registration?.allowedDomains)) {
+    logger.error(
+      `[${strategyName}] Authentication blocked - email domain not allowed for the recovered account [Identifier: ${profile.email}]`,
+    );
+    throw new Error('Email domain not allowed');
+  }
+
+  if (hasStartBalance(getBalanceConfig(accountConfig)) && !(await findBalanceByUser(userId))) {
+    logger.warn(
+      `[${strategyName}] Concurrent first login found user ${userId} before its start balance; failing this login`,
+    );
+    throw new Error(ErrorTypes.AUTH_FAILED);
+  }
+
+  logger.info(
+    `[${strategyName}] Concurrent first login for user ${userId}; continuing as that user`,
+  );
+  return { user: applyOpenIDProfile(resolution.user, profile), appConfig: accountConfig };
 }

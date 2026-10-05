@@ -5,7 +5,15 @@ import type {
   RefillIntervalUnit,
   StatefulCodeEnvironment,
 } from 'librechat-data-provider';
-import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
+import type {
+  IUser,
+  BalanceConfig,
+  CreateUserRequest,
+  UserRecord,
+  NewUserData,
+  UserDeleteResult,
+  CreateUserIfAbsentResult,
+} from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
 import { evictAuthUserDocs } from '~/utils/eviction';
@@ -64,6 +72,10 @@ export function createUserMethods(
     disableTTL?: boolean,
     returnUser?: boolean,
   ) => Promise<mongoose.Types.ObjectId | Partial<IUser>>;
+  createUserIfAbsent: (
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ) => Promise<CreateUserIfAbsentResult>;
   updateUser: (
     userId: string,
     updateData: Partial<IUser>,
@@ -267,6 +279,48 @@ export function createUserMethods(
   }
 
   /**
+   * Initializes a new user's start balance, with auto-refill settings when complete. The write is
+   * insert-only, so it never replaces a balance that already exists or the activity recorded on it.
+   */
+  async function creditStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+
+    const Balance = mongoose.models.Balance;
+    const initial: {
+      tokenCredits: number;
+      autoRefillEnabled?: boolean;
+      refillIntervalValue?: number;
+      refillIntervalUnit?: RefillIntervalUnit;
+      refillAmount?: number;
+      refillMode?: BalanceRefillMode;
+    } = { tokenCredits: balanceConfig.startBalance };
+
+    if (
+      balanceConfig.autoRefillEnabled &&
+      balanceConfig.refillIntervalValue != null &&
+      balanceConfig.refillIntervalUnit != null &&
+      balanceConfig.refillAmount != null
+    ) {
+      initial.autoRefillEnabled = true;
+      initial.refillIntervalValue = balanceConfig.refillIntervalValue;
+      initial.refillIntervalUnit = balanceConfig.refillIntervalUnit;
+      initial.refillAmount = balanceConfig.refillAmount;
+      initial.refillMode = balanceConfig.refillMode ?? 'add';
+    }
+
+    await Balance.findOneAndUpdate(
+      { _id: userId },
+      { $setOnInsert: { ...initial, user: userId } },
+      { upsert: true, new: true },
+    ).lean();
+  }
+
+  /**
    * Creates a new user, optionally with a TTL of 1 week.
    */
   async function createUser(
@@ -276,7 +330,6 @@ export function createUserMethods(
     returnUser: boolean = false,
   ): Promise<mongoose.Types.ObjectId | Partial<IUser>> {
     const User = mongoose.models.User;
-    const Balance = mongoose.models.Balance;
 
     const userData: Partial<IUser> = {
       ...data,
@@ -288,48 +341,71 @@ export function createUserMethods(
     }
 
     const user = await User.create(userData);
-
-    // If balance is enabled, create or update a balance record for the user
-    if (balanceConfig?.enabled && balanceConfig?.startBalance) {
-      const update: {
-        $inc: { tokenCredits: number };
-        $set?: {
-          autoRefillEnabled: boolean;
-          refillIntervalValue: number;
-          refillIntervalUnit: RefillIntervalUnit;
-          refillAmount: number;
-          refillMode?: BalanceRefillMode;
-        };
-      } = {
-        $inc: { tokenCredits: balanceConfig.startBalance },
-      };
-
-      if (
-        balanceConfig.autoRefillEnabled &&
-        balanceConfig.refillIntervalValue != null &&
-        balanceConfig.refillIntervalUnit != null &&
-        balanceConfig.refillAmount != null
-      ) {
-        update.$set = {
-          autoRefillEnabled: true,
-          refillIntervalValue: balanceConfig.refillIntervalValue,
-          refillIntervalUnit: balanceConfig.refillIntervalUnit,
-          refillAmount: balanceConfig.refillAmount,
-          refillMode: balanceConfig.refillMode ?? 'add',
-        };
-      }
-
-      await Balance.findOneAndUpdate(
-        { _id: user._id },
-        { ...update, $setOnInsert: { user: user._id } },
-        { upsert: true, new: true },
-      ).lean();
-    }
+    await creditStartBalance(user._id, balanceConfig);
 
     if (returnUser) {
       return user.toObject() as Partial<IUser>;
     }
     return user._id as mongoose.Types.ObjectId;
+  }
+
+  /**
+   * Creates a user without a TTL, or reports `user_exists` when a unique email or provider
+   * identity index already holds the account, as when concurrent first logins race to insert it.
+   * The start balance is initialized under the new user's id before the user is inserted, so
+   * the account is never visible without it and login balance sync never initializes it first.
+   * A balance write that fails, or an insert a unique index rejects, removes the balance under
+   * the id that never became a user; any other insert failure keeps it, since an unacknowledged
+   * insert may still have committed.
+   */
+  async function createUserIfAbsent(
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ): Promise<CreateUserIfAbsentResult> {
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const userData: Partial<IUser> = { ...data };
+    delete userData.expiresAt;
+
+    const user = new User(userData);
+    await user.validate();
+    try {
+      await creditStartBalance(user._id, balanceConfig);
+    } catch (error) {
+      await discardStartBalance(user._id, balanceConfig);
+      throw error;
+    }
+
+    try {
+      await user.save({ validateBeforeSave: false });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) {
+        throw error;
+      }
+      await discardStartBalance(user._id, balanceConfig);
+      return { ok: false, error: { code: 'user_exists' } };
+    }
+
+    return { ok: true, value: user.toObject() as UserRecord };
+  }
+
+  /** Removes, best effort, the start balance initialized for an id that never became a user. */
+  async function discardStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+    try {
+      await mongoose.models.Balance.deleteOne({ _id: userId });
+    } catch {
+      logger.warn(
+        '[createUserIfAbsent] Could not remove the start balance of a user never created',
+        {
+          userId: userId.toString(),
+        },
+      );
+    }
   }
 
   /**
@@ -949,6 +1025,7 @@ export function createUserMethods(
     findOwnerContactUsers,
     countUsers,
     createUser,
+    createUserIfAbsent,
     updateUser,
     awaitAuthUserDocEviction,
     consumeBackupCode,
