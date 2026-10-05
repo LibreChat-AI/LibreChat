@@ -35,6 +35,7 @@ import {
 } from './scopes';
 import { OboTokenResolutionError, isRetryableOboExchangeError } from '../mcp/oauth/obo';
 import { getAppConfigOptionsFromUser } from '../app/service';
+import { getSafeErrorMetadata } from '../utils/errors';
 import { resolveScheduledOboServer } from './target';
 import { checkAccess } from '../middleware/access';
 import { getPluginAuthMap } from '../agents/auth';
@@ -711,7 +712,7 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         );
       }
       if (error instanceof OboTokenResolutionError) throw error;
-      logger.warn('[schedules] scheduled OBO credential read failed', { error });
+      logger.warn('[schedules] scheduled OBO credential read failed', getSafeErrorMetadata(error));
       throw new OboTokenResolutionError(
         'session_refresh_failed',
         'Temporary OBO credential failure.',
@@ -1159,36 +1160,53 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
       advanceGeneration: true,
     });
     if (!lease) throw new Error('Scheduled OBO grant cleanup is in progress');
+    const releases: Array<() => void> = [];
+    const grantLeases: Array<{ release: () => Promise<void> }> = [];
     try {
+      const modernPrefix = `scheduled-mcp:schedule-obo:${scheduleId}:`;
+      const legacyPrefix = `mcp:schedule-obo:${scheduleId}:`;
+      const identifiers = [
+        ...new Set(await tokens.listScheduledOboGrantIdentifiers(userId)),
+      ].filter(
+        (identifier) =>
+          identifier.endsWith(':refresh') &&
+          (identifier.startsWith(modernPrefix) || identifier.startsWith(legacyPrefix)),
+      );
+      // Keep redemption, persistence and rollback quiesced through schedule deletion.
+      for (const identifier of identifiers) {
+        const modern = identifier.startsWith(modernPrefix);
+        const purpose = modern ? true : undefined;
+        const key = identifier.slice(
+          modern ? 'scheduled-mcp:'.length : 'mcp:'.length,
+          -':refresh'.length,
+        );
+        releases.push(await deps.tokenStorage.beginRefreshTeardown(userId, key, purpose));
+        const grantLease = await deps.flowManager.acquireLease(
+          getMCPOAuthLeaseId(userId, key, undefined, purpose),
+          { advanceGeneration: true },
+        );
+        if (!grantLease) throw new Error('Scheduled OBO grant cleanup is in progress');
+        grantLeases.push(grantLease);
+      }
       const escaped = scheduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       await tokens.deleteTokens({
         userId,
         identifier: new RegExp(`^scheduled-mcp:schedule-obo:${escaped}:`),
       });
-      const legacyIdentifiers = (await tokens.listScheduledOboGrantIdentifiers(userId)).filter(
-        (identifier) => identifier.startsWith(`mcp:schedule-obo:${scheduleId}:`),
-      );
-      for (const identifier of legacyIdentifiers) {
+      for (const identifier of identifiers) {
+        if (!identifier.startsWith(legacyPrefix)) continue;
         const key = identifier.slice('mcp:'.length, -':refresh'.length);
-        const release = await deps.tokenStorage.beginRefreshTeardown(userId, key);
-        try {
-          const lease = await deps.flowManager.acquireLease(getMCPOAuthLeaseId(userId, key), {
-            advanceGeneration: true,
-          });
-          if (!lease) throw new Error('Legacy scheduled OBO cleanup is in progress');
-          try {
-            const generation = await legacyGrant(userId, key);
-            if (generation) await deleteLegacyGrant(userId, key, generation);
-          } finally {
-            await lease.release();
-          }
-        } finally {
-          release();
-        }
+        const generation = await legacyGrant(userId, key);
+        if (generation) await deleteLegacyGrant(userId, key, generation);
       }
       return await afterPurge?.();
     } finally {
-      await lease.release();
+      try {
+        await Promise.all(grantLeases.map((grantLease) => grantLease.release()));
+      } finally {
+        for (const release of releases) release();
+        await lease.release();
+      }
     }
   };
 

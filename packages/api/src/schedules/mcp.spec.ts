@@ -435,6 +435,31 @@ it('inspects only an accessible, selected operator-owned OBO target before enrol
   ).resolves.toEqual([{ server: 'docs', status: 'ready' }]);
 });
 
+it('initializes only the requested OBO target without waiting on unrelated selected servers', async () => {
+  const { check, deps } = setup(['search_mcp_docs', 'query_mcp_unrelated']);
+  const docs = { ...server, source: 'config' as const, obo: { scopes: 'read' } };
+  const unrelated = { ...server, url: 'https://slow.example.test/mcp', source: 'config' as const };
+  deps.getAppConfig = jest.fn(
+    async () =>
+      ({
+        endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+        mcpConfig: { docs, unrelated },
+      }) as Partial<AppConfig> as AppConfig,
+  );
+  deps.getServerConfigs = jest.fn(async () => ({ docs, unrelated }));
+  deps.ensureConfigServers = jest.fn(async (config) => {
+    if ('unrelated' in config) throw new Error('Unrelated initializer must not run');
+    return { docs };
+  });
+  const onSelected = jest.fn(async () => undefined);
+  await expect(
+    check('agent', principal, { inspectOboTarget: { serverName: 'docs', onSelected } }),
+  ).resolves.toEqual([{ server: 'docs', status: 'ready' }]);
+  expect(deps.ensureConfigServers).toHaveBeenCalledWith({ docs }, expect.any(Function));
+  expect(onSelected).toHaveBeenCalledWith(docs);
+  expect(deps.connect).not.toHaveBeenCalled();
+});
+
 it('reports missing unattended OBO credentials without offering a browser reconnect', async () => {
   const { check, deps } = setup();
   deps.getServerConfigs = jest.fn(async () => ({

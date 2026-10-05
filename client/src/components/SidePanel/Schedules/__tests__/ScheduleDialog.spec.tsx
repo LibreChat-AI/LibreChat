@@ -1,10 +1,11 @@
 import { createElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { ToastProvider, ThemeProvider, validateThemeDefinition } from '@librechat/client';
 import type { TSchedule } from 'librechat-data-provider';
+import type { ThemeDefinition } from '@librechat/client';
 import type { ReactNode } from 'react';
 import ScheduleDialog from '../ScheduleDialog';
 
@@ -77,7 +78,21 @@ jest.mock('~/data-provider', () => ({
   useUpdateScheduleMutation: () => ({ mutate: mockMutate, isLoading: false }),
 }));
 
-const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) => {
+const referenceTheme: ThemeDefinition = {
+  version: 1,
+  name: 'obo-reference',
+  modes: {
+    light: { appearance: { checkboxSize: '20px' }, colors: { 'rgb-focus-control': '20 50 80' } },
+    dark: { appearance: { checkboxSize: '22px' }, colors: { 'rgb-focus-control': '200 220 240' } },
+  },
+};
+
+const renderDialog = (
+  schedule?: Partial<TSchedule>,
+  onOpenChange = jest.fn(),
+  mode?: 'light' | 'dark',
+) => {
+  if (mode) expect(validateThemeDefinition(referenceTheme)).toEqual([]);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -85,7 +100,25 @@ const renderDialog = (schedule?: Partial<TSchedule>, onOpenChange = jest.fn()) =
     return createElement(
       QueryClientProvider,
       { client: queryClient },
-      createElement(MemoryRouter, null, createElement(ToastProvider, null, children)),
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(
+          ToastProvider,
+          null,
+          mode ? (
+            <ThemeProvider
+              initialTheme={mode}
+              persistThemeDefinition={false}
+              themeDefinition={referenceTheme}
+            >
+              {children}
+            </ThemeProvider>
+          ) : (
+            children
+          ),
+        ),
+      ),
     );
   }
   return render(
@@ -131,12 +164,45 @@ describe('ScheduleDialog', () => {
     await fillRequiredFields(user);
     const checkbox = screen.getByRole('checkbox', { name: 'com_ui_schedule_obo_prepare' });
     expect(checkbox).not.toBeChecked();
+    expect(checkbox.tagName).toBe('BUTTON');
+    expect(checkbox).toHaveClass('size-theme-checkbox', 'focus-visible:ring-focus-control');
     await user.click(checkbox);
     await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
     await waitFor(() =>
       expect(mockMutate).toHaveBeenCalledWith(expect.objectContaining({ enabled: false })),
     );
   });
+
+  it.each(['light', 'dark'] as const)(
+    'uses the reference theme and accessible label/keyboard control in %s mode',
+    async (mode) => {
+      mockLimits.oboServers = ['Files'];
+      const user = userEvent.setup();
+      const { unmount } = renderDialog(undefined, jest.fn(), mode);
+      try {
+        await fillRequiredFields(user);
+        const checkbox = screen.getByRole('checkbox', { name: 'com_ui_schedule_obo_prepare' });
+        expect(checkbox).toHaveClass('size-theme-checkbox', 'focus-visible:ring-focus-control');
+        expect(document.documentElement.style.getPropertyValue('--theme-checkbox-size')).toBe(
+          mode === 'light' ? '20px' : '22px',
+        );
+        expect(document.documentElement.style.getPropertyValue('--focus-control')).toBe(
+          mode === 'light' ? '20 50 80' : '200 220 240',
+        );
+        await user.click(screen.getByText('com_ui_schedule_obo_prepare'));
+        expect(checkbox).toBeChecked();
+        checkbox.focus();
+        await user.keyboard('[Space]');
+        expect(checkbox).not.toBeChecked();
+        await user.click(screen.getByRole('button', { name: 'com_ui_create' }));
+        await waitFor(() =>
+          expect(mockMutate).toHaveBeenCalledWith(expect.objectContaining({ enabled: true })),
+        );
+      } finally {
+        unmount();
+      }
+    },
+  );
 
   afterEach(() => {
     jest.clearAllMocks();

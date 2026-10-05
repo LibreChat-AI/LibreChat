@@ -5,10 +5,20 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useForm, Controller } from 'react-hook-form';
 import {
+  PermissionBits,
+  isCronCadence,
+  nextRunInstants,
+  scheduleFrequencies,
+  isValidCronExpression,
+  cadenceIntervalMinutes,
+  SCHEDULE_CRON_MAX_LENGTH,
+} from 'librechat-data-provider';
+import {
   Input,
   Label,
   Radio,
   Button,
+  Checkbox,
   TimePicker,
   MinutePicker,
   FieldMessage,
@@ -18,15 +28,6 @@ import {
   OGDialogTemplate,
   useToastContext,
 } from '@librechat/client';
-import {
-  PermissionBits,
-  isCronCadence,
-  nextRunInstants,
-  scheduleFrequencies,
-  isValidCronExpression,
-  cadenceIntervalMinutes,
-  SCHEDULE_CRON_MAX_LENGTH,
-} from 'librechat-data-provider';
 import type {
   TSchedule,
   TCreateSchedule,
@@ -749,10 +750,32 @@ export default function ScheduleDialog({
             </div>
 
             {schedule == null && (schedulesData?.limits.oboServers?.length ?? 0) > 0 && (
-              <label className="text-text-primary flex items-start gap-2 text-sm">
-                <input type="checkbox" className="mt-1" {...register('prepareObo')} />
-                <span>{localize('com_ui_schedule_obo_prepare')}</span>
-              </label>
+              <Controller
+                name="prepareObo"
+                control={control}
+                render={({ field }) => (
+                  <div className="flex items-start gap-2">
+                    <Checkbox
+                      id="schedule-prepare-obo"
+                      aria-labelledby="schedule-prepare-obo-label"
+                      className="mt-1"
+                      name={field.name}
+                      checked={field.value}
+                      onCheckedChange={(checked) => field.onChange(checked === true)}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                      disabled={isLoading}
+                    />
+                    <Label
+                      id="schedule-prepare-obo-label"
+                      htmlFor="schedule-prepare-obo"
+                      className="text-sm"
+                    >
+                      {localize('com_ui_schedule_obo_prepare')}
+                    </Label>
+                  </div>
+                )}
+              />
             )}
 
             <Controller

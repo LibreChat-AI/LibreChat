@@ -399,14 +399,18 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
       authoritativeAliases,
       new Set([...Object.keys(accessibleServers), ...configNames]),
     ));
-    const selectedRawConfig = Object.fromEntries(
-      Object.entries(rawConfig).filter(([serverName]) => selected.has(serverName)),
-    );
     if (options.inspectOboTarget && !selected.has(options.inspectOboTarget.serverName)) {
       throw new ScheduleMCPError([
         { server: options.inspectOboTarget.serverName, status: 'mcp_configuration_missing' },
       ]);
     }
+    const selectedRawConfig = Object.fromEntries(
+      Object.entries(rawConfig).filter(([serverName]) =>
+        options.inspectOboTarget
+          ? serverName === options.inspectOboTarget.serverName
+          : selected.has(serverName),
+      ),
+    );
     const requestProbeLimit = createConcurrencyLimiter(options.concurrency);
     const config = await deps.ensureConfigServers(selectedRawConfig, (task) =>
       requestProbeLimit(() => {

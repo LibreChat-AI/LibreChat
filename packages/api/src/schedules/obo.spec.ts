@@ -1,6 +1,7 @@
 import { Keyv } from 'keyv';
 import jwt from 'jsonwebtoken';
 import { createHmac } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { AgentCapabilities, Permissions, PermissionTypes } from 'librechat-data-provider';
 import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -821,6 +822,207 @@ describe('separately authorized scheduled OBO grants', () => {
     });
     expect(row.enabled).toBe(true);
     expect(pauseSchedule).not.toHaveBeenCalled();
+  });
+
+  it('quiesces modern renewal before schedule deletion and keeps its purpose fence held', async () => {
+    const { service, row, requestGrant, tokenStore } = harness();
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    row.enabled = true;
+    let started!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    requestGrant.mockImplementationOnce(async (...args) => {
+      signal = args[3];
+      started();
+      await Promise.race([
+        blocked,
+        new Promise<never>((_, reject) => {
+          signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+        }),
+      ]);
+      return { access_token: 'late', refresh_token: 'late-refresh', expires_in: 3600 };
+    });
+    const provider = (await service.resolve(user, { context, target }))!;
+    const renewing = provider({ forceRefresh: true }).catch((error) => error);
+    await entered;
+    const afterPurge = jest.fn(async () => {
+      expect(signal?.aborted).toBe(true);
+      expect(
+        MCPTokenStorage.isRefreshTeardownActive(
+          user.id,
+          'schedule-obo:sched-1:Files',
+          user.tenantId,
+          true,
+        ),
+      ).toBe(true);
+      expect(tokenStore.getAll()).toEqual([]);
+      return 'deleted';
+    });
+    try {
+      await expect(service.purge(user.id, row.id, afterPurge)).resolves.toBe('deleted');
+      expect(await renewing).toBeInstanceOf(Error);
+      expect(afterPurge).toHaveBeenCalledTimes(1);
+      expect(tokenStore.getAll()).toEqual([]);
+    } finally {
+      release();
+      await renewing;
+    }
+  });
+
+  it('waits for modern persistence and rollback before removing the schedule', async () => {
+    const { service, row, requestGrant, tokenStore } = harness();
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    row.enabled = true;
+    await tokenStore.deleteTokens({
+      userId: user.id,
+      type: 'mcp_oauth',
+      identifier: 'scheduled-mcp:schedule-obo:sched-1:Files',
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const create = tokenStore.createToken;
+    jest.spyOn(tokenStore, 'createToken').mockImplementationOnce(async (data) => {
+      const created = await create(data);
+      entered();
+      await blocked;
+      return created;
+    });
+    const provider = (await service.resolve(user, { context, target }))!;
+    const renewing = provider({ forceRefresh: true }).catch((error) => error);
+    await started;
+    const afterPurge = jest.fn(async () => 'deleted');
+    const deletion = service.purge(user.id, row.id, afterPurge);
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(afterPurge).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await renewing;
+      await deletion;
+    }
+    expect(afterPurge).toHaveBeenCalledTimes(1);
+    expect(tokenStore.getAll()).toEqual([]);
+    expect(requestGrant).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs only safe metadata for unexpected credential-store diagnostics', async () => {
+    const coordinator = Object.create(MCPTokenStorage) as typeof MCPTokenStorage;
+    const { service, row } = harness(coordinator);
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    row.enabled = true;
+    const diagnostic = Object.assign(new Error('private-query-secret'), {
+      query: { token: 'stored-credential-secret' },
+      response: { status: 503, data: { refresh_token: 'provider-secret' } },
+      cause: new Error('nested-private-secret'),
+    });
+    coordinator.getTokens = jest.fn(async () => {
+      throw diagnostic;
+    });
+    const provider = (await service.resolve(user, { context, target }))!;
+    await expect(provider()).rejects.toMatchObject({ retryable: true });
+    const warning = jest
+      .mocked(logger.warn)
+      .mock.calls.find(
+        ([message]) => String(message) === '[schedules] scheduled OBO credential read failed',
+      );
+    expect(warning).toEqual([
+      '[schedules] scheduled OBO credential read failed',
+      { type: 'Error', status: 503 },
+    ]);
+    expect(JSON.stringify(warning)).not.toMatch(/private|stored-credential-secret|provider-secret/);
+  });
+
+  it('refuses deletion when a modern grant fence is unavailable and releases teardown for retry', async () => {
+    const { service, row, tokenStore, flow } = harness();
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    const leaseId = getMCPOAuthLeaseId(user.id, 'schedule-obo:sched-1:Files', user.tenantId, true);
+    const acquire = flow.acquireLease.bind(flow);
+    const fence = jest
+      .spyOn(flow, 'acquireLease')
+      .mockImplementation(async (id, options) => (id === leaseId ? null : acquire(id, options)));
+    const afterPurge = jest.fn(async () => 'deleted');
+    await expect(service.purge(user.id, row.id, afterPurge)).rejects.toThrow(
+      'cleanup is in progress',
+    );
+    expect(afterPurge).not.toHaveBeenCalled();
+    expect(tokenStore.getAll()).toHaveLength(3);
+    expect(
+      MCPTokenStorage.isRefreshTeardownActive(
+        user.id,
+        'schedule-obo:sched-1:Files',
+        user.tenantId,
+        true,
+      ),
+    ).toBe(false);
+    fence.mockRestore();
+    await expect(service.purge(user.id, row.id, afterPurge)).resolves.toBe('deleted');
+    expect(tokenStore.getAll()).toEqual([]);
+  });
+
+  it('fences modern grants only for the deleted schedule without touching ordinary prefix credentials', async () => {
+    const { service, row, tokenStore, flow } = harness();
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    const base = {
+      userId: user.id,
+      findToken: tokenStore.findToken,
+      createToken: tokenStore.createToken,
+      updateToken: tokenStore.updateToken,
+      deleteTokens: tokenStore.deleteTokens,
+      flowManager: flow,
+      tokens: {
+        access_token: 'other',
+        refresh_token: 'other-refresh',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      },
+      clientInfo: { client_id: 'client' },
+    };
+    await MCPTokenStorage.storeTokens({
+      ...base,
+      serverName: 'schedule-obo:other-schedule:Files',
+      scheduledGrant: true,
+    });
+    await MCPTokenStorage.storeTokens({ ...base, serverName: 'schedule-obo:sched-1:Files' });
+    const id = getMCPOAuthLeaseId(user.id, 'schedule-obo:sched-1:Files', user.tenantId, true);
+    const before = await flow.getLeaseGeneration(id);
+    await service.purge(user.id, row.id, async () => {
+      expect(await flow.acquireLease(id, { expectedGeneration: before!, waitMs: 0 })).toBeNull();
+      expect(
+        MCPTokenStorage.isRefreshTeardownActive(
+          user.id,
+          'schedule-obo:other-schedule:Files',
+          user.tenantId,
+          true,
+        ),
+      ).toBe(false);
+      expect(
+        MCPTokenStorage.isRefreshTeardownActive(
+          user.id,
+          'schedule-obo:sched-1:Files',
+          user.tenantId,
+        ),
+      ).toBe(false);
+    });
+    await expect(
+      flow.acquireLease(id, { expectedGeneration: before!, waitMs: 0 }),
+    ).resolves.toBeNull();
+    await expect(
+      MCPTokenStorage.getTokens({ ...base, serverName: 'schedule-obo:sched-1:Files' }),
+    ).resolves.toMatchObject({ access_token: 'other' });
+    await expect(service.listEnrolled(user.id)).resolves.toEqual({ 'other-schedule': ['Files'] });
+    expect(tokenStore.getAll()).toHaveLength(6);
   });
 
   it('keeps a schedule visible for retry when grant cleanup fails before deletion', async () => {
