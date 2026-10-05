@@ -32,6 +32,13 @@ import {
   resolveOboToken,
 } from '~/mcp/oauth';
 import {
+  isOAuthAuthenticationError,
+  isMCPTransportAuthenticationError,
+  createScheduledMCPTransportError,
+  MCPAuthenticationRejectedError,
+  isMCPInitializationError,
+} from './errors';
+import {
   isOAuthServer,
   waitUntilDeadline,
   applyRequestHeaders,
@@ -43,14 +50,7 @@ import {
   resolveScheduledMCPBearerConfig,
   createScheduledMCPBearerHeaderResolver,
   isScheduledMCPBearer,
-  ScheduledMCPBearerError,
 } from '~/schedules/bearer';
-import {
-  isOAuthAuthenticationError,
-  isMCPTransportAuthenticationError,
-  MCPAuthenticationRejectedError,
-  isMCPInitializationError,
-} from './errors';
 import {
   isDirectOpenIDBearerRecoveryEnabled,
   resolveDirectOpenIDBearerConfig,
@@ -206,7 +206,7 @@ export class MCPConnectionFactory {
         throw new MCPAuthenticationRejectedError(basic.serverName, false, error);
       }
       if (isScheduledMCPBearer(oauth?.requestScopedConnections))
-        throw new ScheduledMCPBearerError('credential_rejected', basic.serverName);
+        throw createScheduledMCPTransportError(error, basic.serverName);
       directBearerRecoveryState.attempted = true;
       const refreshedConfig = await resolveDirectOpenIDBearerConfig({
         config: directBearerSourceConfig,
@@ -285,7 +285,7 @@ export class MCPConnectionFactory {
       await initial.connection.dispose().catch(() => undefined);
     }
     if (isScheduledMCPBearer(options?.requestScopedConnections))
-      throw new ScheduledMCPBearerError('credential_rejected', basic.serverName);
+      throw createScheduledMCPTransportError(initial.authenticationError, basic.serverName);
     if (this.isRequestCancelled(options)) {
       return { tools: null, connection: null, oauthRequired: false, oauthUrl: null };
     }

@@ -466,15 +466,18 @@ it('ignores forged ordinary scheduling payloads and keeps old incomplete resumes
     resolveScheduledMCPBearerConfig({ context, config: sibling, user, serverName: 'Static' }),
   ).resolves.toBe(sibling);
 });
-it('retires a rejected resource credential for the occurrence without auto-minting or tool replay', async () => {
-  const f = await bearerFixture();
-  await f.call();
-  rejectScheduledMCPBearer(f.context, 'Files');
-  await expect(f.call()).rejects.toMatchObject({
-    failure: { reason: 'credential_rejected', automaticReplay: false },
-  });
-  expect(f.resolveBearer).toHaveBeenCalledTimes(1);
-});
+it.each(['credential_rejected', 'resource_permission_denied'] as const)(
+  'retires %s for the occurrence without auto-minting or tool replay',
+  async (reason) => {
+    const f = await bearerFixture();
+    await f.call();
+    rejectScheduledMCPBearer(f.context, 'Files', reason);
+    await expect(f.call()).rejects.toMatchObject({
+      failure: { reason, automaticReplay: false },
+    });
+    expect(f.resolveBearer).toHaveBeenCalledTimes(1);
+  },
+);
 it('uses the host adapter at scheduled preflight and preserves missing-adapter diagnosis', async () => {
   const f = await bearerFixture();
   const deps: Parameters<typeof createScheduleMCPPreflight>[0] = {

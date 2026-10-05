@@ -589,6 +589,10 @@ it.each([401, 403] as const)(
   'records an automatic SDK SSE HTTP %s without another catalog or tool call',
   async (status) => {
     const f = await fixture();
+    const failure = new ScheduledMCPBearerError(
+      status === 403 ? 'resource_permission_denied' : 'credential_rejected',
+      'Files',
+    );
     let reject = false;
     let dispatched = 0;
     const server = await createOAuthMCPServer({
@@ -660,17 +664,14 @@ it.each([401, 403] as const)(
         await new Promise((resolve) => setTimeout(resolve, 10));
       expect(record).toHaveBeenCalledWith(
         expect.objectContaining({
-          failure: expect.objectContaining({
-            reason: 'credential_rejected',
-            recovery: 'authorize',
-          }),
+          failure: failure.failure,
         }),
       );
       expect(recover).toHaveBeenCalled();
       await expect(recover.mock.results[0].value).rejects.toMatchObject({
-        failure: { reason: 'credential_rejected' },
+        failure: failure.failure,
       });
-      expect(retire).toHaveBeenCalledWith('Files');
+      expect(retire).toHaveBeenCalledWith('Files', failure.failure.reason);
       expect(Reflect.get(connection, 'shouldStopReconnecting')).toBe(true);
       const requests = dispatched;
       await cleanupMCPRequestContext(context);
@@ -682,8 +683,13 @@ it.each([401, 403] as const)(
       );
       await expect(f.service.recordScheduleOutcome(f.outcome)).resolves.toBe(true);
       expect(await f.methods.getScheduleRunAbortState(f.schedule.id, f.scheduledFor)).toMatchObject(
-        { status: 'error', mcp: [expect.objectContaining({ reason: 'credential_rejected' })] },
+        { status: 'error', mcp: failure.outcomes },
       );
+      expect(await f.methods.getScheduleById(f.schedule.id)).toMatchObject({
+        enabled: false,
+        disabledReason: failure.failure.status,
+        lastRun: { mcp: failure.outcomes },
+      });
     } finally {
       await connection?.dispose();
       await cleanupMCPRequestContext(context);
@@ -1446,14 +1452,21 @@ it.each(['cooperative', 'ignores abort'] as const)(
 );
 
 describe.each(['tool', 'App SDK read', 'App budget read'] as const)('%s admission', (phase) => {
-  it.each(['authority denial', 'HTTP rejection'] as const)(
+  it.each(['authority denial', 'HTTP rejection', 'HTTP forbidden'] as const)(
     'keeps a known %s behind durable admission after the real SDK deadline',
     async (mode) => {
       const f = await fixture();
       let rejectTransport = false;
+      const rejectionStatus = mode === 'HTTP forbidden' ? 403 : 401;
+      const reason = {
+        'authority denial': 'consent_revoked',
+        'HTTP rejection': 'credential_rejected',
+        'HTTP forbidden': 'resource_permission_denied',
+      } as const;
       const server = await createOAuthMCPServer({
         ...(phase !== 'tool' && { appResourceUri: 'ui://admission' }),
-        resourceFailure: () => (mode === 'HTTP rejection' && rejectTransport ? 401 : undefined),
+        resourceFailure: () =>
+          rejectTransport && mode !== 'authority denial' ? rejectionStatus : undefined,
       });
       const context = createMCPRequestContext();
       const manager = new MCPManager();
@@ -1464,10 +1477,7 @@ describe.each(['tool', 'App SDK read', 'App budget read'] as const)('%s admissio
       });
       let available = false,
         modelReturned = false;
-      const failure = new ScheduledMCPBearerError(
-        mode === 'authority denial' ? 'consent_revoked' : 'credential_rejected',
-        'Files',
-      );
+      const failure = new ScheduledMCPBearerError(reason[mode], 'Files');
       const input = {
         error: failure,
         identity: f.identity,

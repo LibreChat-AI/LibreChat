@@ -49,16 +49,17 @@ import {
   ScheduledMCPBearerError,
 } from '~/schedules/bearer';
 import {
+  MCPAuthenticationRejectedError,
+  isMCPTransportAuthenticationError,
+  isMCPInitializationError,
+  createScheduledMCPTransportError,
+} from './errors';
+import {
   projectMCPAppRuntimeTarget,
   type MCPAppBindingCodec,
   type MCPAppBindingSubject,
   type MCPAppRuntimeTarget,
 } from './apps/binding';
-import {
-  MCPAuthenticationRejectedError,
-  isMCPTransportAuthenticationError,
-  isMCPInitializationError,
-} from './errors';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { mcpOptionsContainGraphTokenPlaceholder, preProcessGraphTokens } from '~/utils/graph';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -1819,8 +1820,8 @@ Please follow these instructions when using tools from the respective MCP server
             throw new MCPAuthenticationRejectedError(serverName, false, connectionCheckError);
           }
           if (isScheduledMCPBearer(requestScopedConnections))
-            throw new ScheduledMCPBearerError(
-              'credential_rejected',
+            throw createScheduledMCPTransportError(
+              connectionCheckError,
               serverName,
               scheduledBearerInvocation?.agentId,
             );
@@ -1959,12 +1960,17 @@ Please follow these instructions when using tools from the respective MCP server
           if (error instanceof ScheduledMCPPolicyError) throw error;
           if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
             if (isMCPTransportAuthenticationError(error)) {
-              rejectScheduledMCPBearer(requestScopedConnections, serverName);
-              throw new ScheduledMCPBearerError(
-                'credential_rejected',
+              const failure = createScheduledMCPTransportError(
+                error,
                 serverName,
                 scheduledBearerInvocation?.agentId,
               );
+              rejectScheduledMCPBearer(
+                requestScopedConnections,
+                serverName,
+                failure.failure.reason,
+              );
+              throw failure;
             }
             throw error;
           }

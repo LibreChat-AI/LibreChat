@@ -30,13 +30,12 @@ import {
   resolveScheduledMCPBearerConfig,
   requiresScheduledMCPBearerConnection,
   isScheduledMCPBearer,
-  ScheduledMCPBearerError,
 } from '~/schedules/bearer';
+import { MCPAuthenticationRejectedError, createScheduledMCPTransportError } from '~/mcp/errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from '~/mcp/openid';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
-import { MCPAuthenticationRejectedError } from '~/mcp/errors';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
 import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
@@ -1085,7 +1084,7 @@ export abstract class UserConnectionManager {
         const toolListAuthenticationError = toolListSnapshot?.authenticationError;
         if (toolListAuthenticationError && directBearerRecovery && user) {
           if (isScheduledMCPBearer(requestScopedConnections))
-            throw new ScheduledMCPBearerError('credential_rejected', serverName);
+            throw createScheduledMCPTransportError(toolListAuthenticationError, serverName);
           if (directBearerRecoveryState.attempted) {
             throw new MCPAuthenticationRejectedError(
               serverName,

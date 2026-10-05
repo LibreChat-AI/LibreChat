@@ -27,7 +27,11 @@ import {
   quiesceMCPRequestContext,
   MCPRequestQuiescedError,
 } from '~/mcp/request';
-import { ScheduledMCPBearerError, isMCPTransportAuthenticationError } from '~/mcp/errors';
+import {
+  ScheduledMCPBearerError,
+  isMCPTransportAuthenticationError,
+  createScheduledMCPTransportError,
+} from '~/mcp/errors';
 import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
 import { readScheduleFireContext, isScheduleFireRequest } from './trigger';
 import { getScheduleMCPExecution } from './authorization/execution';
@@ -60,7 +64,7 @@ interface BearerInput {
 interface ScheduledBearerScope {
   readonly identity: ScheduledMCPIdentity;
   resolve: (input: BearerInput) => Promise<ParsedServerConfig>;
-  reject: (serverName: string) => void;
+  reject: (serverName: string, reason?: ScheduledMCPFailure['reason']) => void;
 }
 const scopes = new WeakMap<RequestScopedMCPConnectionStore, ScheduledBearerScope>();
 const scopeSignals = new WeakMap<RequestScopedMCPConnectionStore, AbortSignal>();
@@ -118,7 +122,7 @@ export function createScheduledMCPBearerHost(deps: {
       const captured = Object.freeze(scheduledMCPIdentitySchema.parse(identity));
       const cached = new Map<string, { token: string; expiresAtMs: number }>();
       const flights = new Map<string, Promise<{ token: string; expiresAtMs: number }>>();
-      const rejected = new Set<string>();
+      const rejected = new Map<string, ScheduledMCPFailure['reason']>();
       const fail: (
         reason: ScheduledMCPFailure['reason'],
         server: string,
@@ -162,8 +166,8 @@ export function createScheduledMCPBearerHost(deps: {
       };
       return {
         identity: captured,
-        reject(server) {
-          rejected.add(server);
+        reject(server, reason = 'credential_rejected') {
+          rejected.set(server, reason);
           cached.clear();
         },
         async resolve({ user, serverName, config, signal, selection, onFailure }) {
@@ -179,7 +183,7 @@ export function createScheduledMCPBearerHost(deps: {
           try {
             if (user?.id !== captured.ownerId || (user.tenantId ?? null) !== captured.tenantId)
               deny('binding_mismatch', serverName);
-            if (rejected.has(serverName)) deny('credential_rejected', serverName);
+            if (rejected.has(serverName)) deny(rejected.get(serverName)!, serverName);
             const targets = await awaitOboOperation(
               deps.resolveEnrollment(captured, { signal }),
               signal,
@@ -296,7 +300,7 @@ export function createScheduledMCPBearerHost(deps: {
                 deny('binding_mismatch', serverName);
             }
             signal?.throwIfAborted();
-            if (rejected.has(serverName)) deny('credential_rejected', serverName);
+            if (rejected.has(serverName)) deny(rejected.get(serverName)!, serverName);
             if (credential.expiresAtMs <= now()) deny('credential_missing', serverName);
             return {
               ...effective,
@@ -393,10 +397,9 @@ export function createScheduledMCPBearerHeaderResolver(
     resolver.recordFailure = async (cause) => {
       const rejection = isMCPTransportAuthenticationError(cause);
       let error = cause instanceof ScheduledMCPBearerError ? cause : undefined;
-      if (!error && rejection)
-        error = new ScheduledMCPBearerError('credential_rejected', serverName);
+      if (!error && rejection) error = createScheduledMCPTransportError(cause, serverName);
       if (!error) return;
-      if (rejection) rejectScheduledMCPBearer(context, serverName);
+      if (rejection) rejectScheduledMCPBearer(context, serverName, error.failure.reason);
       const key = cause != null && typeof cause === 'object' ? cause : error;
       const admission = admitBearerFailure(context, error, key);
       if (!(await admission) || rejection) throw error;
@@ -478,8 +481,9 @@ export async function resolveScheduledMCPBearerConfig(
 export function rejectScheduledMCPBearer(
   context: RequestScopedMCPConnectionStore | undefined,
   serverName: string,
+  reason: ScheduledMCPFailure['reason'] = 'credential_rejected',
 ): void {
-  if (context) scopes.get(context)?.reject(serverName);
+  if (context) scopes.get(context)?.reject(serverName, reason);
 }
 
 export function prepareScheduledMCPBearer(input: {
