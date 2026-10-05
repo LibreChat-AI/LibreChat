@@ -1063,6 +1063,30 @@ describe('ToolCall sole tool disclosure', () => {
     },
   );
 
+  it('keeps the row of an only call whose output is only whitespace', () => {
+    render(
+      <RecoilRoot>
+        <MCPAppsPolicyProvider
+          startupConfig={{ mcpApps: { enabled: true } } as TStartupConfig}
+          ready
+          userId="user-1"
+        >
+          <SoleToolContext.Provider value>
+            <ToolCall
+              args="{}"
+              name="lookup"
+              output={'  \n '}
+              initialProgress={1}
+              isSubmitting={false}
+              runStepStatus="completed"
+            />
+          </SoleToolContext.Provider>
+        </MCPAppsPolicyProvider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('tool-call')).toBeInTheDocument();
+  });
+
   it('keeps the row of an only call that is still running', () => {
     render(
       <RecoilRoot>

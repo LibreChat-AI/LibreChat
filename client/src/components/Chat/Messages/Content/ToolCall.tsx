@@ -237,7 +237,7 @@ export default function ToolCall({
   const bare =
     (soleTool || loneGroup) &&
     hasInfo &&
-    (hasToolParams(args) || (output?.length ?? 0) > 0) &&
+    (hasToolParams(args) || (output?.trim().length ?? 0) > 0) &&
     phase === 'completed' &&
     !isMCPToolCall &&
     !isActionCall &&
