@@ -608,28 +608,34 @@ describe('live fold parity with the cards it hides', () => {
     expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('First pass');
   });
 
-  it('previews CJK reasoning sentence by sentence', () => {
+  it('keeps the prior tool status instead of CJK reasoning when thoughts are hidden', () => {
     const think = {
       type: ContentTypes.THINK,
       think: '两个引用共享一个提交。接下来检查顺序约定',
     } as unknown as TMessageContentParts;
-    mount([toPart({ name: 'lookup', output: 'rows' }), think], undefined, true);
+    const call = toPart({
+      name: 'lookup',
+      args: { intent: 'Checking the sources' },
+      output: 'rows',
+    });
+    mount([call, think], undefined, true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    /** Only the finished sentence; the one still being written stays out. */
-    expect(button).toHaveTextContent('两个引用共享一个提交。');
-    expect(button).not.toHaveTextContent('接下来');
+    expect(button).toHaveTextContent('Checking the sources');
+    expect(button).not.toHaveTextContent('两个引用共享一个提交。');
   });
 
-  it('keeps a CJK sentence that ends exactly at the tail instead of reverting to the call', () => {
+  it('keeps a generated reasoning label when raw thought text is hidden', () => {
     const think = {
       type: ContentTypes.THINK,
-      think: '两个引用共享一个提交。接下来检查顺序约定。',
+      think: '两个引用共享一个提交。',
+      reasoning_label: 'Checking the references',
     } as unknown as TMessageContentParts;
-    mount([toPart({ name: 'lookup', output: 'rows' }), think], undefined, true);
+    mount([think], undefined, true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('接下来检查顺序约定。');
+    expect(button).toHaveTextContent('Checking the references');
+    expect(button).not.toHaveTextContent('两个引用共享一个提交。');
   });
 
   it.each([
@@ -655,14 +661,14 @@ describe('live fold parity with the cards it hides', () => {
     ).toHaveTextContent(text);
   });
 
-  it('does not re-announce a sentence when the stream pauses after a space', () => {
+  it('keeps the previous tool line while hidden reasoning streams', () => {
     jest.useFakeTimers();
     const frame = (think: string) => (
       <QueryClientProvider client={new QueryClient()}>
         <RecoilRoot>
           <ContentParts
             content={[
-              toPart({ name: 'lookup', output: 'rows' }),
+              toPart({ name: 'lookup', args: { intent: 'Checking the references' }, output: 'rows' }),
               { type: ContentTypes.THINK, think } as unknown as TMessageContentParts,
             ]}
             messageId="m1"
@@ -677,6 +683,8 @@ describe('live fold parity with the cards it hides', () => {
       </QueryClientProvider>
     );
     const view = render(frame('Both refs share'));
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+
     for (const next of ['Both refs share ', 'Both refs share a', 'Both refs share a ']) {
       view.rerender(frame(next));
       act(() => {
@@ -684,6 +692,8 @@ describe('live fold parity with the cards it hides', () => {
       });
     }
 
+    expect(header).toHaveAccessibleName('Checking the references');
+    expect(header).not.toHaveTextContent('Both refs share');
     expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
   });
 
@@ -990,47 +1000,35 @@ describe('live activity hardening transitions', () => {
     </QueryClientProvider>
   );
 
-  it('shows a thought only as finished sentences, each held for a second', () => {
+  it('keeps raw reasoning out of the live header while Show thinking is disabled', () => {
     jest.useFakeTimers();
     const content = (think: string): TMessageContentParts[] => [
       { type: ContentTypes.THINK, think },
     ];
-    const view = render(frame(content('Let me')));
+    const view = render(frame(content('Let me check the evidence')));
     const header = screen.getByRole('button');
-    /** Nothing finished yet: the generic line, not a fragment. */
-    expect(header).toHaveAccessibleName('Thinking...');
-    view.rerender(frame(content('Let me check the evidence')));
-    act(() => jest.advanceTimersByTime(1000));
-    expect(header).toHaveAccessibleName('Thinking...');
+    expect(header).toHaveAccessibleName('Running');
 
-    /** A sentence finishing a second after the last paint shows at once. */
-    view.rerender(frame(content('Let me check the evidence.')));
-    expect(header).toHaveAccessibleName('Let me check the evidence.');
-
-    /** The next sentence is written behind the finished one. */
-    view.rerender(frame(content('Let me check the evidence. Now I can')));
-    act(() => jest.advanceTimersByTime(200));
-    expect(header).toHaveAccessibleName('Let me check the evidence.');
-
-    /** Finished 200ms after the last paint: the line holds its sentence for
-     *  the rest of the second before the next one takes it. */
-    view.rerender(frame(content('Let me check the evidence. Now I can decide.')));
-    act(() => jest.advanceTimersByTime(200));
-    expect(header).toHaveAccessibleName('Let me check the evidence.');
-    act(() => jest.advanceTimersByTime(600));
-    expect(header).toHaveAccessibleName('Now I can decide.');
+    for (const think of [
+      'Let me check the evidence.',
+      'Let me check the evidence. Now I can',
+      'Let me check the evidence. Now I can decide.',
+    ]) {
+      view.rerender(frame(content(think)));
+      act(() => jest.advanceTimersByTime(1000));
+      expect(header).not.toHaveTextContent('Let me check the evidence');
+      expect(header).not.toHaveTextContent('Now I can decide');
+    }
     expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
   });
 
   it('keeps decimals and versions inside one sentence', () => {
-    jest.useFakeTimers();
-    const content = (think: string): TMessageContentParts[] => [
-      { type: ContentTypes.THINK, think },
-    ];
-    render(frame(content('The gain was 3.5 points on v2.1 today. Next up')));
-    expect(screen.getByRole('button')).toHaveAccessibleName(
-      'The gain was 3.5 points on v2.1 today.',
+    const activity = getLiveActivity(
+      [{ type: ContentTypes.THINK, think: 'The gain was 3.5 points on v2.1 today. Next up' }],
+      (key) => key,
+      [],
     );
+    expect(activity.text).toBe('The gain was 3.5 points on v2.1 today.');
   });
 
   function SandboxEvent() {
@@ -1238,11 +1236,11 @@ describe('live activity hardening transitions', () => {
   });
 
   it.each(['x'.repeat(1199), 'Earlier sentence. ' + 'x'.repeat(1199)])(
-    'does not repeatedly announce one thought as its bounded preview window moves',
+    'does not expose a long reasoning stream in the live header when thoughts are hidden',
     (initial) => {
       jest.useFakeTimers();
       const content = (think: string) => [
-        toPart({ name: 'lookup', output: 'rows' }),
+        toPart({ name: 'lookup', args: { intent: 'Checking the source' }, output: 'rows' }),
         { type: ContentTypes.THINK, think } as TMessageContentParts,
       ];
       const view = render(frame(content(initial)));
@@ -1252,10 +1250,10 @@ describe('live activity hardening transitions', () => {
           jest.advanceTimersByTime(500);
         });
       }
+      const header = screen.getByRole('button');
+      expect(header).toHaveAccessibleName('Checking the source');
+      expect(header).not.toHaveTextContent('x'.repeat(10));
       expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
-      /** The finished sentence is the long run itself, clamped to one line;
-       *  the sentence after it is still being written. */
-      expect(screen.getByRole('button')).toHaveAccessibleName(`${'x'.repeat(255)}…`);
     },
   );
 
