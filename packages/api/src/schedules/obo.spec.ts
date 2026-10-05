@@ -22,7 +22,9 @@ import {
 import { createScheduledOboGrantService, createLazyScheduledOboGrantService } from './obo';
 import { OboTokenResolutionError, resolveOboToken } from '../mcp/oauth/obo';
 import { createScheduleMCPPreflight, ScheduleMCPError } from './mcp';
+import { createScheduleUpstreamTokenProviderResolver } from './mcp';
 import { MCPConnectionFactory } from '../mcp/MCPConnectionFactory';
+import { restoreScheduledTokenContext } from './context';
 import { resolveScheduledOboServer } from './target';
 import { FlowStateManager } from '../flow/manager';
 import { MCPConnection } from '../mcp/connection';
@@ -1181,6 +1183,132 @@ describe('separately authorized scheduled OBO grants', () => {
       expect.objectContaining({ assertion: token }),
     );
   });
+
+  it.each(['preflight', 'initial', 'restored'] as const)(
+    'uses trusted manual provenance for paused OBO %s, never body-provided flags',
+    async (path) => {
+      const {
+        service,
+        row,
+        deps,
+        requestGrant,
+        tokenStore,
+        authorizeInvocation,
+        setInvocationAllowed,
+      } = harness();
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      let received: string | undefined;
+      const obtain = async (manual: boolean): Promise<void> => {
+        if (path === 'preflight') {
+          const preflight = createScheduleMCPPreflight({
+            ...deps,
+            resolveAgentGraphAccess: async () => ({}) as never,
+            getAgentGraphNodes: async (ids) =>
+              ids.map((id) => ({ id, provider: 'test', model: 'test', tools: ['read_mcp_Files'] })),
+            getModelsConfig: async () => ({ test: ['test'] }),
+            getAppConfig: async () =>
+              ({
+                endpoints: { agents: { capabilities: [AgentCapabilities.tools] } },
+                mcpConfig: { Files: config },
+              }) as Partial<AppConfig> as AppConfig,
+            resolveUpstreamTokenProvider: service.resolve,
+            connect: async (options) => {
+              const provider = await options.upstreamTokenProviderResolver!({
+                target: { mcpServer: options.serverName, url: config.url!, scopes: target.scopes },
+              });
+              received = (await provider!())?.access_token;
+              return {
+                fetchToolsSnapshot: async () => ({
+                  tools: [{ name: 'read', inputSchema: { type: 'object' as const } }],
+                  complete: true,
+                }),
+              };
+            },
+          });
+          await preflight(context.agentId, user, { scheduleId: row.id, concurrency: 1, manual });
+          return;
+        }
+        const req = {
+          user,
+          _isScheduledFire: true,
+          _isAgentTrigger: path === 'initial',
+          body: {
+            manual: true,
+            scheduleManual: true,
+            agent_id: context.agentId,
+            agentTrigger: {
+              version: 1,
+              event: {
+                type: 'schedule.occurrence',
+                occurredAt: 0,
+                source: { type: 'schedule', id: row.id },
+              },
+              metadata: { manual: path === 'initial' ? manual : true },
+            },
+          },
+        };
+        const restored =
+          path === 'restored'
+            ? restoreScheduledTokenContext(req, {
+                userId: user.id,
+                tenantId: user.tenantId,
+                scheduleId: row.id,
+                agent_id: context.agentId,
+                scheduleManual: manual,
+              })
+            : undefined;
+        const resolver = createScheduleUpstreamTokenProviderResolver(
+          req,
+          service.resolve,
+          undefined,
+          restored,
+        )!;
+        const provider = await resolver({ target });
+        received = (await provider!())?.access_token;
+      };
+      await obtain(true);
+      expect(received).toBe('first');
+      expect(authorizeInvocation).toHaveBeenLastCalledWith(
+        user,
+        { ...context, manual: true },
+        target,
+      );
+      await expect(obtain(false)).rejects.toBeInstanceOf(Error);
+      const access = tokenStore.getAll().find((record) => record.type === 'mcp_oauth')!;
+      await tokenStore.updateToken(
+        { userId: user.id, type: access.type, identifier: access.identifier },
+        { expiresAt: new Date(Date.now() - 1000) },
+      );
+      await obtain(true);
+      expect(received).toBe('fresh-after-12h');
+      expect(requestGrant).toHaveBeenCalledTimes(2);
+      setInvocationAllowed(false);
+      await expect(obtain(true)).rejects.toBeInstanceOf(Error);
+      await service.revoke(user.id, row.id, 'Files');
+      expect(tokenStore.getAll()).toEqual([]);
+    },
+  );
+
+  it.each(['root', 'scope', 'operator policy', 'account'] as const)(
+    'does not let manual provenance bypass %s withdrawal',
+    async (denial) => {
+      const { service, row, tokenStore, setAllowed, setServer, setOwnerActive, requestGrant } =
+        harness();
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      const provider = (await service.resolve(user, {
+        context: { ...context, manual: true },
+        target,
+      }))!;
+      await expect(provider()).resolves.toMatchObject({ access_token: 'first' });
+      if (denial === 'root') row.agent_id = 'different';
+      else if (denial === 'scope') setServer({ ...config, obo: { scopes: 'different' } });
+      else if (denial === 'operator policy') setAllowed([]);
+      else setOwnerActive(false);
+      await expect(provider()).rejects.toMatchObject({ reason: 'missing_upstream_provider' });
+      expect(requestGrant).toHaveBeenCalledTimes(1);
+      expect(tokenStore.getAll()).toHaveLength(3);
+    },
+  );
 
   it('reads an enrolled grant for activation preflight but never for a disabled scheduled run', async () => {
     const { service, row, setAllowed, requestGrant } = harness();

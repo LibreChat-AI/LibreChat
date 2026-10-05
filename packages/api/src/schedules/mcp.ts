@@ -142,6 +142,7 @@ export function createScheduleUpstreamTokenProviderResolver(
           ...(req.user.tenantId ? { tenantId: req.user.tenantId } : {}),
           agentId,
           invocationMode: 'delegated',
+          ...((req._isManualScheduledFire ?? fire.manual) === true && { manual: true }),
         }
       : undefined;
   return bindUpstreamTokenProviderResolver(req.user, resolve, signal, context);
@@ -462,6 +463,7 @@ export function createScheduleMCPPreflight(deps: ScheduleMCPDeps): ScheduleMCPPr
             ...(user.tenantId ? { tenantId: user.tenantId } : {}),
             agentId,
             invocationMode: 'delegated',
+            ...(options.manual === true && { manual: true }),
           }
         : undefined,
       options.activationPreflight === true && options.scheduleId != null,

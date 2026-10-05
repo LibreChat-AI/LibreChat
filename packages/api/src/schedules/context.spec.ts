@@ -46,7 +46,11 @@ it.each([false, true])('captures verified root identity for manual=%s', async (m
   req.body.agent_id = 'child-agent';
   req.body.agentTrigger.event.source.id = 'changed';
   await createLazyOboUpstreamTokenProvider(bound, signal, target)();
-  expect(resolve).toHaveBeenCalledWith(user, { signal, context, target });
+  expect(resolve).toHaveBeenCalledWith(user, {
+    signal,
+    context: { ...context, ...(manual && { manual: true }) },
+    target,
+  });
   expect(Object.isFrozen(resolve.mock.calls[0][1].context)).toBe(true);
 });
 
@@ -120,6 +124,41 @@ it('restores a paused run from job identity without trusting resume body fields'
   await createScheduleUpstreamTokenProviderResolver(req, resolve, undefined, restored)!({ target });
   expect(resolve).toHaveBeenCalledWith(user, { signal: undefined, context, target });
   expect(JSON.stringify(req)).not.toContain('root-agent');
+});
+
+it.each([true, false, undefined])(
+  'restores manual provenance only from the authenticated job: %s',
+  async (manual) => {
+    const req = {
+      user,
+      _isScheduledFire: true,
+      _isManualScheduledFire: true,
+      body: { manual: true, scheduleManual: true, scheduleId: 'spoofed', agent_id: 'spoofed' },
+    };
+    const restored = restoreScheduledTokenContext(req, {
+      userId: user.id,
+      tenantId: user.tenantId,
+      scheduleId: context.scheduleId,
+      agent_id: context.agentId,
+      scheduleManual: manual,
+    });
+    const resolve = jest.fn().mockResolvedValue(jest.fn());
+    await createScheduleUpstreamTokenProviderResolver(req, resolve, undefined, restored)!({
+      target,
+    });
+    expect(resolve).toHaveBeenCalledWith(user, {
+      signal: undefined,
+      context: { ...context, ...(manual === true && { manual: true }) },
+      target,
+    });
+  },
+);
+
+it('keeps captured automatic classification authoritative over body mutations', async () => {
+  const req = { ...request(true), _isScheduledFire: true, _isManualScheduledFire: false };
+  const resolve = jest.fn().mockResolvedValue(jest.fn());
+  await createScheduleUpstreamTokenProviderResolver(req, resolve)!({ target });
+  expect(resolve.mock.calls[0][1].context).not.toHaveProperty('manual');
 });
 
 it.each([{ userId: 'different' }, { tenantId: 'different' }])(

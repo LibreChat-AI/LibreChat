@@ -379,7 +379,7 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         ? schedule.agent_id !== writePreflight.agentId ||
           schedule.configRevision !== writePreflight.configRevision
         : schedule.agent_id !== context.agentId) ||
-      (!allowDisabled && !schedule.enabled) ||
+      (!allowDisabled && context.manual !== true && !schedule.enabled) ||
       !user.openidId ||
       !user.openidIssuer
     )
