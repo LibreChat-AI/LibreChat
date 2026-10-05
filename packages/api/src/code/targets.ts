@@ -122,6 +122,8 @@ export interface SubagentCodeTargetParams {
   userId?: string | null;
   conversationId?: string | null;
   getAppConfig?: CodeCapabilityConfigLoader;
+  /** Cancels the resolution; probes still queued are skipped. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -244,9 +246,14 @@ export async function resolveSubagentCodeTargets(
   }
   const results = await Promise.all(
     authorized.map((selection) =>
-      probeTarget(() => resolveCandidate(params, selections, selection)),
+      probeTarget(() =>
+        params.signal?.aborted === true
+          ? Promise.resolve<CandidateResult>({ status: 'unauthorized' })
+          : resolveCandidate(params, selections, selection),
+      ),
     ),
   );
+  throwIfCanceled(params.signal);
   const targets: SubagentCodeTarget[] = [];
   const unavailableMachines = new Set<string>();
   const unavailableWorkspaces = new Set<string>();
@@ -442,7 +449,11 @@ export interface SubagentCodePlacementInput<T extends SubagentCodeAgent> {
  */
 export interface SubagentCodeRouting<TContext> {
   /** Builds a child's per-call machine choices; empty on SDKs without host arguments. */
-  describe(agent: SubagentCodeAgent, flags: SubagentCodeFlags): Promise<SubagentCodeDescription>;
+  describe(
+    agent: SubagentCodeAgent,
+    flags: SubagentCodeFlags,
+    signal?: AbortSignal,
+  ): Promise<SubagentCodeDescription>;
   /**
    * Routes one child execution: an explicit call choice (re-validated against
    * the current request), else the machine a per-call-routed parent runs on
@@ -680,21 +691,16 @@ export function createSubagentCodeRouting<TContext>({
     return placement;
   };
   /** Live targets this request may place a subagent on per call. */
-  const resolveTargets = async (params: SubagentCodeTargetParams): Promise<SubagentCodeTargets> => {
-    const resolution = await resolveSubagentCodeTargets(params);
-    if (sharedRunFiles !== true) {
-      return resolution;
-    }
-    return {
-      ...resolution,
-      targets: resolution.targets.filter((target) => target.context.environmentType !== 'attached'),
-    };
-  };
+  /** Every per-call target is an attached machine, so a shared-file run probes none. */
+  const resolveTargets = (params: SubagentCodeTargetParams): Promise<SubagentCodeTargets> =>
+    sharedRunFiles === true ? Promise.resolve(NO_TARGETS) : resolveSubagentCodeTargets(params);
   const paramsFor = (
     agent: SubagentCodeAgent,
     flags: SubagentCodeFlags,
+    signal?: AbortSignal,
   ): SubagentCodeTargetParams => ({
     ...request,
+    signal,
     agentId: agent.id,
     statefulSessions: flags.statefulCodeSessions === true,
     environment: flags.statefulCodeEnvironment,
@@ -767,11 +773,11 @@ export function createSubagentCodeRouting<TContext>({
     return parentEnvironmentId;
   };
   return {
-    async describe(agent, flags) {
+    async describe(agent, flags, signal) {
       if (!isSubagentHostArgsSupported() || flags.statefulCodeSessions !== true) {
         return {};
       }
-      const { targets } = await resolveTargets(paramsFor(agent, flags));
+      const { targets } = await resolveTargets(paramsFor(agent, flags, signal));
       const subagentHostArgs = buildSubagentCodeHostArgs(targets);
       return subagentHostArgs == null
         ? {}
@@ -783,7 +789,7 @@ export function createSubagentCodeRouting<TContext>({
       const requested =
         hostArgs?.[SUBAGENT_MACHINE_ARG] != null || hostArgs?.[SUBAGENT_WORKSPACE_ARG] != null;
       if (requested) {
-        const resolution = await resolveTargets(paramsFor(agent, flags));
+        const resolution = await resolveTargets(paramsFor(agent, flags, context?.signal));
         throwIfCanceled(context?.signal);
         const target = selectSubagentCodeTarget(hostArgs, resolution);
         if (target != null) {
@@ -805,7 +811,7 @@ export function createSubagentCodeRouting<TContext>({
           : { agent, childEnvironmentId: parentEnvironmentId };
       }
       if (inheritedRoute(agent.id, parentEnvironmentId) != null) {
-        const { targets } = await resolveTargets(paramsFor(agent, flags));
+        const { targets } = await resolveTargets(paramsFor(agent, flags, context?.signal));
         throwIfCanceled(context?.signal);
         /** Re-read after the await: a concurrent call may have settled this subagent meanwhile. */
         const inherited = inheritedRoute(agent.id, parentEnvironmentId);
@@ -873,6 +879,10 @@ export function createSubagentCodeRouting<TContext>({
       /** A pending placement is a user of the per-agent entry until its resolution settles. */
       const register = (replace: boolean): void => {
         const owner = contextOwners.get(agentId);
+        if (!holds.has(placement) && (replace || !contexts.has(agentId))) {
+          /** A committed placement now owns the entry; nothing pending may roll it back. */
+          contextOwners.delete(agentId);
+        }
         if (holds.has(placement)) {
           const record = owner ?? {
             contexts,

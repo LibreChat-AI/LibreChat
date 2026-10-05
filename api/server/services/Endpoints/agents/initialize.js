@@ -24,6 +24,7 @@ const {
   buildAgentContextAttachmentsByAgentId,
   collectCodeExecutionProfileRoutes,
   getLazySubagentConfigId,
+  createRoutedGraphMemberLoader,
   createViewableSubagentLoader,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceSelections,
@@ -1256,7 +1257,11 @@ const initializeClientWithProvider = async ({
         memoryAvailable,
       }),
       waitForAbort(
-        subagentCodeRouting.describe(agent, { statefulCodeSessions, statefulCodeEnvironment }),
+        subagentCodeRouting.describe(
+          agent,
+          { statefulCodeSessions, statefulCodeEnvironment },
+          signal,
+        ),
         signal,
       ),
     ]);
@@ -1753,39 +1758,26 @@ const initializeClientWithProvider = async ({
     return waitForAbort(pending, graphSignal);
   };
 
-  /** A graph member spawned by a per-call-routed parent follows that parent's machine when it
-   *  may, unless it already initialized on its own route this request. Its config belongs to
-   *  the parent's execution, so it is never shared through the graph-member cache. */
-  const loadRoutedGraphMember = async (memberId, parentRunId, graphSignal) => {
-    throwIfAborted(graphSignal);
-    const cached = graphMemberConfigsById.get(memberId);
-    if (cached) return cached;
-    if (skippedAgentIds.has(memberId)) return null;
-    const agent = await waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal);
-    if (!agent || !(await hasSubagentViewAccess(agent, memberId, graphSignal))) {
-      skippedAgentIds.add(memberId);
-      return null;
-    }
-    const executionId = `${parentRunId}:graph:${memberId}`;
-    try {
-      const config = await initializeLoadedSubagent({
+  const loadRoutedGraphMember = createRoutedGraphMemberLoader({
+    getShared: (memberId) => graphMemberConfigsById.get(memberId),
+    isSkipped: (memberId) => skippedAgentIds.has(memberId),
+    skip: (memberId) => skippedAgentIds.add(memberId),
+    getAgent: (memberId, graphSignal) =>
+      waitForAbort(db.getAgentWithVersionCount({ id: memberId }), graphSignal),
+    canView: (agent, memberId, graphSignal) => hasSubagentViewAccess(agent, memberId, graphSignal),
+    initialize: ({ agent, memberId, context }) =>
+      initializeLoadedSubagent({
         agent,
         agentId: memberId,
         configId: getLazySubagentConfigId(agent),
-        context: { signal: graphSignal, parentRunId, executionId },
+        context,
         lazyChildren: [],
         codeFlags: getSubagentCodeFlags(agent),
         viewAccessChecked: true,
-      });
-      return config;
-    } catch (error) {
-      if (isFatalAgentInitializationError(error, { signal: graphSignal })) {
-        throw error;
-      }
-      logger.error(`[initializeClient] Error initializing routed graph member ${memberId}:`, error);
-      return null;
-    }
-  };
+      }),
+    isFatal: (error, graphSignal) =>
+      isFatalAgentInitializationError(error, { signal: graphSignal }),
+  });
 
   async function resolveGraphSubagentsFor(config, graphSignal = signal, routedParentRunId) {
     throwIfAborted(graphSignal);

@@ -865,13 +865,55 @@ describe('subagent code routing', () => {
   });
 
   it('offers and accepts no attached machine while run files are shared', async () => {
-    serveWorkers(allOnline);
+    const fetchSpy = serveWorkers(allOnline);
     const routing = createSubagentCodeRouting<string>({ ...request, sharedRunFiles: true });
 
     await expect(routing.describe(reviewer, flags)).resolves.toEqual({});
     await expect(
       routing.place({ agent: reviewer, flags, context: call({ machine: 'buildbox' }) }),
     ).rejects.toMatchObject({ argument: 'machine', rejection: 'not_allowed' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips queued target probes once the resolution is canceled', async () => {
+    const fetchSpy = serveWorkers(allOnline);
+    const controller = new AbortController();
+    controller.abort(new Error('canceled'));
+
+    await expect(resolveSubagentCodeTargets(params({ signal: controller.signal }))).rejects.toThrow(
+      'canceled',
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the tool context a committed placement installed over a pending one', async () => {
+    serveWorkers(allOnline);
+    const routing = createSubagentCodeRouting<string>(request);
+    const contexts = new Map<string, string>();
+    const pendingCall = call();
+    const pending = await routing.place({ agent: reviewer, flags, context: pendingCall });
+    routing.attach(contexts, {
+      agentId: reviewer.id,
+      context: pendingCall,
+      placement: pending,
+      codeExecutionContext: { environmentId: 'laptop' },
+      toolContext: 'pending',
+    });
+    const shared = await routing.place({ agent: reviewer, flags, context: {} });
+    routing.attach(contexts, {
+      agentId: reviewer.id,
+      context: {},
+      placement: shared,
+      codeExecutionContext: { environmentId: 'laptop' },
+      toolContext: 'shared-member',
+    });
+
+    await expect(
+      routing.settleExecution(pendingCall, async () => {
+        throw new Error('canceled');
+      }),
+    ).rejects.toThrow('canceled');
+    expect(contexts.get(reviewer.id)).toBe('shared-member');
   });
 
   it('attributes a workspace-only conflict to the workspace argument', async () => {
