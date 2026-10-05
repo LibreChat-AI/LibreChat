@@ -3244,7 +3244,13 @@
               "enabled": {
                 "type": "boolean"
               },
+              "graphsEnabled": {
+                "type": "boolean"
+              },
               "allowSelf": {
+                "type": "boolean"
+              },
+              "shareFiles": {
                 "type": "boolean"
               },
               "agent_ids": {

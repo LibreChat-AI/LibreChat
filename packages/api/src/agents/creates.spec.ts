@@ -184,3 +184,42 @@ describe('Agent Management create handler', () => {
     });
   });
 });
+
+it.each([false, true])(
+  'creation projects a saved independent graph flag without returning 500: %s',
+  async (graphsEnabled) => {
+    const subagents = {
+      enabled: false,
+      graphsEnabled,
+      allowSelf: false,
+      shareFiles: true,
+      agent_ids: [],
+      graphs: [
+        {
+          type: 'review',
+          name: 'Review',
+          description: 'Review work',
+          agent_ids: ['member'],
+          edges: [],
+          entry_agent_id: 'member',
+          result_agent_id: 'member',
+        },
+      ],
+    };
+    const deps = makeDeps({
+      createAgent: jest.fn(async (_req: Request, res: Response) =>
+        res.status(201).json({ ...createdAgent, subagents }),
+      ),
+    });
+    const request = makeRequest({ body: { ...validBody, subagents } });
+    const response = makeResponse();
+    await createAgentManagementCreateHandler(deps)(request, response);
+    expect(deps.createAgent).toHaveBeenCalledTimes(1);
+    expect(request.body.subagents).toEqual(subagents);
+    expect(response.status).toHaveBeenCalledWith(201);
+    expect(response.status).not.toHaveBeenCalledWith(500);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ id: createdAgent.id, subagents }),
+    );
+  },
+);
