@@ -103,3 +103,106 @@ describe('createPullRequestLookup', () => {
     expect(find).toHaveBeenCalledTimes(4);
   });
 });
+
+describe('credential scoping', () => {
+  it('never serves a result fetched with one credential to another', async () => {
+    const find = jest.fn(async ({ token }: { token: string }) =>
+      token === 'tenant-a' ? value : null,
+    );
+    const lookup = createPullRequestLookup({ source: { find } });
+    await expect(lookup({ ...input, token: 'tenant-a' })).resolves.toEqual({ ok: true, value });
+    await expect(lookup({ ...input, token: 'tenant-b' })).resolves.toEqual({
+      ok: true,
+      value: null,
+    });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('still reuses a result for the same credential', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, token: 'tenant-a' });
+    await lookup({ ...input, token: 'tenant-a' });
+    expect(find).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not share an in-flight request between credentials', async () => {
+    const releases: Array<() => void> = [];
+    const find = jest.fn(
+      ({ token }: { token: string }) =>
+        new Promise<TConversationPullRequest | null>((resolve) => {
+          releases.push(() => resolve(token === 'a' ? value : null));
+        }),
+    );
+    const lookup = createPullRequestLookup({ source: { find } });
+    const a = lookup({ ...input, token: 'a' });
+    const b = lookup({ ...input, token: 'b' });
+    expect(find).toHaveBeenCalledTimes(2);
+    releases.forEach((release) => release());
+    await expect(a).resolves.toEqual({ ok: true, value });
+    await expect(b).resolves.toEqual({ ok: true, value: null });
+  });
+});
+
+describe('rate limit cooldown', () => {
+  const limited = (retryAfterMs?: number) =>
+    new PullRequestSourceError('RATE_LIMITED', retryAfterMs);
+  const rateLimited = { ok: false, error: { code: 'RATE_LIMITED' } };
+
+  it('stops asking GitHub for every branch of the credential until the retry time', async () => {
+    let clock = 0;
+    const find = jest.fn().mockRejectedValueOnce(limited(60_000)).mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await expect(lookup(input)).resolves.toEqual(rateLimited);
+    clock = 30_000;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual(rateLimited);
+    expect(find).toHaveBeenCalledTimes(1);
+    clock = 60_001;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not block a different credential', async () => {
+    const find = jest.fn().mockRejectedValueOnce(limited(60_000)).mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, token: 'a' });
+    await expect(lookup({ ...input, token: 'b', branch: 'other' })).resolves.toEqual({
+      ok: true,
+      value,
+    });
+  });
+
+  it('waits at least a short floor when GitHub gives no retry time', async () => {
+    let clock = 0;
+    const find = jest.fn().mockRejectedValueOnce(limited()).mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await lookup(input);
+    clock = 9_999;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual(rateLimited);
+    clock = 10_001;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
+  });
+
+  it('caps an absurd retry time so one bad header cannot silence the feature for a day', async () => {
+    let clock = 0;
+    const find = jest
+      .fn()
+      .mockRejectedValueOnce(limited(24 * 60 * 60_000))
+      .mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await lookup(input);
+    clock = 10 * 60_000 + 1;
+    await expect(lookup({ ...input, branch: 'other' })).resolves.toEqual({ ok: true, value });
+  });
+
+  it('keeps serving a cached result while the credential is cooling down', async () => {
+    let clock = 0;
+    const find = jest.fn().mockResolvedValueOnce(value).mockRejectedValueOnce(limited(60_000));
+    const lookup = createPullRequestLookup({ source: { find }, now: () => clock });
+    await lookup(input);
+    await lookup({ ...input, branch: 'other' });
+    clock = 5_000;
+    await expect(lookup(input)).resolves.toEqual({ ok: true, value });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+});

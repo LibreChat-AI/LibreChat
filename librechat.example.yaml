@@ -923,7 +923,9 @@ endpoints:
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
   #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
-  #   # a code worker that reports its branch, and a read-only GitHub token held on the server.
+  #   # a code worker that reports its branch, and a GitHub token held on the server. Use a
+  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests"
+  #   # and "Checks" permissions: without "Checks" every matched pull request fails to load.
   #   pullRequests:
   #     enabled: false
   #     # Environment variable reference only, never the token itself.

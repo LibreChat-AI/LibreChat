@@ -9,6 +9,9 @@ import { PullRequestSourceError } from './types';
 
 const GITHUB_API_BASE = 'https://api.github.com';
 const REQUEST_TIMEOUT_MS = 10_000;
+const CHECK_RUN_PAGE_SIZE = 100;
+/** Bounds the requests one lookup can make; past it the rollup is reported as still running. */
+const MAX_CHECK_RUN_PAGES = 10;
 const MAX_TITLE_LENGTH = 256;
 const REPO_PATTERN = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/;
 const FAILING_CONCLUSIONS = new Set([
@@ -96,11 +99,13 @@ function parseListItem(value: unknown): { number: number; state: string; sha: st
   return { number: value.number, state: value.state, sha: value.head.sha };
 }
 
-function parseCheckRuns(value: unknown): GitHubCheckRun[] {
+type CheckRunPage = { runs: GitHubCheckRun[]; total?: number };
+
+function parseCheckRuns(value: unknown): CheckRunPage {
   if (!isRecord(value) || !Array.isArray(value.check_runs)) {
     throw new PullRequestSourceError('UPSTREAM_ERROR');
   }
-  return value.check_runs.map((run) => {
+  const runs = value.check_runs.map((run) => {
     if (!isRecord(run) || typeof run.status !== 'string') {
       throw new PullRequestSourceError('UPSTREAM_ERROR');
     }
@@ -109,15 +114,22 @@ function parseCheckRuns(value: unknown): GitHubCheckRun[] {
       conclusion: typeof run.conclusion === 'string' ? run.conclusion : null,
     };
   });
+  return { runs, ...(isCount(value.total_count) ? { total: value.total_count } : {}) };
 }
 
-/** A failed check outranks one still running, so the header turns red as soon as it is known. */
-export function summarizeChecks(runs: readonly GitHubCheckRun[]): PullRequestChecks {
-  if (runs.length === 0) return 'none';
+/**
+ * A failed check outranks one still running, so the header turns red as soon as it is known.
+ * An `incomplete` rollup (more runs than were read) is never reported as passing.
+ */
+export function summarizeChecks(
+  runs: readonly GitHubCheckRun[],
+  incomplete = false,
+): PullRequestChecks {
+  if (runs.length === 0 && !incomplete) return 'none';
   if (runs.some((run) => run.conclusion != null && FAILING_CONCLUSIONS.has(run.conclusion))) {
     return 'failing';
   }
-  if (runs.some((run) => run.status !== 'completed')) return 'running';
+  if (incomplete || runs.some((run) => run.status !== 'completed')) return 'running';
   return 'passing';
 }
 
@@ -134,6 +146,7 @@ function summarizeMergeable(pull: GitHubPull): PullRequestMergeable {
 export function toConversationPullRequest(
   pull: GitHubPull,
   runs: readonly GitHubCheckRun[],
+  incomplete = false,
 ): TConversationPullRequest {
   return {
     number: pull.number,
@@ -144,7 +157,7 @@ export function toConversationPullRequest(
     state: summarizeState(pull),
     isDraft: pull.draft,
     mergeable: summarizeMergeable(pull),
-    checks: summarizeChecks(runs),
+    checks: summarizeChecks(runs, incomplete),
   };
 }
 
@@ -155,6 +168,19 @@ function isRateLimited(response: Response): boolean {
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         response.headers.get('retry-after') != null))
   );
+}
+
+/** How long GitHub asked callers to wait: `retry-after` seconds, else the quota reset time. */
+function retryAfterMs(response: Response): number | undefined {
+  const retryAfter = Number(response.headers.get('retry-after'));
+  if (response.headers.get('retry-after') != null && Number.isFinite(retryAfter)) {
+    return Math.max(0, retryAfter * 1000);
+  }
+  const reset = Number(response.headers.get('x-ratelimit-reset'));
+  if (response.headers.get('x-ratelimit-reset') != null && Number.isFinite(reset)) {
+    return Math.max(0, reset * 1000 - Date.now());
+  }
+  return undefined;
 }
 
 /**
@@ -191,10 +217,32 @@ export function createGitHubPullRequestSource({
         throw new PullRequestSourceError('UPSTREAM_ERROR');
       }
     }
-    if (isRateLimited(response)) throw new PullRequestSourceError('RATE_LIMITED');
+    if (isRateLimited(response)) {
+      throw new PullRequestSourceError('RATE_LIMITED', retryAfterMs(response));
+    }
     /** A repository the token cannot see is indistinguishable from one without pull requests. */
     if (response.status === 404) return null;
     throw new PullRequestSourceError('UPSTREAM_ERROR');
+  }
+
+  /** Reads every page up to a bound, so a failure on a later page still shows. */
+  async function readCheckRuns(
+    pathname: string,
+    token: string,
+  ): Promise<{ runs: GitHubCheckRun[]; incomplete: boolean }> {
+    const runs: GitHubCheckRun[] = [];
+    for (let page = 1; page <= MAX_CHECK_RUN_PAGES; page++) {
+      const body = await getJson(`${pathname}?per_page=${CHECK_RUN_PAGE_SIZE}&page=${page}`, token);
+      if (body == null) return { runs, incomplete: false };
+      const parsed = parseCheckRuns(body);
+      runs.push(...parsed.runs);
+      const done =
+        parsed.total != null
+          ? runs.length >= parsed.total || parsed.runs.length === 0
+          : parsed.runs.length < CHECK_RUN_PAGE_SIZE;
+      if (done) return { runs, incomplete: false };
+    }
+    return { runs, incomplete: true };
   }
 
   return {
@@ -205,22 +253,28 @@ export function createGitHubPullRequestSource({
       if (!isPathSegment(owner) || !isPathSegment(name)) return null;
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
       const head = encodeURIComponent(`${owner}:${branch}`);
-      const listed = await getJson(
-        `${base}/pulls?state=all&sort=updated&direction=desc&per_page=10&head=${head}`,
-        token,
-      );
-      if (listed == null) return null;
-      if (!Array.isArray(listed)) throw new PullRequestSourceError('UPSTREAM_ERROR');
-      const candidates = listed.map(parseListItem);
-      const chosen = candidates.find((item) => item.state === 'open') ?? candidates[0];
+      /** `undefined`: the repository is not visible. `null`: it is, and nothing matched. */
+      const listPulls = async (state: 'open' | 'closed', perPage: number) => {
+        const listed = await getJson(
+          `${base}/pulls?state=${state}&sort=updated&direction=desc&per_page=${perPage}&head=${head}`,
+          token,
+        );
+        if (listed == null) return undefined;
+        if (!Array.isArray(listed)) throw new PullRequestSourceError('UPSTREAM_ERROR');
+        return listed.map(parseListItem)[0] ?? null;
+      };
+      /** Open first on its own, so closed history on a reused branch name cannot hide it. */
+      const open = await listPulls('open', 10);
+      if (open === undefined) return null;
+      const chosen = open ?? (await listPulls('closed', 1));
       if (chosen == null) return null;
 
-      const [pull, runs] = await Promise.all([
+      const [pull, checks] = await Promise.all([
         getJson(`${base}/pulls/${chosen.number}`, token),
-        getJson(`${base}/commits/${chosen.sha}/check-runs?per_page=100`, token),
+        readCheckRuns(`${base}/commits/${chosen.sha}/check-runs`, token),
       ]);
       if (pull == null) return null;
-      return toConversationPullRequest(parsePull(pull), runs == null ? [] : parseCheckRuns(runs));
+      return toConversationPullRequest(parsePull(pull), checks.runs, checks.incomplete);
     },
   };
 }

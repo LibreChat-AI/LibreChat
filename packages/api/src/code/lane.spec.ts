@@ -132,3 +132,99 @@ describe('attached bash tool lane reporting', () => {
     expect(String(output)).toContain('ok');
   });
 });
+
+describe('createLaneGitRecorder write order', () => {
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  function controlledWriter() {
+    const events: string[] = [];
+    const releases: Array<(ok?: boolean) => void> = [];
+    const fail: Array<() => void> = [];
+    const setConvoLaneGit = jest.fn(
+      ({ laneGit: reported }: { laneGit: { branch: string | null } }) =>
+        new Promise<boolean>((resolve, reject) => {
+          events.push(`start:${reported.branch}`);
+          releases.push((ok = true) => {
+            events.push(`end:${reported.branch}`);
+            resolve(ok);
+          });
+          fail.push(() => reject(new Error('db down')));
+        }),
+    );
+    return { events, releases, fail, setConvoLaneGit };
+  }
+
+  it('starts a later write only after the earlier one has finished', async () => {
+    const { events, releases, setConvoLaneGit } = controlledWriter();
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-1',
+      setConvoLaneGit,
+    });
+    const first = record?.({ branch: 'a', head });
+    const second = record?.({ branch: 'b', head });
+    await flush();
+    expect(events).toEqual(['start:a']);
+    releases[0]();
+    await first;
+    await flush();
+    expect(events).toEqual(['start:a', 'end:a', 'start:b']);
+    releases[1]();
+    await second;
+    expect(events).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
+  });
+
+  it('orders writes across recorders built for the same conversation', async () => {
+    const { events, releases, setConvoLaneGit } = controlledWriter();
+    const make = () =>
+      createLaneGitRecorder({ user: 'u1', conversationId: 'order-2', setConvoLaneGit });
+    const first = make()?.({ branch: 'a', head });
+    const second = make()?.({ branch: 'b', head });
+    await flush();
+    expect(events).toEqual(['start:a']);
+    releases[0]();
+    await first;
+    await flush();
+    releases[1]();
+    await second;
+    expect(events).toEqual(['start:a', 'end:a', 'start:b', 'end:b']);
+  });
+
+  it('does not make one conversation wait for another', async () => {
+    const { events, setConvoLaneGit } = controlledWriter();
+    const one = createLaneGitRecorder({ user: 'u1', conversationId: 'order-3', setConvoLaneGit });
+    const other = createLaneGitRecorder({ user: 'u1', conversationId: 'order-4', setConvoLaneGit });
+    void one?.({ branch: 'a', head });
+    void other?.({ branch: 'b', head });
+    await flush();
+    expect(events).toEqual(['start:a', 'start:b']);
+  });
+
+  it('does not make one user wait for another on the same conversation id', async () => {
+    const { events, setConvoLaneGit } = controlledWriter();
+    const make = (user: string) =>
+      createLaneGitRecorder({ user, conversationId: 'order-5', setConvoLaneGit });
+    void make('u1')?.({ branch: 'a', head });
+    void make('u2')?.({ branch: 'b', head });
+    await flush();
+    expect(events).toEqual(['start:a', 'start:b']);
+  });
+
+  it('still runs the next write after one fails', async () => {
+    const { events, releases, fail, setConvoLaneGit } = controlledWriter();
+    const record = createLaneGitRecorder({
+      user: 'u1',
+      conversationId: 'order-6',
+      setConvoLaneGit,
+    });
+    const first = record?.({ branch: 'a', head });
+    const second = record?.({ branch: 'b', head });
+    await flush();
+    fail[0]();
+    await expect(first).resolves.toBe(false);
+    await flush();
+    expect(events).toEqual(['start:a', 'start:b']);
+    releases[1]();
+    await expect(second).resolves.toBe(true);
+  });
+});

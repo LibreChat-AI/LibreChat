@@ -10,7 +10,11 @@ export type PullRequestErrorCode = (typeof PULL_REQUEST_ERROR_CODES)[number];
 
 /** Thrown by a source for an operational failure; the lookup translates it into a result. */
 export class PullRequestSourceError extends Error {
-  constructor(public readonly code: PullRequestErrorCode) {
+  constructor(
+    public readonly code: PullRequestErrorCode,
+    /** For `RATE_LIMITED`: how long GitHub asked callers to wait, when it said. */
+    public readonly retryAfterMs?: number,
+  ) {
     super(`Pull request lookup failed: ${code}`);
     this.name = 'PullRequestSourceError';
   }

@@ -51,7 +51,7 @@ describe('summarizeChecks', () => {
 
 describe('createGitHubPullRequestSource', () => {
   const routes = (pullBody = pull(), checks: unknown = { check_runs: [] }) => ({
-    '/pulls?state=all': () => json(listed()),
+    '/pulls?state=open': () => json(listed()),
     '/pulls/7': () => json(pullBody),
     '/check-runs': () => json(checks),
   });
@@ -93,25 +93,37 @@ describe('createGitHubPullRequestSource', () => {
     await expect(find(source)).resolves.toMatchObject({ isDraft: true });
   });
 
-  it('prefers the open pull request over a newer closed one', async () => {
+  it('asks for the open pull request first, so closed history cannot hide it', async () => {
     const { source, fetchFn } = sourceFor({
-      '/pulls?state=all': () =>
-        json([
-          { number: 9, state: 'closed', head: { sha } },
-          { number: 7, state: 'open', head: { sha } },
-        ]),
+      '/pulls?state=open': () => json(listed()),
       '/pulls/7': () => json(pull()),
       '/check-runs': () => json({ check_runs: [] }),
     });
     await expect(find(source)).resolves.toMatchObject({ number: 7 });
-    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/pulls/9'))).toBe(false);
+    const urls = fetchFn.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toContain('state=open');
+    expect(urls.some((url) => url.includes('state=closed'))).toBe(false);
+  });
+
+  it('falls back to the most recently updated closed pull request when none is open', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([{ number: 9, state: 'closed', head: { sha } }]),
+      '/pulls/9': () => json(pull({ number: 9, state: 'closed', merged: true })),
+      '/check-runs': () => json({ check_runs: [] }),
+    });
+    await expect(find(source)).resolves.toMatchObject({ number: 9, state: 'merged' });
   });
 
   it('returns null when the branch has no pull request or the repository is not visible', async () => {
-    const none = sourceFor({ '/pulls?state=all': () => json([]) });
+    const none = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
     await expect(find(none.source)).resolves.toBeNull();
-    const hidden = sourceFor({ '/pulls?state=all': () => new Response('', { status: 404 }) });
+    const hidden = sourceFor({ '/pulls?state=open': () => new Response('', { status: 404 }) });
     await expect(find(hidden.source)).resolves.toBeNull();
+    expect(hidden.fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it('queries only a plain owner/name and never contacts GitHub otherwise', async () => {
@@ -124,7 +136,10 @@ describe('createGitHubPullRequestSource', () => {
   });
 
   it('encodes the branch in the head filter', async () => {
-    const { source, fetchFn } = sourceFor({ '/pulls?state=all': () => json([]) });
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([]),
+    });
     await source.find({ repo: 'o/r', branch: 'feat/a&b=c', token: 't' });
     const url = String(fetchFn.mock.calls[0][0]);
     expect(url).toContain('head=o%3Afeat%2Fa%26b%3Dc');
@@ -137,7 +152,7 @@ describe('createGitHubPullRequestSource', () => {
       new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }),
     ],
   ])('maps %s to RATE_LIMITED', async (_label, response) => {
-    const { source } = sourceFor({ '/pulls?state=all': () => response });
+    const { source } = sourceFor({ '/pulls?state=open': () => response });
     await expect(find(source)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
@@ -146,7 +161,7 @@ describe('createGitHubPullRequestSource', () => {
     ['a plain 403', () => new Response('', { status: 403 })],
     ['a malformed list', () => json({ not: 'a list' })],
   ])('maps %s to UPSTREAM_ERROR', async (_label, respond) => {
-    const { source } = sourceFor({ '/pulls?state=all': respond });
+    const { source } = sourceFor({ '/pulls?state=open': respond });
     await expect(find(source)).rejects.toBeInstanceOf(PullRequestSourceError);
     await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
   });
@@ -173,5 +188,88 @@ describe('createGitHubPullRequestSource', () => {
     const { source } = sourceFor(routes(pull({ title: 'x'.repeat(1000) })));
     const result = await find(source);
     expect(result?.title).toHaveLength(256);
+  });
+});
+
+describe('check runs across pages', () => {
+  const run = (conclusion: string | null, status = 'completed') => ({ status, conclusion });
+  const passing = (count: number) => Array.from({ length: count }, () => run('success'));
+
+  function sourceWithPages(pages: unknown[][], totalCount: number) {
+    const fetchFn = jest.fn(async (input: string) => {
+      const url = String(input);
+      if (url.includes('/pulls?state=open')) return json(listed());
+      if (url.includes('/pulls/7')) return json(pull());
+      if (url.includes('/check-runs')) {
+        const page = Number(new URL(url).searchParams.get('page') ?? '1');
+        return json({ total_count: totalCount, check_runs: pages[page - 1] ?? [] });
+      }
+      throw new Error(`unexpected ${url}`);
+    });
+    return { fetchFn, source: createGitHubPullRequestSource({ fetchFn }) };
+  }
+
+  it('reads every page, so a failure past the first hundred still turns the rollup red', async () => {
+    const { source } = sourceWithPages([passing(100), [run('failure')]], 101);
+    await expect(find(source)).resolves.toMatchObject({ checks: 'failing' });
+  });
+
+  it('reads every page, so a check still running past the first hundred is not called passing', async () => {
+    const { source } = sourceWithPages([passing(100), [run(null, 'in_progress')]], 101);
+    await expect(find(source)).resolves.toMatchObject({ checks: 'running' });
+  });
+
+  it('stops after a bounded number of pages and never calls an incomplete rollup passing', async () => {
+    const pages = Array.from({ length: 60 }, () => passing(100));
+    const { source, fetchFn } = sourceWithPages(pages, 6000);
+    await expect(find(source)).resolves.toMatchObject({ checks: 'running' });
+    const checkCalls = fetchFn.mock.calls.filter(([url]) => String(url).includes('/check-runs'));
+    expect(checkCalls.length).toBeLessThanOrEqual(10);
+  });
+
+  it('makes one request when every check run fits on the first page', async () => {
+    const { source, fetchFn } = sourceWithPages([passing(3)], 3);
+    await expect(find(source)).resolves.toMatchObject({ checks: 'passing' });
+    const checkCalls = fetchFn.mock.calls.filter(([url]) => String(url).includes('/check-runs'));
+    expect(checkCalls).toHaveLength(1);
+  });
+});
+
+describe('rate limit back-off hint', () => {
+  it('carries retry-after as milliseconds', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () =>
+        new Response('', { status: 429, headers: { 'retry-after': '30' } }),
+    });
+    await expect(find(source)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+      retryAfterMs: 30_000,
+    });
+  });
+
+  it('derives the wait from the quota reset when there is no retry-after', async () => {
+    const reset = Math.floor(Date.now() / 1000) + 120;
+    const { source } = sourceFor({
+      '/pulls?state=open': () =>
+        new Response('', {
+          status: 403,
+          headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(reset) },
+        }),
+    });
+    const error = (await find(source).catch((caught: unknown) => caught)) as {
+      code: string;
+      retryAfterMs?: number;
+    };
+    expect(error.code).toBe('RATE_LIMITED');
+    expect(error.retryAfterMs).toBeGreaterThan(100_000);
+    expect(error.retryAfterMs).toBeLessThanOrEqual(120_000);
+  });
+
+  it('leaves the hint out when GitHub gives none', async () => {
+    const { source } = sourceFor({ '/pulls?state=open': () => new Response('', { status: 429 }) });
+    const error = (await find(source).catch((caught: unknown) => caught)) as {
+      retryAfterMs?: number;
+    };
+    expect(error.retryAfterMs).toBeUndefined();
   });
 });
