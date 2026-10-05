@@ -61,6 +61,8 @@ const {
   buildToolApprovalExecutionConfig,
   collectAttachedCodeEnvironmentAgentIds,
   collectAttachedCodeEnvironmentPolicySettings,
+  collectAttachedCodeApprovalPolicies,
+  collectAttachedCodeRoutePolicies,
   buildAttachedCodeEnvironmentAdmissionHooks,
   resolveAttachedCodeApprovalMode,
   resolvePersistedCodeApprovalMode,
@@ -1988,7 +1990,7 @@ class AgentClient extends BaseClient {
     const topLevelAgents = [this.options.agent, ...(this.agentConfigs?.values() ?? [])];
     const codeApprovalMode = resolvePersistedCodeApprovalMode({
       requested: this.options.req.body.codeApprovalMode,
-      settingsByAgentId: collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
+      policies: collectAttachedCodeApprovalPolicies(topLevelAgents),
       approvalsEnabled: agentsEConfig?.toolApproval?.enabled !== false,
     });
     const persistedCodeEnvironmentDecision = resolvePersistableCodeEnvironmentDecision({
@@ -2024,7 +2026,7 @@ class AgentClient extends BaseClient {
     return {
       ...super.getTurnConversationFields(options, conversationId, endpointOptions, context),
       preservedFields: getCodeApprovalPreservedFields(
-        collectAttachedCodeEnvironmentPolicySettings(topLevelAgents),
+        collectAttachedCodeApprovalPolicies(topLevelAgents),
         options.req?.config?.endpoints?.[EModelEndpoint.agents]?.toolApproval?.enabled !== false,
       ),
     };
@@ -4576,7 +4578,7 @@ class AgentClient extends BaseClient {
         collectAttachedCodeEnvironmentPolicySettings(topLevelAgents);
       const codeApprovalMode = resolveAttachedCodeApprovalMode(
         this.options.req.body.codeApprovalMode,
-        attachedCodeEnvironmentSettings,
+        collectAttachedCodeApprovalPolicies(topLevelAgents),
         agentsEConfig?.toolApproval?.enabled !== false,
       );
       const effectiveToolApprovalPolicy = resolveToolApprovalPolicy({
@@ -4597,6 +4599,7 @@ class AgentClient extends BaseClient {
           attachedCodeEnvironmentAgentIds,
           attachedCodeEnvironmentSettings,
           codeApprovalMode,
+          collectAttachedCodeRoutePolicies(topLevelAgents),
         ),
       ];
       const askUserQuestionAdminDisabled = isAskUserQuestionAdminDisabled(appConfig);

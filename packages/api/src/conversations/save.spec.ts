@@ -212,15 +212,15 @@ describe('code approval mode across workspace choices', () => {
   ) => {
     const req = createRequest(userId);
     req.resolvedConversation = await store.getConvo(userId, loadedId);
-    const settingsByAgentId = new Map(targets);
-    const codeApprovalMode = resolvePersistedCodeApprovalMode({ requested, settingsByAgentId });
+    const policies = targets.map(([, policy]) => policy);
+    const codeApprovalMode = resolvePersistedCodeApprovalMode({ requested, policies });
     await saveTurnConversation(store, {
       ...seedFields(req, conversationId),
       endpointOptions: {
         ...endpointOptions,
         ...(codeApprovalMode != null && { codeApprovalMode }),
       },
-      preservedFields: getCodeApprovalPreservedFields(settingsByAgentId),
+      preservedFields: getCodeApprovalPreservedFields(policies),
       context: 'save.spec approval mode',
       ctx: getConversationWriteContext(req),
     });

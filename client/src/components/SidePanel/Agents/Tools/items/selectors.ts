@@ -53,8 +53,10 @@ function isBuiltinSelected(item: AgentItem, form: FormSelection): boolean {
       return Boolean(form.artifacts);
     case 'context':
       return form.context_files.length > 0;
-    case 'orchestration':
-      return form.subagents?.enabled === true || form.edges?.some(isHandoffEdge) === true;
+    case 'subagents':
+      return form.subagents?.enabled === true;
+    case 'handoffs':
+      return form.edges?.some(isHandoffEdge) === true;
     case 'ask_user_question':
       // Native tool presented as a builtin — selection lives in agent.tools.
       return form.tools.includes('ask_user_question');

@@ -9,6 +9,15 @@ export const REFILL_INTERVAL_UNITS = [
 
 export type RefillIntervalUnit = (typeof REFILL_INTERVAL_UNITS)[number];
 
+/** How the UI presents a balance: raw credits, their currency value, or the share of the
+ *  period's allotment already spent. */
+export const BALANCE_DISPLAY_MODES = ['credits', 'currency', 'percent'] as const;
+
+export type BalanceDisplay = (typeof BALANCE_DISPLAY_MODES)[number];
+
+/** Token credits per US dollar: transaction rates are USD per million tokens. */
+export const CREDITS_PER_USD = 1_000_000;
+
 /** How long an unreleased in-flight balance reservation keeps counting against the balance. */
 export const DEFAULT_BALANCE_RESERVATION_TTL_MS = 30 * 60 * 1000;
 /** Shortest reservation TTL; a live reservation is renewed every half TTL. */

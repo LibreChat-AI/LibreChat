@@ -20,7 +20,11 @@ import Error from '../Error';
 let mockEndpointsData: Record<string, Record<string, unknown>> | undefined = {
   openAI: { userProvide: true },
 };
-let mockStartupData: { compactionEnabled: boolean; interface?: { contextUsage?: boolean } } = {
+let mockStartupData: {
+  compactionEnabled: boolean;
+  interface?: { contextUsage?: boolean; currency?: { code: string; rate: number } };
+  balance?: { enabled: boolean; display: string };
+} = {
   compactionEnabled: false,
 };
 let mockAccess: Record<string, boolean> = {};
@@ -806,6 +810,28 @@ describe('Error — token balance and context budget', () => {
         ),
       ),
     ).toBeInTheDocument();
+  });
+
+  it('states the shortfall in money when the deployment shows balance as currency', () => {
+    mockStartupData = {
+      compactionEnabled: false,
+      balance: { enabled: true, display: 'currency' },
+      interface: { currency: { code: 'USD', rate: 1 } },
+    };
+    renderError({ type: ViolationTypes.TOKEN_BALANCE, balance: 1_250_000, tokenCost: 8_400_000 });
+
+    expect(
+      screen.getByText(localized('com_error_token_balance_currency', '$8.40', '$1.25')),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('credits');
+  });
+
+  it('shows no credit figures when the deployment shows balance as a percent', () => {
+    mockStartupData = { compactionEnabled: false, balance: { enabled: true, display: 'percent' } };
+    renderError({ type: ViolationTypes.TOKEN_BALANCE, balance: 1250, tokenCost: 8400 });
+
+    expect(screen.getByText(catalog.com_error_token_balance_hidden)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/1,250|8,400|credits/);
   });
 
   it('lists every generation charge rather than a truncated subset', () => {

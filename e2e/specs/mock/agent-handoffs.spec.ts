@@ -68,7 +68,7 @@ async function waitForMCPTool(page: Page, token: string): Promise<void> {
 async function openOrchestration(page: Page, form: Locator) {
   const settings = form
     .getByRole('listitem')
-    .filter({ hasText: 'Multi-agent orchestration' })
+    .filter({ hasText: 'Handoffs' })
     .getByRole('button', { name: 'Configure', exact: true });
   if (await settings.count()) {
     await settings.click();
@@ -77,7 +77,7 @@ async function openOrchestration(page: Page, form: Locator) {
     await page
       .getByRole('dialog', { name: 'Tool Library', exact: true })
       .getByRole('listitem')
-      .filter({ hasText: 'Multi-agent orchestration' })
+      .filter({ hasText: 'Handoffs' })
       .getByRole('button', { name: 'Configure', exact: true })
       .click();
   }

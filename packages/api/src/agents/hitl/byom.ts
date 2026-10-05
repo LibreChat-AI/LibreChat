@@ -66,6 +66,14 @@ type CodeEnvironmentPolicyAgent = {
     codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
     codeEnvironmentSettings?: CodeEnvironmentUserSettings;
   };
+  /** Machines a parent may route this subagent to per call. */
+  codeExecutionChoices?:
+    | readonly {
+        environmentType?: string;
+        codeEnvironmentConfigSchema?: CodeEnvironmentUserConfigSchema;
+        codeEnvironmentSettings?: CodeEnvironmentUserSettings;
+      }[]
+    | null;
   subagentAgentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   lazySubagentConfigs?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
   subagentGraphMemberMetadata?: readonly (CodeEnvironmentPolicyAgent | null | undefined)[];
@@ -190,7 +198,9 @@ export function collectAttachedCodeEnvironmentAgentIds(
 ): Set<string> {
   const attachedAgentIds = new Set<string>();
   for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
-    if (agent.id && agent.codeExecutionContext?.environmentType === 'attached') {
+    const routable =
+      agent.codeExecutionChoices?.some((choice) => choice.environmentType === 'attached') === true;
+    if (agent.id && (agent.codeExecutionContext?.environmentType === 'attached' || routable)) {
       attachedAgentIds.add(agent.id);
     }
   }
@@ -211,6 +221,36 @@ export function collectAttachedCodeEnvironmentPolicySettings(
     }
   }
   return settingsByAgentId;
+}
+
+/**
+ * Each agent's attached-machine policies: its default route and every machine a parent may route
+ * it to per call. Preflight decisions use all of them, since the call picks the machine later.
+ */
+export function collectAttachedCodeRoutePolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): Map<string, AttachedCodeEnvironmentPolicySettings[]> {
+  const policiesByAgentId = new Map<string, AttachedCodeEnvironmentPolicySettings[]>();
+  for (const agent of collectCodeEnvironmentPolicyAgents(roots)) {
+    const policies = [agent.codeExecutionContext, ...(agent.codeExecutionChoices ?? [])]
+      .filter((context) => context?.environmentType === 'attached')
+      .map((context) => ({
+        configSchema: context?.codeEnvironmentConfigSchema,
+        settings: context?.codeEnvironmentSettings,
+        skillAuthoringAvailable: agent.skillAuthoringAvailable === true,
+      }));
+    if (agent.id && policies.length > 0) {
+      policiesByAgentId.set(agent.id, [...(policiesByAgentId.get(agent.id) ?? []), ...policies]);
+    }
+  }
+  return policiesByAgentId;
+}
+
+/** Every attached-machine policy the run may execute under, for validating the requested mode. */
+export function collectAttachedCodeApprovalPolicies(
+  roots: readonly (CodeEnvironmentPolicyAgent | null | undefined)[],
+): AttachedCodeEnvironmentPolicySettings[] {
+  return [...collectAttachedCodeRoutePolicies(roots).values()].flat();
 }
 
 function permissionDecision(
@@ -247,7 +287,7 @@ function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
  */
 export function resolveAttachedCodeApprovalMode(
   requested: unknown,
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  policies: Iterable<AttachedCodeEnvironmentPolicySettings>,
   approvalsEnabled = true,
 ): CodeApprovalMode | undefined {
   if (!approvalsEnabled) {
@@ -260,14 +300,15 @@ export function resolveAttachedCodeApprovalMode(
       enabled: false,
     });
   }
-  if (settingsByAgentId.size === 0) {
+  const targets = [...policies];
+  if (targets.length === 0) {
     if (requested == null) return undefined;
     if (!isCodeApprovalMode(requested)) throw new CodeApprovalModeError();
     return 'ask';
   }
   let resolved: CodeApprovalMode | undefined;
   let rejection: Error | undefined;
-  for (const policy of settingsByAgentId.values()) {
+  for (const policy of targets) {
     try {
       resolved = resolveCodeApprovalMode(requested, {
         environment: 'attached',
@@ -285,12 +326,13 @@ export function resolveAttachedCodeApprovalMode(
   return resolved;
 }
 
-/** Approvals are on and no agent the turn can reach runs on an attached machine. */
+/** Approvals are on and no agent the turn can reach runs, or may be routed, on an attached
+ *  machine. */
 function makesNoCodeApprovalDecision(
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
   approvalsEnabled: boolean,
 ): boolean {
-  return approvalsEnabled && settingsByAgentId.size === 0;
+  return approvalsEnabled && policies.length === 0;
 }
 
 /**
@@ -300,15 +342,16 @@ function makesNoCodeApprovalDecision(
  */
 export function resolvePersistedCodeApprovalMode({
   requested,
-  settingsByAgentId,
+  policies,
   approvalsEnabled = true,
 }: {
   requested: unknown;
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>;
+  /** Every attached-machine policy the run may execute under (`collectAttachedCodeApprovalPolicies`). */
+  policies: readonly AttachedCodeEnvironmentPolicySettings[];
   approvalsEnabled?: boolean;
 }): CodeApprovalMode | undefined {
-  const effective = resolveAttachedCodeApprovalMode(requested, settingsByAgentId, approvalsEnabled);
-  return makesNoCodeApprovalDecision(settingsByAgentId, approvalsEnabled) ? undefined : effective;
+  const effective = resolveAttachedCodeApprovalMode(requested, policies, approvalsEnabled);
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? undefined : effective;
 }
 
 /**
@@ -320,12 +363,10 @@ export function resolvePersistedCodeApprovalMode({
  * against the targets of whichever later turn uses it.
  */
 export function getCodeApprovalPreservedFields(
-  settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings>,
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
   approvalsEnabled = true,
 ): Array<'codeApprovalMode'> {
-  return makesNoCodeApprovalDecision(settingsByAgentId, approvalsEnabled)
-    ? ['codeApprovalMode']
-    : [];
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? ['codeApprovalMode'] : [];
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {
@@ -337,6 +378,11 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
   attachedAgentIds: ReadonlySet<string>,
   settingsByAgentId: ReadonlyMap<string, AttachedCodeEnvironmentPolicySettings> = new Map(),
   mode?: CodeApprovalMode,
+  /** Machines a parent may route an agent to per call; any of them that asks can pause. */
+  routePoliciesByAgentId: ReadonlyMap<
+    string,
+    readonly AttachedCodeEnvironmentPolicySettings[]
+  > = new Map(),
 ): ResolvedToolApprovalHook[] {
   const hook = createAttachedCodeEnvironmentPolicyHook(attachedAgentIds, settingsByAgentId, mode);
   const hooks: ResolvedToolApprovalHook[] = [];
@@ -344,11 +390,15 @@ export function buildAttachedCodeEnvironmentAdmissionHooks(
   const askCommandAgents = new Set<string>();
   const skillAuthoringAgents = new Set<string>();
   for (const agentId of attachedAgentIds) {
-    const policy = settingsByAgentId.get(agentId);
-    if (permissionDecision(policy, 'fileWrite', mode) === 'ask') askFileAgents.add(agentId);
-    if (permissionDecision(policy, 'commandExecution', mode) === 'ask')
-      askCommandAgents.add(agentId);
-    if (policy?.skillAuthoringAvailable === true) skillAuthoringAgents.add(agentId);
+    const routePolicies = routePoliciesByAgentId.get(agentId) ?? [];
+    const policies = routePolicies.length > 0 ? routePolicies : [settingsByAgentId.get(agentId)];
+    const asks = (category: PermissionCategory): boolean =>
+      policies.some((policy) => permissionDecision(policy, category, mode) === 'ask');
+    if (asks('fileWrite')) askFileAgents.add(agentId);
+    if (asks('commandExecution')) askCommandAgents.add(agentId);
+    if (policies.some((policy) => policy?.skillAuthoringAvailable === true)) {
+      skillAuthoringAgents.add(agentId);
+    }
   }
   if (askFileAgents.size > 0) {
     hooks.push({

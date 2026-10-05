@@ -1,6 +1,6 @@
 import React, { forwardRef, useMemo, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
-import { Zap, Clock, OctagonPause, ZapOff } from 'lucide-react';
+import { Zap, Clock, ZapOff } from 'lucide-react';
 import { composerSubmitClasses, SendActions, SendIcon } from '@librechat/client';
 import type { SendAction } from '@librechat/client';
 import type { Control } from 'react-hook-form';
@@ -14,6 +14,12 @@ import { useLocalize } from '~/hooks';
  *  surface that can submit more than one way — see `SendActions`. */
 type ActionRow = SendAction;
 
+const ACTION_LABELS = {
+  steer: 'com_ui_steer_send',
+  interrupt: 'com_ui_interrupt_steer',
+  queue: 'com_ui_queue_send',
+} as const;
+
 type DuringRunSendButtonProps = {
   control: Control<{ text: string }>;
   steering: SteeringControls;
@@ -26,17 +32,7 @@ type DuringRunSendButtonProps = {
   enterToSend: boolean;
 };
 
-/**
- * The send button while a run is generating: it takes over the send/stop slot
- * (and `submitButtonRef`, so Enter's synthetic click routes here) whenever the
- * composer holds text: submitting steers or queues per the effective action.
- * Hovering it reveals the full action list with its shortcuts: steer, queue
- * (⌘/Ctrl+Enter routes to the non-default action), interrupt & steer
- * (⌘/Ctrl+Shift+Enter — requests an earlier safe point when a conversation
- * exists, otherwise stops and sends a new turn), and
- * interrupt & send (⌥/Alt+Enter — discards the answer and starts over).
- * Clearing the composer restores the Stop button.
- */
+/** The active mode owns submission; the menu overrides it for one message. */
 const DuringRunSendButton = React.memo(
   forwardRef((props: DuringRunSendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const localize = useLocalize();
@@ -44,7 +40,6 @@ const DuringRunSendButton = React.memo(
     const { steering, enterToSend } = props;
     const disabledRef = useRef(props.disabled);
     disabledRef.current = props.disabled;
-    const { steerInterruptsByDefault } = steering;
     const data = useWatch({ control: props.control });
     const content = data?.text?.trim();
     const primary = steering.effectiveAction;
@@ -85,14 +80,6 @@ const DuringRunSendButton = React.memo(
       };
     }, [enterToSend, shortcutsEnabled, submitOverride, yieldedChords]);
 
-    /**
-     * With the preference on, plain Enter routes through `submitDuringRun`,
-     * which preempts. The hint has to follow it: leaving ⏎ on the ordinary
-     * Steer row would advertise a key that does something else, and that row
-     * deliberately stays non-preempting when CLICKED. No key reaches it in
-     * this mode, so it shows none.
-     */
-    const enterInterrupts = primary === 'steer' && steerInterruptsByDefault;
     /** The chord that submits the default action, if any still does. */
     let submitHint: string | undefined;
     if (verdicts.plainEnter === 'submit') {
@@ -102,7 +89,7 @@ const DuringRunSendButton = React.memo(
     }
     const alternateHint = verdicts.modEnter === 'other' ? modEnter : undefined;
     let interruptSteerKbd: string | undefined;
-    if (enterInterrupts && submitHint != null) {
+    if (primary === 'interrupt' && submitHint != null) {
       interruptSteerKbd = submitHint;
     } else if (verdicts.modShiftEnter === 'preempt') {
       interruptSteerKbd = modShiftEnter;
@@ -121,9 +108,9 @@ const DuringRunSendButton = React.memo(
       }
     };
 
-    let steerKbd: string | undefined = alternateHint;
+    let steerKbd: string | undefined = primary === 'queue' ? alternateHint : undefined;
     if (primary === 'steer') {
-      steerKbd = enterInterrupts ? undefined : submitHint;
+      steerKbd = submitHint;
     }
 
     const steerRow: ActionRow = {
@@ -143,34 +130,24 @@ const DuringRunSendButton = React.memo(
       disabled: props.disabled,
       onClick: () => runAction((text) => steering.queueFromComposer(text)),
     };
-    /** When steering is available, keeps visible text; a new chat instead hard-stops. */
+    /** Interrupt never becomes a stop-and-send fallback. */
     const interruptSteerRow: ActionRow = {
       key: 'interrupt-steer',
-      label: localize(
-        props.isNewConversation ? 'com_ui_steer_first_turn_stop' : 'com_ui_interrupt_steer',
-      ),
+      label: localize('com_ui_interrupt_steer'),
       kbd: interruptSteerKbd,
       icon: <ZapOff className="text-status-warning h-4 w-4" aria-hidden="true" />,
       disabled:
         props.disabled ||
         steering.pausedOnApproval ||
-        !steering.canControlGeneration ||
+        !steering.canSteer ||
         steering.pendingReasoningOverride != null,
       onClick: () => runAction((text) => steering.interruptSteer(text)),
     };
-    const interruptRow: ActionRow = {
-      key: 'interrupt',
-      label: localize('com_ui_interrupt_send'),
-      kbd: verdicts.altEnter === 'interrupt' ? altEnter : undefined,
-      icon: <OctagonPause className="text-status-error h-4 w-4" aria-hidden="true" />,
-      disabled: props.disabled || !steering.canControlGeneration,
-      onClick: () => runAction((text) => steering.interruptAndSend(text)),
-    };
-    const rows = primary === 'steer' ? [steerRow, queueRow] : [queueRow, steerRow];
-    rows.push(interruptSteerRow, interruptRow);
-
-    const label =
-      primary === 'steer' ? localize('com_ui_steer_send') : localize('com_ui_queue_send');
+    if (interruptSteerKbd == null && verdicts.altEnter === 'interrupt') {
+      interruptSteerRow.kbd = altEnter;
+    }
+    const rows = [steerRow, interruptSteerRow, queueRow];
+    const label = localize(ACTION_LABELS[primary]);
 
     return (
       <SendActions

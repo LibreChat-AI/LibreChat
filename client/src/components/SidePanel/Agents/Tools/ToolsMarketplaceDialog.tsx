@@ -23,9 +23,9 @@ import {
 } from './items/selectors';
 import { useAgentFileEntries, useAgentItems, useUninstallToolCredentials } from './hooks';
 import MarketplaceSidebar, { MarketplaceFilterBar } from './MarketplaceSidebar';
+import { setSubagentsEnabled, removeHandoffs } from './items/orchestration';
 import { requiresFileManagerRemoval } from './items/capabilities';
 import AddMcpServerDialog from './ItemDialog/AddMcpServerDialog';
-import { removeOrchestration } from './items/orchestration';
 import { computeToggleAction } from './items/mutations';
 import { useLocalize, useToolFavorites } from '~/hooks';
 import MarketplaceCatalog from './MarketplaceCatalog';
@@ -131,14 +131,14 @@ export default function ToolsMarketplaceDialog({
         case 'configure':
           setDetailItem(item);
           break;
-        case 'orchestration-remove': {
-          const next = removeOrchestration(getValues('subagents'), getValues('edges'));
-          if (next.subagents) {
-            setValue('subagents', next.subagents, { shouldDirty: true });
-          }
-          setValue('edges', next.edges, { shouldDirty: true });
+        case 'subagents':
+          setValue('subagents', setSubagentsEnabled(getValues('subagents'), patch.enabled), {
+            shouldDirty: true,
+          });
           break;
-        }
+        case 'handoffs-remove':
+          setValue('edges', removeHandoffs(getValues('edges')), { shouldDirty: true });
+          break;
         case 'builtin':
           setValue(patch.field as keyof AgentForm, patch.value as never, { shouldDirty: true });
           if (patch.field === AgentCapabilities.execute_code && patch.value === false) {

@@ -498,7 +498,7 @@ function QueueRow({
           render={
             <IconButton
               label={localize('com_ui_more_options')}
-              size="lg"
+              size="sm"
               shape="control"
               data-testid="queued-message-options"
               disabled={actionPending}
@@ -526,7 +526,7 @@ function QueueRow({
           ? 'com_ui_dismiss_unconfirmed_delivery'
           : 'com_ui_remove_queued',
       )}
-      size="lg"
+      size="sm"
       shape="control"
       disabled={removeDisabled}
       onClick={
@@ -567,7 +567,7 @@ function QueueRow({
       transition={reduceMotion ? { duration: 0 } : ROW_TRANSITION}
       className="border-border-light overflow-hidden border-b text-sm last:border-b-0"
     >
-      <div className="flex min-h-14 items-center gap-2 px-3 py-2">
+      <div className="flex min-h-11 items-center gap-1.5 px-2.5 py-1.5">
         <IconButton
           ref={gripRef}
           label={localize('com_ui_queue_reorder', {
@@ -658,6 +658,7 @@ function QueueRow({
           <>
             <Button
               variant="outline"
+              size="xs"
               shape="theme"
               disabled={sendDisabled}
               aria-disabled={sendDisabled}
@@ -674,7 +675,7 @@ function QueueRow({
             {showEscalate && (
               <EscalateNowButton
                 surface="queued"
-                size="lg"
+                size="sm"
                 shape="control"
                 messageText={message.text}
                 disabled={
