@@ -1,16 +1,19 @@
 import { logger } from '@librechat/data-schemas';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import type { IRole } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from './service';
 import {
   createSchedulesService,
   recordScheduledMCPToolAuthFailure,
   ScheduledMCPReceiptFencedError,
 } from './service';
+import { getScheduledMCPConfigurationRevision } from './authorization/configuration';
+import { executionFixture, readTool } from './authorization/execution.helper';
+import { createScheduleMCPPreflight, ScheduleMCPError } from './mcp';
 import { ScheduledMCPPolicyError } from './authorization/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
 import { ScheduledMCPBearerError } from '../mcp/errors';
 import { isShutdownInProgress } from '../app/shutdown';
-import { ScheduleMCPError } from './mcp';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
 let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock; updateJob?: jest.Mock } | null = null;
@@ -1334,6 +1337,106 @@ describe('attachment hold renewal', () => {
 });
 
 describe('isScheduleLive policy recheck', () => {
+  async function manualOboLiveness() {
+    const fixture = await executionFixture('resume');
+    fixture.config.obo = { scopes: 'read' };
+    fixture.target.resource.configurationRevision = getScheduledMCPConfigurationRevision(
+      fixture.config,
+      fixture.target.resource,
+    );
+    for (const consent of fixture.snapshot.enrollment!.consents) {
+      consent.resource.configurationRevision = fixture.target.resource.configurationRevision;
+    }
+    const getAppConfig = jest.fn(async () => ({
+      interfaceConfig: { schedules: { use: true } },
+      endpoints: { agents: { capabilities: ['tools'] } },
+      mcpConfig: { warehouse: fixture.config },
+    })) as unknown as SchedulesServiceDeps['getAppConfig'];
+    const preflight = createScheduleMCPPreflight({
+      execution: fixture.factory,
+      getUser: async () => fixture.user,
+      getRoleByName: async () => ({ permissions: { MCP_SERVERS: { USE: true } } }) as IRole,
+      resolveAgentGraphAccess: async () => ({}) as never,
+      getAgentGraphNodes: async (ids) =>
+        ids.map((id) => ({ id, provider: 'test', model: 'test', tools: ['query_mcp_warehouse'] })),
+      getModelsConfig: async () => ({ test: ['test'] }),
+      getAppConfig,
+      ensureConfigServers: async () => ({ warehouse: fixture.config }),
+      getServerConfigs: async () => ({ warehouse: fixture.config }),
+      findPluginAuthsByKeys: async () => [],
+      connect: async () => ({
+        fetchToolsSnapshot: async () => ({ tools: [readTool], complete: true }),
+      }),
+    });
+    const service = makeService(
+      jest.fn(async (_userId: string): Promise<ActiveRun[]> => []),
+      getAppConfig,
+    );
+    const methods = service.engineDeps.methods as unknown as {
+      getScheduleById: jest.Mock;
+      getRoleByName: jest.Mock;
+    };
+    methods.getScheduleById = jest.fn(async () => ({
+      id: fixture.identity.scheduleId,
+      user: fixture.user.id,
+      tenantId: fixture.user.tenantId,
+      agent_id: fixture.identity.agentId,
+      enabled: fixture.snapshot.enabled,
+      configRevision: 0,
+    }));
+    methods.getRoleByName = jest.fn(async () => ({ permissions: { SCHEDULES: { USE: true } } }));
+    service.engineDeps.getUserContext = async () => ({
+      id: fixture.user.id,
+      tenantId: fixture.user.tenantId,
+      role: 'USER',
+    });
+    const probe = jest.mocked(service.engineDeps.preflightMCP);
+    probe.mockImplementation(preflight);
+    return { fixture, service, preflight, probe };
+  }
+
+  it.each([true, false, undefined])(
+    'preserves explicit manual provenance for paused OBO admission: automatic=%s',
+    async (automatic) => {
+      const { fixture, service, preflight, probe } = await manualOboLiveness();
+      fixture.snapshot.enabled = false;
+      await expect(
+        preflight(fixture.identity.agentId, fixture.user, {
+          scheduleId: fixture.identity.scheduleId,
+          concurrency: 1,
+          manual: true,
+        }),
+      ).resolves.toEqual([{ server: 'warehouse', status: 'ready' }]);
+      probe.mockClear();
+      await expect(
+        service.isScheduleLive(fixture.identity.scheduleId, 0, { policy: true, automatic }),
+      ).resolves.toBe(automatic === false);
+      if (automatic === false)
+        expect(probe).toHaveBeenCalledWith(
+          fixture.identity.agentId,
+          expect.objectContaining({ id: fixture.user.id }),
+          expect.objectContaining({ stage: 'resume', oboOnly: true, manual: true }),
+        );
+      if (automatic === true) expect(probe).not.toHaveBeenCalled();
+      if (automatic === undefined) expect(probe.mock.calls[0][2]).not.toHaveProperty('manual');
+    },
+  );
+
+  it.each(['revocation', 'expiry', 'RBAC', 'read-only policy'] as const)(
+    'keeps %s denial on manual OBO admission',
+    async (denial) => {
+      const { fixture, service } = await manualOboLiveness();
+      fixture.snapshot.enabled = false;
+      if (denial === 'revocation') await fixture.revoke();
+      else if (denial === 'expiry') fixture.expire();
+      else if (denial === 'RBAC') fixture.deny();
+      else fixture.removePolicy();
+      await expect(
+        service.isScheduleLive(fixture.identity.scheduleId, 0, { policy: true, automatic: false }),
+      ).resolves.toBe(false);
+    },
+  );
+
   const liveRow = { id: 's1', user: 'u1', enabled: true } as never;
 
   it('refuses a resume while the operator kill switch is up', async () => {

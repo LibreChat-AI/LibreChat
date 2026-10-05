@@ -1812,6 +1812,7 @@ export function createSchedulesService(
           deps.preflightMCP(schedule.agent_id, owner, {
             scheduleId,
             stage: 'resume',
+            ...(options.automatic === false && { manual: true }),
             oboOnly: true,
             concurrency: limits.mcpPreflightConcurrency,
             deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
