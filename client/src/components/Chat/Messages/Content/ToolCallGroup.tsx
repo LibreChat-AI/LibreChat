@@ -288,13 +288,15 @@ export default function ToolCallGroup({
   /** Past tense once the turn is settled — matches the Asking/Asked record
    *  card. While a multi-question turn streams, the still-open question's
    *  tool_call part has no output yet, so keep the present tense. */
-  const groupDone = allCompleted || !isSubmitting;
+  /** A detached task keeps the group in the running tense after the response
+   *  ends: its handle is the call's output, but the work is still going. */
+  const groupDone = (allCompleted || !isSubmitting) && !detachedRunning;
   const askQuestionsDone = allAskQuestions && (groupDone || askQuestionsAnswered);
 
   /** One verdict for the header's tense, its glyph and its icon animation —
    *  they read as a single control, so a group whose label already says
    *  "Asked 1 question" must not keep pulsing beside it. */
-  const isGroupLive = allAskQuestions ? !askQuestionsDone : !groupDone || detachedRunning;
+  const isGroupLive = allAskQuestions ? !askQuestionsDone : !groupDone;
 
   /** For a single-tool group, lead with the tool's own (capitalized) label
    *  instead of the generic "Used 1 tool: name", which reads awkwardly. */
@@ -513,7 +515,7 @@ export default function ToolCallGroup({
         if (only?.cancelled || interrupted) {
           return localize('com_ui_cancelled');
         }
-        if (!groupDone || only?.background === 'running') {
+        if (!groupDone) {
           return localize('com_assistants_running_var', { 0: singleToolLabel });
         }
         return only?.hasOutput
