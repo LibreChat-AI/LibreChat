@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import Rename from '../Rename';
 
@@ -39,7 +39,7 @@ const setup = (titleSetByUser = true, title = 'Old title') => {
   const onOpenChange = jest.fn();
   const trigger = document.createElement('button');
   document.body.appendChild(trigger);
-  render(
+  const { unmount } = render(
     <Rename
       conversationId="convo-1"
       title={title}
@@ -49,7 +49,12 @@ const setup = (titleSetByUser = true, title = 'Old title') => {
       triggerRef={{ current: trigger }}
     />,
   );
-  return { onOpenChange, trigger, input: screen.getByLabelText('com_ui_new_conversation_title') };
+  return {
+    onOpenChange,
+    trigger,
+    unmount,
+    input: screen.getByLabelText('com_ui_new_conversation_title'),
+  };
 };
 
 describe('Rename', () => {
@@ -113,6 +118,22 @@ describe('Rename', () => {
     fireEvent.click(screen.getByText('com_ui_save'));
 
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+  it('does not steal focus when a rename settles after the dialog was unmounted', async () => {
+    let settle: (value: unknown) => void = () => {};
+    mockMutateAsync.mockReturnValue(new Promise((resolve) => (settle = resolve)));
+    const { input, trigger, unmount, onOpenChange } = setup();
+
+    fireEvent.change(input, { target: { value: 'New title' } });
+    fireEvent.click(screen.getByText('com_ui_save'));
+    unmount();
+    await act(async () => {
+      settle({});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(trigger).not.toHaveFocus();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
   it('stays open and reports a failed rename', async () => {

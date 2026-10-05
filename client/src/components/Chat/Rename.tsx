@@ -42,9 +42,15 @@ function RenameContent({
   const inputRef = useRef<HTMLInputElement>(null);
   const updateMutation = useUpdateConversationMutation(conversationId);
 
+  const mountedRef = useRef(true);
+
   useEffect(() => {
+    mountedRef.current = true;
     inputRef.current?.focus();
     inputRef.current?.select();
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   const handleSubmit = async (event: FormEvent) => {
@@ -56,7 +62,10 @@ function RenameContent({
     }
     try {
       await updateMutation.mutateAsync({ conversationId, title: next });
-      onClose();
+      /** A rename that settles after the dialog went away has no dialog left to close or focus. */
+      if (mountedRef.current) {
+        onClose();
+      }
     } catch (error) {
       logger.error('Error renaming conversation', error);
       showToast({
