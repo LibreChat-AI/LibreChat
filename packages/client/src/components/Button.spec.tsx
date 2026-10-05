@@ -17,6 +17,9 @@ describe('Button', () => {
     expect(destructive).toContain('text-text-on-status');
     expect(destructive).toContain('theme-destructive-soft:bg-surface-destructive/10');
     expect(destructive).toContain('theme-destructive-soft:text-text-destructive');
+    // The ink stays at 4.5:1 over the light-theme tint only below a 20% hover and pressed share.
+    expect(destructive).toContain('theme-destructive-soft:hover:bg-surface-destructive/14');
+    expect(destructive).toContain('theme-destructive-soft:hover:active:bg-surface-destructive/17');
   });
 
   it('outlines a toggle in the control border', () => {

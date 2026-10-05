@@ -61,7 +61,7 @@ const buttonVariantRecipe = cva(
         default:
           'bg-button-primary text-text-inverted hover:bg-button-primary-hover hover:active:bg-surface-inverted-pressed',
         destructive:
-          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover theme-destructive-soft:bg-surface-destructive/10 theme-destructive-soft:text-text-destructive theme-destructive-soft:hover:bg-surface-destructive/20 theme-destructive-soft:hover:active:bg-surface-destructive/30',
+          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover theme-destructive-soft:bg-surface-destructive/10 theme-destructive-soft:text-text-destructive theme-destructive-soft:hover:bg-surface-destructive/14 theme-destructive-soft:hover:active:bg-surface-destructive/17',
         outline:
           'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /** An outlined filter whose pressed state stays visible between activations. */
