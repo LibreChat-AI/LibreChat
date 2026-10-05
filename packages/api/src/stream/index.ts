@@ -24,6 +24,7 @@ export type {
   IJobStore,
   IJobStoreV2,
   DetachedAgentEventActionStoreMode,
+  ScheduleProviderOwner,
 } from './interfaces/IJobStore';
 // Canonical "is this approval live?" predicate — one definition shared by the
 // stores, the approval lifecycle, and the status route / message middleware.

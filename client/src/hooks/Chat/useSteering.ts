@@ -609,11 +609,8 @@ export default function useSteering({
   const { mutate: markFilesUsage } = useMarkFilesUsageMutation();
   const { mutate: enqueueAgentQueuedTurn } = useEnqueueAgentQueuedTurnMutation();
   const { mutateAsync: cancelAgentQueuedTurn } = useCancelAgentQueuedTurnMutation();
-  const {
-    duringRunDefaultAction: defaultAction,
-    setDuringRunDefaultAction: setDefaultAction,
-    steerInterruptsByDefault,
-  } = useChatSettings();
+  const { duringRunDefaultAction: defaultAction, setDuringRunDefaultAction: setDefaultAction } =
+    useChatSettings();
 
   const { selected: codeApprovalMode } = useCodeApprovalMode(conversation, addedConversation);
   const endpoint = conversation?.endpointType ?? conversation?.endpoint;
@@ -1970,10 +1967,18 @@ export default function useSteering({
                     }
                     return;
                   }
-                  /** The server's echo is authoritative: a deployment whose SDK
-                   *  cannot seal mid-stream still queues the steer and answers
-                   *  `preempt: false`, which relabels the chip to the ordinary
-                   *  wording instead of surfacing an error. */
+                  /** Unsupported runs retain the words as Steer, but never silently
+                   * claim to have requested tool cancellation. */
+                  if (
+                    preempt &&
+                    response.preempt !== true &&
+                    visibleConversationRef.current === conversationId
+                  ) {
+                    showToast({
+                      message: localize('com_ui_steer_preempt_unsupported'),
+                      status: 'warning',
+                    });
+                  }
                   const acknowledged = {
                     steerId: response.steerId,
                     clientSteerId: localId,
@@ -2533,25 +2538,7 @@ export default function useSteering({
     ],
   );
 
-  /**
-   * Interrupt & steer: the same POST, queue, chip lifecycle and degradation
-   * ladder as an ordinary steer: the only difference is that the server asks
-   * the generating replica to seal its model stream at the next
-   * provider-safe boundary instead of waiting for a tool step. The partial
-   * answer is kept and generation resumes in the same message.
-   *
-   * Falls back to `interruptAndSend` ONLY before a conversation exists:
-   * steering needs a server-side job, so `submitSteer` hard-refuses without a
-   * real conversationId, and an always-visible button would otherwise be dead
-   * for the entire first turn, exactly when a user most wants to stop a long
-   * answer.
-   *
-   * A run paused on tool approval refuses outright instead. `canSteer` is
-   * false there too, but routing that into `interruptAndSend` would hard-abort
-   * the run and discard the partial answer: the exact opposite of what this
-   * action promises. The standalone button is disabled while paused; the
-   * keyboard and hovercard paths reach here, so the guard lives here.
-   */
+  /** Preempt the active step and continue the same response with the message. */
   const interruptSteer = useCallback(
     (text: string): boolean => {
       const trimmed = text.trim();
@@ -2560,7 +2547,8 @@ export default function useSteering({
         trimmed.length === 0 ||
         filesLoading ||
         pausedOnApproval ||
-        !canControlGeneration
+        !canControlGeneration ||
+        !hasRealConvoId
       ) {
         return false;
       }
@@ -2572,9 +2560,6 @@ export default function useSteering({
          turn of their own. */
       if (pendingReasoningOverride != null) {
         return false;
-      }
-      if (!hasRealConvoId) {
-        return interruptAndSend(trimmed);
       }
       const consumed = submitSteer(trimmed, takeComposerFiles(), takeComposerQuotes(), {
         preempt: true,
@@ -2590,7 +2575,6 @@ export default function useSteering({
       canControlGeneration,
       hasRealConvoId,
       pendingReasoningOverride,
-      interruptAndSend,
       takeComposerFiles,
       takeComposerQuotes,
       takeComposerDraft,
@@ -2604,21 +2588,15 @@ export default function useSteering({
       if (composerDisabledRef.current || !duringRunActive) {
         return false;
       }
+      if (effectiveAction === 'interrupt') {
+        return interruptSteer(text);
+      }
       if (effectiveAction === 'steer') {
-        /** Only the DEFAULT route honours the preference: the explicit Steer
-         *  row and the Ctrl/Cmd+Enter alternate stay non-preempting, or they
-         *  would become indistinguishable from Interrupt & steer. */
-        return steerFromComposer(text, steerInterruptsByDefault);
+        return steerFromComposer(text);
       }
       return queueFromComposer(text);
     },
-    [
-      duringRunActive,
-      effectiveAction,
-      steerInterruptsByDefault,
-      steerFromComposer,
-      queueFromComposer,
-    ],
+    [duringRunActive, effectiveAction, interruptSteer, steerFromComposer, queueFromComposer],
   );
 
   /** Memoized so consumers like `memo(Bar)` and `memo(Queue)` can bail on the
@@ -2633,7 +2611,6 @@ export default function useSteering({
       canSendQueuedNow,
       effectiveAction,
       defaultAction,
-      steerInterruptsByDefault,
       pendingReasoningOverride,
       pausedOnApproval,
       setDefaultAction,
@@ -2666,7 +2643,6 @@ export default function useSteering({
       duringRunActive,
       canSendQueuedNow,
       effectiveAction,
-      steerInterruptsByDefault,
       defaultAction,
       pendingReasoningOverride,
       pausedOnApproval,

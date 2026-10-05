@@ -3,10 +3,14 @@ import { InMemorySubagentTaskStore } from '@librechat/agents';
 import type {
   LCTool,
   LCToolRegistry,
+  SubagentTaskClaim,
   SubagentTaskConfig,
   SubagentTaskRuntime,
+  SubagentUpdateEvent,
+  SubagentTaskSnapshot,
 } from '@librechat/agents';
 import type { HostSubagentTaskConfig } from './subagentDelivery';
+import type { ActivitySnapshot } from './digest';
 import {
   isBackgroundEligibleToolName,
   isBackgroundRequested,
@@ -26,11 +30,18 @@ import {
   CHECK_BACKGROUND_TASK_NAME,
   RUN_IN_BACKGROUND_ARG,
 } from './background';
+import {
+  SUBAGENT_POLL_GUIDANCE,
+  SUBAGENT_WAKEUP_GUIDANCE,
+  SUBAGENT_COMPLETION_DELIVERY,
+  SUBAGENT_POLL_WAKEUP_GUIDANCE,
+} from './subagentDelivery';
+import { parseBackgroundTaskOutput } from '../../../../client/src/components/Chat/Messages/Content/Parts/background';
 import { parseBackgroundHandle } from '../../../../client/src/components/Chat/Messages/Content/Parts/handle';
-import { SUBAGENT_COMPLETION_DELIVERY, SUBAGENT_WAKEUP_GUIDANCE } from './subagentDelivery';
 import { SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
 import { TOOL_SELECTION_WILDCARD } from './selection';
 import { toolOptionsSchema } from './validation';
+import { ActivityRecorder } from './digest';
 
 const mcpDef = (name: string): LCTool =>
   ({
@@ -475,6 +486,12 @@ describe('registerBackgroundTaskTool', () => {
     expect(automatic.toolDefinitions[0].description).toContain(
       'Polling or cancelling a finished task retires its pending delivery',
     );
+    for (const description of [manualDescription, automatic.toolDefinitions[0].description ?? '']) {
+      expect(description).toContain('Pass since: activity.cursor');
+      expect(description).toContain('expand:');
+      /** OpenAI-compatible validators reject longer tool descriptions. */
+      expect(description.length).toBeLessThan(1024);
+    }
   });
 });
 
@@ -3248,7 +3265,8 @@ describe('runCheckBackgroundTask (singleton)', () => {
     );
     expect(polled).toMatchObject({
       status: 'running',
-      message: SUBAGENT_WAKEUP_GUIDANCE,
+      message: SUBAGENT_POLL_WAKEUP_GUIDANCE,
+      next_check_s: 30,
     });
 
     const listed = JSON.parse(
@@ -3273,7 +3291,7 @@ describe('runCheckBackgroundTask (singleton)', () => {
       }),
     );
     expect(ephemeralPoll.status).toBe('running');
-    expect(ephemeralPoll.message).toBeUndefined();
+    expect(ephemeralPoll.message).toBe(SUBAGENT_POLL_GUIDANCE);
 
     store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
@@ -3309,8 +3327,12 @@ describe('runCheckBackgroundTask (singleton)', () => {
         subagentTasks,
       }),
     );
-    expect(polled).toMatchObject({ status: 'running' });
-    expect(polled.message).toBeUndefined();
+    expect(polled).toMatchObject({
+      status: 'running',
+      message: SUBAGENT_POLL_GUIDANCE,
+      next_check_s: 30,
+    });
+    expect(polled.message).not.toContain('resumes you automatically');
 
     store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
@@ -4016,5 +4038,250 @@ describe('runCheckBackgroundTask delivery semantics', () => {
     );
 
     expect(cancelled).toEqual(expect.objectContaining({ status: 'not_found' }));
+  });
+});
+
+describe('runCheckBackgroundTask subagent activity', () => {
+  /** The host task store decorates claims and lists with the owner's progress tree;
+   * this store does the same over the SDK store so the poll path runs end to end. */
+  class ActivityTaskStore extends InMemorySubagentTaskStore {
+    readonly recorders = new Map<string, ActivityRecorder>();
+
+    override claim(scopeId: string, taskId: string): SubagentTaskClaim {
+      const claim = super.claim(scopeId, taskId);
+      const recorder = this.recorders.get(taskId);
+      if (claim.status === 'not_found' || recorder == null) {
+        return claim;
+      }
+      const task: ActivitySnapshot = { ...claim.task, activity: recorder.snapshot() };
+      return { ...claim, task };
+    }
+
+    override list(scopeId: string): SubagentTaskSnapshot[] {
+      return super.list(scopeId).map((task): ActivitySnapshot => {
+        const recorder = this.recorders.get(task.taskId);
+        return recorder == null ? task : { ...task, activitySummary: recorder.summary() };
+      });
+    }
+  }
+
+  const update = (phase: SubagentUpdateEvent['phase'], data: unknown): SubagentUpdateEvent => ({
+    runId: 'root-run',
+    subagentRunId: 'child-run',
+    subagentType: 'pr-reviewer',
+    subagentAgentId: 'agent-reviewer',
+    phase,
+    data,
+    timestamp: new Date().toISOString(),
+  });
+
+  const toolCall = (id: string, name: string, intent: string) =>
+    update('run_step', {
+      id: `step-${id}`,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id, name, args: { intent, secret: 'sk-1' } }],
+      },
+    });
+
+  const toolResult = (id: string, name: string, output: string) =>
+    update('run_step_completed', {
+      result: { type: 'tool_call', tool_call: { id, name, output } },
+    });
+
+  let reviewers = 0;
+
+  function startReviewer(release?: Promise<{ content: string }>) {
+    const store = new ActivityTaskStore();
+    const subagentTasks: HostSubagentTaskConfig = {
+      store,
+      scopeId: 'owner:digest-parent',
+      completionDelivery: SUBAGENT_COMPLETION_DELIVERY,
+    };
+    const recorder = new ActivityRecorder();
+    reviewers += 1;
+    const started = store.start({
+      scopeId: subagentTasks.scopeId,
+      idempotencyKey: `parent-run:parent-agent:reviewer-${reviewers}`,
+      parentRunId: 'parent-run',
+      parentAgentId: 'parent-agent',
+      parentToolCallId: 'call-reviewer',
+      input: 'Review the PR.',
+      subagentKind: 'agent',
+      subagentType: 'pr-reviewer',
+      run: (runtime: SubagentTaskRuntime) =>
+        release ??
+        new Promise((_, reject) => {
+          runtime.signal.addEventListener('abort', () => reject(runtime.signal.reason), {
+            once: true,
+          });
+        }),
+    });
+    if (!started.accepted) {
+      throw new Error('Expected subagent task to start.');
+    }
+    store.recorders.set(started.task.taskId, recorder);
+    for (let index = 1; index <= 8; index++) {
+      const name = index % 2 === 1 ? 'bash_tool' : 'read_file';
+      recorder.record(toolCall(`call-${index}`, name, `Step ${index}`));
+      recorder.record(
+        toolResult(
+          `call-${index}`,
+          name,
+          index === 3 ? 'Error: tool call failed: exit 1' : 'API_KEY=leak',
+        ),
+      );
+    }
+    recorder.record(toolCall('call-9', 'bash_tool', 'Running the jest suite'));
+    const poll = async (args: Record<string, unknown> = {}) =>
+      JSON.parse(
+        await runCheckBackgroundTask({
+          userId: 'owner',
+          conversationId: 'digest-parent',
+          agentId: 'agent_parent',
+          args: { background_task_id: started.task.taskId, ...args },
+          subagentTasks,
+        }),
+      );
+    return { store, subagentTasks, recorder, taskId: started.task.taskId, poll };
+  }
+
+  const paths = (digest: { nodes: Array<{ path: string }> }): string[] =>
+    digest.nodes.map((node) => node.path);
+
+  it('returns a folded, navigable digest for a running subagent', async () => {
+    const { store, subagentTasks, taskId, poll, recorder } = startReviewer();
+    const polled = await poll();
+    expect(polled).toMatchObject({
+      status: 'running',
+      message: SUBAGENT_POLL_WAKEUP_GUIDANCE,
+      next_check_s: 30,
+      activity: { turns: 9, tools: 9, errors: 1, active: '9.1', cursor: '8.1' },
+    });
+    expect(polled.progress_detail).toBeUndefined();
+    expect(paths(polled.activity)).toEqual(['1-3', '4', '5', '6', '7', '8', '9', '9.1']);
+    expect(JSON.stringify(polled)).not.toContain('leak');
+    expect(JSON.stringify(polled)).not.toContain('sk-1');
+
+    const unchanged = await poll({ since: polled.activity.cursor });
+    expect(paths(unchanged.activity)).toEqual(['9', '9.1']);
+    recorder.record(toolResult('call-9', 'bash_tool', 'PASS'));
+    recorder.record(toolCall('call-10', 'read_file', 'Reading the diff'));
+    const advanced = await poll({ since: unchanged.activity.cursor });
+    expect(advanced.activity).toMatchObject({ since: '8.1', cursor: '9.1', active: '10.1' });
+    expect(paths(advanced.activity)).toEqual(['9', '9.1', '10', '10.1']);
+
+    const expanded = await poll({ expand: '1-3' });
+    expect(expanded.activity.expanded).toBe('1-3');
+    expect(expanded.activity.nodes).toEqual([
+      expect.objectContaining({ path: '1', summary: 'bash_tool' }),
+      expect.objectContaining({ path: '2', summary: 'read_file' }),
+      expect.objectContaining({ path: '3', status: 'error', errors: 1 }),
+    ]);
+
+    const display = parseBackgroundTaskOutput(JSON.stringify(polled));
+    expect(display?.kind === 'task' ? display.task.activity?.nodes : undefined).toHaveLength(8);
+
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('rejects malformed navigation without touching the task', async () => {
+    const { store, subagentTasks, taskId, poll } = startReviewer();
+    expect(await poll({ expand: 'turn three' })).toEqual({
+      status: 'invalid',
+      background_task_id: taskId,
+      message: expect.stringContaining('expand must be a node path'),
+    });
+    expect(await poll({ since: '1', expand: '2' })).toMatchObject({ status: 'invalid' });
+    expect(store.get(subagentTasks.scopeId, taskId)?.status).toBe('running');
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('lists running subagents with counts and only the node in flight', async () => {
+    const { store, subagentTasks, taskId } = startReviewer();
+    const listed = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'owner',
+        conversationId: 'digest-parent',
+        agentId: 'agent_parent',
+        args: {},
+        subagentTasks,
+      }),
+    );
+    expect(listed.tasks[0].activity).toEqual({
+      turns: 9,
+      tools: 9,
+      errors: 1,
+      active: '9.1',
+      nodes: [
+        expect.objectContaining({
+          path: '9.1',
+          name: 'bash_tool',
+          label: 'Running the jest suite',
+          status: 'running',
+        }),
+      ],
+    });
+    expect(listed.message).toBe(SUBAGENT_WAKEUP_GUIDANCE);
+    store.control(subagentTasks.scopeId, taskId, { action: 'cancel' });
+  });
+
+  it('returns the result with its activity when a finished, undelivered task is polled', async () => {
+    let finish = (_value: { content: string }): void => undefined;
+    const release = new Promise<{ content: string }>((resolve) => (finish = resolve));
+    const { store, subagentTasks, taskId, poll, recorder } = startReviewer(release);
+    recorder.record(toolResult('call-9', 'bash_tool', 'PASS'));
+    recorder.settle('completed');
+    finish({ content: 'Two findings.' });
+    await waitForSubagentTaskToSettle(store, subagentTasks.scopeId, taskId);
+
+    const collected = await poll();
+    expect(collected).toMatchObject({
+      status: 'completed',
+      result: 'Two findings.',
+      activity: { turns: 9, tools: 9, errors: 1, cursor: '9.1' },
+    });
+    expect(collected.activity.active).toBeUndefined();
+    expect(collected.activity.idle_ms).toBeUndefined();
+    expect(collected.next_check_s).toBeUndefined();
+    expect(collected.message).toBeUndefined();
+  });
+
+  it('keeps the legacy progress label when the owner sends no activity', async () => {
+    const store = new InMemorySubagentTaskStore();
+    const subagentTasks: SubagentTaskConfig = { store, scopeId: 'owner:legacy-parent' };
+    const started = store.start({
+      scopeId: subagentTasks.scopeId,
+      idempotencyKey: 'parent-run:parent-agent:legacy',
+      parentRunId: 'parent-run',
+      parentAgentId: 'parent-agent',
+      parentToolCallId: 'call-legacy',
+      input: 'Research this.',
+      subagentKind: 'agent',
+      subagentType: 'researcher',
+      run: (runtime: SubagentTaskRuntime) => {
+        runtime.reportProgress(update('message_delta', { delta: { content: [] } }));
+        return new Promise((_, reject) => {
+          runtime.signal.addEventListener('abort', () => reject(runtime.signal.reason), {
+            once: true,
+          });
+        });
+      },
+    });
+    if (!started.accepted) {
+      throw new Error('Expected subagent task to start.');
+    }
+    await Promise.resolve();
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId: 'owner',
+        conversationId: 'legacy-parent',
+        args: { background_task_id: started.task.taskId, since: '3' },
+        subagentTasks,
+      }),
+    );
+    expect(polled.activity).toBeUndefined();
+    expect(polled.progress_detail).toMatchObject({ phase: 'message_delta' });
+    store.control(subagentTasks.scopeId, started.task.taskId, { action: 'cancel' });
   });
 });

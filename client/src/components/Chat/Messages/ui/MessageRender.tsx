@@ -10,7 +10,7 @@ import {
   getHeaderPrefixForScreenReader,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
-import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
+import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
@@ -23,6 +23,7 @@ import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { MessageContext } from '~/Providers';
+import WakeupRow from './WakeupRow';
 import store from '~/store';
 
 type MessageRenderProps = {
@@ -139,10 +140,7 @@ const MessageRender = memo(function MessageRender({
   );
 
   const { hasParallelContent } = useContentMetadata(msg);
-  const wakeupDisplay = useMemo(
-    () => (msg?.isCreatedByUser === true ? parseWakeupText(msg.text) : null),
-    [msg?.isCreatedByUser, msg?.text],
-  );
+  const wakeupDisplay = useMemo(() => parseWakeupMessage(msg), [msg]);
   const messageId = msg?.messageId ?? '';
   const messageContextValue = useMemo(
     () => ({
@@ -160,9 +158,14 @@ const MessageRender = memo(function MessageRender({
   }
 
   const showOwnerText = !edit && msg.isCreatedByUser && Boolean(msg.privacyRevision);
+  const subagentWakeup =
+    !edit && wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
+  const Row = subagentWakeup == null ? MessageRow : WakeupRow;
 
   return (
-    <MessageRow
+    <Row
+      task={subagentWakeup}
+      conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
@@ -180,7 +183,11 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
+      systemLabel={
+        wakeupDisplay != null && subagentWakeup == null && !edit
+          ? localize('com_ui_system_event')
+          : undefined
+      }
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
           {/* The reading holds the column start: it takes over the slot the streaming
@@ -249,7 +256,7 @@ const MessageRender = memo(function MessageRender({
             />
           ))}
       </MessageContext.Provider>
-    </MessageRow>
+    </Row>
   );
 }, areMessageRenderPropsEqual);
 MessageRender.displayName = 'MessageRender';

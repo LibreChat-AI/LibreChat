@@ -7,6 +7,7 @@ import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
 import { prepareQueuedCodeFileContext } from '../code/queued';
+import { createSubagentCodeRouting } from '~/code/targets';
 import { createProvisionFilesCallback } from './callback';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -48,10 +49,14 @@ function buildHarness({
   contexts,
   codeImpl,
   vectorImpl,
+  resolveExecutionContext,
 }: {
   contexts: Array<[string, ProvisionToolContext]>;
   codeImpl?: jest.Mock;
   vectorImpl?: jest.Mock;
+  resolveExecutionContext?: Parameters<
+    typeof createProvisionFilesCallback
+  >[0]['resolveExecutionContext'];
 }) {
   const provisionToCodeEnv =
     codeImpl ??
@@ -101,6 +106,7 @@ function buildHarness({
       updateFile,
       updateCodeEnvRef,
       addEmbeddedEntity,
+      resolveExecutionContext,
     }),
   };
 }
@@ -299,6 +305,57 @@ describe('createProvisionFilesCallback', () => {
       expect(args.sandboxFilename).toBe(advertised.get(args.file.file_id));
     }
     expect(agent.provisionState.codeEnvFiles).toEqual([]);
+  });
+
+  it("provisions a per-call routed child into its own execution's context", async () => {
+    const shared = { provisionState: state([makeFile({ file_id: 'shared-route' })], []) };
+    const routed = { provisionState: state([makeFile({ file_id: 'routed-route' })], []) };
+    const routing = createSubagentCodeRouting<ProvisionToolContext>({});
+    routing.attach(new Map(), {
+      agentId: 'agent-a',
+      context: { executionId: 'run-routed' },
+      placement: {
+        agent: { id: 'agent-a' },
+        target: {
+          environmentId: 'machine',
+          workspaceId: 'workspace',
+          context: {
+            baseUrl: 'https://bridge.example',
+            codeSessionKey: 'machine',
+            executionProfile: 'stateful',
+            statefulSessions: true,
+            environmentId: 'machine',
+          },
+        },
+      },
+      codeExecutionContext: { environmentId: 'machine' },
+      toolContext: routed,
+    });
+    const executionContext = {
+      rootRunId: 'root',
+      hookSessionId: 'hooks',
+      depth: 1,
+      ancestry: [
+        {
+          subagentRunId: 'run-routed',
+          subagentType: 'agent-a',
+          subagentKind: 'agent' as const,
+          subagentAgentId: 'agent-a',
+          parentRunId: 'root',
+        },
+      ],
+    };
+    const { provisionFiles, provisionToCodeEnv } = buildHarness({
+      contexts: [['agent-a', shared]],
+      resolveExecutionContext: routing.getToolContext,
+    });
+
+    await provisionFiles([Constants.EXECUTE_CODE], 'agent-a', undefined, executionContext);
+    await provisionFiles([Constants.EXECUTE_CODE], 'agent-a');
+
+    expect(
+      provisionToCodeEnv.mock.calls.map(([args]) => (args as { file: TFile }).file.file_id),
+    ).toEqual(['routed-route', 'shared-route']);
   });
 
   it('scopes only the agent own resource files to its identity', async () => {

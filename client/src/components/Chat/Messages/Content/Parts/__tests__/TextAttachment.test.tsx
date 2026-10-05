@@ -1,6 +1,11 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
+
+let mockRemScale = 1;
+jest.mock('@librechat/client', () => ({
+  useRemScale: () => mockRemScale,
+}));
 import Attachment, { AttachmentGroup } from '../Attachment';
 
 jest.mock('~/hooks', () => ({
@@ -101,11 +106,13 @@ const restoreScrollHeight = () => {
 };
 
 afterAll(() => {
+  mockRemScale = 1;
   restoreScrollHeight();
 });
 
 describe('TextAttachment (via Attachment default export)', () => {
   beforeEach(() => {
+    mockRemScale = 1;
     mockHandleDownload.mockReset();
     setScrollHeight(0);
   });
@@ -152,6 +159,26 @@ describe('TextAttachment (via Attachment default export)', () => {
     expect(expanded).toHaveAttribute('aria-expanded', 'true');
   });
 
+  it('recalculates the text preview when the root scale changes', () => {
+    setScrollHeight(300);
+    mockRemScale = 1.5;
+    const { container, rerender } = render(<Attachment attachment={textAttachment()} />);
+    expect(screen.queryByRole('button', { name: 'Show all' })).not.toBeInTheDocument();
+
+    mockRemScale = 0.5;
+    rerender(<Attachment attachment={textAttachment()} />);
+    expect(screen.getByRole('button', { name: 'Show all' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(container.querySelector('pre')).toHaveStyle({ maxHeight: '160px' });
+
+    mockRemScale = 1.5;
+    rerender(<Attachment attachment={textAttachment()} />);
+    expect(screen.queryByRole('button', { name: 'Show all' })).not.toBeInTheDocument();
+    expect(container.querySelector('pre')?.style.maxHeight).toBe('');
+  });
+
   it('falls through to FileAttachment when text is missing', () => {
     const noText = textAttachment({ text: undefined as unknown as string });
     render(<Attachment attachment={noText} />);
@@ -171,6 +198,7 @@ describe('TextAttachment (via Attachment default export)', () => {
 
 describe('AttachmentGroup', () => {
   beforeEach(() => {
+    mockRemScale = 1;
     setScrollHeight(0);
   });
 

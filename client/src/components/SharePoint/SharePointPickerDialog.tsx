@@ -64,7 +64,7 @@ export default function SharePointPickerDialog({
        *  needed a scrim of its own: it takes the theme's. */}
       <OGDialogContent
         focusOutline="hidden"
-        className="sharepoint-picker-bg bg-surface-dialog fixed top-1/2 left-1/2 z-50 h-[680px] max-h-[90vh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border p-2 shadow-lg"
+        className="sharepoint-picker-bg bg-surface-dialog fixed top-1/2 left-1/2 z-50 h-[42.5rem] max-h-[90vh] max-w-[90vw] -translate-x-1/2 -translate-y-1/2 rounded-lg border p-2 shadow-lg"
         showCloseButton={true}
       >
         <OGDialogTitle className="sr-only">

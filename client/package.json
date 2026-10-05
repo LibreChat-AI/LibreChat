@@ -12,7 +12,7 @@
     "dev": "cross-env NODE_ENV=development vite",
     "preview-prod": "cross-env NODE_ENV=development vite preview",
     "test": "cross-env NODE_ENV=development jest --watch",
-    "test:ci": "cross-env NODE_ENV=development jest --ci --logHeapUsage",
+    "test:ci": "cross-env NODE_ENV=development COVERAGE=true jest --ci --logHeapUsage",
     "b:test": "NODE_ENV=test bunx jest --watch",
     "b:build": "NODE_ENV=production bun --bun vite build",
     "b:dev": "NODE_ENV=development bunx vite"

@@ -7,6 +7,7 @@ let mockIsUnseen = false;
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
+  useRemScale: () => 1,
   useToastContext: () => ({ showToast: jest.fn() }),
   Spinner: ({ className }: { className?: string }) => (
     <svg data-testid="status-ring" className={className} />

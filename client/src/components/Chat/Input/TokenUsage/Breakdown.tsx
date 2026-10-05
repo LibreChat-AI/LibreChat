@@ -351,17 +351,17 @@ export default function Breakdown({
     hoveredSegment != null && hoverIsValid(hoveredSegment) ? hoveredSegment : null;
 
   return (
-    <div className="w-72" role="region" aria-label={localize('com_ui_context_usage')}>
+    <div className="w-full" role="region" aria-label={localize('com_ui_context_usage')}>
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger
           focusOutline="hidden"
-          className="group focus-visible:ring-text-primary flex w-full items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
+          className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
           data-testid="context-breakdown-toggle"
         >
-          <span className="text-text-primary text-sm font-medium whitespace-nowrap">
+          <span className="text-text-primary min-w-0 text-left text-sm font-medium">
             {localize('com_ui_context_window')}
           </span>
-          <span className="text-text-secondary flex items-center gap-1 text-xs font-medium whitespace-nowrap">
+          <span className="text-text-secondary flex min-w-0 items-center gap-1 text-xs font-medium">
             {maxTokens != null
               ? `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)} (${Math.round(percent)}%)`
               : formatTokens(usedTokens)}

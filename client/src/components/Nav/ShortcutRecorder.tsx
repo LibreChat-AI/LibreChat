@@ -182,7 +182,7 @@ export function RecorderPill({
       onKeyDown={onKeyDown}
       onKeyUp={onKeyUp}
       className={cn(
-        'bg-surface-primary flex h-[30px] items-center gap-1.5 rounded-md border px-2 outline-hidden transition-colors',
+        'bg-surface-primary flex h-[1.875rem] items-center gap-1.5 rounded-md border px-2 outline-hidden transition-colors',
         'focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary-alt focus-visible:ring-2 focus-visible:ring-offset-1',
         stateBorder,
       )}
