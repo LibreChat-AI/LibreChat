@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -42,6 +42,8 @@ export type UseChatOptionsResult = {
   /** Rendered by the surface that owns the menu, next to its trigger. */
   dialogs: ReactNode;
 };
+
+type DialogKind = 'rename' | 'project' | 'delete';
 
 const iconClass = 'size-4 text-text-secondary';
 const noop = () => {};
@@ -96,9 +98,22 @@ export default function useChatOptions({
   const renameRef = useRef<HTMLButtonElement>(null);
   const projectRef = useRef<HTMLButtonElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
-  const [showRename, setShowRename] = useState(false);
-  const [showProject, setShowProject] = useState(false);
-  const [showDelete, setShowDelete] = useState(false);
+  /** ChatView stays mounted across a route change, so a dialog is tied to the chat it was opened
+   *  for rather than to whichever chat is open when it renders. */
+  const [openDialog, setOpenDialog] = useState<{ kind: DialogKind; id: string } | null>(null);
+  useEffect(() => {
+    setOpenDialog(null);
+  }, [conversationId, readOnly]);
+  const isDialogOpen = (kind: DialogKind) =>
+    !readOnly && openDialog?.kind === kind && openDialog.id === conversationId;
+  const showRename = isDialogOpen('rename');
+  const showProject = isDialogOpen('project');
+  const showDelete = isDialogOpen('delete');
+  const toggleDialog = (kind: DialogKind) => (open: boolean) =>
+    setOpenDialog(open ? { kind, id: conversationId } : null);
+  const setShowRename = toggleDialog('rename');
+  const setShowProject = toggleDialog('project');
+  const setShowDelete = toggleDialog('delete');
 
   const pinMutation = usePinConversationMutation();
   const archiveMutation = useArchiveConvoMutation();

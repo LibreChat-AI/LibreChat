@@ -1,4 +1,5 @@
-import { renderHook, act } from '@testing-library/react';
+import '@testing-library/jest-dom';
+import { render, screen, renderHook, act } from '@testing-library/react';
 import type { MenuItemProps } from '~/common';
 import useChatOptions from '../useChatOptions';
 
@@ -47,12 +48,17 @@ jest.mock('~/data-provider', () => ({
   useAssignConversationToProjectMutation: () => ({ mutate: mockAssign }),
   useDuplicateConversationMutation: () => ({ mutate: mockDuplicate }),
 }));
-jest.mock('~/components/Conversations/ConvoOptions', () => ({ ProjectButton: () => null }));
+jest.mock('~/components/Conversations/ConvoOptions', () => ({
+  ProjectButton: () => <div data-testid="project-dialog" />,
+}));
 jest.mock('~/components/Conversations/ConvoOptions/DeleteButton', () => ({
   __esModule: true,
-  default: () => null,
+  default: () => <div data-testid="delete-dialog" />,
 }));
-jest.mock('~/components/Chat/Rename', () => ({ __esModule: true, default: () => null }));
+jest.mock('~/components/Chat/Rename', () => ({
+  __esModule: true,
+  default: () => <div data-testid="rename-dialog" />,
+}));
 jest.mock('../useExportShare', () => ({
   __esModule: true,
   default: () => ({
@@ -260,6 +266,47 @@ describe('useChatOptions', () => {
       ariaHasPopup: 'dialog',
       ariaControls: 'delete-conversation-dialog',
     });
+  });
+
+  it('closes an open dialog when another chat becomes the open one', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_rename').onClick?.({} as never));
+    const { rerender: rerenderDialogs } = render(<>{result.current.dialogs}</>);
+    expect(screen.getByTestId('rename-dialog')).toBeInTheDocument();
+
+    mockState.conversation = { conversationId: 'convo-2', title: 'Other' };
+    rerender();
+    rerenderDialogs(<>{result.current.dialogs}</>);
+
+    expect(screen.queryByTestId('rename-dialog')).not.toBeInTheDocument();
+  });
+
+  it('does not reopen a dialog when the first chat comes back', () => {
+    const { result, rerender } = setup();
+
+    act(() => find(result.current.items, 'com_ui_delete').onClick?.({} as never));
+    mockState.conversation = { conversationId: 'convo-2', title: 'Other' };
+    rerender();
+    mockState.conversation = { conversationId: 'convo-1', title: 'Hello' };
+    rerender();
+    render(<>{result.current.dialogs}</>);
+
+    expect(screen.queryByTestId('delete-dialog')).not.toBeInTheDocument();
+  });
+
+  it('renders no mutating dialog once the thread turns read-only', () => {
+    let readOnly = false;
+    const { result, rerender } = renderHook(() =>
+      useChatOptions({ isSharedButtonEnabled: true, closeMenu: jest.fn(), readOnly }),
+    );
+
+    act(() => find(result.current.items, 'com_ui_change_project').onClick?.({} as never));
+    readOnly = true;
+    rerender();
+    render(<>{result.current.dialogs}</>);
+
+    expect(screen.queryByTestId('project-dialog')).not.toBeInTheDocument();
   });
 
   it('leaves an archived chat for a new one once the archive lands', () => {
