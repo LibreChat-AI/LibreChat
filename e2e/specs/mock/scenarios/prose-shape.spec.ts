@@ -96,13 +96,12 @@ test.describe('prose and shape roles', () => {
     await openNewChat(page, 'clickhouse');
     const prose = await proseStyles(page);
     const border = await probeStyle(page, 'border border-border-medium', 'border-top-color');
-    const chip = await roleColor(page, await previousChipRole(page));
 
     expect(prose.bullet).not.toBe(border);
     expect(prose.quoteBar).not.toBe(border);
     expect(prose.bullet).toBe(await roleColor(page, 'prose-bullet'));
     expect(prose.quoteBar).toBe(await roleColor(page, 'prose-quote-bar'));
-    expect(prose.chip).not.toBe(chip);
+    expect(prose.chip).toBe(await roleColor(page, 'surface-code-inline'));
     expect(prose.chipWeight).toBe('500');
   });
 
