@@ -107,12 +107,16 @@ it('resolves repeated tool IDs by their content-part occurrence and rejects ambi
   expect(findAgentLaneId(dispatch, 'repeat', 9)).toBeUndefined();
 });
 
-it('preserves literal graph titles while normalizing known legacy agent titles', () => {
+it('preserves literal display titles while suppressing legacy storage keys', () => {
   expect(readableSubagentTitle('Subagent: research', undefined, 'graph')).toBe(
     'Subagent: research',
   );
   expect(readableSubagentTitle('Subagent: Historical Agent', 'agent_deleted', 'agent')).toBe(
-    'Historical Agent',
+    'Subagent: Historical Agent',
+  );
+  expect(readableSubagentTitle('self', 'agent_deleted', 'agent')).toBe('self');
+  expect(readableSubagentTitle('agent_research_team', 'agent_deleted', 'agent')).toBe(
+    'agent_research_team',
   );
   expect(
     readableSubagentTitle('Subagent: agent_deleted', 'agent_deleted', 'agent'),

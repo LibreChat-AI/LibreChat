@@ -875,7 +875,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
               agentId: selectedActorAgentId,
               subagentType: selection.subagentType,
               subagentKind: childKind,
-              title: threadView?.title,
+              title: threadView?.title ?? byThreadId.get(threadId)?.title,
             },
             parentAuthor,
             agentsMap,
@@ -883,6 +883,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           ),
     [
       agentsMap,
+      byThreadId,
       childKind,
       localize,
       parentAuthor,
@@ -891,6 +892,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       selectedEventActorName,
       selection.event,
       selection.subagentType,
+      threadId,
       threadView?.title,
     ],
   );

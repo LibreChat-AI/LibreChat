@@ -902,6 +902,54 @@ describe('SubagentThreadPanel', () => {
     },
   );
 
+  it.each(
+    ['Historical Reviewer', 'Subagent: Reviewer', 'self', 'agent_research_team'].flatMap((title) =>
+      [false, true].map((failed) => ({ title, failed })),
+    ),
+  )('retains an unavailable indexed agent title $title (failed: $failed)', ({ title, failed }) => {
+    const child: ParentSubagentSummary = {
+      threadId: 'child-thread',
+      parentMessageId: 'parent-message',
+      subagentType: 'agent_deleted',
+      subagentKind: 'agent',
+      agentId: 'agent_deleted',
+      title,
+      origin: 'tool',
+      status: 'completed',
+      latestTaskId: 'task',
+      tasks: [{ taskId: 'task', status: 'completed' }],
+      tasksTruncated: false,
+    };
+    mockParentChildrenByThread.set(child.threadId, child);
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: !failed, isError: failed });
+    const view = render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, subagentType: 'agent_deleted', subagentIdentity: undefined }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-author', title);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: { ...completedView, agentId: 'agent_deleted', title },
+    });
+    view.rerender(
+      <Root>
+        <SubagentThreadPanel
+          selection={{ ...selection, subagentType: 'agent_deleted', subagentIdentity: undefined }}
+        />
+      </Root>,
+    );
+    expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveAttribute(
+      'placeholder',
+      `com_endpoint_message_new: ${title}`,
+    );
+  });
+
   it('preserves a literal graph display title beginning with Subagent:', () => {
     mockUseSubagentThreadQuery.mockReturnValue({
       isLoading: false,

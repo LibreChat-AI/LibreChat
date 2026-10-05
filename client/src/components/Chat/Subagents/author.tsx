@@ -33,9 +33,10 @@ export function readableSubagentTitle(
   kind?: 'agent' | 'graph',
 ): string | undefined {
   if (!title) return undefined;
-  const name =
-    kind !== 'graph' && title.startsWith('Subagent: ') ? title.slice('Subagent: '.length) : title;
-  return readableSubagentType(name, agentId, kind);
+  if (kind === 'graph') return title;
+  const candidate = title.startsWith('Subagent: ') ? title.slice('Subagent: '.length) : title;
+  if (candidate === agentId) return undefined;
+  return title;
 }
 
 /** Explicit graph identity takes precedence over the legacy self alias. */
