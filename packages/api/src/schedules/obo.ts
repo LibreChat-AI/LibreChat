@@ -437,6 +437,19 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
     return { user, schedule, config, provider };
   };
 
+  const credentialBinding = (authorized: Awaited<ReturnType<typeof validate>>): string =>
+    JSON.stringify([
+      authorized.user.openidId,
+      authorized.user.openidIssuer,
+      authorized.user.tenantId ?? '',
+      authorized.config.url,
+      authorized.config.obo?.scopes,
+      authorized.provider.clientId,
+      authorized.provider.issuer,
+      authorized.provider.tokenEndpoint,
+      authorized.provider.authorizationEndpoint,
+    ]);
+
   const read = async (
     userId: string,
     context: ScheduledTokenContext,
@@ -446,17 +459,21 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
     writePreflight?: ScheduleWritePreflight,
   ): Promise<MCPOAuthTokens> => {
     if (!target.url) throw missingGrant();
-    let authorized: Awaited<ReturnType<typeof validate>>;
-    try {
-      authorized = await validate(userId, context, target, activationPreflight, writePreflight);
-    } catch (error) {
-      if (error instanceof OboTokenResolutionError) throw error;
-      throw new OboTokenResolutionError(
-        'session_refresh_failed',
-        'Temporary scheduled OBO authorization failure.',
-        true,
-      );
-    }
+    const authorizeRead = async (): Promise<Awaited<ReturnType<typeof validate>>> => {
+      try {
+        return await validate(userId, context, target, activationPreflight, writePreflight);
+      } catch (error) {
+        if (error instanceof OboTokenResolutionError) throw error;
+        throw new OboTokenResolutionError(
+          'session_refresh_failed',
+          'Temporary scheduled OBO authorization failure.',
+          true,
+          error,
+        );
+      }
+    };
+    const authorized = await authorizeRead();
+    const binding = credentialBinding(authorized);
     const { user, config, provider } = authorized;
     if (config.url !== target.url) throw missingGrant();
     const key = scheduledOboGrantKey(context.scheduleId, target.mcpServer);
@@ -719,8 +736,8 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         true,
       );
     }
-    // Authority denial is not a stale credential generation, including after rotation.
-    await assertInvocationAuthorized(user, context, target);
+    // Provider work and peer adoption cannot retain an earlier operator/role allow decision.
+    if (credentialBinding(await authorizeRead()) !== binding) throw missingGrant();
     return result;
   };
 
@@ -796,7 +813,9 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
       )
         throw missingGrant();
       const target = { mcpServer: serverName, scopes: selected.obo.scopes };
-      const { config, provider } = await validate(userId, context, target, true);
+      const authorized = await validate(userId, context, target, true);
+      const binding = credentialBinding(authorized);
+      const { config, provider } = authorized;
       const key = scheduledOboGrantKey(scheduleId, serverName);
       const leaseId = getMCPOAuthLeaseId(userId, key, undefined, true);
       const generation = await deps.flowManager.getLeaseGeneration(leaseId);
@@ -850,7 +869,9 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
         if (!lease)
           throw new MCPTokenRefreshUnavailableError(key, new Error('Grant is being changed'));
         try {
-          const fresh = await deps.getSchedule(scheduleId, userId);
+          const current = await validate(userId, context, target, true);
+          if (credentialBinding(current) !== binding) throw missingGrant();
+          const fresh = current.schedule;
           if (
             !fresh ||
             fresh.configRevision !== schedule.configRevision ||
@@ -859,7 +880,7 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
           )
             throw missingGrant();
           if (expectedBinding != null) {
-            const currentServer = await getServer(user, serverName);
+            const currentServer = current.config;
             if (
               !currentServer?.url ||
               currentServer.obo?.scopes !== expectedScopes ||
@@ -868,7 +889,6 @@ export function createScheduledOboGrantService(deps: GrantDeps): ScheduledOboGra
             )
               throw missingGrant();
           }
-          await assertInvocationAuthorized(user, context, { ...target, url: config.url });
           const clientInfo: ScheduledOboClientInfo = {
             client_id: provider.clientId,
             scope: `${target.scopes} offline_access`,

@@ -11,6 +11,7 @@ import type {
 import type { OAuthTokens, OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { MCPOAuthTokens, ExtendedOAuthTokens, OAuthStoredClientMetadata } from './types';
 import type { FlowLease, FlowStateManager } from '~/flow/manager';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isInvalidClientMessage } from '~/mcp/utils';
 import { isSystemUserId } from '~/mcp/enum';
 
@@ -550,7 +551,7 @@ export class MCPTokenStorage {
       } catch (error) {
         logger.debug(
           `${this.getLogPrefix(userId, serverName)} Stored authorization no longer matches the configured OAuth binding`,
-          { error },
+          getSafeErrorMetadata(error),
         );
         return false;
       }
@@ -558,9 +559,7 @@ export class MCPTokenStorage {
     } catch (error) {
       logger.warn(
         `${this.getLogPrefix(userId, serverName)} Failed to inspect stored authorization`,
-        {
-          error,
-        },
+        getSafeErrorMetadata(error),
       );
       return false;
     }
@@ -606,9 +605,10 @@ export class MCPTokenStorage {
         (await decryptV2(tokenData.token)) === accessToken
       );
     } catch (error) {
-      logger.warn(`${this.getLogPrefix(userId, serverName)} Failed to verify cached access token`, {
-        error,
-      });
+      logger.warn(
+        `${this.getLogPrefix(userId, serverName)} Failed to verify cached access token`,
+        getSafeErrorMetadata(error),
+      );
       return false;
     }
   }
@@ -1098,9 +1098,10 @@ export class MCPTokenStorage {
             logger.debug(`${logPrefix} Stale refresh token was already superseded`);
           }
         } catch (cleanupError) {
-          logger.warn(`${logPrefix} Failed to remove stale refresh token after OAuth callback`, {
-            error: cleanupError,
-          });
+          logger.warn(
+            `${logPrefix} Failed to remove stale refresh token after OAuth callback`,
+            getSafeErrorMetadata(cleanupError),
+          );
         }
       }
 
@@ -1117,12 +1118,13 @@ export class MCPTokenStorage {
         try {
           await rollback();
         } catch (rollbackError) {
-          logger.warn(`${logPrefix} Failed to roll back a partial OAuth credential write`, {
-            error: rollbackError,
-          });
+          logger.warn(
+            `${logPrefix} Failed to roll back a partial OAuth credential write`,
+            getSafeErrorMetadata(rollbackError),
+          );
         }
       }
-      logger.error(`${logPrefix} Failed to store tokens`, error);
+      logger.error(`${logPrefix} Failed to store tokens`, getSafeErrorMetadata(error));
       throw error;
     }
   }
@@ -1395,7 +1397,7 @@ export class MCPTokenStorage {
     } catch (error) {
       logger.warn(
         `${this.getLogPrefix(params.userId, params.serverName)} Failed to record upstream OAuth rejection`,
-        error,
+        getSafeErrorMetadata(error),
       );
     }
   }
@@ -1477,9 +1479,10 @@ export class MCPTokenStorage {
           findToken,
         });
       } catch (snapshotError) {
-        logger.debug(`${logPrefix} Could not observe the credential before the refresh flight`, {
-          error: snapshotError,
-        });
+        logger.debug(
+          `${logPrefix} Could not observe the credential before the refresh flight`,
+          getSafeErrorMetadata(snapshotError),
+        );
       }
     }
 
@@ -1601,9 +1604,10 @@ export class MCPTokenStorage {
     try {
       await lease.release();
     } catch (releaseError) {
-      logger.warn(`${logPrefix} Failed to release the OAuth refresh flight`, {
-        error: releaseError,
-      });
+      logger.warn(
+        `${logPrefix} Failed to release the OAuth refresh flight`,
+        getSafeErrorMetadata(releaseError),
+      );
     }
   }
 
@@ -1973,16 +1977,17 @@ export class MCPTokenStorage {
         try {
           await persistenceLease?.release();
         } catch (releaseError) {
-          logger.warn(`${logPrefix} Failed to release OAuth refresh persistence lease`, {
-            error: releaseError,
-          });
+          logger.warn(
+            `${logPrefix} Failed to release OAuth refresh persistence lease`,
+            getSafeErrorMetadata(releaseError),
+          );
         }
       }
 
       logger.info(`${logPrefix} Successfully refreshed and stored OAuth tokens`);
       return storedTokens;
     } catch (refreshError) {
-      logger.error(`${logPrefix} Failed to refresh tokens`, refreshError);
+      logger.error(`${logPrefix} Failed to refresh tokens`, getSafeErrorMetadata(refreshError));
       if (
         refreshError instanceof ReauthenticationRequiredError ||
         refreshError instanceof MCPTokenRefreshUnavailableError
@@ -2035,7 +2040,10 @@ export class MCPTokenStorage {
           ]);
           for (const r of results) {
             if (r.status === 'rejected') {
-              logger.warn(`${logPrefix} Failed to clear stale token data`, r.reason);
+              logger.warn(
+                `${logPrefix} Failed to clear stale token data`,
+                getSafeErrorMetadata(r.reason),
+              );
             }
           }
           await publishPreparedCleanup?.();
@@ -2156,7 +2164,7 @@ export class MCPTokenStorage {
       ) {
         throw error;
       }
-      logger.error(`${logPrefix} Failed to retrieve tokens`, error);
+      logger.error(`${logPrefix} Failed to retrieve tokens`, getSafeErrorMetadata(error));
       throw new MCPTokenStorageUnavailableError(serverName, error);
     }
   }

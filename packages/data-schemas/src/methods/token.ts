@@ -3,7 +3,6 @@ import { IToken, TokenCreateData, TokenQuery, TokenUpdateData, TokenDeleteResult
 import { indexGrantClients, classifyScheduledGrant } from '~/utils/grants';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { createIndexesWithRetry } from '~/utils/retry';
-import logger from '~/config/winston';
 
 function isDuplicateKeyError(error: unknown): boolean {
   return (
@@ -43,22 +42,17 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
    * Creates a new Token instance.
    */
   async function createToken(tokenData: TokenCreateData): Promise<IToken> {
-    try {
-      const Token = mongoose.models.Token;
-      const currentTime = new Date();
-      const expiresAt = new Date(currentTime.getTime() + tokenData.expiresIn * 1000);
+    const Token = mongoose.models.Token;
+    const currentTime = new Date();
+    const expiresAt = new Date(currentTime.getTime() + tokenData.expiresIn * 1000);
 
-      const newTokenData = {
-        ...tokenData,
-        createdAt: currentTime,
-        expiresAt,
-      };
+    const newTokenData = {
+      ...tokenData,
+      createdAt: currentTime,
+      expiresAt,
+    };
 
-      return await Token.create(newTokenData);
-    } catch (error) {
-      logger.debug('An error occurred while creating token:', error);
-      throw error;
-    }
+    return await Token.create(newTokenData);
   }
 
   /**
@@ -70,42 +64,37 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
     expectedToken: string | null,
     tokenData: TokenCreateData,
   ): Promise<boolean> {
-    try {
-      const Token = mongoose.models.Token;
-      await ensureIndexes();
-      const currentTime = new Date();
-      const { expiresIn, ...storedTokenData } = tokenData;
-      const replacement = {
-        ...storedTokenData,
-        scope,
-        createdAt: currentTime,
-        expiresAt: new Date(currentTime.getTime() + expiresIn * 1000),
-      };
-      const query = {
-        scope,
-        token: expectedToken ?? tokenData.token,
-      };
+    const Token = mongoose.models.Token;
+    await ensureIndexes();
+    const currentTime = new Date();
+    const { expiresIn, ...storedTokenData } = tokenData;
+    const replacement = {
+      ...storedTokenData,
+      scope,
+      createdAt: currentTime,
+      expiresAt: new Date(currentTime.getTime() + expiresIn * 1000),
+    };
+    const query = {
+      scope,
+      token: expectedToken ?? tokenData.token,
+    };
 
-      try {
-        const replacedToken = await Token.findOneAndUpdate(
-          query,
-          expectedToken === null ? { $setOnInsert: replacement } : { $set: replacement },
-          {
-            new: true,
-            upsert: expectedToken === null,
-            runValidators: true,
-            setDefaultsOnInsert: true,
-          },
-        );
-        return replacedToken !== null;
-      } catch (error) {
-        if (isDuplicateKeyError(error)) {
-          return false;
-        }
-        throw error;
-      }
+    try {
+      const replacedToken = await Token.findOneAndUpdate(
+        query,
+        expectedToken === null ? { $setOnInsert: replacement } : { $set: replacement },
+        {
+          new: true,
+          upsert: expectedToken === null,
+          runValidators: true,
+          setDefaultsOnInsert: true,
+        },
+      );
+      return replacedToken !== null;
     } catch (error) {
-      logger.debug('An error occurred while conditionally replacing token:', error);
+      if (isDuplicateKeyError(error)) {
+        return false;
+      }
       throw error;
     }
   }
@@ -117,66 +106,56 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
     query: TokenQuery,
     updateData: TokenUpdateData,
   ): Promise<IToken | null> {
-    try {
-      const Token = mongoose.models.Token;
-      const { metadataCredentialSetId, ...tokenQuery } = query;
-      const dbQuery: Record<string, unknown> = { ...tokenQuery };
-      if (metadataCredentialSetId !== undefined) {
-        dbQuery['metadata.credential_set_id'] = metadataCredentialSetId;
-      }
-
-      const dataToUpdate = { ...updateData };
-      if (updateData?.expiresIn !== undefined) {
-        dataToUpdate.expiresAt = new Date(Date.now() + updateData.expiresIn * 1000);
-      }
-
-      return await Token.findOneAndUpdate(dbQuery, dataToUpdate, { new: true });
-    } catch (error) {
-      logger.debug('An error occurred while updating token:', error);
-      throw error;
+    const Token = mongoose.models.Token;
+    const { metadataCredentialSetId, ...tokenQuery } = query;
+    const dbQuery: Record<string, unknown> = { ...tokenQuery };
+    if (metadataCredentialSetId !== undefined) {
+      dbQuery['metadata.credential_set_id'] = metadataCredentialSetId;
     }
+
+    const dataToUpdate = { ...updateData };
+    if (updateData?.expiresIn !== undefined) {
+      dataToUpdate.expiresAt = new Date(Date.now() + updateData.expiresIn * 1000);
+    }
+
+    return await Token.findOneAndUpdate(dbQuery, dataToUpdate, { new: true });
   }
 
   /** Deletes all Token documents matching every provided field (AND semantics). */
   async function deleteTokens(query: TokenQuery): Promise<TokenDeleteResult> {
-    try {
-      const Token = mongoose.models.Token;
-      const conditions = [];
+    const Token = mongoose.models.Token;
+    const conditions = [];
 
-      if (query.userId !== undefined) {
-        conditions.push({ userId: query.userId });
-      }
-      if (query.token !== undefined) {
-        conditions.push({ token: query.token });
-      }
-      if (query.email !== undefined) {
-        const email = query.email === null ? null : query.email.trim().toLowerCase();
-        conditions.push({ email });
-      }
-      if (query.type !== undefined) {
-        conditions.push({ type: query.type });
-      }
-      if (query.scope !== undefined) {
-        conditions.push({ scope: query.scope });
-      }
-      if (query.identifier !== undefined) {
-        conditions.push({ identifier: query.identifier });
-      }
-      if (query.metadataCredentialSetId !== undefined) {
-        conditions.push({ 'metadata.credential_set_id': query.metadataCredentialSetId });
-      }
-
-      if (conditions.length === 0) {
-        throw new Error('At least one query parameter must be provided');
-      }
-
-      return await Token.deleteMany({
-        $and: conditions,
-      });
-    } catch (error) {
-      logger.debug('An error occurred while deleting tokens:', error);
-      throw error;
+    if (query.userId !== undefined) {
+      conditions.push({ userId: query.userId });
     }
+    if (query.token !== undefined) {
+      conditions.push({ token: query.token });
+    }
+    if (query.email !== undefined) {
+      const email = query.email === null ? null : query.email.trim().toLowerCase();
+      conditions.push({ email });
+    }
+    if (query.type !== undefined) {
+      conditions.push({ type: query.type });
+    }
+    if (query.scope !== undefined) {
+      conditions.push({ scope: query.scope });
+    }
+    if (query.identifier !== undefined) {
+      conditions.push({ identifier: query.identifier });
+    }
+    if (query.metadataCredentialSetId !== undefined) {
+      conditions.push({ 'metadata.credential_set_id': query.metadataCredentialSetId });
+    }
+
+    if (conditions.length === 0) {
+      throw new Error('At least one query parameter must be provided');
+    }
+
+    return await Token.deleteMany({
+      $and: conditions,
+    });
   }
 
   /**
@@ -184,40 +163,35 @@ export function createTokenMethods(mongoose: typeof import('mongoose')): {
    * Email is automatically normalized to lowercase for case-insensitive matching.
    */
   async function findToken(query: TokenQuery, options?: QueryOptions): Promise<IToken | null> {
-    try {
-      const Token = mongoose.models.Token;
-      const conditions = [];
+    const Token = mongoose.models.Token;
+    const conditions = [];
 
-      if (query.userId) {
-        conditions.push({ userId: query.userId });
-      }
-      if (query.token) {
-        conditions.push({ token: query.token });
-      }
-      if (query.email !== undefined) {
-        const email = query.email === null ? null : query.email.trim().toLowerCase();
-        conditions.push({ email });
-      }
-      if (query.type !== undefined) {
-        conditions.push({ type: query.type });
-      }
-      if (query.scope !== undefined) {
-        conditions.push({ scope: query.scope });
-      }
-      if (query.identifier !== undefined) {
-        conditions.push({ identifier: query.identifier });
-      }
-      if (query.metadataCredentialSetId !== undefined) {
-        conditions.push({ 'metadata.credential_set_id': query.metadataCredentialSetId });
-      }
-
-      const token = await Token.findOne({ $and: conditions }, null, options).lean();
-
-      return token as IToken | null;
-    } catch (error) {
-      logger.debug('An error occurred while finding token:', error);
-      throw error;
+    if (query.userId) {
+      conditions.push({ userId: query.userId });
     }
+    if (query.token) {
+      conditions.push({ token: query.token });
+    }
+    if (query.email !== undefined) {
+      const email = query.email === null ? null : query.email.trim().toLowerCase();
+      conditions.push({ email });
+    }
+    if (query.type !== undefined) {
+      conditions.push({ type: query.type });
+    }
+    if (query.scope !== undefined) {
+      conditions.push({ scope: query.scope });
+    }
+    if (query.identifier !== undefined) {
+      conditions.push({ identifier: query.identifier });
+    }
+    if (query.metadataCredentialSetId !== undefined) {
+      conditions.push({ 'metadata.credential_set_id': query.metadataCredentialSetId });
+    }
+
+    const token = await Token.findOne({ $and: conditions }, null, options).lean();
+
+    return token as IToken | null;
   }
 
   /** Projects identifiers and backfills proven legacy purpose without reading ciphertext. */

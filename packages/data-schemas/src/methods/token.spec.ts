@@ -5,6 +5,7 @@ import { migrateScheduledOboGrantProvenance } from '~/migrations/obo';
 import { runAsSystem } from '~/config/tenantContext';
 import { createTokenModel } from '~/models/token';
 import { createTokenMethods } from './token';
+import logger from '~/config/winston';
 
 /** Mocking logger */
 jest.mock('~/config/winston', () => ({
@@ -303,6 +304,53 @@ describe('scheduled OBO grant identifier projection', () => {
     ]);
     expect(JSON.stringify(identifiers)).not.toContain('encrypted-secret');
   });
+});
+
+describe('token storage diagnostic boundary', () => {
+  it.each(['create', 'find', 'update', 'delete', 'replace'] as const)(
+    'does not log private %s failure data before its owner handles it',
+    async (operation) => {
+      const diagnostic = Object.assign(new Error('private-storage-secret'), {
+        query: { token: 'private-credential' },
+      });
+      const fail = () => {
+        throw diagnostic;
+      };
+      const owner = new mongoose.Types.ObjectId().toString();
+      let action: Promise<unknown>;
+      if (operation === 'create') {
+        jest.spyOn(Token, 'create').mockImplementationOnce(fail);
+        action = methods.createToken({ userId: owner, token: 'test-value', expiresIn: 3600 });
+      } else if (operation === 'find') {
+        jest.spyOn(Token, 'findOne').mockImplementationOnce(fail);
+        action = methods.findToken({ userId: owner });
+      } else if (operation === 'delete') {
+        jest.spyOn(Token, 'deleteMany').mockImplementationOnce(fail);
+        action = methods.deleteTokens({ userId: owner });
+      } else {
+        jest.spyOn(Token, 'findOneAndUpdate').mockImplementationOnce(fail);
+        action =
+          operation === 'update'
+            ? methods.updateToken({ userId: owner }, { token: 'new' })
+            : methods.replaceTokenIfCurrent('scope', null, {
+                userId: owner,
+                token: 'new',
+                expiresIn: 3600,
+              });
+      }
+      try {
+        await expect(action).rejects.toBe(diagnostic);
+        expect(
+          JSON.stringify([
+            ...jest.mocked(logger.debug).mock.calls,
+            ...jest.mocked(logger.error).mock.calls,
+          ]),
+        ).not.toMatch(/private-storage-secret|private-credential/);
+      } finally {
+        jest.restoreAllMocks();
+      }
+    },
+  );
 });
 
 describe('Token Methods - Detailed Tests', () => {

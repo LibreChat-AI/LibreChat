@@ -919,9 +919,8 @@ describe('separately authorized scheduled OBO grants', () => {
     expect(requestGrant).toHaveBeenCalledTimes(2);
   });
 
-  it('logs only safe metadata for unexpected credential-store diagnostics', async () => {
-    const coordinator = Object.create(MCPTokenStorage) as typeof MCPTokenStorage;
-    const { service, row } = harness(coordinator);
+  it('logs only safe metadata through the real coordinator for credential-store diagnostics', async () => {
+    const { service, row, tokenStore } = harness();
     await service.enroll(user.id, row.id, 'Files', 'assertion');
     row.enabled = true;
     const diagnostic = Object.assign(new Error('private-query-secret'), {
@@ -929,21 +928,113 @@ describe('separately authorized scheduled OBO grants', () => {
       response: { status: 503, data: { refresh_token: 'provider-secret' } },
       cause: new Error('nested-private-secret'),
     });
-    coordinator.getTokens = jest.fn(async () => {
-      throw diagnostic;
+    const find = tokenStore.findToken;
+    jest.spyOn(tokenStore, 'findToken').mockImplementation(async (...args) => {
+      if (args[0].type === 'mcp_oauth') throw diagnostic;
+      return find(...args);
     });
     const provider = (await service.resolve(user, { context, target }))!;
     await expect(provider()).rejects.toMatchObject({ retryable: true });
-    const warning = jest
-      .mocked(logger.warn)
-      .mock.calls.find(
-        ([message]) => String(message) === '[schedules] scheduled OBO credential read failed',
-      );
-    expect(warning).toEqual([
-      '[schedules] scheduled OBO credential read failed',
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to retrieve tokens'),
       { type: 'Error', status: 503 },
-    ]);
-    expect(JSON.stringify(warning)).not.toMatch(/private|stored-credential-secret|provider-secret/);
+    );
+    const calls = [...jest.mocked(logger.error).mock.calls, ...jest.mocked(logger.warn).mock.calls];
+    expect(JSON.stringify(calls)).not.toMatch(
+      /private-query-secret|stored-credential-secret|provider-secret|nested-private-secret/,
+    );
+    expect(logger.warn).toHaveBeenCalledWith('[schedules] scheduled OBO credential read failed', {
+      type: 'Error',
+    });
+  });
+
+  it.each(['renewal', 'cached read', 'peer adoption'] as const)(
+    'rechecks live operator policy after %s without deleting the retained grant',
+    async (phase) => {
+      const coordinator = Object.create(MCPTokenStorage) as typeof MCPTokenStorage;
+      const { service, row, setAllowed, tokenStore, requestGrant } = harness(coordinator);
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      row.enabled = true;
+      if (phase === 'renewal')
+        requestGrant.mockImplementationOnce(async () => {
+          setAllowed([]);
+          return { access_token: 'renewed', refresh_token: 'rotated', expires_in: 3600 };
+        });
+      if (phase === 'cached read')
+        coordinator.getTokens = async (params) => {
+          const result = await MCPTokenStorage.getTokens(params);
+          setAllowed([]);
+          return result;
+        };
+      if (phase === 'peer adoption')
+        coordinator.forceRefreshTokens = async (params) => {
+          await service.enroll(user.id, row.id, 'Files', 'peer-assertion');
+          const result = await MCPTokenStorage.forceRefreshTokens(params);
+          setAllowed([]);
+          return result;
+        };
+      const provider = (await service.resolve(user, { context, target }))!;
+      await expect(provider({ forceRefresh: phase !== 'cached read' })).rejects.toMatchObject({
+        reason: 'missing_upstream_provider',
+        retryable: false,
+      });
+      expect(tokenStore.getAll()).toHaveLength(3);
+      if (phase === 'peer adoption')
+        expect(requestGrant.mock.calls.filter(([, type]) => type === 'refresh_token')).toHaveLength(
+          0,
+        );
+      await service.revoke(user.id, row.id, 'Files');
+      expect(tokenStore.getAll()).toEqual([]);
+    },
+  );
+
+  it.each(['destination', 'provider endpoint', 'root', 'role', 'outage'] as const)(
+    'rechecks %s after renewal while retaining cleanup',
+    async (changed) => {
+      const {
+        service,
+        row,
+        deps,
+        requestGrant,
+        tokenStore,
+        setServer,
+        setProvider,
+        setAgentAllowed,
+      } = harness();
+      await service.enroll(user.id, row.id, 'Files', 'assertion');
+      row.enabled = true;
+      requestGrant.mockImplementationOnce(async () => {
+        if (changed === 'destination') setServer({ ...config, url: 'https://changed.test/mcp' });
+        else if (changed === 'provider endpoint')
+          setProvider(user.openidIssuer!, 'https://changed.test/token');
+        else if (changed === 'root') row.agent_id = 'changed-root';
+        else if (changed === 'role') setAgentAllowed(false);
+        else
+          deps.getAppConfig = async () => {
+            throw new Error('private-policy-outage');
+          };
+        return { access_token: 'renewed', refresh_token: 'rotated', expires_in: 3600 };
+      });
+      const provider = (await service.resolve(user, { context, target }))!;
+      await expect(provider({ forceRefresh: true })).rejects.toMatchObject({
+        retryable: changed === 'outage',
+      });
+      expect(tokenStore.getAll()).toHaveLength(3);
+      await service.revoke(user.id, row.id, 'Files');
+      expect(tokenStore.getAll()).toEqual([]);
+    },
+  );
+
+  it('rechecks operator policy after enrollment exchange before persisting a grant', async () => {
+    const { service, row, setAllowed, requestGrant, tokenStore } = harness();
+    requestGrant.mockImplementationOnce(async () => {
+      setAllowed([]);
+      return { access_token: 'first', refresh_token: 'refresh', expires_in: 3600 };
+    });
+    await expect(service.enroll(user.id, row.id, 'Files', 'assertion')).rejects.toMatchObject({
+      reason: 'missing_upstream_provider',
+    });
+    expect(tokenStore.getAll()).toEqual([]);
   });
 
   it('refuses deletion when a modern grant fence is unavailable and releases teardown for retry', async () => {
