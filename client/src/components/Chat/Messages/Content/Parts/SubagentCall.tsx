@@ -15,8 +15,11 @@ import {
   subagentProgressKey,
   useSubagentProgress,
 } from '~/components/Chat/Subagents/state';
+import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { isSelfSpawn as isSelfSpawnType } from '~/components/Chat/Subagents/author';
 import { adaptLivePersistedActivity } from '~/components/Chat/Subagents/adapters';
 import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
+import { subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { getSubagentPrompt } from '~/components/Chat/Subagents/prompt';
 import { MessageContext } from '~/Providers/MessageContext';
@@ -198,7 +201,10 @@ export default function SubagentCall({
     isSharedConvo !== true && backgroundHandle != null && parentConversationId !== '';
 
   const subagentType = progress?.subagentType ?? extractSubagentType(args);
-  const isSelfSpawn = subagentType === 'self';
+  const isSelfSpawn = isSelfSpawnType(
+    subagentType,
+    progress?.subagentKind ?? subagentIdentity?.subagentKind,
+  );
   const subagentAgentId = resolveSubagentAgentId(progress, subagentIdentity);
   const subagentAgent = subagentAgentId ? agentsMap?.[subagentAgentId] : undefined;
   /**
@@ -285,11 +291,13 @@ export default function SubagentCall({
     return localize('com_ui_subagent_complete');
   };
   const headerText = getHeaderText();
-  /** Muted sub-label shown to the right of the base label: the
-   *  configured agent name for named subagents. Self-spawns omit it
-   *  (redundant — the header already says "agent") as do cases where
-   *  the name isn't resolvable (agent map miss). */
+  /** A named subagent leads with its own name and face, the way its turns read
+   *  in main chat, and the verb or status follows it muted. Self-spawns keep
+   *  the verb alone — the name would be the agent this card already sits
+   *  under — as do agents the map cannot resolve. */
   const subagentNameLabel = !isSelfSpawn && subagentAgent?.name ? subagentAgent.name : '';
+
+  const cardLabel = subagentNameLabel ? `${subagentNameLabel}: ${headerText}` : headerText;
 
   const canOpenDetails = useMemo(() => {
     const fallbackActivity = adaptLivePersistedActivity({
@@ -417,9 +425,9 @@ export default function SubagentCall({
           canOpenDetails ? 'group' : 'cursor-default opacity-80',
           running && !detachedStatusUnknown && 'animate-pulse-slow',
         )}
-        aria-label={headerText}
+        aria-label={detachedStatusUnknown ? undefined : cardLabel}
       >
-        <div className="text-text-primary flex items-center gap-2 text-sm font-medium">
+        <div className="text-text-primary flex w-full min-w-0 items-center gap-2 text-sm font-medium">
           <div
             className={cn(
               FOLD_GLYPH_CLASS,
@@ -442,18 +450,47 @@ export default function SubagentCall({
               <Users size={14} />
             )}
           </div>
-          <span className="min-w-0 truncate" title={headerText}>
-            {headerText}
-          </span>
           {subagentNameLabel ? (
-            <span
-              className="text-text-secondary min-w-0 flex-1 truncate font-normal"
-              title={subagentNameLabel}
-            >
-              {subagentNameLabel}
-            </span>
+            <>
+              <span
+                className="max-w-[50%] min-w-0 shrink truncate font-semibold"
+                title={subagentNameLabel}
+              >
+                {subagentNameLabel}
+              </span>
+              <span
+                className="text-text-secondary min-w-0 flex-1 truncate font-normal"
+                title={detachedStatusUnknown ? undefined : headerText}
+              >
+                {detachedStatusUnknown && backgroundHandle != null ? (
+                  <DetachedTaskStatus
+                    threadId={backgroundHandle.subagent_thread_id}
+                    taskId={backgroundHandle.background_task_id}
+                    fallback={headerText}
+                  />
+                ) : (
+                  headerText
+                )}
+              </span>
+            </>
           ) : (
-            <span className="flex-1" />
+            <>
+              <span
+                className="min-w-0 truncate"
+                title={detachedStatusUnknown ? undefined : headerText}
+              >
+                {detachedStatusUnknown && backgroundHandle != null ? (
+                  <DetachedTaskStatus
+                    threadId={backgroundHandle.subagent_thread_id}
+                    taskId={backgroundHandle.background_task_id}
+                    fallback={headerText}
+                  />
+                ) : (
+                  headerText
+                )}
+              </span>
+              <span className="flex-1" />
+            </>
           )}
           {canOpenDetails && (
             <ChevronRight
@@ -479,6 +516,30 @@ export default function SubagentCall({
       )}
     </>
   );
+}
+
+/**
+ * A detached child's status as the parent's subagent index last reported it.
+ * Its own leaf so an index refresh re-renders this text alone, never the card
+ * or the message around it; with no indexed answer the card keeps its neutral
+ * label rather than guessing.
+ */
+function DetachedTaskStatus({
+  threadId,
+  taskId,
+  fallback,
+}: {
+  threadId: string;
+  taskId: string;
+  fallback: string;
+}) {
+  const localize = useLocalize();
+  const { byThreadId } = useParentSubagents();
+  const child = byThreadId.get(threadId);
+  const status =
+    child?.tasks.find((task) => task.taskId === taskId)?.status ??
+    (child?.latestTaskId === taskId ? child.status : undefined);
+  return <>{status == null ? fallback : localize(subagentStatusLabelKey(status))}</>;
 }
 
 function extractSubagentType(args: SubagentCallProps['args']): string {

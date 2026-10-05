@@ -1,3 +1,4 @@
+import type { BalanceTone } from '~/utils';
 import { cn } from '~/utils';
 
 const SIZE = 20;
@@ -10,10 +11,21 @@ interface GaugeProps {
   percent: number;
   /** Max context unknown — render an empty track only */
   indeterminate: boolean;
+  /** A tone the caller already classified (the balance's), in place of the context thresholds */
+  tone?: BalanceTone;
 }
 
-function getStrokeClass(percent: number, indeterminate: boolean): string {
+function getStrokeClass(percent: number, indeterminate: boolean, tone?: BalanceTone): string {
   if (indeterminate) {
+    return 'stroke-text-secondary';
+  }
+  if (tone === 'danger') {
+    return 'stroke-status-error';
+  }
+  if (tone === 'warning') {
+    return 'stroke-status-warning';
+  }
+  if (tone === 'normal') {
     return 'stroke-text-secondary';
   }
   if (percent > 90) {
@@ -25,7 +37,7 @@ function getStrokeClass(percent: number, indeterminate: boolean): string {
   return 'stroke-text-secondary';
 }
 
-export default function Gauge({ percent, indeterminate }: GaugeProps) {
+export default function Gauge({ percent, indeterminate, tone }: GaugeProps) {
   const offset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
 
   return (
@@ -55,7 +67,7 @@ export default function Gauge({ percent, indeterminate }: GaugeProps) {
         strokeDasharray={CIRCUMFERENCE}
         strokeDashoffset={indeterminate ? CIRCUMFERENCE : offset}
         strokeLinecap="round"
-        className={cn('transition-all duration-300', getStrokeClass(percent, indeterminate))}
+        className={cn('transition-all duration-300', getStrokeClass(percent, indeterminate, tone))}
       />
     </svg>
   );

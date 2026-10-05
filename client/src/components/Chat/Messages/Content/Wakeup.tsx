@@ -1,5 +1,4 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { Users } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
@@ -27,6 +26,17 @@ const SUBAGENT_HEADER_KEYS = {
 const threadStatus = (status: WakeupTask['status']) =>
   status === 'error' ? ('failed' as const) : status;
 
+/** The outcome glyph, colored for success only: a failure already paints the
+ *  header label with the warning role. */
+function SubagentOutcomeIcon({ status }: { status: ReturnType<typeof threadStatus> }) {
+  const StatusIcon = subagentStatusIcon(status);
+  return (
+    <SystemEventIcon>
+      <StatusIcon size={14} className={cn(status === 'completed' && 'text-status-success')} />
+    </SystemEventIcon>
+  );
+}
+
 function WakeupTaskCard({
   task,
   conversationId,
@@ -47,7 +57,6 @@ function WakeupTaskCard({
   const { selection, open: openActivity } = useSubagentTaskPanel(durableTask, conversationId);
   const status = threadStatus(task.status);
   const StatusIcon = subagentStatusIcon(status);
-  const title = task.subagentType ?? '';
   const hasResult = task.result.trim() !== '';
 
   return (
@@ -58,7 +67,6 @@ function WakeupTaskCard({
           aria-hidden
           className={cn('shrink-0', status === 'failed' && 'text-status-error')}
         />
-        {title !== '' && <span className="min-w-0 truncate font-medium">{title}</span>}
         <span className="shrink-0">{localize(subagentStatusLabelKey(status))}</span>
         {selection != null && openActivity != null && (
           /** The trigger identity attributes let the panel's close handler
@@ -129,9 +137,11 @@ const Wakeup = memo(function Wakeup({
     return localize('com_ui_wakeup_task_finished');
   }, [display.kind, display.tasks, localize]);
 
+  /** A subagent's report is headed by the agent's own name and face on its row,
+   *  so its header line carries only the outcome. */
   const nameSummary = useMemo(() => {
     if (display.kind === 'subagent') {
-      return display.tasks[0]?.subagentType ?? '';
+      return '';
     }
     const seen = new Set<string>();
     const labels: string[] = [];
@@ -167,9 +177,7 @@ const Wakeup = memo(function Wakeup({
           live
           icon={
             display.kind === 'subagent' ? (
-              <SystemEventIcon>
-                <Users size={14} />
-              </SystemEventIcon>
+              <SubagentOutcomeIcon status={threadStatus(display.tasks[0]?.status ?? 'completed')} />
             ) : (
               <StackedToolIcons toolNames={toolIconNames} mcpIconMap={mcpIconMap} maxIcons={4} />
             )
