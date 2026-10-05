@@ -1,7 +1,9 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { ReasoningCompact } from '../Reasoning';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import Reasoning, { ReasoningCompact } from '../Reasoning';
 import { ROW_GLYPH_SLOT } from '../../rows';
+import { showThinkingAtom } from '~/store/showThinking';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -18,7 +20,11 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('../Thinking', () => ({
   ThinkingContent: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  ThinkingButton: () => <button type="button">{'thinking'}</button>,
+  ThinkingButton: ({ onClick }: { onClick?: React.MouseEventHandler<HTMLButtonElement> }) => (
+    <button type="button" onClick={onClick}>
+      {'thinking'}
+    </button>
+  ),
   FloatingThinkingBar: () => null,
   useInViewport: () => ({ ref: { current: null }, inViewport: true }),
 }));
@@ -27,6 +33,18 @@ jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
   default: () => <button type="button">{'copy'}</button>,
 }));
+
+jest.mock('../Parts', () => ({
+  StreamingThoughtPeek: ({ text }: { text: string }) => (
+    <div data-testid="streaming-thought-peek">{text}</div>
+  ),
+}));
+
+jest.mock('~/Providers', () => ({
+  useMessageContext: () => ({ isSubmitting: true, isLatestMessage: true, nextType: undefined }),
+}));
+
+jest.mock('~/hooks/Messages/useSmoothStreaming', () => () => false);
 
 jest.mock('lucide-react', () => ({
   Lightbulb: () => <span data-testid="thoughts-icon" />,
@@ -103,6 +121,62 @@ describe('ReasoningCompact', () => {
 
     expect(screen.getByRole('button', { name: 'Thoughts' })).toBeInTheDocument();
     expect(screen.queryByText('A long stream of reasoning')).not.toBeInTheDocument();
+  });
+
+  it('does not preview compact reasoning when Show thinking is disabled', () => {
+    render(
+      <ReasoningCompact
+        reasoning="A long stream of reasoning"
+        label="Thoughts"
+        showThinking={false}
+        isStreaming
+      />,
+    );
+
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.queryByText('A long stream of reasoning')).not.toBeInTheDocument();
+  });
+
+  it('keeps the compact preview available when an opted-in reader collapses the row', () => {
+    render(
+      <ReasoningCompact
+        reasoning="A useful thought."
+        label="Thoughts"
+        showThinking
+        isStreaming
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thoughts' }));
+    expect(screen.getByTestId('streaming-thought-peek')).toHaveTextContent('A useful thought.');
+  });
+
+  it('does not show a standalone preview when Show thinking is disabled', () => {
+    const store = createStore();
+    store.set(showThinkingAtom, false);
+
+    render(
+      <Provider store={store}>
+        <Reasoning reasoning="A useful thought." isLast />
+      </Provider>,
+    );
+
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.queryByText('A useful thought.')).not.toBeInTheDocument();
+  });
+
+  it('keeps the standalone preview available when an opted-in reader collapses it', () => {
+    const store = createStore();
+    store.set(showThinkingAtom, true);
+
+    render(
+      <Provider store={store}>
+        <Reasoning reasoning="A useful thought." isLast />
+      </Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'thinking' }));
+    expect(screen.getByTestId('streaming-thought-peek')).toHaveTextContent('A useful thought.');
   });
 
   it('opens from the host preference rather than the app store', () => {
