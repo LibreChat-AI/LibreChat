@@ -20,7 +20,9 @@ export function AutoRefill() {
   const { summary } = state;
   const { lastRefill, refillIntervalUnit, refillIntervalValue } = balance;
 
-  if (!balance.autoRefillEnabled) {
+  /** A non-positive refill amount never refills (the server requires a positive one), the same
+   *  reading the balance summary gives it */
+  if (!balance.autoRefillEnabled || summary.refillAmount == null) {
     return (
       <div className="text-text-secondary text-sm">
         {localize('com_nav_balance_auto_refill_disabled')}
@@ -30,7 +32,6 @@ export function AutoRefill() {
 
   if (
     lastRefill === undefined ||
-    summary.refillAmount == null ||
     refillIntervalUnit === undefined ||
     refillIntervalValue === undefined
   ) {

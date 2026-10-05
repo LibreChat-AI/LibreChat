@@ -170,6 +170,19 @@ describe('TokenUsage gauge', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('agrees with the card when auto-refill is on but the refill amount is not positive', async () => {
+    mockStartupConfig.mockReturnValue(config());
+    mockBalance.mockReturnValue({ ...balance, refillAmount: 0 });
+    renderGauge();
+    const card = await openCard();
+    expect(within(card).getByTestId('balance-refill')).toHaveTextContent(
+      "Doesn't refill automatically",
+    );
+    const settings = render(<AutoRefill />);
+    expect(settings.container).toHaveTextContent('Auto-Refill is disabled.');
+    expect(settings.container).not.toHaveTextContent('Error loading auto-refill settings.');
+  });
+
   it.each(['credits', 'currency', 'percent'] as const)(
     'shows the same %s reading in the gauge and in settings',
     async (display) => {
