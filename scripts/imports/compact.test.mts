@@ -132,6 +132,52 @@ test('preserves comments and resolution attributes around the import clause', ()
   assert.equal(compact(commented), commented);
 });
 
+test('measures complete attributed imports and preserves their syntax at the width boundary', async () => {
+  for (const keyword of ['with', 'assert']) {
+    for (const mode of ['import', 'require']) {
+      const suffix = ` ${keyword} { 'resolution-mode': '${mode}' };\n`;
+      const declaration = header.trimEnd().slice(0, -1) + suffix;
+      const source = declaration + 'type Row = [Message, Conversation, Assistant];\n';
+      const width = declaration.trimEnd().length;
+      assert.ok(header.trimEnd().length <= 100 && width > 100);
+      assert.equal(compact(source, width), source);
+      const output = compact(source, width - 1);
+      assert.equal(
+        output,
+        `import type * as t from './models'${suffix}type Row = [t.Message, t.Conversation, t.Agent];\n`,
+      );
+      assert.equal(compact(source, 100), output);
+      const multiline = source
+        .replace("{ 'resolution-mode':", "{\n  'resolution-mode':")
+        .replace(/ };/, '\n};');
+      assert.notEqual(compact(multiline, 100), multiline);
+      const formatted = await prettier.format(output, {
+        parser: 'typescript',
+        printWidth: 100,
+        singleQuote: true,
+      });
+      assert.equal(compact(formatted, 100), formatted);
+    }
+  }
+});
+
+test('dependency-manifest-only changes select the import tooling CI gate', async () => {
+  const workflow = await readFile(join(ROOT, '.github/workflows/static-checks.yml'), 'utf8');
+  const filter = workflow.match(/^            import_tools:\n((?:              - [^\n]+\n)+)/m);
+  assert.ok(filter, 'import_tools filter exists');
+  const paths = [...filter[1].matchAll(/- '([^']+)'/g)].map((match) => match[1]);
+  for (const manifest of ['package.json', 'package-lock.json']) {
+    assert.ok(
+      paths.includes(manifest),
+      `${manifest} selects tooling checks without a source change`,
+    );
+  }
+  assert.match(
+    workflow,
+    /name: Test and typecheck import cleanup tooling\n        if: always\(\) && steps\.paths\.outputs\.import_tools == 'true'/,
+  );
+});
+
 test('rewrites documentation types and qualified type queries', () => {
   const source =
     header +
@@ -273,6 +319,25 @@ test('normal CLI and pre-commit cleanup compact types, and checks reject eligibl
     assert.equal(await readFile(file, 'utf8'), '// sort-imports-ignore\n' + source);
 
     const longImport = source.split('\n')[1] + '\n';
+    const attributed =
+      header.trimEnd().slice(0, -1) +
+      " with { 'resolution-mode': 'import' };\ntype Row = Message;\n";
+    await writeFile(file, attributed);
+    assert.equal(run('--check').status, 1);
+    assert.equal(staticCheck().status, 1);
+    assert.equal(await readFile(file, 'utf8'), attributed);
+    const attributedHook = spawnSync(process.execPath, [...args, file], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    assert.equal(attributedHook.status, 0, attributedHook.stderr);
+    assert.equal(
+      await readFile(file, 'utf8'),
+      "import type * as t from './models' with { 'resolution-mode': 'import' };\ntype Row = t.Message;\n",
+    );
+    assert.equal(run('--check').status, 0);
+    assert.equal(staticCheck().status, 0);
+
     for (const exempt of [
       longImport + 'export type { Message };\n',
       longImport.replace('Message,', 'Message, /* retained */'),

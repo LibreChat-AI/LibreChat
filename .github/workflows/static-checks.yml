@@ -114,6 +114,8 @@ jobs:
             import_tools:
               - 'scripts/sort-imports.mts'
               - 'scripts/imports/**'
+              - 'package.json'
+              - 'package-lock.json'
               - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'

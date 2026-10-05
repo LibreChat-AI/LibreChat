@@ -56,7 +56,11 @@ export function compactTypeImports(content: string, fileName: string, printWidth
       continue;
     }
 
-    const flat = `import type { ${bindings.elements.map((binding) => binding.getText(source)).join(', ')} } from ${statement.moduleSpecifier.getText(source)};`;
+    const attributes = statement.attributes;
+    const suffix = attributes
+      ? ` ${ts.tokenToString(attributes.token)} { ${attributes.elements.map((attribute) => `${attribute.name.getText(source)}: ${attribute.value.getText(source)}`).join(', ')} }`
+      : '';
+    const flat = `import type { ${bindings.elements.map((binding) => binding.getText(source)).join(', ')} } from ${statement.moduleSpecifier.getText(source)}${suffix};`;
     if (flat.length <= printWidth) continue;
 
     const scanner = ts.createScanner(
