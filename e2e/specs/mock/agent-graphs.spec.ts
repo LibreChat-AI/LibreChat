@@ -141,6 +141,51 @@ test('authors and executes a graph team independently of ordinary subagents', as
       graphsEnabled: false,
       graphs: [{ type: 'review_team' }],
     });
+
+    await reopened.getByRole('button', { name: 'Add tools', exact: true }).click();
+    const editLibrary = page.getByRole('dialog', { name: 'Tool Library', exact: true });
+    await editLibrary
+      .getByRole('listitem')
+      .filter({ hasText: 'Subagent Graphs' })
+      .getByRole('button', { name: 'Configure', exact: true })
+      .click();
+    await expect(
+      dialog.getByRole('switch', { name: 'Enable graph teams', exact: true }),
+    ).not.toBeChecked();
+    await dialog.getByRole('button', { name: 'Edit Review team', exact: true }).click();
+    await dialog.getByLabel('Team name', { exact: true }).fill('Renamed disabled team');
+    await dialog.getByRole('button', { name: 'Save graph team', exact: true }).click();
+    await expect(
+      dialog.getByRole('switch', { name: 'Enable graph teams', exact: true }),
+    ).not.toBeChecked();
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await page
+      .getByRole('dialog', { name: 'Tool Library', exact: true, includeHidden: true })
+      .getByRole('button', { name: 'Close', exact: true })
+      .click();
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === 'PATCH' &&
+          new URL(response.url()).pathname === `/api/agents/${parent?.id}` &&
+          response.ok(),
+      ),
+      reopened.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
+    const edited = await fetchJson<AgentDetail>(page, `/api/agents/${parent.id}/expanded`, token);
+    expect(edited.subagents).toEqual({
+      ...saved.subagents,
+      graphs: saved.subagents?.graphs?.map((graph) => ({
+        ...graph,
+        name: 'Renamed disabled team',
+      })),
+    });
+    await expect(
+      reopened
+        .getByRole('listitem')
+        .filter({ has: page.getByText('Subagent Graphs', { exact: true }) }),
+    ).toHaveCount(0);
   } finally {
     await cleanupAgent(page, parent?.id);
     await cleanupAgent(page, child.id);

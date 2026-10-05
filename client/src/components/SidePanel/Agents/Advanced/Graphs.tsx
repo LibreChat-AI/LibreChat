@@ -50,7 +50,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
     id === currentAgentId || id === ''
       ? localize('com_ui_agent_graphs_self')
       : (getAgent(id)?.name ?? id);
-  const write = (next: AgentSubagentGraph[], active = true) => {
+  const write = (next: AgentSubagentGraph[], active: boolean) => {
     const value = getValues('subagents');
     setValue(
       'subagents',
@@ -102,7 +102,7 @@ export default function Graphs({ currentAgentId }: { currentAgentId: string }) {
       }
       next.push(parsed.data);
     } else next[draft.index] = parsed.data;
-    write(next);
+    write(next, draft.index === null ? true : enabled);
     setDraft(null);
   };
   const graph = draft?.graph;
