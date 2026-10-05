@@ -19,6 +19,10 @@ type SpawnConfig = Pick<NonNullable<Agent['subagents']>, 'enabled' | 'agent_ids'
   >;
 };
 
+/** Near the node limit, missing or unviewable IDs still load in parallel; the injected loader
+ *  bounds actual concurrency, and at most this many reads land past the limit. */
+const MIN_LOAD_BATCH = 8;
+
 /** The saved fields of a subagent that decide where it runs code. */
 export type SubagentCodeRoutingAgent = Pick<
   Agent,
@@ -124,14 +128,17 @@ export async function resolveSubagentCodeWorkspaceInheritance({
   const rootIds = [...agents.keys()];
   let frontier = [...agents.values()].flatMap(({ subagentIds }) => subagentIds ?? []);
   const attempted = new Set<string>();
-  /** Like graph construction, only admitted agents count toward the node limit, and nothing past
-   *  it is read: graph construction rejects a graph that admits more. */
+  /** Like graph construction, only admitted agents count toward the node limit, and reading stops
+   *  once it is reached: graph construction rejects a graph that admits more. */
   let admitted = 0;
   for (let depth = 1; depth <= MAX_SUBAGENT_DEPTH && frontier.length > 0; depth++) {
     const ids = [...new Set(frontier)].filter((id) => !agents.has(id) && !attempted.has(id));
     frontier = [];
     for (let start = 0; start < ids.length && admitted < MAX_SUBAGENT_GRAPH_NODES; ) {
-      const batch = ids.slice(start, start + MAX_SUBAGENT_GRAPH_NODES - admitted);
+      const batch = ids.slice(
+        start,
+        start + Math.max(MAX_SUBAGENT_GRAPH_NODES - admitted, MIN_LOAD_BATCH),
+      );
       start += batch.length;
       batch.forEach((id) => attempted.add(id));
       const loaded = await Promise.all(batch.map((id) => loadSubagent(id).catch(() => null)));

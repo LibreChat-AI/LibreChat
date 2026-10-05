@@ -367,6 +367,42 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
     expect(load).toHaveBeenCalledTimes(50);
   });
 
+  it('keeps loading missing subagents in parallel batches near the node limit', async () => {
+    const admittedIds = Array.from({ length: 49 }, (_, index) => `agent_child_${index}`);
+    const missing = Array.from({ length: 40 }, (_, index) => `agent_missing_${index}`);
+    let inFlight = 0;
+    let peak = 0;
+    const load = jest.fn(async (agentId: string): Promise<SubagentCodeRoutingAgent | null> => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight--;
+      if (agentId.startsWith('agent_missing_')) return null;
+      return {
+        id: agentId,
+        ...demoCodeSettings,
+        subagents: agentId === admittedIds[0] ? { enabled: true, agent_ids: missing } : undefined,
+      };
+    });
+    await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [
+        {
+          id: LIA,
+          subagents: { enabled: true, agent_ids: admittedIds },
+          statefulCodeSessions: true,
+          codeExecutionContext: { environmentId: LIA_RAG, environmentType: 'attached' },
+        },
+      ],
+      loadSubagent: load,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+    });
+    expect(load).toHaveBeenCalledTimes(admittedIds.length + missing.length);
+    expect(peak).toBeGreaterThan(1);
+  });
+
   it('reads nothing when the run cannot use stateful code or holds no selection', async () => {
     const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
     for (const [selections, codeExecutionAvailable] of [
