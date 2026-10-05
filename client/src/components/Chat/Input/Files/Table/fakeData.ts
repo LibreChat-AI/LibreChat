@@ -17,7 +17,7 @@ export const files: TFile[] = [
     updatedAt: '2024-01-23T18:25:48.153Z',
     usage: 0,
     user: '652ac880c4102a77fe54c5db',
-    embedded: false,
+    embedded: true,
   },
   {
     _id: '65b004abd70ce86b9146e861',

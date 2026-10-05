@@ -1641,6 +1641,8 @@
   "com_ui_edit_project": "Edit project",
   "com_ui_edit_prompt_page": "Edit Prompt Page",
   "com_ui_edit_skill": "Edit Skill",
+  "com_ui_embedded": "Embedded",
+  "com_ui_not_embedded": "Not embedded",
   "com_ui_editable_message": "Editable Message",
   "com_ui_edited_file": "Edited {{0}}",
   "com_ui_editing_file": "Editing {{0}}",
