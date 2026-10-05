@@ -178,7 +178,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                   <img
                     src={rawUrl}
                     alt={data.filename}
-                    className="max-h-[600px] max-w-full rounded-lg object-contain"
+                    className="max-h-[37.5rem] max-w-full rounded-lg object-contain"
                   />
                 )}
 

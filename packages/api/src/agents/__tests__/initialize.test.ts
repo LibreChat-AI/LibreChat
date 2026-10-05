@@ -50,8 +50,9 @@ import {
   configSchema,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { Agent, TFile, FiltersConfig } from 'librechat-data-provider';
+import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
+import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
@@ -5466,6 +5467,368 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({});
 
     expect(result.tools).toContainEqual(OPENAI_SEARCH);
+  });
+});
+
+describe('initializeAgent — linked instructions', () => {
+  const link: AgentInstructionsPrompt = {
+    source: 'native',
+    groupId: 'group-1',
+    selection: { type: 'production' },
+  };
+
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  /** `ResolveLinkedInstructions` is a callable that also carries a `recordUse`
+   *  method (see `../instructions/linked`); a bare `jest.fn()` has no such
+   *  property, so tests build the mock the same shape the real resolver has. */
+  type ResolveLinkedInstructionsMock = jest.Mock<
+    ReturnType<ResolveLinkedInstructions>,
+    Parameters<ResolveLinkedInstructions>
+  > & { recordUse: jest.Mock };
+  function makeResolveLinkedInstructions(): ResolveLinkedInstructionsMock {
+    const resolve = jest.fn() as unknown as ResolveLinkedInstructionsMock;
+    return Object.assign(resolve, { recordUse: jest.fn() });
+  }
+
+  const run = async ({
+    agentOverrides,
+    reqOverrides,
+    params = {},
+    loadToolsOverride,
+  }: {
+    agentOverrides?: Partial<Agent>;
+    reqOverrides?: Partial<ServerRequest>;
+    params?: Partial<Parameters<typeof initializeAgent>[0]>;
+    loadToolsOverride?: (loadTools: ReturnType<typeof createMocks>['loadTools']) => void;
+  }) => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, agentOverrides);
+    Object.assign(req, reqOverrides);
+    loadToolsOverride?.(loadTools);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        ...params,
+      },
+      db,
+    );
+  };
+
+  beforeEach(() => {
+    (logger.warn as jest.Mock).mockClear?.();
+  });
+
+  it('resolves a linked agent, still applies special-vars substitution, and records exactly one usage', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Hello {{current_user}}, be concise.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      reqOverrides: { user: { id: 'user-1', name: 'Ada' } as never },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(expect.objectContaining({ link }));
+    expect(result.instructions).toBe('Hello Ada, be concise.');
+    expect(result.instructionsPromptFacts).toEqual({
+      source: 'native',
+      groupId: 'group-1',
+      promptId: 'prompt-1',
+    });
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledTimes(1);
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledWith({
+      source: 'native',
+      groupId: 'group-1',
+      promptId: 'prompt-1',
+    });
+  });
+
+  it('falls back to empty instructions with a warning, and records no usage, when the link is unavailable', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({ status: 'unavailable', reason: 'timeout' });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('falls back to empty instructions with a warning when no resolver is provided', async () => {
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+    });
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+  });
+
+  it('leaves an unlinked agent unchanged, never calls the resolver, and records no usage', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+
+    const result = await run({
+      agentOverrides: { instructions: 'Be helpful.' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
+    expect(result.instructions).toBe('Be helpful.');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('resolves and initializes normally, but records no usage, when recordLinkedPromptUsage is false', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions, recordLinkedPromptUsage: false },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed instructions.');
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(expect.objectContaining({ link }));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('records no usage when initializeAgent throws after a successful resolution', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    const failure = new Error('boom after resolution');
+
+    await expect(
+      run({
+        agentOverrides: { instructionsPrompt: link },
+        params: { resolveLinkedInstructions },
+        loadToolsOverride: (loadTools) =>
+          loadTools.mockResolvedValue({
+            tools: [],
+            toolContextMap: {},
+            dynamicToolContextMap: {},
+            toolDefinitions: [],
+            hasDeferredTools: false,
+            // Rejects well after the instructions block has resolved and set
+            // `agent.instructions`, so the throw happens on the way OUT.
+            repositoryInstructionSource: { load: jest.fn().mockRejectedValue(failure) },
+          }),
+      }),
+    ).rejects.toBe(failure);
+    await flush();
+
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the resolver is a plain function with no recordUse (a successful init still returns normally)', async () => {
+    // `resolveLinkedInstructions` is typed as a plain callable in
+    // `InitializeAgentParams`; a caller-supplied function that matches the
+    // type but not the real resolver's `Object.assign(resolve, { recordUse })`
+    // shape must not throw after initialization has already succeeded.
+    const resolveLinkedInstructions: ResolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    }) as unknown as ResolveLinkedInstructions;
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed instructions.');
+  });
+
+  it('does not produce an unhandled rejection when the resolution rejects before it is awaited', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      const rejection = new Error('rejected before the instructions block awaits it');
+      const resolveLinkedInstructions = makeResolveLinkedInstructions();
+      // Rejects on the same tick it's called — well before `initializeAgent`
+      // reaches the instructions block, since that only happens after tool
+      // loading (delayed below) and several other steps.
+      resolveLinkedInstructions.mockImplementation(() => Promise.reject(rejection));
+
+      await expect(
+        run({
+          agentOverrides: { instructionsPrompt: link },
+          params: { resolveLinkedInstructions },
+          loadToolsOverride: (loadTools) =>
+            loadTools.mockImplementation(
+              () =>
+                new Promise((resolve) => {
+                  setTimeout(
+                    () =>
+                      resolve({
+                        tools: [],
+                        toolContextMap: {},
+                        dynamicToolContextMap: {},
+                        toolDefinitions: [],
+                        hasDeferredTools: false,
+                      }),
+                    10,
+                  );
+                }),
+            ),
+        }),
+      ).rejects.toBe(rejection);
+
+      // Give the process a turn to report an unhandled rejection, if any occurred.
+      await flush();
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+    expect(unhandled).toEqual([]);
+  });
+});
+
+describe('initializeAgent — linked instructions and the agent-definition content policy', () => {
+  const link: AgentInstructionsPrompt = {
+    source: 'native',
+    groupId: 'group-1',
+    selection: { type: 'production' },
+  };
+  const blockingAgentInstructionsFilters: FiltersConfig = {
+    agentInstructions: {
+      pii: {
+        starterPatterns: [],
+        customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+        fields: ['instructions'],
+      },
+    },
+  };
+
+  it('blocks a stored inline instructions field that trips the policy when there is no link', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    agent.instructions = 'Contains SECRET-VALUE marker';
+    Object.assign(req, { config: { filters: blockingAgentInstructionsFilters } });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('excludes the stored inline instructions from that scan when the agent has a valid link', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, {
+      instructionsPrompt: link,
+      instructions: 'Contains SECRET-VALUE marker',
+    });
+    Object.assign(req, { config: { filters: blockingAgentInstructionsFilters } });
+    const resolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Safe resolved prompt.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    Object.assign(resolveLinkedInstructions, { recordUse: jest.fn() });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        resolveLinkedInstructions:
+          resolveLinkedInstructions as unknown as ResolveLinkedInstructions,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Safe resolved prompt.');
+  });
+
+  it('never calls the resolver when the definition-content check rejects a field other than instructions', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, {
+      instructionsPrompt: link,
+      // The stored inline `instructions` are excluded from the scan by the
+      // link (see the test above), but `description` is not — the check
+      // must still run, and reject, before the resolver is ever started.
+      description: 'Contains SECRET-VALUE marker',
+    });
+    Object.assign(req, {
+      config: {
+        filters: {
+          agentInstructions: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+              fields: ['description'],
+            },
+          },
+        },
+      },
+    });
+    const resolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Safe resolved prompt.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    Object.assign(resolveLinkedInstructions, { recordUse: jest.fn() });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+          resolveLinkedInstructions:
+            resolveLinkedInstructions as unknown as ResolveLinkedInstructions,
+        },
+        db,
+      ),
+    ).rejects.toThrow();
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
   });
 });
 

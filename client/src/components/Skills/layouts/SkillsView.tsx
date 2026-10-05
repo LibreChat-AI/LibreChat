@@ -1,4 +1,4 @@
-import { Spinner, useMediaQuery } from '@librechat/client';
+import { Spinner } from '@librechat/client';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { Navigate, useNavigate, useParams, useLocation, useSearchParams } from 'react-router-dom';
 import SkillFileViewer from '~/components/Skills/display/SkillFileViewer';
@@ -7,6 +7,7 @@ import { useHasAccess, useAuthContext, useLocalize } from '~/hooks';
 import SkillDetail from '~/components/Skills/display/SkillDetail';
 import SkillState from '~/components/Skills/display/SkillState';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { useGetSkillByIdQuery } from '~/data-provider';
 
 /**
@@ -151,7 +152,7 @@ function EditView({ skillId }: { skillId: string }) {
 
 /** Sidebar reopen affordance for small screens, where the drawer is the only navigation. */
 function MobileSidebarToggle() {
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   if (!isSmallScreen) {
     return null;
   }

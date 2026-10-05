@@ -2277,3 +2277,23 @@ describe('officePreview setting', () => {
     expect(JSON.stringify(result.error?.issues[0].path)).toBe('["officePreview","fileSizeLimit"]');
   });
 });
+
+describe('mergeFileConfig memoization', () => {
+  it('returns the same instance for the same dynamic object and for undefined', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    expect(mergeFileConfig(dynamic)).toBe(mergeFileConfig(dynamic));
+    expect(mergeFileConfig(undefined)).toBe(mergeFileConfig(undefined));
+    expect(mergeFileConfig(fileConfigSchema.parse({ serverFileSizeLimit: 5 }))).not.toBe(
+      mergeFileConfig(dynamic),
+    );
+  });
+
+  it('clears the cache when the regex compiler is swapped', () => {
+    const dynamic = fileConfigSchema.parse({ serverFileSizeLimit: 5 });
+    const before = mergeFileConfig(dynamic);
+    const beforeStatic = mergeFileConfig(undefined);
+    setFileConfigRegexCompiler((pattern) => new RegExp(pattern));
+    expect(mergeFileConfig(dynamic)).not.toBe(before);
+    expect(mergeFileConfig(undefined)).not.toBe(beforeStatic);
+  });
+});

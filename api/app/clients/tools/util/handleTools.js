@@ -394,6 +394,7 @@ const loadTools = async ({
               conversation: options.req?.resolvedConversation,
               request: options.req?.body,
             }),
+            inheritedEnvironments: options.req?.codeWorkspaceInheritance,
             environments:
               options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
             userId: user,
@@ -685,8 +686,8 @@ const loadTools = async ({
       getAvailableTools: (userId, serverName, config) =>
         getMCPServerTools(userId, serverName, config, capabilityProfile),
       context: {
-        mcpPermissionContext,
         agentId: agent?.id,
+        mcpPermissionContext,
         signal,
         user: safeUser,
         userMCPAuthMap,
