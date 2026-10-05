@@ -3058,6 +3058,90 @@ describe('initializeClient — subagent loading', () => {
       }
     });
 
+    it('shares a lazy child config with later graphs only once its selection commits', async () => {
+      const req = await setup();
+      const member = await createAgent({
+        id: 'agent_graph_member',
+        name: 'Graph member',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        stateful_code_environment: 'user',
+        code_environment_id: LIA_RAG,
+        code_environment_ids: [],
+      });
+      await grantView(member);
+      mockInitializeAgent.mockResolvedValue({
+        ...makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID, member.id] },
+        }),
+        statefulCodeSessions: true,
+        codeExecutionContext: { environmentId: LIA_RAG, environmentType: 'attached' },
+      });
+      const fetchSpy = mockWorkerStatus();
+      try {
+        await initializeClient({
+          req,
+          res: {},
+          signal: new AbortController().signal,
+          endpointOption: makeEndpointOption(),
+        });
+        const descriptorFor = (id) =>
+          agentClientArgs.agent.lazySubagentConfigs.find((descriptor) => descriptor.id === id);
+        mockInitializeAgent.mockImplementation(async (params) => ({
+          ...makeSubagentConfig(params.agent.id),
+          ...(params.agent.id === SUBAGENT_ID
+            ? {
+                subagents: {
+                  enabled: true,
+                  allowSelf: false,
+                  agent_ids: [],
+                  graphs: [
+                    {
+                      type: 'review_team',
+                      name: 'Review team',
+                      description: 'Reviews together.',
+                      agent_ids: [member.id],
+                      edges: [],
+                      entryAgentId: member.id,
+                      resultAgentId: member.id,
+                    },
+                  ],
+                },
+              }
+            : {}),
+          codeExecutionContext: {
+            environmentId: params.agent.code_environment_id,
+            environmentType: 'attached',
+          },
+        }));
+        const reviewWith = async (executionId) => {
+          const config = await select(descriptorFor(SUBAGENT_ID), {
+            signal: new AbortController().signal,
+            executionId,
+            hostArgs: { machine: SKYNET },
+          });
+          return config.subagentGraphConfigs?.[0]?.memberConfigs?.[0];
+        };
+
+        const unsettled = await descriptorFor(member.id).resolve({
+          signal: new AbortController().signal,
+          executionId: 'run-member-unsettled',
+        });
+        expect(await reviewWith('run-review-a')).not.toBe(unsettled);
+
+        const settled = await select(descriptorFor(member.id), {
+          signal: new AbortController().signal,
+          executionId: 'run-member-settled',
+        });
+        expect(await reviewWith('run-review-b')).toBe(settled);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it("holds a graph member's default machine while it initializes", async () => {
       const req = await setup();
       const member = await createAgent({

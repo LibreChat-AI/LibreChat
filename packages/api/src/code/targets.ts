@@ -498,13 +498,13 @@ export interface SubagentCodeRouting<TContext> {
   /**
    * Runs one lazy child's whole resolution, through to the inputs handed to the SDK.
    * The routes and per-agent tool contexts it and its graph members hold become
-   * permanent only when it succeeds; when it fails they are given back (unless
-   * another execution holds them) and `onRelease` undoes the caller's own state.
+   * permanent only when it succeeds (then `onCommit` publishes the caller's own
+   * state); when it fails they are given back unless another execution holds them.
    */
   settleExecution<TConfig>(
     context: Pick<SubagentCodeCallContext, 'executionId'> | null | undefined,
     resolve: () => Promise<TConfig>,
-    onRelease?: () => void,
+    hooks?: { onCommit?: () => void },
   ): Promise<TConfig>;
 }
 
@@ -932,14 +932,14 @@ export function createSubagentCodeRouting<TContext>({
         throw error;
       }
     },
-    async settleExecution(context, resolve, onRelease) {
+    async settleExecution(context, resolve, hooks) {
       try {
         const resolved = await resolve();
         settleHoldsOf(context?.executionId, true);
+        hooks?.onCommit?.();
         return resolved;
       } catch (error) {
         settleHoldsOf(context?.executionId, false);
-        onRelease?.();
         throw error;
       }
     },

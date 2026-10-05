@@ -1617,9 +1617,9 @@ const initializeClientWithProvider = async ({
             subagentAgentConfigs: eagerChildren,
             subagentGraphMemberMetadata,
             settle: (context, resolveInputs) =>
-              subagentCodeRouting.settleExecution(context, resolveInputs, () =>
-                forgetSharedConfig(context),
-              ),
+              subagentCodeRouting.settleExecution(context, resolveInputs, {
+                onCommit: () => publishSharedConfig(context),
+              }),
             ...guardRoutableSubagent({
               description: metadata.description,
               codeWorkspaceUnavailable: metadata.codeWorkspaceUnavailable,
@@ -1635,7 +1635,6 @@ const initializeClientWithProvider = async ({
                 });
                 config.subagentAgentConfigs = eagerChildren;
                 if (!subagentCodeRouting.isRouted(context.executionId)) {
-                  graphMemberConfigsById.set(config.id, config);
                   sharedConfigByCall.set(context, config);
                 }
                 await resolveGraphSubagentsFor(
@@ -1691,12 +1690,12 @@ const initializeClientWithProvider = async ({
   const graphMemberConfigsById = new Map(
     rootSubagentConfigs.filter((config) => config?.id).map((config) => [config.id, config]),
   );
-  /** A lazy call's shared config is reused only if that call's selection succeeds. */
+  /** A lazy call's config joins the shared graph cache only once its route commits. */
   const sharedConfigByCall = new WeakMap();
-  const forgetSharedConfig = (context) => {
+  const publishSharedConfig = (context) => {
     const config = sharedConfigByCall.get(context);
-    if (config != null && graphMemberConfigsById.get(config.id) === config) {
-      graphMemberConfigsById.delete(config.id);
+    if (config != null && !graphMemberConfigsById.has(config.id)) {
+      graphMemberConfigsById.set(config.id, config);
     }
   };
   const graphMemberLoadsById = new Map();
@@ -1807,11 +1806,13 @@ const initializeClientWithProvider = async ({
       }
       const memberConfigs = await Promise.all(
         memberIds.map((memberId) =>
-          initializeGraphMember(() =>
-            routedParentRunId == null
-              ? loadGraphMember(memberId, graphSignal)
-              : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
-          ),
+          memberId === config.id
+            ? config
+            : initializeGraphMember(() =>
+                routedParentRunId == null
+                  ? loadGraphMember(memberId, graphSignal)
+                  : loadRoutedGraphMember(memberId, routedParentRunId, graphSignal),
+              ),
         ),
       );
       throwIfAborted(graphSignal);
