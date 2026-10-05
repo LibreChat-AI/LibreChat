@@ -8,6 +8,7 @@ import {
   containsToolCallPreviews,
   prepareToolCallPreviews,
   previewMessagesToolCalls,
+  prepareResultToolCallPreviews,
   rejectToolCallPreviewWrites,
   withToolCallPreviews,
   withMessageToolCallPreviews,
@@ -351,6 +352,40 @@ describe('wide or unusual JSON', () => {
   });
 });
 
+describe('JSON numbers in previews', () => {
+  const pad = 'p'.repeat(5_000);
+
+  it.each([
+    ['an integer past 2^53', '9007199254740993'],
+    ['an exponent past the double range', '1e400'],
+    ['a decimal finer than a double holds', '0.1000000000000000000001'],
+    ['an underflowing exponent', '1e-400'],
+  ])('falls back to text rather than change %s', (_label, token) => {
+    const args = `{"id":${token},"pad":"${pad}"}`;
+    const preview = previewToolCallArgs(args, 1_024);
+    expect(preview?.args).toBe(args.slice(0, 1_024));
+    expect(preview?.args).toContain(token);
+
+    const output = `{"id":${token},"items":[${token}],"pad":"${pad}"}`;
+    const call = previewToolCall(toolPart({ name: 'list_issues_mcp', output }).tool_call, limits);
+    expect(call.output).toContain(token);
+    expect(call.output).toContain(TOOL_CALL_PREVIEW_ELISION);
+  });
+
+  it('keeps the structure for numbers a double holds exactly, however they are written', () => {
+    const args = `{"a":1.50,"b":15e-1,"c":-0,"d":9007199254740991,"e":"1e400","pad":"${pad}"}`;
+    const preview = previewToolCallArgs(args, 1_024);
+    const parsed = JSON.parse(preview?.args as string);
+    expect(parsed).toMatchObject({ a: 1.5, b: 1.5, c: 0, d: 9007199254740991, e: '1e400' });
+  });
+
+  it('sends a background-task result whole rather than as unparseable text', () => {
+    const output = `{"status":"completed","task_id":"task_1","bytes":9007199254740993,"output":"${pad}"}`;
+    const check = toolPart({ name: 'check_background_task', output }).tool_call;
+    expect(previewToolCall(check, limits).output).toBe(output);
+  });
+});
+
 describe('deeply nested JSON output', () => {
   it('falls back to a bounded text preview instead of exhausting the stack', () => {
     const output = `${'['.repeat(20_000)}${']'.repeat(20_000)}`;
@@ -461,6 +496,48 @@ describe('prepareToolCallPreviews', () => {
     const preview = prepareToolCallPreviews({ query: { toolPreviews: '1' } }, { getAppConfig });
     const [message] = await preview(messages);
     expect(message.content?.[0]).toMatchObject({ tool_call: { outputTruncated: true } });
+  });
+});
+
+describe('prepareResultToolCallPreviews', () => {
+  const result = () => ({
+    conversation: { conversationId: 'fork-1' },
+    messages: [{ messageId: 'm1', content: [toolPart({ output: 'o'.repeat(10_000) })] }],
+  });
+  const config = (enabled: boolean) =>
+    ({ toolCallPreviews: toolCallPreviewsConfigSchema.parse({ enabled }) }) as AppConfig;
+
+  it("reads the requester's bounds, ignoring the config the route resolved", async () => {
+    const getAppConfig = jest.fn().mockResolvedValue(config(true));
+    const req = {
+      query: { toolPreviews: '1' },
+      user: { id: 'viewer', role: 'USER', tenantId: 'tenant-viewer' },
+      config: config(false),
+    };
+    const preview = prepareResultToolCallPreviews(req, { getAppConfig });
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'viewer', tenantId: 'tenant-viewer' }),
+    );
+    const original = result();
+    const previewed = await preview(original);
+    expect(previewed.conversation).toBe(original.conversation);
+    expect(previewed.messages[0].content[0]).toMatchObject({
+      tool_call: { outputTruncated: true },
+    });
+  });
+
+  it('returns the result untouched when the requester opted out or did not ask', async () => {
+    const original = result();
+    const optedOut = prepareResultToolCallPreviews(
+      { query: { toolPreviews: '1' } },
+      { getAppConfig: jest.fn().mockResolvedValue(config(false)) },
+    );
+    await expect(optedOut(original)).resolves.toBe(original);
+
+    const getAppConfig = jest.fn();
+    const notAsked = prepareResultToolCallPreviews({ query: {} }, { getAppConfig });
+    await expect(notAsked(original)).resolves.toBe(original);
+    expect(getAppConfig).not.toHaveBeenCalled();
   });
 });
 

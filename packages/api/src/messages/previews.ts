@@ -272,6 +272,82 @@ function parseJsonContainer(text: string): JsonValue | undefined {
   }
 }
 
+const isDigitCode = (code: number): boolean => code >= 48 && code <= 57;
+
+/** `0-9 . e E + -`: the characters a JSON number token is made of. */
+const isNumberCode = (code: number): boolean =>
+  isDigitCode(code) || code === 46 || code === 101 || code === 69 || code === 43 || code === 45;
+
+/** A decimal as `[-]digits e exponent` with no leading or trailing zeros, so `1.50` and `15e-1`
+ *  compare equal and only a change of value shows. */
+function canonicalDecimal(token: string): string {
+  const negative = token.startsWith('-');
+  const unsigned = negative ? token.slice(1) : token;
+  const exponentAt = unsigned.search(/[eE]/);
+  const mantissa = exponentAt === -1 ? unsigned : unsigned.slice(0, exponentAt);
+  const pointAt = mantissa.indexOf('.');
+  const fraction = pointAt === -1 ? '' : mantissa.slice(pointAt + 1);
+  const digits = (pointAt === -1 ? mantissa : mantissa.slice(0, pointAt)) + fraction;
+  const significant = digits.replace(/^0+/, '');
+  if (significant === '') {
+    return '0';
+  }
+  const trimmed = significant.replace(/0+$/, '');
+  const exponent =
+    (exponentAt === -1 ? 0 : Number(unsigned.slice(exponentAt + 1))) -
+    fraction.length +
+    (significant.length - trimmed.length);
+  return `${negative ? '-' : ''}${trimmed}e${exponent}`;
+}
+
+/** Whether the number survives a parse and re-serialization as the same value. */
+function numberRoundTrips(token: string): boolean {
+  const value = Number(token);
+  return Number.isFinite(value) && canonicalDecimal(token) === canonicalDecimal(String(value));
+}
+
+/**
+ * Whether every number in the (already valid) JSON text comes back as the same value once
+ * parsed into doubles and serialized again. An integer past 2^53, a decimal with more precision
+ * than a double holds, or an exponent past its range would otherwise show a different value
+ * (or `null`) in the preview than the tool actually produced.
+ */
+function numbersRoundTrip(text: string): boolean {
+  let i = 0;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code === 34) {
+      i++;
+      while (i < text.length && text.charCodeAt(i) !== 34) {
+        i += text.charCodeAt(i) === 92 ? 2 : 1;
+      }
+      i++;
+      continue;
+    }
+    if (code !== 45 && !isDigitCode(code)) {
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < text.length && isNumberCode(text.charCodeAt(i))) {
+      i++;
+    }
+    if (!numberRoundTrips(text.slice(start, i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The structure-preserving preview of JSON text, or `undefined` when the caller should fall
+ * back: the structure cannot fit, or a number in it would not survive the round trip.
+ */
+function shrinkJsonText(text: string, parsed: JsonValue, maxChars: number): string | undefined {
+  const shrunk = shrinkJsonToFit(parsed, maxChars);
+  return shrunk !== undefined && numbersRoundTrip(text) ? shrunk : undefined;
+}
+
 /**
  * Serializes the JSON within `maxChars` by shortening only its longest strings: the largest
  * per-string cap that fits wins, so short fields (a command, a path, an intent, a status) stay
@@ -308,7 +384,7 @@ export function previewToolCallArgs(args: unknown, maxChars: number): ArgsPrevie
       return undefined;
     }
     const parsed = parseJsonContainer(args);
-    const shrunk = parsed === undefined ? undefined : shrinkJsonToFit(parsed, maxChars);
+    const shrunk = parsed === undefined ? undefined : shrinkJsonText(args, parsed, maxChars);
     return { args: shrunk ?? sliceStart(args, maxChars), length: args.length };
   }
   if (!isObject(args)) {
@@ -348,7 +424,7 @@ export function previewToolCallOutput(
     return output;
   }
   const parsed = parseJsonContainer(output);
-  const shrunk = parsed === undefined ? undefined : shrinkJsonToFit(parsed, maxChars);
+  const shrunk = parsed === undefined ? undefined : shrinkJsonText(output, parsed, maxChars);
   if (shrunk != null) {
     return shrunk;
   }
@@ -521,6 +597,11 @@ export interface ToolCallPreviewDeps {
 
 type MessagesPreviewer = <T extends PreviewableMessage>(messages: T[]) => Promise<T[]>;
 
+/** A response carrying the messages a fork-style route returns. */
+type MessagesResult = { messages?: PreviewableMessage[] | null };
+
+export type ResultPreviewer = <T extends MessagesResult>(result: T) => Promise<T>;
+
 const sendInFull: MessagesPreviewer = (messages) => Promise.resolve(messages);
 
 async function resolveLimits(
@@ -562,6 +643,26 @@ export function prepareToolCallPreviews(
   };
 }
 
+/**
+ * `prepareToolCallPreviews` for a route that returns `{ messages }` and whose `req.config` is not
+ * the requester's: a shared-link fork resolves the share owner's config for its content checks,
+ * while the forked conversation belongs to the requester, so the bounds come from the
+ * requester's own tenant and role.
+ */
+export function prepareResultToolCallPreviews(
+  req: ToolCallPreviewRequest,
+  deps: ToolCallPreviewDeps,
+): ResultPreviewer {
+  const preview = prepareToolCallPreviews(req, deps);
+  return async (result) => {
+    if (!Array.isArray(result?.messages)) {
+      return result;
+    }
+    const messages = await preview(result.messages);
+    return messages === result.messages ? result : { ...result, messages };
+  };
+}
+
 /** True when any tool call in the content, nested subagent runs included, carries preview markers. */
 export function containsToolCallPreviews(content: unknown): boolean {
   if (!Array.isArray(content)) {
@@ -595,7 +696,7 @@ interface PreviewableResultRequest {
  * for previews does not seed its conversation cache with the full history. Reads the bounds
  * from the config the route already resolved.
  */
-export function withToolCallPreviews<T extends { messages?: PreviewableMessage[] | null }>(
+export function withToolCallPreviews<T extends MessagesResult>(
   req: PreviewableResultRequest,
   result: T,
 ): T {
