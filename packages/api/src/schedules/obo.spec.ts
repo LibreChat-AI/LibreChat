@@ -919,6 +919,39 @@ describe('separately authorized scheduled OBO grants', () => {
     expect(requestGrant).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps custom-variable lookup failures retryable without diagnostic disclosure', async () => {
+    const { service, row, deps, setServer, setVariables, tokenStore } = harness();
+    setServer({
+      ...config,
+      url: 'https://mcp.test/{{KEY}}',
+      customUserVars: { KEY: { title: 'Key', description: 'Credential', sensitive: true } },
+    });
+    setVariables({ KEY: 'test-key' });
+    await service.enroll(user.id, row.id, 'Files', 'assertion');
+    row.enabled = true;
+    const error = Object.assign(new Error(`private-variable-diagnostic-${'x'.repeat(5000)}`), {
+      query: { token: 'private-variable-query' },
+    });
+    deps.findPluginAuthsByKeys = async () => {
+      throw error;
+    };
+    const provider = (await service.resolve(user, {
+      context,
+      target: { ...target, url: 'https://mcp.test/test-key' },
+    }))!;
+    await expect(provider()).rejects.toMatchObject({
+      reason: 'session_refresh_failed',
+      retryable: true,
+    });
+    expect(
+      JSON.stringify([
+        ...jest.mocked(logger.warn).mock.calls,
+        ...jest.mocked(logger.error).mock.calls,
+      ]),
+    ).not.toMatch(/private-variable-diagnostic|private-variable-query/);
+    expect(tokenStore.getAll()).toHaveLength(3);
+  });
+
   it('logs only safe metadata through the real coordinator for credential-store diagnostics', async () => {
     const { service, row, tokenStore } = harness();
     await service.enroll(user.id, row.id, 'Files', 'assertion');
