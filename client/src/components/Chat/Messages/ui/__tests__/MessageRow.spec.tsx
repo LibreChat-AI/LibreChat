@@ -80,7 +80,7 @@ describe('MessageRow', () => {
     expect(heading).toContainElement(screen.getByTestId('message-icon'));
     expect(screen.getByTestId('message-icon').parentElement).toHaveClass('size-6');
     expect(heading.lastElementChild).toHaveTextContent('You');
-    expect(messageSurface).toHaveClass('bg-surface-tertiary');
+    expect(messageSurface).toHaveClass('bg-surface-user-message');
     expect(messageSurface).not.toHaveClass('border');
   });
 
@@ -90,7 +90,7 @@ describe('MessageRow', () => {
     const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
 
     expect(messageSurface).toHaveClass('border', 'border-border-medium');
-    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
     expect(screen.getByRole('heading', { name: 'Message from You' })).toBeVisible();
   });
 
