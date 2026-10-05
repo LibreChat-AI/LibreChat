@@ -359,6 +359,21 @@ describe('tool-call previews on the message routes', () => {
       await expectStoredContentIntact();
     });
 
+    it('returns a branched message as a preview to a client that asks, keeping storage full', async () => {
+      const response = await request(app)
+        .post('/api/messages/branch?toolPreviews=1')
+        .send({ messageId: responseId, agentId: 'agent_a' });
+      expect(response.status).toBe(201);
+      expect(response.body.content[1].tool_call.outputTruncated).toBe(true);
+      expect(response.body.content[2].tool_call.subagentContentOmitted).toBe(true);
+      const [branched] = await mockDb.methods.getMessages({
+        messageId: response.body.messageId,
+        user: OWNER,
+      });
+      expect(branched.content[1].tool_call.output).toBe(fullOutput);
+      expect(branched.content[2].tool_call.subagent_content).toEqual(transcript);
+    });
+
     it('forking copies the stored content, not the preview', async () => {
       await loadPreviews();
       const { forkConversation } = require('~/server/utils/import/fork');

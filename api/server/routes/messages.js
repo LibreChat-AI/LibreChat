@@ -33,6 +33,7 @@ const {
   prepareToolCallPreviews,
   createToolCallPartHandler,
   rejectToolCallPreviewWrites,
+  withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { getAppConfig } = require('~/server/services/Config');
@@ -412,7 +413,7 @@ router.post('/branch', configMiddleware, async (req, res) => {
       conversationId: sourceMessage.conversationId,
     });
 
-    res.status(201).json(toClientMessage(savedMessage));
+    res.status(201).json(withMessageToolCallPreviews(req, toClientMessage(savedMessage)));
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -517,11 +518,13 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
       conversationId: message.conversationId,
     });
 
-    res.status(200).json({
-      conversationId: savedMessage.conversationId,
-      content: savedMessage.content,
-      text: savedMessage.text,
-    });
+    res.status(200).json(
+      withMessageToolCallPreviews(req, {
+        conversationId: savedMessage.conversationId,
+        content: savedMessage.content,
+        text: savedMessage.text,
+      }),
+    );
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);

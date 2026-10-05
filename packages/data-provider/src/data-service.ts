@@ -1145,13 +1145,13 @@ export const editArtifact = async ({
   messageId,
   ...params
 }: m.TEditArtifactRequest): Promise<m.TEditArtifactResponse> => {
-  return request.post(endpoints.messagesArtifacts(messageId), params);
+  return request.post(withToolCallPreviews(endpoints.messagesArtifacts(messageId)), params);
 };
 
 export const branchMessage = async (
   payload: m.TBranchMessageRequest,
 ): Promise<m.TBranchMessageResponse> => {
-  return request.post(endpoints.messagesBranch(), payload);
+  return request.post(withToolCallPreviews(endpoints.messagesBranch()), payload);
 };
 
 export interface OwnerMessageText {

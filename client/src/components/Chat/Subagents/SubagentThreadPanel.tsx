@@ -57,6 +57,7 @@ import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
 import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
+import { getSubagentPrompt } from './prompt';
 import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
@@ -795,6 +796,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   );
   const storedToolCall = awaitsStoredPart ? storedPart.data?.tool_call : undefined;
   const persistedContent = storedToolCall?.subagent_content ?? selection.persistedContent;
+  const prompt =
+    (storedToolCall == null ? undefined : getSubagentPrompt(storedToolCall.args)) ??
+    selection.prompt;
   let legacyOutput = selection.legacyOutput;
   if (awaitsStoredPart && legacyOutput != null) {
     legacyOutput = storedToolCall?.output;
@@ -804,7 +808,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     () =>
       adaptLivePersistedActivity({
         title: foregroundTitle,
-        prompt: selection.prompt,
+        prompt,
         progress,
         persistedContent,
         isDetached: selection.durable != null,
@@ -815,7 +819,15 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         isSubmitting: selection.durable == null ? selection.isSubmitting : detachedLiveSubmitting,
         runStepStatus: selection.durable == null ? selection.runStepStatus : undefined,
       }),
-    [detachedLiveSubmitting, foregroundTitle, legacyOutput, persistedContent, progress, selection],
+    [
+      detachedLiveSubmitting,
+      foregroundTitle,
+      legacyOutput,
+      persistedContent,
+      progress,
+      prompt,
+      selection,
+    ],
   );
   const activity = useMemo(() => {
     if (selection.durable == null) return liveActivity;
@@ -945,7 +957,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
             selection.event == null
               ? ('parent_continuation' as const)
               : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
           ...(selectedTaskCreatedAt == null ? {} : { createdAt: selectedTaskCreatedAt }),
         },
         activity,
@@ -972,7 +984,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
         },
         activity,
       },
@@ -984,6 +996,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     movingWindowTurns,
     olderTurns,
     postRebaseTurns,
+    prompt,
     rebaseTurns,
     retainedTurnsValid,
     threadId,

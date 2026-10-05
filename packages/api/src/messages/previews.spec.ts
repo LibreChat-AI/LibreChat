@@ -10,6 +10,7 @@ import {
   previewMessagesToolCalls,
   rejectToolCallPreviewWrites,
   withToolCallPreviews,
+  withMessageToolCallPreviews,
   TOOL_CALL_PREVIEW_ELISION,
 } from './previews';
 
@@ -443,6 +444,24 @@ describe('withToolCallPreviews', () => {
       conversation: { conversationId: 'x' },
     };
     expect(withToolCallPreviews({ query: { toolPreviews: '1' } }, noMessages)).toBe(noMessages);
+  });
+});
+
+describe('withMessageToolCallPreviews', () => {
+  it('previews one returned message for a client that asked, and only then', () => {
+    const message = {
+      conversationId: 'c1',
+      text: '',
+      content: [toolPart({ output: 'o'.repeat(10_000) })],
+    };
+    const config = { toolCallPreviews: toolCallPreviewsConfigSchema.parse({}) };
+    const previewed = withMessageToolCallPreviews(
+      { query: { toolPreviews: '1' }, config },
+      message,
+    );
+    expect(previewed).toMatchObject({ conversationId: 'c1', text: '' });
+    expect(previewed.content[0]).toMatchObject({ tool_call: { outputTruncated: true } });
+    expect(withMessageToolCallPreviews({ query: {}, config }, message)).toBe(message);
   });
 });
 

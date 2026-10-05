@@ -242,6 +242,27 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     expect((await request(app).get(partUrl(0, 'call_dup'))).status).toBe(404);
   });
 
+  it('serves a call whose provider id is unusually long', async () => {
+    const longId = `call_${'x'.repeat(2_000)}`;
+    await seed(OWNER, {
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: longId,
+            type: 'tool_call',
+            name: 'bash_tool',
+            output: 'done',
+            args: '{}',
+          },
+        },
+      ],
+    });
+    const response = await request(app).get(partUrl(0, longId));
+    expect(response.status).toBe(200);
+    expect(response.body.tool_call.id).toBe(longId);
+  });
+
   it('answers not found for a missing part, a non-tool part, or an unknown id', async () => {
     await seed();
     expect((await request(app).get(partUrl(9))).status).toBe(404);
@@ -277,7 +298,6 @@ describe('GET /api/messages/:conversationId/:messageId/parts/:partIndex', () => 
     expect((await request(strict).get(partUrl('-1'))).status).toBe(400);
     expect((await request(strict).get(partUrl('1.5'))).status).toBe(400);
     expect((await request(strict).get(partUrl('99999999999999999999'))).status).toBe(400);
-    expect((await request(strict).get(partUrl(1, 'x'.repeat(600)))).status).toBe(400);
     expect(getMessages).not.toHaveBeenCalled();
   });
 

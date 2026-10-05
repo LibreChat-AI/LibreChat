@@ -1560,7 +1560,7 @@ describe('SubagentThreadPanel', () => {
           tool_call: {
             id: 'foreground-call',
             name: 'subagent',
-            args: '{"prompt":"Review this change."}',
+            args: '{"prompt":"Review this change, including the migration and its rollback."}',
             output: 'Full final answer.',
             subagent_content: [{ type: 'text', text: 'Stored review transcript.' }],
           },
@@ -1576,6 +1576,10 @@ describe('SubagentThreadPanel', () => {
 
       expect(screen.getByText('Stored review transcript.')).toBeInTheDocument();
       expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-state', 'ready');
+      expect(
+        screen.getByText('Review this change, including the migration and its rollback.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Review this change.')).not.toBeInTheDocument();
     });
 
     it('reports a failed load with a retry instead of rendering the preview', () => {

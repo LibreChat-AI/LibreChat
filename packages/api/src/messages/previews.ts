@@ -542,6 +542,20 @@ export function withToolCallPreviews<T extends { messages?: PreviewableMessage[]
   return messages === result.messages ? result : { ...result, messages };
 }
 
+/**
+ * Previews one message a mutation returns (an artifact edit's content, a branched response), so
+ * a client that asked for previews merges a bounded copy into its conversation cache.
+ */
+export function withMessageToolCallPreviews<T extends PreviewableMessage>(
+  req: PreviewableResultRequest,
+  message: T,
+): T {
+  if (message == null || !Array.isArray(message.content)) {
+    return message;
+  }
+  return withToolCallPreviews(req, { messages: [message] }).messages[0];
+}
+
 interface MessageWriteRequest {
   body?: { content?: unknown } | null;
 }

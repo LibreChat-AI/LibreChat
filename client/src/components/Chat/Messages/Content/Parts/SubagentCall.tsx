@@ -18,6 +18,7 @@ import {
 import { adaptLivePersistedActivity } from '~/components/Chat/Subagents/adapters';
 import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
+import { getSubagentPrompt } from '~/components/Chat/Subagents/prompt';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
@@ -265,7 +266,7 @@ export default function SubagentCall({
     shouldThrottleTicker,
   );
 
-  const prompt = typeof args === 'string' ? tryPrompt(args) : extractPrompt(args);
+  const prompt = getSubagentPrompt(args);
 
   /** Base verb-only label ("Running agent" / "Ran agent"). The agent name
    *  is rendered separately as a muted sub-label so "agent" stays a
@@ -491,23 +492,6 @@ function extractSubagentType(args: SubagentCallProps['args']): string {
   }
   const a = args as { subagent_type?: string } | undefined;
   return a?.subagent_type ?? 'agent';
-}
-
-function extractPrompt(args: Record<string, unknown> | undefined): string | undefined {
-  if (!args) return undefined;
-  for (const key of ['prompt', 'description', 'task', 'instructions']) {
-    const value = args[key];
-    if (typeof value === 'string' && value.trim().length > 0) return value;
-  }
-  return undefined;
-}
-
-function tryPrompt(args: string): string | undefined {
-  try {
-    return extractPrompt(JSON.parse(args) as Record<string, unknown>);
-  } catch {
-    return undefined;
-  }
 }
 
 /** Stable key for a ticker line — helps React reuse the DOM node across

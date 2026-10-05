@@ -9,6 +9,7 @@ jest.mock('@librechat/api', () => ({
   prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
   createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
   rejectToolCallPreviewWrites: (_req, _res, next) => next(),
+  withMessageToolCallPreviews: (_req, message) => message,
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(10),
   createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),

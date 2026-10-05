@@ -49,7 +49,6 @@ interface StoredToolCallPart {
   tool_call?: FullToolCall;
 }
 
-const MAX_TOOL_CALL_ID_LENGTH = 512;
 const PART_INDEX_PATTERN = /^\d+$/;
 
 function getAgentToolCall(part: unknown): FullToolCall | undefined {
@@ -163,7 +162,7 @@ function parseIdentifier(value: unknown): string | undefined | null {
   if (value == null) {
     return undefined;
   }
-  if (typeof value !== 'string' || value === '' || value.length > MAX_TOOL_CALL_ID_LENGTH) {
+  if (typeof value !== 'string' || value === '') {
     return null;
   }
   return value;
