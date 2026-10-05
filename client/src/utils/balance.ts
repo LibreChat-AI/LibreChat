@@ -99,9 +99,9 @@ export function formatBalanceAmount(
   if (display === 'currency') {
     return formatCost(credits / CREDITS_PER_USD, currency);
   }
-  /** Whole credits, except below one, where a rounded "0" would hide a real amount */
-  const fraction = Math.abs(credits) < 1 ? 2 : 0;
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: fraction }).format(credits);
+  /** Credits are fractional when pricing multipliers are; two places keep a shortfall like
+   *  100.4 against 100.3 visible, and whole amounts still print without decimals */
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(credits);
 }
 
 const MINUTE_MS = 60_000;

@@ -70,8 +70,11 @@ describe('summarizeBalance', () => {
 });
 
 describe('formatBalanceAmount', () => {
-  it('formats whole credits', () => {
-    expect(formatBalanceAmount(12_480.6, 'credits')).toBe('12,481');
+  it('formats credits without hiding fractional differences', () => {
+    expect(formatBalanceAmount(3_100_000, 'credits')).toBe('3,100,000');
+    expect(formatBalanceAmount(100.4, 'credits')).toBe('100.4');
+    expect(formatBalanceAmount(100.3, 'credits')).toBe('100.3');
+    expect(formatBalanceAmount(12_480.656, 'credits')).toBe('12,480.66');
   });
 
   it('converts credits to money at one million credits per dollar', () => {

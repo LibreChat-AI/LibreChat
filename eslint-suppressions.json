@@ -307,11 +307,6 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Input/TokenUsage/Popover.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/TokenUsage/index.tsx": {
     "shadcn/no-restyle": {
       "count": 1

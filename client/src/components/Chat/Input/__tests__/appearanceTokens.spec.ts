@@ -12,7 +12,7 @@ const themedControls = [
   /** The submit slot's faces share one recipe, which owns the coarse-pointer
    *  tap-target floor as well as the geometry. */
   ['DuringRunSendButton.tsx', ['composerSubmitClasses()']],
-  ['TokenUsage/index.tsx', ['size-theme-control', 'rounded-theme-control-round']],
+  ['TokenUsage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   ['Files/AttachFile.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   ['CodeApprovalMenu.tsx', ['composerControlClasses()', 'md:px-theme-control-x']],
 ] as const;
