@@ -1,4 +1,3 @@
-import { isSubagentGraphsEnabled } from 'librechat-data-provider';
 import type { AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 
 /** Match the SDK: untyped, unconditional one-to-many edges default to direct. */
@@ -17,9 +16,6 @@ export function setSubagentsEnabled(
 ): AgentSubagentsConfig {
   return {
     ...subagents,
-    ...((subagents?.graphs?.length ?? 0) > 0 && {
-      graphsEnabled: isSubagentGraphsEnabled(subagents),
-    }),
     enabled,
     allowSelf: subagents?.allowSelf ?? true,
     agent_ids: subagents?.agent_ids ?? [],

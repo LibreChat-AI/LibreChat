@@ -44,13 +44,12 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
        */
       field.onChange({
         ...value,
-        ...(graphCount > 0 && { graphsEnabled: isSubagentGraphsEnabled(value) }),
         enabled: next,
         allowSelf: value.allowSelf ?? true,
         agent_ids: value.agent_ids ?? [],
       });
     },
-    [field, value, graphCount],
+    [field, value],
   );
 
   const setAllowSelf = useCallback(

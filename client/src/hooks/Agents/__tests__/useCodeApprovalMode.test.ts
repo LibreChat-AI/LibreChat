@@ -304,6 +304,31 @@ describe('useCodeApprovalMode', () => {
     expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
   });
 
+  test('graph-only teams remain reachable in public execution metadata', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
+  });
+
   test('includes attached subagents while preserving their mandatory asks', () => {
     const primary = {
       id: 'agent_1',

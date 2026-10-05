@@ -1,3 +1,4 @@
+import { AgentCapabilities, resolveSubagents } from 'librechat-data-provider';
 import type { AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 import type { FormSelection } from '../selectors';
 import type { AgentItem } from '../types';
@@ -93,9 +94,9 @@ test('subagent toggles preserve their complete settings and restore the retained
     ],
   };
   const disabled = setSubagentsEnabled(subagents, false);
-  expect(disabled).toEqual({ ...subagents, enabled: false, graphsEnabled: true });
+  expect(disabled).toEqual({ ...subagents, enabled: false });
   expect(subagents.enabled).toBe(true);
-  expect(setSubagentsEnabled(disabled, true)).toEqual({ ...subagents, graphsEnabled: true });
+  expect(setSubagentsEnabled(disabled, true)).toEqual(subagents);
   expect(setSubagentsEnabled(undefined, true)).toEqual({
     enabled: true,
     allowSelf: true,
@@ -160,4 +161,33 @@ test('graph selection and removal use the graph flag independently of ordinary s
   ).toEqual([subagentItem]);
   expect(computeToggleAction(graphItem, { selected: true })).toEqual({ type: 'graphs-remove' });
   expect(computeToggleAction(graphItem, { selected: false })).toEqual({ type: 'configure' });
+});
+
+test('ordinary Subagents toggles do not migrate the capability gate of legacy teams', () => {
+  const team = {
+    type: 'legacy',
+    name: 'Legacy',
+    description: 'Work',
+    agent_ids: ['child'],
+    entry_agent_id: 'child',
+    result_agent_id: 'child',
+    edges: [],
+  };
+  const original = { enabled: true, allowSelf: false, agent_ids: [], graphs: [team] };
+  const disabled = setSubagentsEnabled(original, false);
+  const restored = setSubagentsEnabled(disabled, true);
+  expect(restored).toEqual(original);
+  expect(resolveSubagents(restored, [AgentCapabilities.subagents])?.graphs).toEqual([team]);
+  expect(restored.graphsEnabled).toBeUndefined();
+});
+
+test('ordinary Subagents toggles retain an explicit independent graph choice', () => {
+  const config = {
+    enabled: true,
+    allowSelf: false,
+    graphsEnabled: true,
+    agent_ids: [],
+    graphs: [],
+  };
+  expect(setSubagentsEnabled(config, false)).toEqual({ ...config, enabled: false });
 });
