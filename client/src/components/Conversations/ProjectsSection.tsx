@@ -479,7 +479,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     }
 
     return (
-      <ul className="m-0 list-none p-0">
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {projects.map((project) => (
           <ProjectItem
             key={project._id}
