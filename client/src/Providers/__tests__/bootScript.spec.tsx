@@ -183,7 +183,10 @@ describe('index.html deployment theme boot script', () => {
   });
 
   it.each([
+    ['/d', 'rgb(1, 2, 3)'],
+    ['/d/', 'rgb(1, 2, 3)'],
     ['/d/prompts', 'rgb(1, 2, 3)'],
+    ['/d/prompts/', 'rgb(1, 2, 3)'],
     ['/d/prompts/new', 'rgb(1, 2, 3)'],
     ['/d/anything', 'rgb(1, 2, 3)'],
     ['/d/prompts/abc123', 'rgb(8, 10, 24)'],
