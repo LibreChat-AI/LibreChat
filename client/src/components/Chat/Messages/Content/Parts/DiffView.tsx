@@ -172,7 +172,7 @@ interface DiffRowProps {
 const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffRowProps) {
   if (type === 'hunk') {
     if (!text) {
-      return <div className="border-border-inset mx-3 my-1.5 border-t" />;
+      return <div className="border-border-light mx-3 my-1.5 border-t" />;
     }
     return <div className="text-text-tertiary px-3 py-0.5 text-[11px] select-none">{text}</div>;
   }
