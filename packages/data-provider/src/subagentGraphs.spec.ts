@@ -82,3 +82,64 @@ test('legacy stored teams keep their old subagents capability until an explicit 
     resolveSubagents({ ...config, graphsEnabled: true }, [AgentCapabilities.subagents])?.graphs,
   ).toEqual([]);
 });
+
+const capabilityChoices = [
+  { name: 'ordinary', value: [AgentCapabilities.subagents] },
+  { name: 'graphs', value: [AgentCapabilities.subagent_graphs] },
+  { name: 'both', value: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs] },
+  { name: 'neither', value: [] },
+  { name: 'unresolved', value: undefined },
+];
+const matrix = capabilityChoices.flatMap(({ name, value }) =>
+  [undefined, false, true].flatMap((enabled) =>
+    [undefined, false, true].map((graphsEnabled) => ({
+      name,
+      capabilities: value,
+      enabled,
+      graphsEnabled,
+    })),
+  ),
+);
+
+test.each(matrix)(
+  'preserves spawn authorization for $name capabilities, singles=$enabled, graphs=$graphsEnabled',
+  ({ capabilities, enabled, graphsEnabled }) => {
+    const config: AgentSubagentsConfig = {
+      enabled,
+      graphsEnabled,
+      allowSelf: true,
+      agent_ids: ['child'],
+      graphs: [graph],
+    };
+    const original = JSON.stringify(config);
+    const singles =
+      enabled === true &&
+      (capabilities == null || capabilities.includes(AgentCapabilities.subagents));
+    const requiredCapability =
+      graphsEnabled == null ? AgentCapabilities.subagents : AgentCapabilities.subagent_graphs;
+    const teams =
+      (graphsEnabled ?? enabled === true) &&
+      (capabilities == null || capabilities.includes(requiredCapability));
+    const resolved = resolveSubagents(config, capabilities);
+    expect(isSubagentGraphsEnabled(config, capabilities)).toBe(teams);
+    expect(resolved?.enabled).toBe(singles || teams);
+    expect(resolved?.allowSelf !== false && resolved?.enabled === true).toBe(singles);
+    expect(resolved?.agent_ids).toEqual(singles ? ['child'] : []);
+    expect(resolved?.graphs).toEqual(teams ? [graph] : []);
+    expect(resolveSubagents(resolved, capabilities)).toEqual(resolved);
+    expect(JSON.stringify(config)).toBe(original);
+  },
+);
+
+test('a new graph capability never authorizes untouched legacy teams', () => {
+  const legacy = { enabled: true, graphs: [graph] };
+  expect(resolveSubagents(legacy, [AgentCapabilities.subagent_graphs])).toMatchObject({
+    enabled: false,
+    graphs: [],
+    agent_ids: [],
+    allowSelf: false,
+  });
+  expect(
+    resolveSubagents({ ...legacy, graphsEnabled: true }, [AgentCapabilities.subagent_graphs]),
+  ).toMatchObject({ enabled: true, graphs: [graph], agent_ids: [], allowSelf: false });
+});

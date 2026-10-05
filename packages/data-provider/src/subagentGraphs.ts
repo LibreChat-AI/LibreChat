@@ -159,11 +159,27 @@ export const graphSubagentSchema: z.ZodType<AgentSubagentGraph> = z
     }
   });
 
-/** Legacy teams followed the single-agent flag until a graph-specific choice was saved. */
+/** Legacy teams retain the ordinary subagents gate until a graph-specific choice is saved. */
 export function isSubagentGraphsEnabled(
   config?: Pick<AgentSubagentsConfig, 'enabled' | 'graphsEnabled'> | null,
+  capabilities?: readonly string[],
 ): boolean {
-  return config?.graphsEnabled ?? config?.enabled === true;
+  const capability =
+    config?.graphsEnabled == null ? AgentCapabilities.subagents : AgentCapabilities.subagent_graphs;
+  return (
+    (config?.graphsEnabled ?? config?.enabled === true) &&
+    (capabilities == null || capabilities.includes(capability))
+  );
+}
+
+export function isSubagentsEnabled(
+  config?: Pick<AgentSubagentsConfig, 'enabled'> | null,
+  capabilities?: readonly string[],
+): boolean {
+  return (
+    config?.enabled === true &&
+    (capabilities == null || capabilities.includes(AgentCapabilities.subagents))
+  );
 }
 
 /** Runtime projection only. Persisted settings and the two user choices remain untouched. */
@@ -172,14 +188,8 @@ export function resolveSubagents(
   capabilities?: readonly string[],
 ): AgentSubagentsConfig | undefined {
   if (!config) return undefined;
-  const singles =
-    config.enabled === true &&
-    (capabilities == null || capabilities.includes(AgentCapabilities.subagents));
-  const graphs =
-    isSubagentGraphsEnabled(config) &&
-    (capabilities == null ||
-      capabilities.includes(AgentCapabilities.subagent_graphs) ||
-      (config.graphsEnabled == null && capabilities.includes(AgentCapabilities.subagents)));
+  const singles = isSubagentsEnabled(config, capabilities);
+  const graphs = isSubagentGraphsEnabled(config, capabilities);
   if (config.graphsEnabled == null && singles && graphs) return config;
   return {
     ...config,

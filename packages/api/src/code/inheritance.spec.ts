@@ -1,12 +1,12 @@
 import mongoose from 'mongoose';
-import { Tools } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { Tools, AgentCapabilities } from 'librechat-data-provider';
 import { agentSchema, createMethods } from '@librechat/data-schemas';
 import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { IAgent } from '@librechat/data-schemas';
 import type { CodeWorkspaceInheritanceRoot, SubagentCodeRoutingAgent } from './inheritance';
 import type { CodeEnvironmentConfig } from '~/agents/execution';
-import { resolveSubagentCodeWorkspaceInheritance } from './inheritance';
+import { getSpawnableSubagentIds, resolveSubagentCodeWorkspaceInheritance } from './inheritance';
 import { resolveCodeExecutionContext } from '~/agents/execution';
 
 const SKYNET = 'code-yuwoQAAPhY1WMaDD6oIk';
@@ -304,6 +304,147 @@ describe('resolveSubagentCodeWorkspaceInheritance', () => {
         [verifier, LIA_RAG],
       ]),
     );
+  });
+
+  it('projects loaded descendants before a disabled graph can create conflicting parent routes', async () => {
+    const middleId = 'agent_fixed_planner';
+    const childMachine = 'code-child-machine';
+    const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [middleId, REVIEWER] } });
+    await seed(middleId, {
+      code_environment_id: SKYNET,
+      code_environment_ids: [],
+      subagents: {
+        enabled: false,
+        graphsEnabled: true,
+        graphs: [
+          {
+            type: 'disabled-team',
+            name: 'Disabled',
+            description: 'Work',
+            agent_ids: [REVIEWER],
+            edges: [],
+            entry_agent_id: REVIEWER,
+            result_agent_id: REVIEWER,
+          },
+        ],
+      },
+    });
+    const reviewer = await seed(REVIEWER, {
+      code_environment_id: childMachine,
+      code_environment_ids: [SKYNET, LIA_RAG],
+    });
+    const configured = [...environments, { ...environments[0], id: childMachine }];
+    const selection = [{ environmentId: LIA_RAG, workspaceId: 'agents', agentIds: [LIA] }];
+    const storedMiddle = await methods.getAgentWithVersionCount({ id: middleId });
+    const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+      selections: selection,
+      roots: [root(lia)],
+      loadSubagent,
+      environments: configured,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+      capabilities: [AgentCapabilities.subagents],
+    });
+    expect(inheritance.get(REVIEWER)).toBe(LIA_RAG);
+    expect(inheritance.has(middleId)).toBe(false);
+    expect(loadSubagent).toHaveBeenCalledTimes(2);
+    expect((await methods.getAgentWithVersionCount({ id: middleId }))?.subagents).toEqual(
+      storedMiddle?.subagents,
+    );
+    expect(
+      resolveCodeExecutionContext({
+        statefulSessions: true,
+        environmentId: reviewer.code_environment_id,
+        environmentIds: reviewer.code_environment_ids,
+        environments: configured,
+        allowEnvironmentSelection: true,
+        workspaceSelections: selection,
+        inheritedEnvironments: inheritance,
+        userId: 'user-1',
+        agentId: REVIEWER,
+        conversationId: 'chat-1',
+      }).environmentId,
+    ).toBe(LIA_RAG);
+  });
+
+  it.each([false, true])(
+    'applies the graph capability to stored-only descendants, enabled=%s',
+    async (graphCapability) => {
+      const leaf = 'agent_graph_only_leaf';
+      const lia = await seed(LIA, { subagents: { enabled: true, agent_ids: [REVIEWER] } });
+      await seed(REVIEWER, {
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          agent_ids: ['disabled-single'],
+          graphs: [
+            {
+              type: 'nested-team',
+              name: 'Nested',
+              description: 'Work',
+              agent_ids: [leaf],
+              edges: [],
+              entry_agent_id: leaf,
+              result_agent_id: leaf,
+            },
+          ],
+        },
+      });
+      await seed(leaf);
+      const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+        selections: incident,
+        roots: [root(lia)],
+        loadSubagent,
+        environments,
+        allowEnvironmentSelection: true,
+        codeExecutionAvailable: true,
+        capabilities: graphCapability
+          ? [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs]
+          : [AgentCapabilities.subagents],
+      });
+      expect(inheritance.get(REVIEWER)).toBe(LIA_RAG);
+      expect(inheritance.has(leaf)).toBe(graphCapability);
+      expect(loadSubagent).not.toHaveBeenCalledWith('disabled-single');
+      expect(loadSubagent.mock.calls.map(([id]) => id)).toEqual(
+        graphCapability ? [REVIEWER, leaf] : [REVIEWER],
+      );
+    },
+  );
+
+  it('does not load ordinary or legacy targets under the graph capability alone', async () => {
+    const lia = await seed(LIA, {
+      subagents: {
+        enabled: true,
+        agent_ids: [REVIEWER],
+        graphs: [
+          {
+            type: 'legacy-team',
+            name: 'Legacy',
+            description: 'Work',
+            agent_ids: [REVIEWER],
+            edges: [],
+            entry_agent_id: REVIEWER,
+            result_agent_id: REVIEWER,
+          },
+        ],
+      },
+    });
+    const inheritance = await resolveSubagentCodeWorkspaceInheritance({
+      selections: incident,
+      roots: [root(lia)],
+      loadSubagent,
+      environments,
+      allowEnvironmentSelection: true,
+      codeExecutionAvailable: true,
+      capabilities: [AgentCapabilities.subagent_graphs],
+    });
+    expect(inheritance.size).toBe(0);
+    expect(loadSubagent).not.toHaveBeenCalled();
+    expect(
+      getSpawnableSubagentIds({ ...lia, subagents: { ...lia.subagents, graphsEnabled: true } }, [
+        AgentCapabilities.subagent_graphs,
+      ]),
+    ).toEqual([REVIEWER]);
   });
 
   it('counts only admitted subagents toward the node limit', async () => {

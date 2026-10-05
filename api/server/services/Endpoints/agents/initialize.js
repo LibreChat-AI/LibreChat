@@ -1567,6 +1567,7 @@ const initializeClientWithProvider = async ({
           request: runtimeRequestBody,
         }),
         roots: rootSubagentConfigs.filter((config) => config?.id),
+        capabilities: [...enabledCapabilities],
         loadSubagent: (agentId) => resolveLazyMetadata(() => loadViewableSubagent(agentId)),
         environments: statefulCodeSessionsConfig?.environments,
         allowEnvironmentSelection: statefulCodeSessionsConfig?.allowEnvironmentSelection,
