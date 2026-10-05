@@ -627,6 +627,11 @@ describe('getSpeechText', () => {
     expect(getSpeechText({ content: null, text: null })).toBe('');
   });
 
+  test('speaks string content, as imported messages may carry it', () => {
+    const content = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
+    expect(getSpeechText({ content, text: '' })).toBe('The answer is 4.');
+  });
+
   test('strips a legacy thinking block from plain text', () => {
     const text = ':::thinking\nWork it out.\n:::\nThe answer is 4.';
     expect(getSpeechText({ text })).toBe('The answer is 4.');

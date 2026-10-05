@@ -427,16 +427,14 @@ const thinkingOpenPattern = /:::thinking[\s\S]*$/;
  * so the spoken text only ever grows as the answer streams in.
  */
 export function getSpeechText(message: {
-  content?: Array<a.TMessageContentParts | undefined> | null;
+  content?: Array<a.TMessageContentParts | undefined> | string | null;
   text?: string | null;
 }): string {
   if (Array.isArray(message.content) && message.content.length > 0) {
     return parseTextParts(message.content, true);
   }
-  return (message.text ?? '')
-    .replace(thinkingBlockPattern, '')
-    .replace(thinkingOpenPattern, '')
-    .trim();
+  const text = typeof message.content === 'string' ? message.content : message.text;
+  return (text ?? '').replace(thinkingBlockPattern, '').replace(thinkingOpenPattern, '').trim();
 }
 
 export const SEPARATORS = ['.', '?', '!', '۔', '。', '‥', ';', '¡', '¿', '\n', '```'];
