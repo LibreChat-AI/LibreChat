@@ -440,6 +440,7 @@ registration:
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
+#   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
 # Example Transactions settings
 # Controls whether to save transaction records to the database

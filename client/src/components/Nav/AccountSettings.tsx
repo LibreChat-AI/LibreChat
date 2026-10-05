@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { ArchivedChatsModal } from '~/components/Nav/SettingsTabs/General/ArchivedChatsModal';
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
-import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
+import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { settingsOpenAtom } from './Settings';
 import { openInNewTab } from '~/utils';
@@ -96,11 +96,8 @@ function HelpSubmenu({
 
 function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
   const localize = useLocalize();
-  const { user, isAuthenticated, logout } = useAuthContext();
+  const { user, logout } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
-  const balanceQuery = useGetUserBalance({
-    enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
-  });
   const setShowSettings = useSetAtom(settingsOpenAtom);
   const setShowFiles = useSetAtom(showFilesDialogAtom);
   const setFilesDialogTrigger = useSetAtom(filesDialogTriggerAtom);
@@ -146,15 +143,6 @@ function AccountSettings({ collapsed = false }: { collapsed?: boolean }) {
           {user?.email ?? localize('com_nav_user')}
         </div>
         <DropdownMenuSeparator />
-        {startupConfig?.balance?.enabled === true && balanceQuery.data != null && (
-          <>
-            <div className="text-text-secondary mr-2 ml-3 py-2 text-sm" role="note">
-              {localize('com_nav_balance')}:{' '}
-              {new Intl.NumberFormat().format(Math.round(balanceQuery.data.tokenCredits))}
-            </div>
-            <DropdownMenuSeparator />
-          </>
-        )}
         <HelpSubmenu
           helpAndFaqURL={startupConfig?.helpAndFaqURL}
           termsOfServiceURL={startupConfig?.interface?.termsOfService?.externalUrl}

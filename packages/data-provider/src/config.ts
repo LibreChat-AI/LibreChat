@@ -30,6 +30,7 @@ import {
 } from './schemas';
 import {
   REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
   MIN_BALANCE_RESERVATION_TTL_MS,
   DEFAULT_BALANCE_RESERVATION_TTL_MS,
 } from './balance';
@@ -3395,6 +3396,8 @@ export const balanceSchema = z.object({
     .min(MIN_BALANCE_RESERVATION_TTL_MS)
     .optional()
     .default(DEFAULT_BALANCE_RESERVATION_TTL_MS),
+  /** How the UI presents the balance; `credits` keeps the raw figure. */
+  display: z.enum(BALANCE_DISPLAY_MODES).optional().default('credits'),
 });
 
 export const transactionsSchema = z.object({

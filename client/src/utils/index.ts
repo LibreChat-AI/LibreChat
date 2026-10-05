@@ -32,6 +32,7 @@ export * from './textarea';
 export * from './messages';
 export * from './focus';
 export * from './tokens';
+export * from './balance';
 export * from './redirect';
 export * from './links';
 export * from './languages';
