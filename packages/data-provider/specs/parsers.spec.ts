@@ -2,6 +2,7 @@ import {
   parseConvo,
   getSpeechText,
   parseTextParts,
+  parseThinkingContent,
   parseCompactConvo,
   replaceSpecialVars,
   getEphemeralSender,
@@ -637,9 +638,18 @@ describe('getSpeechText', () => {
     expect(getSpeechText({ text })).toBe('The answer is 4.');
   });
 
-  test('keeps the answer between and after repeated thinking blocks', () => {
+  test('speaks a repeated thinking block, which the message view shows as answer text', () => {
     const text = ':::thinking\na\n:::\nAnswer 1\n:::thinking\nb\n:::\nAnswer 2';
-    expect(getSpeechText({ text })).toBe('Answer 1\n\nAnswer 2');
+    expect(getSpeechText({ text })).toBe(parseThinkingContent(text).regularContent);
+    expect(getSpeechText({ text })).toBe('Answer 1\n:::thinking\nb\n:::\nAnswer 2');
+  });
+
+  test('trims structured answers so whitespace alone is not speakable', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.THINK, think: 'reasoning' },
+      { type: ContentTypes.TEXT, text: '\n' },
+    ];
+    expect(getSpeechText({ content })).toBe('');
   });
 
   test('speaks an unmatched marker, which the UI shows as answer text', () => {
