@@ -122,6 +122,7 @@ import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
+import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { ContentFilterError } from '../middleware/contentFilter';
@@ -1613,6 +1614,10 @@ export async function initializeAgent(
       appConfig?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
     inheritedEnvironments: runtime.codeWorkspaceInheritance,
     environments: configuredCodeEnvironments,
+    implicitStatefulRouteAvailable: isImplicitStatefulCodeRouteAvailable(
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION,
+      process.env.LIBRECHAT_CODE_BASEURL_STATEFUL,
+    ),
     userId: requestFileOwnerId,
     conversationId,
   });

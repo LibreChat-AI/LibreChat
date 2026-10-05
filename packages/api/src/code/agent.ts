@@ -69,6 +69,8 @@ export interface AgentCodeFlagsParams {
   environments?: readonly CodeEnvironmentConfig[];
   /** Enforced when present: a stateful agent outside this list is refused. */
   allowedStatefulCodeEnvironments?: readonly StatefulCodeEnvironment[];
+  /** Whether the deployment's versioned implicit stateful route is live. */
+  implicitStatefulRouteAvailable?: boolean;
 }
 
 export interface AgentCodeFlags {
@@ -94,10 +96,7 @@ export function resolveAgentCodeFlags(params: AgentCodeFlagsParams): AgentCodeFl
     agent,
     params.requestBody,
     params.environments,
-    isImplicitStatefulCodeRouteAvailable(
-      process.env.CODE_ENVIRONMENT_DECISION_VERSION,
-      process.env.LIBRECHAT_CODE_BASEURL_STATEFUL,
-    ),
+    params.implicitStatefulRouteAvailable === true,
   );
   const codeEnvAvailable =
     params.codeExecutionAvailable &&
@@ -168,7 +167,11 @@ export function resolveAgentCodeExecution(params: AgentCodeExecutionParams): Age
 
 export type RequestAgentCodeExecutionParams = Omit<
   AgentCodeExecutionParams,
-  'conversation' | 'allowEnvironmentSelection' | 'inheritedEnvironments' | 'environments'
+  | 'conversation'
+  | 'allowEnvironmentSelection'
+  | 'inheritedEnvironments'
+  | 'environments'
+  | 'implicitStatefulRouteAvailable'
 > & {
   /** The authenticated request whose admitted conversation, config and principal apply. */
   req: Pick<
@@ -177,7 +180,11 @@ export type RequestAgentCodeExecutionParams = Omit<
   >;
 };
 
-/** Fills the request-scoped inputs of the per-agent code rule from an authenticated request. */
+/**
+ * Fills the request-scoped inputs of the per-agent code rule from an authenticated request:
+ * its admitted conversation, principal-scoped machines and inheritance, and the deployment's
+ * implicit stateful route rollout.
+ */
 export function withRequestCodeInputs({
   req,
   ...params
@@ -191,5 +198,9 @@ export function withRequestCodeInputs({
     inheritedEnvironments: req.codeWorkspaceInheritance,
     environments: statefulCodeSessions?.environments,
     userId: params.userId ?? req.user?.id,
+    implicitStatefulRouteAvailable: isImplicitStatefulCodeRouteAvailable(
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION,
+      process.env.LIBRECHAT_CODE_BASEURL_STATEFUL,
+    ),
   };
 }

@@ -27,6 +27,7 @@ const {
   createRoutedGraphMemberLoader,
   createViewableSubagentLoader,
   resolveAgentCodeFlags,
+  withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceSelections,
   resolveCodeExecutionWorkspaceContext,
@@ -1166,20 +1167,16 @@ const initializeClientWithProvider = async ({
   });
 
   /** Inputs the shared per-agent code rule reads for a subagent in this request. */
-  const getSubagentCodeParams = (agent) => ({
-    agent,
-    requestBody: runtimeRequestBody,
-    conversation: admittedConversation,
-    codeExecutionAvailable: codeEnvAvailable === true,
-    statefulSessionsAvailable: statefulSessionsAvailable === true,
-    allowedStatefulCodeEnvironments,
-    allowEnvironmentSelection:
-      appConfig.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
-    inheritedEnvironments: req.codeWorkspaceInheritance,
-    environments: appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments,
-    userId,
-    conversationId,
-  });
+  const getSubagentCodeParams = (agent) =>
+    withRequestCodeInputs({
+      req,
+      agent,
+      requestBody: runtimeRequestBody,
+      codeExecutionAvailable: codeEnvAvailable === true,
+      statefulSessionsAvailable: statefulSessionsAvailable === true,
+      allowedStatefulCodeEnvironments,
+      conversationId,
+    });
 
   /** The code flags a lazy subagent runs with in this request. */
   const getSubagentCodeFlags = (agent) => {

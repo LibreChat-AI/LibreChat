@@ -159,9 +159,42 @@ describe('resolveAgentCodeExecution', () => {
     expect(optsOutOfAttachedCodeEnvironment(agent, body, [], true)).toBe(false);
     expect(optsOutOfAttachedCodeEnvironment(agent, {}, environments, false)).toBe(false);
   });
+
+  it('keeps an implicit stateful agent on code only when the caller reports the route live', () => {
+    const agent = { ...terra, code_environment_id: undefined };
+    const params = {
+      ...baseParams,
+      agent,
+      environments: [],
+      requestBody: { codeEnvironmentMode: 'without_attached' as const },
+    };
+
+    expect(resolveAgentCodeFlags(params).codeEnvAvailable).toBe(false);
+    expect(
+      resolveAgentCodeFlags({ ...params, implicitStatefulRouteAvailable: true }).codeEnvAvailable,
+    ).toBe(true);
+  });
 });
 
 describe('withRequestCodeInputs', () => {
+  afterEach(() => {
+    delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+    delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+  });
+
+  it('reports the deployment implicit stateful route rollout', () => {
+    const request = {
+      req: { body: {} },
+      codeExecutionAvailable: true,
+      statefulSessionsAvailable: true,
+    };
+    expect(withRequestCodeInputs(request).implicitStatefulRouteAvailable).toBe(false);
+
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful.example/v1';
+    expect(withRequestCodeInputs(request).implicitStatefulRouteAvailable).toBe(true);
+  });
+
   it('reads the admitted conversation, deployment machines and principal from the request', () => {
     const inheritance = new Map([[terra.id ?? '', SKYNET]]);
     const conversation = { codeWorkspaces: [{ environmentId: SKYNET, workspaceId: 'librechat' }] };
