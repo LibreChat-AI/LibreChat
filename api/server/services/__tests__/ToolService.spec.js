@@ -3888,7 +3888,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.context);
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.ask_user_question);
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.tools);
-      expect(defaultAgentCapabilities).toContain(AgentCapabilities.chain);
+      expect(defaultAgentCapabilities).not.toContain(AgentCapabilities.chain);
       expect(defaultAgentCapabilities).toContain(AgentCapabilities.ocr);
     });
   });

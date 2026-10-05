@@ -236,7 +236,7 @@ function TokenUsageIndicator({
           }
         }}
         className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary z-[200] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-3 shadow-lg focus:outline-hidden',
+          'border-border-medium bg-surface-secondary text-text-primary z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-3 shadow-lg focus:outline-hidden',
           'origin-bottom translate-y-1 scale-95 opacity-0 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
           'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
           'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -244,7 +244,7 @@ function TokenUsageIndicator({
       >
         {/* The popover owns its width, which the breakdown held only while it
             was the sole child of a shrink-to-fit box. */}
-        <div className="w-72 space-y-3">
+        <div className="w-72 max-w-full space-y-3">
           <Breakdown
             view={view}
             showCost={showCost}

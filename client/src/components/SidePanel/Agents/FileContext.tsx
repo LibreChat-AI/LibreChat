@@ -159,7 +159,7 @@ function FileContext({
               }
             />
             {fileCount > 0 && (
-              <span className="bg-surface-tertiary text-text-secondary inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1.5 text-[10px] font-medium">
+              <span className="bg-surface-tertiary text-text-secondary inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1.5 text-[10px] font-medium">
                 {fileCount}
               </span>
             )}

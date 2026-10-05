@@ -50,7 +50,7 @@ function ItemIconView({ item, size }: ItemIconProps) {
 
   const tileClasses =
     size === 'md' ? 'h-10 w-10 rounded-xl text-base' : 'h-9 w-9 rounded-lg text-sm';
-  const iconClasses = size === 'md' ? 'h-[18px] w-[18px]' : 'h-[18px] w-[18px]';
+  const iconClasses = size === 'md' ? 'h-[1.125rem] w-[1.125rem]' : 'h-[1.125rem] w-[1.125rem]';
 
   if (iconUrl && !imgError) {
     return (

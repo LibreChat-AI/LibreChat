@@ -2,7 +2,7 @@ import { useMemo, useCallback, useState, useEffect, useRef } from 'react';
 import { HatGlasses } from 'lucide-react';
 import { easings } from '@react-spring/web';
 import { EModelEndpoint } from 'librechat-data-provider';
-import { BirthdayIcon, TooltipAnchor, SplitText } from '@librechat/client';
+import { BirthdayIcon, TooltipAnchor, SplitText, useRemScale } from '@librechat/client';
 import { useChatContext, useAgentsMapContext, useAssistantsMapContext } from '~/Providers';
 import Description, { isHtmlDescription } from '~/components/ui/Description';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
@@ -44,6 +44,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const { user } = useAuthContext();
   const localize = useLocalize();
+  const remScale = useRemScale();
   const { isTemporary } = useChatSettings();
 
   const [textHasMultipleLines, setTextHasMultipleLines] = useState(false);
@@ -102,7 +103,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
     if (contentRef.current) {
       setContentHeight(contentRef.current.offsetHeight);
     }
-  }, [lineCount, description, selectedAgent]);
+  }, [lineCount, description, selectedAgent, remScale]);
 
   const getDynamicMargin = useMemo(() => {
     let margin = 'mb-0';
@@ -160,7 +161,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
             )}
             {startupConfig?.showBirthdayIcon && (
               <TooltipAnchor
-                className="absolute right-2 bottom-[27px]"
+                className="absolute right-2 bottom-[1.6875rem]"
                 description={localize('com_ui_happy_birthday')}
                 aria-label={localize('com_ui_happy_birthday')}
               >
