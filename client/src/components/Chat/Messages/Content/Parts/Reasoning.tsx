@@ -239,7 +239,7 @@ const Reasoning = memo((props: ReasoningProps) => {
             }
             shimmerLabel={effectiveIsSubmitting && isLast}
           />
-          {!isExpanded && effectiveIsSubmitting && isLast && (
+          {showThinking && !isExpanded && effectiveIsSubmitting && isLast && (
             <StreamingThoughtPeek text={reasoningText} />
           )}
         </div>
@@ -414,7 +414,9 @@ export const ReasoningCompact = memo(
             />
           )}
         </div>
-        {!isExpanded && isStreaming && <StreamingThoughtPeek text={reasoningText} />}
+        {showThinking && !isExpanded && isStreaming && (
+          <StreamingThoughtPeek text={reasoningText} />
+        )}
         <div
           id={contentId}
           role="group"
