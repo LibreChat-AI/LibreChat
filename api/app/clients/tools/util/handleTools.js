@@ -2,6 +2,8 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Calculator, createSearchTool, createCodeExecutionTool } = require('@librechat/agents');
 const {
   checkAccess,
+  createGitHubCompareTool,
+  getProxyDispatcher,
   toolkitParent,
   toolRolePermissions,
   checkToolRolePermission,
@@ -214,7 +216,6 @@ const loadTools = async ({
   imageOutputType,
 }) => {
   const toolConstructors = {
-    github_compare: require('@librechat/api').GitHubCompareTool,
     flux: FluxAPI,
     calculator: Calculator,
     google: GoogleSearchAPI,
@@ -227,6 +228,13 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    github_compare: () =>
+      createGitHubCompareTool({
+        config: options.req?.config?.githubCompare,
+        toolRegistry: options.toolRegistry,
+        fetch,
+        getDispatcher: getProxyDispatcher,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });

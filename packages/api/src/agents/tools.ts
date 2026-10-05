@@ -29,7 +29,6 @@ import {
   buildAttachedWorkspaceBashDescription,
 } from '~/code/command';
 import { toolkitExpansion } from '~/tools/toolkits/mapping';
-import { GITHUB_COMPARE_DEFINITION } from '~/tools/compare';
 import { normalizeAgentToolKeys } from '~/mcp/utils';
 import { collectReachableAgents } from './traversal';
 
@@ -1266,9 +1265,6 @@ export function registerCodeExecutionTools(
         workspaceNativeSandbox,
       }),
     );
-  }
-  if (workspaceTools && bashAvailable && workspaceEnvironment?.repo) {
-    candidates.push(GITHUB_COMPARE_DEFINITION);
   }
   if (workspaceTools && supportsWorkspaceOperation('search_text')) {
     candidates.push(SEARCH_WORKSPACE_TOOL_DEF);

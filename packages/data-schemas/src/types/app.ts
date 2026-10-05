@@ -66,6 +66,7 @@ export interface AppConfig {
   summarization?: SummarizationConfig;
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
+  githubCompare?: TCustomConfig['githubCompare'];
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */

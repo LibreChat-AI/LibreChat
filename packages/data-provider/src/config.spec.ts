@@ -2641,3 +2641,33 @@ describe('workspace admission configuration', () => {
     },
   );
 });
+
+describe('GitHub comparison configuration', () => {
+  it('keeps outbound comparison disabled unless explicitly enabled', () => {
+    expect(configSchema.parse({ version: '1.0' }).githubCompare).toBeUndefined();
+    expect(configSchema.parse({ version: '1.0', githubCompare: {} }).githubCompare).toEqual({
+      enabled: false,
+      timeoutMs: 10000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', githubCompare: { enabled: true, timeoutMs: 2000 } })
+        .githubCompare,
+    ).toEqual({
+      enabled: true,
+      timeoutMs: 2000,
+    });
+  });
+  it.each([0, -1, 30001, 1.5, '10000'])('rejects invalid timeout %p', (timeoutMs) => {
+    expect(configSchema.safeParse({ version: '1.0', githubCompare: { timeoutMs } }).success).toBe(
+      false,
+    );
+  });
+  it('rejects unknown comparison settings', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        githubCompare: { enabled: true, baseURL: 'https://other.test' },
+      }).success,
+    ).toBe(false);
+  });
+});

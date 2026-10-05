@@ -1,7 +1,10 @@
-import { WebSearchToolDefinition, CalculatorToolDefinition } from '@librechat/agents';
+import {
+  WebSearchToolDefinition,
+  CalculatorToolDefinition,
+  GitHubCompareToolDefinition,
+} from '@librechat/agents';
 import type { ExtendedJsonSchema } from './schema';
 import { AskUserQuestionToolDefinition } from '~/agents/hitl/askUserQuestionTool';
-import { GITHUB_COMPARE_DEFINITION } from '~/tools/compare';
 import { geminiToolkit } from '~/tools/toolkits/gemini';
 import { oaiToolkit } from '~/tools/toolkits/oai';
 
@@ -438,9 +441,12 @@ export const toolDefinitions: Record<string, ToolRegistryDefinition> = {
  */
 const agentToolDefinitions: Record<string, ToolRegistryDefinition> = {
   github_compare: {
-    name: GITHUB_COMPARE_DEFINITION.name,
-    description: GITHUB_COMPARE_DEFINITION.description,
-    schema: GITHUB_COMPARE_DEFINITION.parameters as ExtendedJsonSchema,
+    name: GitHubCompareToolDefinition.name,
+    description: GitHubCompareToolDefinition.description,
+    schema: {
+      ...GitHubCompareToolDefinition.parameters,
+      required: [...GitHubCompareToolDefinition.parameters.required],
+    },
     toolType: 'builtin',
   },
   [CalculatorToolDefinition.name]: {

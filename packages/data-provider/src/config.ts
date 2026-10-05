@@ -3739,6 +3739,13 @@ export const configSchema = z.object({
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  githubCompare: z
+    .object({
+      enabled: z.boolean().default(false),
+      timeoutMs: z.number().int().min(1).max(30000).default(10000),
+    })
+    .strict()
+    .optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
