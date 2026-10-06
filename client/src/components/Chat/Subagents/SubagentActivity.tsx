@@ -289,7 +289,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           aria-expanded={expanded}
           aria-label={toggleLabel}
           title={toggleLabel}
-          className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
+          className="text-text-secondary hover:bg-surface-tertiary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
         >
           {expanded ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
           <span className="hidden sm:inline">{toggleLabel}</span>

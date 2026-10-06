@@ -159,7 +159,7 @@ function EventSubagentRows({
         aria-expanded={expanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_subagent_activity')}: ${summary}`}
-        className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start gap-2 rounded-lg px-3 py-2 text-left focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:ring-inset"
+        className="text-text-secondary focus-visible:ring-ring-primary flex h-auto min-h-10 w-full items-center justify-start px-3 text-left focus-visible:ring-offset-0 focus-visible:ring-inset"
       >
         <Bot size={15} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{summary}</span>

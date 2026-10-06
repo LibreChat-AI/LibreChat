@@ -158,7 +158,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
           variant="ghost"
           size="sm"
           onClick={onShowAll}
-          className="text-text-secondary hover:text-text-primary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium transition-colors"
+          className="text-text-secondary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium"
         >
           {localize('com_ui_show_all')}
         </Button>

@@ -14,7 +14,7 @@
       "count": 4
     },
     "shadcn/no-restyle": {
-      "count": 17
+      "count": 16
     }
   },
   "client/src/components/Agents/AgentGrid.tsx": {
@@ -118,7 +118,7 @@
   },
   "client/src/components/Bookmarks/BookmarkForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 11
     }
   },
   "client/src/components/Bookmarks/BookmarkItem.tsx": {
@@ -783,7 +783,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 5
     }
   },
   "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
@@ -793,7 +793,7 @@
   },
   "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 12
     },
     "shadcn/no-unknown-classes": {
       "count": 1
@@ -809,7 +809,7 @@
   },
   "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 8
     }
   },
   "client/src/components/Chat/Trace/Button.tsx": {
@@ -862,17 +862,12 @@
   },
   "client/src/components/Conversations/ConvoOptions/ProjectButton.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 11
     }
   },
   "client/src/components/Conversations/ConvoOptions/ShareButton.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
-  "client/src/components/Conversations/ConvoOptions/SharedLinkButton.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 10
     }
   },
   "client/src/components/Conversations/ConvoOptions/SharedLinkCopyButton.tsx": {
@@ -892,7 +887,7 @@
   },
   "client/src/components/Conversations/ProjectsSection.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 9
     }
   },
   "client/src/components/Conversations/RenameForm.tsx": {
@@ -995,12 +990,12 @@
   },
   "client/src/components/Input/SetKeyDialog/SetKeyDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 3
     }
   },
   "client/src/components/Insights/InsightsView.tsx": {
     "shadcn/no-restyle": {
-      "count": 30
+      "count": 28
     }
   },
   "client/src/components/MCP/CustomUserVarsSection.tsx": {
@@ -1028,7 +1023,7 @@
       "count": 3
     },
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 7
     }
   },
   "client/src/components/MCP/StackedMCPIcons.tsx": {
@@ -1065,7 +1060,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 7
+      "count": 6
     }
   },
   "client/src/components/Messages/Content/Mermaid/MermaidDialog.tsx": {
@@ -1073,7 +1068,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 40
+      "count": 34
     }
   },
   "client/src/components/Messages/Content/RunCode.tsx": {
@@ -1266,7 +1261,7 @@
   },
   "client/src/components/Projects/ProjectCreateDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/Projects/ProjectsView.tsx": {
@@ -1405,12 +1400,12 @@
   },
   "client/src/components/Share/ShareView.tsx": {
     "shadcn/no-restyle": {
-      "count": 23
+      "count": 14
     }
   },
   "client/src/components/SharePoint/SharePointPickerDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/Sharing/GenericGrantAccessDialog.tsx": {
@@ -1428,12 +1423,12 @@
   },
   "client/src/components/Sharing/PeoplePickerAdminSettings.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/Sharing/PublicSharingToggle.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Agents/ActionsInput.tsx": {
@@ -1956,7 +1951,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 12
     }
   },
   "client/src/components/Tools/ToolItem.tsx": {
@@ -1966,7 +1961,7 @@
   },
   "client/src/components/UnifiedSidebar/ExpandedPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/UnifiedSidebar/Sidebar.tsx": {
@@ -1994,7 +1989,7 @@
   },
   "client/src/components/Variables/Editor.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 11
     },
     "shadcn/require-static-classes": {
       "count": 1
@@ -2005,7 +2000,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 3
     }
   },
   "client/src/components/Web/Sources.tsx": {
@@ -2013,7 +2008,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 56
+      "count": 50
     },
     "shadcn/no-unknown-classes": {
       "count": 1
@@ -2021,7 +2016,7 @@
   },
   "client/src/components/ui/AdminSettingsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 18
+      "count": 14
     },
     "shadcn/require-static-classes": {
       "count": 1

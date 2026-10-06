@@ -68,7 +68,7 @@ export default function McpOAuthDialog({
             {localize('com_nav_mcp_connect_server', { 0: serverName })}
           </OGDialogTitle>
         </div>
-        <OGDialogDescription className="text-text-secondary text-sm">
+        <OGDialogDescription className="text-sm">
           {localize('com_ui_mcp_oauth_description')}
         </OGDialogDescription>
 
