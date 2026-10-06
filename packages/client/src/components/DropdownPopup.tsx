@@ -158,7 +158,9 @@ const Menu: React.FC<MenuProps> = ({
               aria-controls={item.ariaControls}
               aria-label={item.ariaLabel}
               aria-checked={item.ariaChecked}
-              {...(item.ariaChecked !== undefined ? { role: 'menuitemcheckbox' } : {})}
+              {...(item.ariaChecked !== undefined
+                ? { role: item.ariaRole ?? 'menuitemcheckbox' }
+                : {})}
               onClick={(event) => {
                 event.preventDefault();
                 if (item.onClick) {
@@ -205,6 +207,12 @@ const SubMenuItem: React.FC<{
   itemClassName?: string;
 }> = ({ item, subItems, menuId, hideAll, iconClassName, itemClassName }) => {
   const store = Ariakit.useMenuStore();
+  /** The parent's `hideAll` closes only its own store: a submenu that stays mounted would be left
+   *  open in its portal, so this store is closed with it. */
+  const hideSubmenuAndParents = () => {
+    store.hide();
+    hideAll();
+  };
   return (
     <Ariakit.MenuProvider store={store}>
       {/* A submenu trigger is a MenuItem and a MenuButton in one element: as a bare
@@ -218,7 +226,7 @@ const SubMenuItem: React.FC<{
         disabled={item.disabled}
         id={item.id}
         ref={item.ref}
-        render={item.render ?? <Ariakit.MenuButton />}
+        render={<Ariakit.MenuButton render={item.render} />}
       >
         <span className="flex items-center gap-2">
           {item.icon != null && (
@@ -238,7 +246,7 @@ const SubMenuItem: React.FC<{
         menuId={menuId}
         gutter={20}
         portal={true}
-        hideAll={hideAll}
+        hideAll={hideSubmenuAndParents}
         style={{ maxHeight: 'min(24rem, var(--popover-available-height, 24rem))' }}
       />
     </Ariakit.MenuProvider>

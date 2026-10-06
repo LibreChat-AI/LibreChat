@@ -193,6 +193,18 @@ describe('useChatOptions', () => {
     expect(find(subItems, 'Beta')).toMatchObject({ ariaChecked: true, disabled: true });
   });
 
+  it('offers the projects as one exclusive choice', () => {
+    mockState.projects = [
+      { _id: 'project-1', name: 'Alpha' },
+      { _id: 'project-2', name: 'Beta' },
+    ];
+    const { result } = setup();
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    expect(find(subItems, 'Alpha').ariaRole).toBe('menuitemradio');
+    expect(find(subItems, 'Beta').ariaRole).toBe('menuitemradio');
+  });
+
   it('assigns the picked project and mirrors it into the open chat', () => {
     mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
     const { result } = setup();

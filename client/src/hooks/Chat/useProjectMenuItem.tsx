@@ -65,6 +65,7 @@ export default function useProjectMenuItem({
         onClick: () => assign(project._id),
         disabled: isCurrent,
         ariaChecked: isCurrent,
+        ariaRole: 'menuitemradio',
         icon: isCurrent ? (
           <Check className={iconClass} aria-hidden="true" />
         ) : (

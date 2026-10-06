@@ -143,6 +143,104 @@ describe('DropdownPopup', () => {
       expect(screen.queryByRole('menuitem', { name: 'Work' })).not.toBeInTheDocument();
     });
 
+    it('keeps a custom render on the submenu trigger able to open its submenu', async () => {
+      const user = userEvent.setup();
+      function Example() {
+        const [open, setOpen] = useState(false);
+        return (
+          <DropdownPopup
+            menuId="custom-trigger"
+            isOpen={open}
+            setIsOpen={setOpen}
+            unmountOnHide={true}
+            trigger={<Ariakit.MenuButton>Options</Ariakit.MenuButton>}
+            items={[
+              { label: 'Rename', onClick: jest.fn() },
+              {
+                label: 'Change project',
+                render: (props) => <button {...props} />,
+                subItems: [{ label: 'Alpha', onClick: jest.fn() }],
+              },
+            ]}
+          />
+        );
+      }
+      render(<Example />);
+
+      await user.click(screen.getByRole('button', { name: 'Options' }));
+      await user.keyboard('{ArrowDown}{ArrowDown}');
+      const trigger = await screen.findByRole('menuitem', { name: /Change project/ });
+      expect(trigger.tagName).toBe('BUTTON');
+      expect(trigger).toHaveFocus();
+
+      await user.keyboard('{ArrowRight}');
+      expect(await screen.findByRole('menuitem', { name: 'Alpha' })).toBeInTheDocument();
+    });
+
+    it('hides the submenu too when a pick closes a menu that stays mounted', async () => {
+      const user = userEvent.setup();
+      function Example() {
+        const [open, setOpen] = useState(false);
+        return (
+          <DropdownPopup
+            menuId="stays-mounted"
+            isOpen={open}
+            setIsOpen={setOpen}
+            trigger={<Ariakit.MenuButton>Options</Ariakit.MenuButton>}
+            items={[
+              { label: 'Rename', onClick: jest.fn() },
+              { label: 'Change project', subItems: [{ label: 'Alpha', onClick: jest.fn() }] },
+            ]}
+          />
+        );
+      }
+      render(<Example />);
+
+      await user.click(screen.getByRole('button', { name: 'Options' }));
+      await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}');
+      const alpha = await screen.findByRole('menuitem', { name: 'Alpha' });
+      await waitFor(() => expect(alpha).toHaveFocus());
+
+      await user.keyboard('{Enter}');
+
+      await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull());
+      expect(screen.queryByRole('menuitem', { name: 'Alpha' })).toBeNull();
+    });
+
+    it('exposes an item as a radio when it asks for one', async () => {
+      const user = userEvent.setup();
+      function Example() {
+        const [open, setOpen] = useState(false);
+        return (
+          <DropdownPopup
+            menuId="radio-items"
+            isOpen={open}
+            setIsOpen={setOpen}
+            unmountOnHide={true}
+            trigger={<Ariakit.MenuButton>Options</Ariakit.MenuButton>}
+            items={[
+              { label: 'Alpha', ariaChecked: true, ariaRole: 'menuitemradio' },
+              { label: 'Beta', ariaChecked: false, ariaRole: 'menuitemradio' },
+              { label: 'Pin', ariaChecked: false },
+            ]}
+          />
+        );
+      }
+      render(<Example />);
+
+      await user.click(screen.getByRole('button', { name: 'Options' }));
+
+      expect(await screen.findByRole('menuitemradio', { name: 'Alpha' })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+      expect(screen.getByRole('menuitemradio', { name: 'Beta' })).toHaveAttribute(
+        'aria-checked',
+        'false',
+      );
+      expect(screen.getByRole('menuitemcheckbox', { name: 'Pin' })).toBeInTheDocument();
+    });
+
     it('keeps the menu open when a submenu item opts out of hiding', async () => {
       const onPick = jest.fn();
       const { user, onOpenChange } = await openSubmenu(onPick, false);
