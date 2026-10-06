@@ -230,6 +230,10 @@
   --text-xl--line-height: var(--theme-text-xl-leading);
   --text-2xl: var(--theme-text-2xl);
   --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --text-3xs: var(--theme-text-3xs);
+  --text-2xs: var(--theme-text-2xs);
+  --text-xs-plus: var(--theme-text-xs-plus);
+  --text-sm-plus: var(--theme-text-sm-plus);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);

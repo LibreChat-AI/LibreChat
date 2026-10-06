@@ -434,6 +434,7 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `font-theme-dialog-title` (`dialogTitleFontFamily`). The title size and family
   follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
   own padding, size or weight class replaces the role.
+- `text-3xs`, `text-2xs`, `text-xs-plus`, `text-sm-plus` - The 10, 11, 13 and 15px steps (`text3xs`, `text2xs`, `textXsPlus`, `textSmPlus`); they set a size only, never a line height.
 - `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
   `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.

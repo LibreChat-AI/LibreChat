@@ -677,6 +677,11 @@ export interface IThemeAppearance {
   textLg: string;
   textXl: string;
   text2xl: string;
+  /** Sizes between and below the scale (10, 11, 13 and 15px) that carry no line height of their own. */
+  text3xs: string;
+  text2xs: string;
+  textXsPlus: string;
+  textSmPlus: string;
   leadingXs: string;
   leadingSm: string;
   leadingBase: string;

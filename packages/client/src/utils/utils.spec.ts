@@ -15,4 +15,13 @@ describe('cn', () => {
   ])('lets a caller size replace %s', (role, caller) => {
     expect(cn(role, caller)).toBe(caller);
   });
+
+  it.each(['3xs', '2xs', 'xs-plus', 'sm-plus'])('keeps a color beside text-%s', (step) => {
+    expect(cn('text-text-primary', `text-${step}`)).toBe(`text-text-primary text-${step}`);
+  });
+
+  it('lets a caller size replace an off-scale step', () => {
+    expect(cn('text-2xs', 'text-sm')).toBe('text-sm');
+    expect(cn('text-sm', 'text-xs-plus')).toBe('text-xs-plus');
+  });
 });

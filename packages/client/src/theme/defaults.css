@@ -310,6 +310,10 @@ html {
   --theme-text-xl: 1.25rem;
   --theme-text-xl-leading: calc(1.75 / 1.25);
   --theme-text-2xl: 1.5rem;
+  --theme-text-3xs: 0.625rem;
+  --theme-text-2xs: 0.6875rem;
+  --theme-text-xs-plus: 0.8125rem;
+  --theme-text-sm-plus: 0.9375rem;
   --theme-text-2xl-leading: calc(2 / 1.5);
   /* Roboto Mono is self-hosted (the `@font-face` block below), so code renders the same on every
    * platform with real bold and italic faces. The tail is reached while the font loads, if it
