@@ -1,6 +1,6 @@
+import { type ClassValue, clsx } from 'clsx';
 import { TYPE_STEPS } from '@librechat/client';
 import { extendTailwindMerge } from 'tailwind-merge';
-import { type ClassValue, clsx } from 'clsx';
 
 const twMerge = extendTailwindMerge({
   extend: { classGroups: { 'font-size': [{ text: [...TYPE_STEPS] }] } },
