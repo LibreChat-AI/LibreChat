@@ -8,6 +8,8 @@ import {
   applyModelAwareDefaults,
   getModelReasoning,
   effectiveModelReasoning,
+  hasExplicitReasoningEffort,
+  resolveModelReasoning,
   isOpenRouterEffortSupported,
   resolveDropParamsUIKeys,
 } from './parameterSettings';
@@ -681,5 +683,49 @@ describe('effectiveModelReasoning', () => {
   it('ignores the reported efforts when the administrator defines reasoning_effort', () => {
     expect(effectiveModelReasoning(reported, [{ key: 'reasoning_effort' }])).toBeUndefined();
     expect(effectiveModelReasoning(null, [{ key: 'reasoning_effort' }])).toBeUndefined();
+  });
+});
+
+describe('hasExplicitReasoningEffort', () => {
+  it('is true only when reasoning_effort is defined', () => {
+    expect(hasExplicitReasoningEffort([{ key: 'reasoning_effort' }])).toBe(true);
+    expect(hasExplicitReasoningEffort([{ key: 'promptCache' }])).toBe(false);
+    expect(hasExplicitReasoningEffort(undefined)).toBe(false);
+    expect(hasExplicitReasoningEffort(null)).toBe(false);
+  });
+});
+
+describe('resolveModelReasoning', () => {
+  const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] } } };
+  const resolve = (overrides: Partial<Parameters<typeof resolveModelReasoning>[0]> = {}) =>
+    resolveModelReasoning({
+      capabilities,
+      settled: true,
+      endpoint: 'OpenRouter',
+      model: 'a/b',
+      ...overrides,
+    });
+
+  it('returns the reported efforts once the lookup has settled', () => {
+    expect(resolve()).toEqual({ efforts: ['low'] });
+  });
+
+  it('reports no reasoning for a model the settled catalog does not list', () => {
+    expect(resolve({ model: 'meta/other' })).toBeNull();
+  });
+
+  it('hides the efforts until the lookup has settled', () => {
+    expect(resolve({ capabilities: undefined, settled: false })).toBeNull();
+  });
+
+  it('falls back to the generic efforts when the lookup settled without data', () => {
+    expect(resolve({ capabilities: undefined, settled: true })).toBeUndefined();
+  });
+
+  it('never narrows or hides an administrator-defined reasoning_effort', () => {
+    const paramDefinitions = [{ key: 'reasoning_effort' }];
+
+    expect(resolve({ paramDefinitions })).toBeUndefined();
+    expect(resolve({ capabilities: undefined, settled: false, paramDefinitions })).toBeUndefined();
   });
 });

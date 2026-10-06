@@ -641,6 +641,31 @@ describe('applyRequestReasoningOverride: capability loading', () => {
     expect(load).toHaveBeenCalledWith('OpenRouter');
   });
 
+  it('does not load capabilities when the administrator defined reasoning_effort', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+    const explicit = {
+      ...openRouter,
+      endpointsConfig: {
+        OpenRouter: {
+          order: 0,
+          customParams: {
+            defaultParamsEndpoint: 'openrouter',
+            paramDefinitions: [{ key: 'reasoning_effort' }],
+          },
+        },
+      },
+    };
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...explicit,
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
   it('does not load capabilities when the target is not OpenRouter', async () => {
     const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 

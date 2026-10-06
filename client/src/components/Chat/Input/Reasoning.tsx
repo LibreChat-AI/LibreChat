@@ -337,7 +337,11 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
-  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model);
+  const { modelReasoning, pending: capabilitiesPending } = useModelReasoning(
+    endpointsConfig,
+    provider,
+    model,
+  );
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -397,13 +401,17 @@ export function useComposerReasoning({
        key may survive while its enum value or number no longer does. */
     const mismatchedSetting =
       setting != null && value != null && !isReasoningOverrideSupported(value, setting);
+    /* While the first capability request is in flight the setting is hidden, which says
+       nothing about the staged choice: keep it until the catalog confirms or refutes it. */
     if (
+      !capabilitiesPending &&
       (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
       value != null
     ) {
       setValue(undefined);
     }
   }, [
+    capabilitiesPending,
     explicitlyUnavailable,
     reasoningStateKey,
     setValue,

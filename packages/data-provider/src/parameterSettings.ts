@@ -1589,6 +1589,13 @@ export function isOpenRouterEffortSupported(
   return modelReasoning.efforts.includes(effort);
 }
 
+/** Whether an administrator defined `reasoning_effort` for the endpoint. */
+export function hasExplicitReasoningEffort(
+  paramDefinitions?: Partial<SettingDefinition>[] | null,
+): boolean {
+  return paramDefinitions?.some((setting) => setting.key === 'reasoning_effort') === true;
+}
+
 /**
  * An administrator-defined `reasoning_effort` is authoritative for its endpoint,
  * so the provider's per-model efforts must not narrow or remove it.
@@ -1597,8 +1604,32 @@ export function effectiveModelReasoning(
   modelReasoning: TModelReasoning | null | undefined,
   paramDefinitions?: Partial<SettingDefinition>[] | null,
 ): TModelReasoning | null | undefined {
-  const explicit = paramDefinitions?.some((setting) => setting.key === 'reasoning_effort') === true;
-  return explicit ? undefined : modelReasoning;
+  return hasExplicitReasoningEffort(paramDefinitions) ? undefined : modelReasoning;
+}
+
+/**
+ * The efforts to offer for one OpenRouter model, from the state of its endpoint's capability
+ * lookup. `settled` is false until the first request finishes: nothing is offered then
+ * (`null`), because a choice made from the generic list could be refused by the server. A
+ * lookup that settled without data (it failed) keeps the generic list (`undefined`), which
+ * the server accepts in the same situation. An administrator-defined `reasoning_effort` is
+ * never narrowed or hidden.
+ */
+export function resolveModelReasoning({
+  capabilities,
+  settled,
+  endpoint,
+  model,
+  paramDefinitions,
+}: {
+  capabilities: TReasoningCapabilityMap | undefined;
+  settled: boolean;
+  endpoint: string;
+  model: string;
+  paramDefinitions?: Partial<SettingDefinition>[] | null;
+}): TModelReasoning | null | undefined {
+  const reported = settled ? getModelReasoning(capabilities, endpoint, model) : null;
+  return effectiveModelReasoning(reported, paramDefinitions);
 }
 
 /**

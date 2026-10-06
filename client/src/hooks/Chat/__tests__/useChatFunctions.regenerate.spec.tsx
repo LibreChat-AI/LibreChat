@@ -34,7 +34,15 @@ const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesState: { current?: { status: string } } = {};
+const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) =>
+  queryKey[0] === QueryKeys.reasoningCapabilities ? mockCapabilitiesState.current : undefined,
+);
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return mockCapabilitiesData.current;
+  }
   if (queryKey[0] === QueryKeys.agent) {
     return mockAgentQueryData.current;
   }
@@ -63,7 +71,7 @@ jest.mock('react-router-dom', () => ({
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
     getQueryData: mockGetQueryData,
-    getQueryState: jest.fn(() => undefined),
+    getQueryState: (queryKey: readonly unknown[]) => mockGetQueryState(queryKey),
   }),
 }));
 
@@ -210,6 +218,8 @@ function renderAsk(
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    mockCapabilitiesData.current = undefined;
+    mockCapabilitiesState.current = undefined;
     localStorage.clear();
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
@@ -675,6 +685,70 @@ describe('useChatFunctions ask', () => {
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
     expect(submission.userMessage.reasoningOverride).toEqual(override);
+  });
+
+  describe('replaying a reasoning override on an OpenRouter endpoint', () => {
+    const model = 'openai/gpt-6.1-sol';
+    const override = { key: 'reasoning_effort', value: 'max' } as TReasoningOverride;
+    const openRouter = (paramDefinitions?: unknown[]) => ({
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+          ...(paramDefinitions && { paramDefinitions }),
+        },
+      },
+    });
+    const replay = () => {
+      const { result, setSubmission } = renderAsk([], 'openrouter-conversation', {
+        endpoint: 'OpenRouter' as TConversation['endpoint'],
+        model,
+      });
+      act(() => {
+        result.current.ask({ text: 'Think' }, { overrideReasoning: override });
+      });
+      return (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
+    };
+
+    beforeEach(() => {
+      mockEndpointsQueryData.current = openRouter();
+    });
+
+    it('omits the override while the capabilities have not loaded', () => {
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when no capabilities request has run', () => {
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps an override the loaded capabilities support', () => {
+      mockCapabilitiesData.current = { OpenRouter: { [model]: { efforts: ['max', 'high'] } } };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('omits an override the loaded capabilities do not support', () => {
+      mockCapabilitiesData.current = { OpenRouter: { [model]: { efforts: ['low'] } } };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps the override when the capabilities request failed, as the server then accepts it', () => {
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('keeps an administrator-defined effort override without waiting for the catalog', () => {
+      mockEndpointsQueryData.current = openRouter([{ key: 'reasoning_effort' }]);
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toEqual(override);
+    });
   });
 
   it('uses hydrated per-agent query data when the agent catalog is unavailable', () => {

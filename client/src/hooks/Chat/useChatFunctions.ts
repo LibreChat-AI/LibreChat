@@ -11,8 +11,7 @@ import {
   ContentTypes,
   EModelEndpoint,
   getEndpointField,
-  getModelReasoning,
-  effectiveModelReasoning,
+  resolveModelReasoning,
   isAgentsEndpoint,
   parseCompactConvo,
   replaceSpecialVars,
@@ -54,6 +53,7 @@ import {
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -535,8 +535,19 @@ export default function useChatFunctions({
       const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
+      const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
+      const capabilitiesData = queryClient.getQueryData<TReasoningCapabilityMap>(capabilitiesKey);
+      const capabilitiesStatus = queryClient.getQueryState(capabilitiesKey)?.status;
+      /* A replayed override is checked against the loaded per-model efforts. While they are
+         still unknown (never requested, or in flight) it is omitted rather than sent: the
+         server waits for the same catalog and would refuse the whole message. A failed
+         request leaves the generic list, which the server accepts in that case. */
+      const capabilitiesUnknown =
+        usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '') &&
+        capabilitiesData == null &&
+        capabilitiesStatus !== 'error';
       const supportedSetting =
-        effectiveEndpoint == null
+        effectiveEndpoint == null || capabilitiesUnknown
           ? undefined
           : resolveReasoningSettingForTarget({
               endpoint: effectiveEndpointType ?? effectiveEndpoint,
@@ -548,17 +559,13 @@ export default function useChatFunctions({
               modelReasoning:
                 effectiveModel == null
                   ? undefined
-                  : effectiveModelReasoning(
-                      getModelReasoning(
-                        queryClient.getQueryData<TReasoningCapabilityMap>([
-                          QueryKeys.reasoningCapabilities,
-                          effectiveEndpoint,
-                        ]),
-                        effectiveEndpoint,
-                        effectiveModel,
-                      ),
-                      customParams?.paramDefinitions,
-                    ),
+                  : resolveModelReasoning({
+                      capabilities: capabilitiesData,
+                      settled: true,
+                      endpoint: effectiveEndpoint,
+                      model: effectiveModel,
+                      paramDefinitions: customParams?.paramDefinitions,
+                    }),
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
         reasoningOverride = undefined;

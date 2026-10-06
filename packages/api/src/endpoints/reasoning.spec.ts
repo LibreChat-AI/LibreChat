@@ -332,7 +332,7 @@ describe('withSupportedEffort', () => {
   });
 
   it('keeps an effort the administrator defined for the endpoint', async () => {
-    const { deps } = makeDeps();
+    const { deps, fetchSpy } = makeDeps();
     const stored = options('max');
 
     const result = await withSupportedEffort(
@@ -342,6 +342,7 @@ describe('withSupportedEffort', () => {
     );
 
     expect(result).toBe(stored);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('does not fetch when no effort is stored', async () => {
@@ -426,6 +427,41 @@ describe('loadReasoningCapabilities: availability', () => {
 
     expect(Object.keys(result.capabilities)).toEqual(['Good']);
     expect(result.unavailable).toEqual(['Bad']);
+  });
+});
+
+describe('loadReasoningCapabilities: explicit reasoning definitions', () => {
+  const explicit = { customParams: { paramDefinitions: [{ key: 'reasoning_effort' }] } };
+
+  it('skips an endpoint whose administrator defined reasoning_effort', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities([endpoint(explicit)], deps);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ capabilities: {}, unavailable: [] });
+  });
+
+  it('does not wait on a catalog outage for such an endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps(async () => {
+      throw new Error('upstream down');
+    });
+
+    const result = await loadReasoningCapabilities([endpoint(explicit)], deps);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.unavailable).toEqual([]);
+  });
+
+  it('still reads an endpoint whose paramDefinitions do not define reasoning_effort', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { paramDefinitions: [{ key: 'promptCache' }] } })],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });
 

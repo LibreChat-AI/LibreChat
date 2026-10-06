@@ -2,6 +2,7 @@ import {
   Providers,
   getModelReasoning,
   effectiveModelReasoning,
+  hasExplicitReasoningEffort,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
@@ -186,9 +187,11 @@ async function loadCapabilitiesFor(
   const endpointKey = input.isAgent
     ? (loadedAgent?.provider ?? endpointOption.endpointType ?? input.endpointType ?? input.endpoint)
     : input.endpoint;
-  const paramsEndpoint =
-    input.endpointsConfig?.[endpointKey]?.customParams?.defaultParamsEndpoint ??
-    input.defaultParamsEndpoint;
+  const customParams = input.endpointsConfig?.[endpointKey]?.customParams;
+  const paramsEndpoint = customParams?.defaultParamsEndpoint ?? input.defaultParamsEndpoint;
+  if (hasExplicitReasoningEffort(customParams?.paramDefinitions)) {
+    return undefined;
+  }
   return paramsEndpoint === Providers.OPENROUTER
     ? (await load(endpointKey)).capabilities
     : undefined;

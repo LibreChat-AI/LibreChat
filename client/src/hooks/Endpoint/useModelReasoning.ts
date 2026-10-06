@@ -1,42 +1,51 @@
 import { useMemo } from 'react';
-import { Providers, getModelReasoning, effectiveModelReasoning } from 'librechat-data-provider';
+import {
+  Providers,
+  resolveModelReasoning,
+  hasExplicitReasoningEffort,
+} from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelReasoning } from 'librechat-data-provider';
 import { useReasoningCapabilitiesQuery } from '~/data-provider';
 
-/** Whether the endpoint's parameter set is OpenRouter's, the only one with per-model efforts. */
-export function isOpenRouterEndpoint(
+/**
+ * Whether the endpoint's efforts come from a per-model catalog: an OpenRouter parameter set
+ * whose administrator did not define `reasoning_effort` themselves. Anything else needs no
+ * request and no waiting.
+ */
+export function usesReasoningCapabilities(
   endpointsConfig: TEndpointsConfig | undefined,
   endpoint: string,
 ): boolean {
-  return endpointsConfig?.[endpoint]?.customParams?.defaultParamsEndpoint === Providers.OPENROUTER;
+  const customParams = endpointsConfig?.[endpoint]?.customParams;
+  return (
+    customParams?.defaultParamsEndpoint === Providers.OPENROUTER &&
+    !hasExplicitReasoningEffort(customParams.paramDefinitions)
+  );
 }
 
 /**
  * The reasoning efforts the selected OpenRouter model accepts, for `applyModelAwareDefaults`
- * and `resolveReasoningSettingForTarget`: `undefined` when unknown (the request failed, or
- * this is not an OpenRouter endpoint), so the generic list stays; `null` once loaded when the
- * model reports none, and also while the first request is in flight. Hiding the control then
- * is deliberate: a choice made from the generic list could be refused by the server, and a
- * saved value is kept regardless of what the control shows. An administrator-defined
- * `reasoning_effort` is never narrowed or hidden. The request is made only for an OpenRouter
- * endpoint.
+ * and `resolveReasoningSettingForTarget` (see `resolveModelReasoning`). `pending` is true while
+ * the first request is in flight: the efforts are hidden then, so a choice cannot be made from
+ * the generic list, but a value already stored or staged must be kept, not cleared, until the
+ * catalog can confirm or refute it.
  */
 export function useModelReasoning(
   endpointsConfig: TEndpointsConfig | undefined,
   endpoint: string,
   model: string,
-): { modelReasoning: TModelReasoning | null | undefined } {
-  const enabled = isOpenRouterEndpoint(endpointsConfig, endpoint);
+): { modelReasoning: TModelReasoning | null | undefined; pending: boolean } {
+  const enabled = usesReasoningCapabilities(endpointsConfig, endpoint);
   const { data: capabilities, isInitialLoading } = useReasoningCapabilitiesQuery(endpoint, {
     enabled,
   });
-  const paramDefinitions = endpointsConfig?.[endpoint]?.customParams?.paramDefinitions;
-  const modelReasoning = useMemo(() => {
-    if (!enabled || !model) {
-      return undefined;
-    }
-    const reported = isInitialLoading ? null : getModelReasoning(capabilities, endpoint, model);
-    return effectiveModelReasoning(reported, paramDefinitions);
-  }, [capabilities, enabled, endpoint, isInitialLoading, model, paramDefinitions]);
-  return { modelReasoning };
+  const pending = enabled && isInitialLoading;
+  const modelReasoning = useMemo(
+    () =>
+      enabled && model
+        ? resolveModelReasoning({ capabilities, settled: !pending, endpoint, model })
+        : undefined,
+    [capabilities, enabled, endpoint, model, pending],
+  );
+  return { modelReasoning, pending };
 }

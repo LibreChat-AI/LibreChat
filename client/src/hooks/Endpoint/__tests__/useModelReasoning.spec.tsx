@@ -98,6 +98,46 @@ describe('useModelReasoning', () => {
     expect(result.current.modelReasoning).toBeUndefined();
   });
 
+  it('reports pending only while the first request is in flight', () => {
+    mockLoading = true;
+    const loading = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+    expect(loading.result.current.pending).toBe(true);
+
+    mockLoading = false;
+    const settled = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+    expect(settled.result.current.pending).toBe(false);
+  });
+
+  it('never reports pending for an endpoint that does not use capabilities', () => {
+    mockLoading = true;
+    const endpoints = { openAI: { order: 0, type: 'openAI' } } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'openAI', model));
+
+    expect(result.current.pending).toBe(false);
+  });
+
+  it('does not request capabilities when the administrator defined reasoning_effort', () => {
+    const endpoints = {
+      OpenRouter: {
+        order: 0,
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [{ key: 'reasoning_effort' }],
+        },
+      },
+    } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'OpenRouter',
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(result.current.pending).toBe(false);
+  });
+
   it('shows the efforts once loaded', () => {
     mockCapabilities = { OpenRouter: { [model]: { efforts: ['low'] } } };
 

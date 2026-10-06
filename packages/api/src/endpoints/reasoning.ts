@@ -11,6 +11,7 @@ import {
   normalizeEndpointName,
   getModelReasoning,
   effectiveModelReasoning,
+  hasExplicitReasoningEffort,
   isOpenRouterEffortSupported,
 } from 'librechat-data-provider';
 import type { TEndpoint, TModelReasoning } from 'librechat-data-provider';
@@ -143,10 +144,16 @@ type ResolvedTarget = {
  * administrator credentials. A `directEndpoint` is skipped: its base URL is the exact
  * inference URL, so `/models` cannot be derived from it. So is an endpoint that pins its model
  * through `addParams.model`: every request goes to that one model, so the efforts of the model
- * a user selected say nothing about what is sent, and narrowing by them would be wrong.
+ * a user selected say nothing about what is sent, and narrowing by them would be wrong. And so is
+ * an endpoint whose administrator defined `reasoning_effort`: that definition is authoritative,
+ * so the catalog could not change any result and reading it would only add latency.
  */
 function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
-  if (endpoint.directEndpoint === true || typeof endpoint.addParams?.model === 'string') {
+  if (
+    endpoint.directEndpoint === true ||
+    typeof endpoint.addParams?.model === 'string' ||
+    hasExplicitReasoningEffort(endpoint.customParams?.paramDefinitions)
+  ) {
     return undefined;
   }
   const name = normalizeEndpointName(endpoint.name);
