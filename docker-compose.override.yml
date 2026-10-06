@@ -403,6 +403,36 @@ services:
     networks:
       - infra-network
 
+  # One-shot: creates the content-free `analytics` views
+  # (otel/clickhouse/analytics.sql) that HyperDX's usage timeline reads, once
+  # Langfuse and the collector have created their tables. Mirrors
+  # infra/terraform/analytics.tf.
+  clickhouse-analytics-init:
+    image: clickhouse/clickhouse-server:25.12
+    entrypoint: ["/bin/sh", "/analytics-init.sh"]
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      ANALYTICS_SQL_FILE: /analytics.sql
+    volumes:
+      - type: bind
+        source: ./otel/clickhouse/analytics-init.sh
+        target: /analytics-init.sh
+        read_only: true
+      - type: bind
+        source: ./otel/clickhouse/analytics.sql
+        target: /analytics.sql
+        read_only: true
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
 networks:
   infra-network:
 
