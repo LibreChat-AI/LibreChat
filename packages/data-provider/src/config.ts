@@ -67,6 +67,7 @@ import {
   PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS,
 } from './types/pullRequest';
 import { isActionTool } from './types/tools';
+import { PR_AUTOMATION_TRUST_LEVELS } from './types/prAutomation';
 import { apiBaseUrl } from './api-endpoints';
 import { FileSources } from './types/files';
 import { MCPServersSchema } from './mcp';
@@ -1921,6 +1922,20 @@ export const agentsEndpointSchema = baseEndpointSchema
               message: 'At least one allowed repository is required when pull requests are enabled',
             });
           }
+        })
+        .optional(),
+      /** Auto-fix CI and address review comments on a conversation's pull request. Off unless an
+       *  administrator opts in; a user can only narrow `maxTrust`, never widen it. */
+      prAutomation: z
+        .object({
+          enabled: z.boolean().optional().default(false),
+          /** Fix rounds one pull request may run before the automation stops. */
+          maxRounds: z.number().int().min(1).max(20).optional().default(5),
+          /** Wall-clock minutes from the first automated round before the automation stops. */
+          maxMinutes: z.number().int().min(5).max(1440).optional().default(120),
+          /** Widest author trust a user may select: `approvedBots` acts on the linked account and
+           *  allowlisted bots only, `collaborators` adds write-access users, `anyone` acts on all. */
+          maxTrust: z.enum(PR_AUTOMATION_TRUST_LEVELS).optional().default('approvedBots'),
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are

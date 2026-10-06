@@ -21,6 +21,7 @@ import { createPluginAuthModel } from './pluginAuth';
 import { createSharedLinkModel } from './sharedLink';
 import { createAccessRoleModel } from './accessRole';
 import { createToolFavoriteModel } from './favorite';
+import { createPRAutomationModel } from './prAutomation';
 import { createMCPServerModel } from './mcpServer';
 import { createAssistantModel } from './assistant';
 import { createSkillFileModel } from './skillFile';
@@ -86,6 +87,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ToolCall: ReturnType<typeof createToolCallModel>;
   MemoryEntry: ReturnType<typeof createMemoryModel>;
   ToolFavorite: ReturnType<typeof createToolFavoriteModel>;
+  PRAutomation: ReturnType<typeof createPRAutomationModel>;
   AccessRole: ReturnType<typeof createAccessRoleModel>;
   AclEntry: ReturnType<typeof createAclEntryModel>;
   SystemGrant: ReturnType<typeof createSystemGrantModel>;
@@ -137,6 +139,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ToolCall: createToolCallModel(mongoose),
     MemoryEntry: createMemoryModel(mongoose),
     ToolFavorite: createToolFavoriteModel(mongoose),
+    PRAutomation: createPRAutomationModel(mongoose),
     AccessRole: createAccessRoleModel(mongoose),
     AclEntry: createAclEntryModel(mongoose),
     SystemGrant: createSystemGrantModel(mongoose),
