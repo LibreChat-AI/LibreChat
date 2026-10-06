@@ -18,7 +18,7 @@ const InputNumber: React.ForwardRefExoticComponent<
     return (
       <RCInputNumber
         className={cn(
-          'border-border-medium text-text-primary placeholder:text-text-tertiary flex max-h-5 w-full rounded-md border bg-transparent px-3 py-2 text-sm focus:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+          'border-border-medium text-text-primary placeholder:text-text-tertiary flex max-h-5 w-full rounded-md border bg-transparent px-3 py-2 text-sm focus:outline-hidden has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50',
           disabledWithinFillClasses,
           className ?? '',
         )}
