@@ -188,7 +188,7 @@ export function RecorderPill({
       )}
     >
       {showHint ? (
-        <span className="text-text-secondary text-[11.5px]">
+        <span className="text-text-secondary text-1xs">
           {localize('com_shortcut_recorder_placeholder')}
         </span>
       ) : (
@@ -216,7 +216,7 @@ export function RecorderInfo({
     return (
       <div
         id={`${ownerId}-recorder-hint`}
-        className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1 pl-1 text-[11.5px]"
+        className="text-1xs flex flex-wrap items-center justify-end gap-x-2 gap-y-1 pl-1"
       >
         <span className="text-text-secondary">
           {localize('com_shortcut_recorder_conflict_prefix')}{' '}
@@ -245,10 +245,7 @@ export function RecorderInfo({
   return (
     <div id={`${ownerId}-recorder-hint`} className="flex items-center justify-end gap-2 pl-1">
       <span
-        className={cn(
-          'text-[11.5px]',
-          showInvalid ? 'text-text-destructive' : 'text-text-secondary',
-        )}
+        className={cn('text-1xs', showInvalid ? 'text-text-destructive' : 'text-text-secondary')}
       >
         {showInvalid
           ? localize('com_shortcut_recorder_needs_modifier')
