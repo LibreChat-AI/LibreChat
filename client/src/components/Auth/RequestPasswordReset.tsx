@@ -11,12 +11,7 @@ import { useLocalize } from '~/hooks';
 
 const BodyTextWrapper: FC<{ children: ReactNode }> = ({ children }) => {
   return (
-    <Alert
-      variant="success"
-      icon={false}
-      elevation="raised"
-      className="mt-6 px-6 py-4 transition-all"
-    >
+    <Alert variant="success" icon={false} elevation="raised" size="roomy" className="mt-6">
       {children}
     </Alert>
   );
@@ -111,7 +106,7 @@ function RequestPasswordReset() {
               },
             })}
             aria-invalid={!!errors.email}
-            className="webkit-dark-styles peer text-text-primary focus:border-accent-primary h-auto w-full rounded-2xl border px-3.5 pt-3 pb-2.5 duration-200"
+            variant="floating"
             placeholder=" "
           />
           <label
@@ -133,7 +128,9 @@ function RequestPasswordReset() {
           type="submit"
           disabled={!!errors.email || isLoading}
           variant="submit"
-          className="h-12 w-full rounded-2xl"
+          size="xl"
+          shape="soft"
+          className="w-full"
         >
           {isLoading ? <Spinner /> : localize('com_auth_continue')}
         </Button>

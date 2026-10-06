@@ -68,16 +68,6 @@
       "count": 6
     }
   },
-  "client/src/components/Auth/AuthLayout.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Auth/ErrorMessage.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Auth/Footer.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -86,34 +76,9 @@
       "count": 1
     }
   },
-  "client/src/components/Auth/LoginForm.tsx": {
-    "shadcn/no-restyle": {
-      "count": 33
-    }
-  },
-  "client/src/components/Auth/Registration.tsx": {
-    "shadcn/no-restyle": {
-      "count": 33
-    }
-  },
-  "client/src/components/Auth/RequestPasswordReset.tsx": {
-    "shadcn/no-restyle": {
-      "count": 13
-    }
-  },
-  "client/src/components/Auth/ResetPassword.tsx": {
-    "shadcn/no-restyle": {
-      "count": 48
-    }
-  },
   "client/src/components/Auth/TwoFactorScreen.tsx": {
     "shadcn/no-restyle": {
-      "count": 19
-    }
-  },
-  "client/src/components/Auth/VerifyEmail.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/Bookmarks/BookmarkForm.tsx": {

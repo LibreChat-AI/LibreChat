@@ -1,7 +1,15 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { useForm } from 'react-hook-form';
 import { Turnstile } from '@marsidev/react-turnstile';
-import { ThemeContext, SecretInput, Spinner, Button, Input, isDark } from '@librechat/client';
+import {
+  ThemeContext,
+  SecretInput,
+  Spinner,
+  Button,
+  Input,
+  isDark,
+  floatingLabel,
+} from '@librechat/client';
 import type { TLoginUser, TStartupConfig } from 'librechat-data-provider';
 import type { TAuthContext } from '~/common';
 import { useResendVerificationEmail, useGetStartupConfig } from '~/data-provider';
@@ -36,13 +44,6 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
   const emailAutoComplete = startupConfig.passkeyLoginEnabled
     ? `${baseAutoComplete} webauthn`
     : baseAutoComplete;
-  const authInputClassName =
-    'webkit-dark-styles peer h-auto w-full rounded-2xl border px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-accent-primary focus-visible:border-accent-primary';
-  const authSecretInputClassName = `${authInputClassName} pr-12`;
-  const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
-  const authSecretButtonClassName =
-    'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
 
   useEffect(() => {
     if (error && error.includes('422') && !showResendLink) {
@@ -115,10 +116,10 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
                   : (value) => validateEmail(value, localize('com_auth_email_pattern')),
               })}
               aria-invalid={!!errors.email}
-              className={authInputClassName}
+              variant="floating"
               placeholder=" "
             />
-            <label htmlFor="email" className={authLabelClassName}>
+            <label htmlFor="email" className={floatingLabel}>
               {useUsernameLogin
                 ? localize('com_auth_username').replace(/ \(.*$/, '')
                 : localize('com_auth_email_address')}
@@ -142,12 +143,9 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
                 maxLength: { value: 128, message: localize('com_auth_password_max_length') },
               })}
               aria-invalid={!!errors.password}
-              className={authSecretInputClassName}
+              variant="floating"
               placeholder=" "
               label={localize('com_auth_password')}
-              labelClassName={authLabelClassName}
-              controlsClassName="right-2"
-              buttonClassName={authSecretButtonClassName}
             />
           </div>
           {renderError('password')}
@@ -183,7 +181,9 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             type="submit"
             disabled={(requireCaptcha && !turnstileToken) || isSubmitting}
             variant="submit"
-            className="h-12 w-full rounded-2xl"
+            size="xl"
+            shape="soft"
+            className="w-full"
           >
             {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
           </Button>
