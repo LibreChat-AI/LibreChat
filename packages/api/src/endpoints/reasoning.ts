@@ -7,11 +7,9 @@ import {
   CacheKeys,
   ReasoningEffort,
   EModelEndpoint,
-  KnownEndpoints,
   normalizeEndpointName,
   getModelReasoning,
   effectiveModelReasoning,
-  hasExplicitReasoningEffort,
   isOpenRouterEffortSupported,
 } from 'librechat-data-provider';
 import type { TEndpoint, TModelReasoning } from 'librechat-data-provider';
@@ -21,6 +19,7 @@ import type {
   ReasoningCapabilityCache,
   ReasoningCapabilityResult,
 } from '~/types';
+import { usesOpenRouterCatalog } from '~/endpoints/custom/config';
 import { isUserProvided, applyAxiosProxyConfig } from '~/utils';
 import { resolveConfigSecret } from '~/admin/secrets';
 import { standardCache } from '~/cache';
@@ -30,6 +29,9 @@ const DEFAULT_CATALOG_TIMEOUT_MS = 5000;
 
 /** Applies when an endpoint does not set `customParams.reasoningCatalogFailureTtlMs`. */
 const DEFAULT_CATALOG_FAILURE_TTL_MS = 30000;
+
+/** Applies when an endpoint does not set `customParams.reasoningCatalogTtlMs`. */
+const DEFAULT_CATALOG_TTL_MS = Time.ONE_HOUR;
 
 /** Applies when an endpoint does not set `customParams.reasoningCatalogMaxPages`. */
 const DEFAULT_CATALOG_MAX_PAGES = 20;
@@ -59,23 +61,20 @@ const UNRESTRICTED_EFFORTS: string[] = Object.values(ReasoningEffort).filter(
   (effort) => effort !== ReasoningEffort.unset,
 );
 
-function isOpenRouterHost(baseURL: string): boolean {
-  try {
-    const host = new URL(baseURL).hostname.toLowerCase();
-    const openRouterHost = `${KnownEndpoints.openrouter}.ai`;
-    return host === openRouterHost || host.endsWith(`.${openRouterHost}`);
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Identity of a catalog lookup: the endpoint and the limits that decide its outcome. Two
  * endpoints sharing a base URL and key but configuring different page or time limits must
  * not share a result, or the first one's limits would govern both.
  */
-function cacheKey({ baseURL, apiKey, timeoutMs, maxPages, failureTtlMs }: ResolvedTarget): string {
-  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages, failureTtlMs]);
+function cacheKey({
+  baseURL,
+  apiKey,
+  timeoutMs,
+  maxPages,
+  failureTtlMs,
+  ttlMs,
+}: ResolvedTarget): string {
+  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages, failureTtlMs, ttlMs]);
   return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32);
 }
 
@@ -86,6 +85,13 @@ function safeOrigin(baseURL: string): string {
   } catch {
     return 'invalid-url';
   }
+}
+
+/** The `/models` URL of an API base, with `/models` on the path and any query kept in place. */
+function catalogURL(baseURL: string): string {
+  const url = new URL(baseURL);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/models`;
+  return url.toString();
 }
 
 /**
@@ -102,7 +108,7 @@ async function readCatalog(
   const models: CatalogModels = {};
   const origin = new URL(baseURL).origin;
   const seen = new Set<string>();
-  let url: string | null = `${baseURL.replace(/\/+$/, '')}/models`;
+  let url: string | null = catalogURL(baseURL);
 
   while (url != null) {
     if (seen.has(url) || seen.size >= maxPages) {
@@ -152,29 +158,29 @@ type ResolvedTarget = {
   timeoutMs: number;
   maxPages: number;
   failureTtlMs: number;
+  ttlMs: number;
 };
 
 /**
- * The endpoint's catalog target, or nothing when it is not an OpenRouter endpoint with
- * administrator credentials. A `directEndpoint` is skipped: its base URL is the exact
- * inference URL, so `/models` cannot be derived from it. So is an endpoint that pins its model
- * through `addParams.model`: every request goes to that one model, so the efforts of the model
- * a user selected say nothing about what is sent, and narrowing by them would be wrong. And so is
- * an endpoint whose administrator defined `reasoning_effort`: that definition is authoritative,
- * so the catalog could not change any result and reading it would only add latency.
+ * The endpoint's catalog target, or nothing when it does not use the OpenRouter catalog (see
+ * {@link usesOpenRouterCatalog}) or has no administrator credentials. A `directEndpoint` is skipped:
+ * its base URL is the exact inference URL, so `/models` cannot be derived from it. So is an endpoint
+ * that pins its model through `addParams.model`: every request goes to that one model, so the efforts
+ * of the model a user selected say nothing about what is sent, and narrowing by them would be wrong.
  */
 function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
-  if (
-    endpoint.directEndpoint === true ||
-    typeof endpoint.addParams?.model === 'string' ||
-    hasExplicitReasoningEffort(endpoint.customParams?.paramDefinitions)
-  ) {
+  if (endpoint.directEndpoint === true || typeof endpoint.addParams?.model === 'string') {
     return undefined;
   }
   const name = normalizeEndpointName(endpoint.name);
   const baseURL = resolveConfigSecret(endpoint.baseURL) ?? '';
   const apiKey = resolveConfigSecret(endpoint.apiKey) ?? '';
-  if (!name || isUserProvided(baseURL) || isUserProvided(apiKey) || !isOpenRouterHost(baseURL)) {
+  if (
+    !name ||
+    isUserProvided(baseURL) ||
+    isUserProvided(apiKey) ||
+    !usesOpenRouterCatalog(endpoint, baseURL)
+  ) {
     return undefined;
   }
   return {
@@ -185,6 +191,7 @@ function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
     maxPages: endpoint.customParams?.reasoningCatalogMaxPages ?? DEFAULT_CATALOG_MAX_PAGES,
     failureTtlMs:
       endpoint.customParams?.reasoningCatalogFailureTtlMs ?? DEFAULT_CATALOG_FAILURE_TTL_MS,
+    ttlMs: endpoint.customParams?.reasoningCatalogTtlMs ?? DEFAULT_CATALOG_TTL_MS,
   };
 }
 
@@ -229,7 +236,7 @@ function resolveCatalog(
       });
     }
     if (models != null) {
-      await deps.cache.set(key, models, Time.ONE_HOUR);
+      await deps.cache.set(key, models, target.ttlMs);
     } else if (target.failureTtlMs > 0) {
       await deps.cache.set(failureKey(key), true, target.failureTtlMs);
     }

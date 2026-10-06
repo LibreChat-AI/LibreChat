@@ -2086,6 +2086,11 @@ export const endpointSchema = baseEndpointSchema.merge(
          * requested again; 0 retries on every request. Omission keeps 30000.
          */
         reasoningCatalogFailureTtlMs: z.number().int().min(0).max(600000).optional(),
+        /**
+         * Milliseconds a successfully read OpenRouter catalog is kept before it is read again.
+         * Omission keeps 3600000 (one hour).
+         */
+        reasoningCatalogTtlMs: z.number().int().min(60000).max(86400000).optional(),
       })
       .strict()
       .optional(),

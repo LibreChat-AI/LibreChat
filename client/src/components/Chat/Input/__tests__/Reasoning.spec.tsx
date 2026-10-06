@@ -976,6 +976,20 @@ describe('useComposerReasoning: restored override while OpenRouter capabilities 
     expect(stagedValue(store)).toEqual(staged);
   });
 
+  it('keeps a supported override when a refresh changes the other advertised efforts', async () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    const { store, rendered } = setup();
+    await act(async () => {});
+    expect(stagedValue(store)).toEqual(staged);
+
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'medium', 'high'] } } };
+    rendered.rerender();
+    await act(async () => {});
+
+    expect(rendered.result.current?.setting.options).toEqual(['', 'low', 'medium', 'high']);
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
   it('clears it only after the loaded capabilities prove it unsupported', async () => {
     mockCapabilities = { OpenRouter: { [model]: { efforts: ['high'] } } };
 

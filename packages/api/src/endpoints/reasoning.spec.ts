@@ -849,3 +849,101 @@ describe('failed catalog lookups are remembered briefly', () => {
     expect(second.unavailable).toEqual([]);
   });
 });
+
+describe('loadReasoningCapabilities: which endpoints use the catalog', () => {
+  it('reads a proxy the administrator marks as OpenRouter, though its host is not OpenRouter', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const { capabilities } = await loadReasoningCapabilities(
+      [
+        endpoint({
+          baseURL: 'https://proxy.example.com/v1',
+          customParams: { defaultParamsEndpoint: 'openrouter' },
+        }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0].url).toBe('https://proxy.example.com/v1/models');
+    expect(Object.keys(capabilities)).toEqual(['OpenRouter']);
+  });
+
+  it('skips an OpenRouter host whose administrator chose another params endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { defaultParamsEndpoint: 'openAI' } })],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips an endpoint that disables reasoning', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { reasoningFormat: 'disabled' } })],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('catalog URL', () => {
+  it('puts /models on the path of a base URL that carries a query string', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ baseURL: 'https://openrouter.ai/api/v1?signature=abc' })],
+      deps,
+    );
+
+    expect(fetchSpy.mock.calls[0][0].url).toBe('https://openrouter.ai/api/v1/models?signature=abc');
+  });
+
+  it('handles a trailing slash', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities([endpoint({ baseURL: `${OPENROUTER}/` })], deps);
+
+    expect(fetchSpy.mock.calls[0][0].url).toBe(`${OPENROUTER}/models`);
+  });
+});
+
+describe('successful catalog lifetime', () => {
+  it('keeps a read catalog for an hour by default', async () => {
+    const { deps, ttls } = makeDeps();
+
+    await loadReasoningCapabilities([endpoint()], deps);
+
+    expect([...ttls.values()]).toContain(3600000);
+  });
+
+  it('keeps it for the lifetime the endpoint configures', async () => {
+    const { deps, ttls } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { reasoningCatalogTtlMs: 120000 } })],
+      deps,
+    );
+
+    expect([...ttls.values()]).toContain(120000);
+  });
+
+  it('does not let one lifetime policy serve an endpoint with another', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'Short', customParams: { reasoningCatalogTtlMs: 120000 } }),
+        endpoint({ name: 'Long', customParams: { reasoningCatalogTtlMs: 7200000 } }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});

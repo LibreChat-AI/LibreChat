@@ -1,6 +1,6 @@
 import { AuthType, EModelEndpoint, ReasoningParameterFormat } from 'librechat-data-provider';
 import type { TCustomEndpoints } from 'librechat-data-provider';
-import { loadCustomEndpointsConfig } from './config';
+import { loadCustomEndpointsConfig, usesOpenRouterCatalog } from './config';
 
 const baseEndpoint = {
   apiKey: 'sk-test',
@@ -108,6 +108,29 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
           customParams: { defaultParamsEndpoint: EModelEndpoint.custom },
         })?.defaultParamsEndpoint,
       ).toBe('openrouter');
+    });
+
+    it.each([ReasoningParameterFormat.reasoningEffort, ReasoningParameterFormat.reasoningObject])(
+      'marks an OpenRouter endpoint that sets reasoningFormat %s and keeps the format',
+      (format) => {
+        const params = load({
+          baseURL: 'https://openrouter.ai/api/v1',
+          customParams: { reasoningFormat: format },
+        });
+
+        expect(params?.defaultParamsEndpoint).toBe('openrouter');
+        expect(params?.reasoningFormat).toBe(format);
+      },
+    );
+
+    it('leaves an endpoint that disables reasoning unmarked', () => {
+      const params = load({
+        baseURL: 'https://openrouter.ai/api/v1',
+        customParams: { reasoningFormat: ReasoningParameterFormat.disabled },
+      });
+
+      expect(params?.defaultParamsEndpoint).toBeUndefined();
+      expect(params?.reasoningFormat).toBe(ReasoningParameterFormat.disabled);
     });
 
     it('does not mark a host that is not OpenRouter', () => {
@@ -246,5 +269,46 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
         userProvideURL: false,
       }),
     );
+  });
+});
+
+describe('usesOpenRouterCatalog', () => {
+  const OR = 'https://openrouter.ai/api/v1';
+  const uses = (endpoint: Record<string, unknown>, baseURL: string = OR) =>
+    usesOpenRouterCatalog({ ...baseEndpoint, name: 'Gateway', ...endpoint } as never, baseURL);
+
+  it('is true for an OpenRouter host, whatever the endpoint is named', () => {
+    expect(uses({})).toBe(true);
+  });
+
+  it('is true for a proxy the administrator marks as OpenRouter, on any host', () => {
+    expect(
+      uses(
+        { customParams: { defaultParamsEndpoint: 'openrouter' } },
+        'https://proxy.example.com/v1',
+      ),
+    ).toBe(true);
+  });
+
+  it('is false for a host that is not OpenRouter and carries no marker', () => {
+    expect(uses({}, 'https://api.mistral.ai/v1')).toBe(false);
+  });
+
+  it('is false when the administrator chose another params endpoint', () => {
+    expect(uses({ customParams: { defaultParamsEndpoint: EModelEndpoint.openAI } })).toBe(false);
+  });
+
+  it('is false when the administrator defined reasoning_effort', () => {
+    expect(uses({ customParams: { paramDefinitions: [{ key: 'reasoning_effort' }] } })).toBe(false);
+  });
+
+  it('is false when reasoning is disabled', () => {
+    expect(uses({ customParams: { reasoningFormat: ReasoningParameterFormat.disabled } })).toBe(
+      false,
+    );
+  });
+
+  it('is false for a native provider endpoint', () => {
+    expect(uses({ provider: EModelEndpoint.anthropic })).toBe(false);
   });
 });

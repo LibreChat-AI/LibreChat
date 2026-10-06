@@ -363,19 +363,17 @@ export function useComposerReasoning({
     modelReasoning,
     provider,
   ]);
-  const settingFingerprint =
-    setting == null
-      ? ''
-      : `${setting.key}:${setting.type}:${setting.options?.join(',') ?? ''}:${setting.range?.min ?? ''}:${setting.range?.positiveMin ?? ''}:${setting.range?.max ?? ''}:${setting.range?.step ?? ''}`;
   const targetResolved =
     endpoint !== '' &&
     (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
-  /* Not compared while the first capability request is in flight: the setting is hidden then,
-     so the fingerprint would change when it resolves and read as the user switching targets. */
+  /* The target is the endpoint or agent and the model. The efforts a catalog advertises for it
+     are not part of the identity: a refresh that changes them is not the user switching targets,
+     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below.
+     Not compared while the first capability request is in flight, when the setting is hidden. */
   const targetFingerprint =
     targetResolved && !capabilitiesPending
-      ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
+      ? `${isAgent ? conversation?.agent_id : provider}:${model}`
       : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =

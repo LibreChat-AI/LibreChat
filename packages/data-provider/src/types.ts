@@ -738,6 +738,7 @@ export type TConfig = {
     reasoningCatalogTimeoutMs?: number;
     reasoningCatalogMaxPages?: number;
     reasoningCatalogFailureTtlMs?: number;
+    reasoningCatalogTtlMs?: number;
   };
 };
 

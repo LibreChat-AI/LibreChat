@@ -109,6 +109,24 @@ describe('useModelReasoning', () => {
     expect(result.current.pending).toBe(false);
   });
 
+  it('does not request capabilities when reasoning is disabled for the endpoint', () => {
+    const endpoints = {
+      OpenRouter: {
+        order: 0,
+        type: 'custom',
+        customParams: { defaultParamsEndpoint: 'openrouter', reasoningFormat: 'disabled' },
+      },
+    } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'OpenRouter',
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(result.current.pending).toBe(false);
+  });
+
   it('does not request capabilities when the administrator defined reasoning_effort', () => {
     renderHook(() => useModelReasoning(withDefinition, 'OpenRouter', model));
 

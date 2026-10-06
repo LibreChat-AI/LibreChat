@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import {
   Providers,
+  ReasoningParameterFormat,
   resolveModelReasoning,
   hasExplicitReasoningEffort,
 } from 'librechat-data-provider';
@@ -19,6 +20,7 @@ export function usesReasoningCapabilities(
   const customParams = endpointsConfig?.[endpoint]?.customParams;
   return (
     customParams?.defaultParamsEndpoint === Providers.OPENROUTER &&
+    customParams.reasoningFormat !== ReasoningParameterFormat.disabled &&
     !hasExplicitReasoningEffort(customParams.paramDefinitions)
   );
 }
