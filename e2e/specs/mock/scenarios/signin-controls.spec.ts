@@ -35,12 +35,20 @@ for (const mode of MODES) {
       expect(field.width).toBe(field.wrapperWidth);
 
       const label = page.locator('label[for="email"]');
-      const resting = await label.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
+      const resting = await label.evaluate((el) =>
+        Number.parseFloat(getComputedStyle(el).scale === 'none' ? '1' : getComputedStyle(el).scale),
+      );
       expect(resting).toBe(1);
 
       await email.fill('someone@example.com');
       await expect
-        .poll(() => label.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a))
+        .poll(() =>
+          label.evaluate((el) =>
+            Number.parseFloat(
+              getComputedStyle(el).scale === 'none' ? '1' : getComputedStyle(el).scale,
+            ),
+          ),
+        )
         .toBeCloseTo(0.75, 2);
 
       const password = page.locator('#password');
