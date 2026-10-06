@@ -214,6 +214,9 @@ export default [
           // `icon-*` is a sizing utility from client/src/style.css (height, width, stroke-width),
           // so it belongs with layout rather than with a primitive's own appearance.
           allow: ['layout', 'icon-*'],
+          // The lint names a component after its declaration in `packages/client/dist`, where the
+          // bundler suffixes a colliding name (`DialogContent$1`, from the two dialog families), so
+          // every pattern accepts that suffix.
           // A contract replaces `allow` rather than extending it, so each one restates the
           // baseline. These record policy, not debt: the categories below are the caller's to
           // set, which is why they are not in eslint-suppressions.json.
@@ -221,16 +224,16 @@ export default [
             // A text primitive renders the caller's text, so the caller owns its size, weight
             // and leading. Color is still the theme's: it stays reported here.
             {
-              pattern: '^(Label|Description|DialogTitle|DialogDescription|SeriesLabel)$',
+              pattern: '^(Label|Description|DialogTitle|DialogDescription|SeriesLabel)(\\$\\d+)?$',
               allow: ['layout', 'icon-*', 'typography'],
             },
             // A skeleton stands in for the caller's content, so it takes that content's
             // silhouette and footprint.
-            { pattern: '^Skeleton$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
+            { pattern: '^Skeleton(\\$\\d+)?$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
             // A dialog or panel container lays out whatever the caller puts in it, so the padding
             // and gaps between those parts are the caller's. Color and shape stay the theme's.
             {
-              pattern: '^(DialogContent|DialogHeader|DialogFooter|PanelContent)$',
+              pattern: '^(DialogContent|DialogHeader|DialogFooter|PanelContent)(\\$\\d+)?$',
               allow: ['layout', 'icon-*', 'spacing'],
             },
           ],
