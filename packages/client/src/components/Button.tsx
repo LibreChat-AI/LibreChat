@@ -43,7 +43,6 @@ type ButtonVariantOptions =
         | 'xs'
         | 'sm'
         | 'lg'
-        | 'xl'
         | 'snug'
         | 'bare'
         | 'theme'
@@ -197,8 +196,6 @@ const buttonVariantRecipe = cva(
         xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
-        /** The full-bleed action that closes a sign-in form. */
-        xl: 'h-12 px-4 py-2',
         /** Default height with a snug pad, for a text action that sits close to its neighbors. */
         snug: 'h-theme-button p-1',
         /** Sized by its own text with no pad, for an action set inside a sentence. */

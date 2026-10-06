@@ -138,9 +138,8 @@ function ResetPassword() {
           aria-label={localize('com_auth_submit_registration')}
           disabled={!!errors.password || !!errors.confirm_password || isSubmitting}
           variant="submit"
-          size="xl"
           shape="soft"
-          className="w-full"
+          className="h-12 w-full"
         >
           {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
         </Button>

@@ -181,9 +181,8 @@ const LoginForm: React.FC<TLoginFormProps> = ({ onSubmit, startupConfig, error, 
             type="submit"
             disabled={(requireCaptcha && !turnstileToken) || isSubmitting}
             variant="submit"
-            size="xl"
             shape="soft"
-            className="w-full"
+            className="h-12 w-full"
           >
             {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
           </Button>
