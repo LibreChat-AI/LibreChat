@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
 import ApprovalProvider from '../ApprovalContext';
 import AskUserQuestion from '../AskUserQuestion';
+import store from '~/store';
 
 const mockSubmitAnswer = jest.fn();
 const mockSetAnswerText = jest.fn();
@@ -59,8 +60,9 @@ jest.mock('~/Providers/ChatContext', () => ({
 const tree = (
   key: string,
   question: Agents.AskUserQuestionRequest = { question: 'Which environment?' },
+  enterToSend = true,
 ) => (
-  <RecoilRoot>
+  <RecoilRoot initializeState={({ set }) => set(store.enterToSend, enterToSend)}>
     <ApprovalProvider>
       <AskUserQuestion key={key} actionId="ask-1" question={question} />
     </ApprovalProvider>
@@ -108,5 +110,52 @@ describe('AskUserQuestion', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
 
     expect(mockSubmitAnswer).toHaveBeenCalledWith(['public', 'carried free-form answer']);
+  });
+
+  describe('answer box keyboard submit', () => {
+    const liveTree = (enterToSend: boolean, answerText = 'Use staging first') => {
+      mockCollapsed = true;
+      mockLiveActionId = 'ask-1';
+      mockAnswerText = answerText;
+      return tree('live', { question: 'Which environment?' }, enterToSend);
+    };
+    const answerBox = () => screen.getByRole('textbox', { name: 'Your answer' });
+
+    test('Enter submits when Enter-to-send is on', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).toHaveBeenCalledWith(['Use staging first']);
+    });
+
+    test('Ctrl+Enter and Cmd+Enter submit when Enter-to-send is off', () => {
+      render(liveTree(false));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', ctrlKey: true });
+      fireEvent.keyDown(answerBox(), { key: 'Enter', metaKey: true });
+      expect(mockSubmitAnswer).toHaveBeenCalledTimes(2);
+    });
+
+    test('plain Enter does not submit when Enter-to-send is off', () => {
+      render(liveTree(false));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('Shift+Enter never submits', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', shiftKey: true });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('Enter confirming an IME composition does not submit', () => {
+      render(liveTree(true));
+      fireEvent.keyDown(answerBox(), { key: 'Enter', keyCode: 229 });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
+
+    test('does not submit an empty answer', () => {
+      render(liveTree(true, '   '));
+      fireEvent.keyDown(answerBox(), { key: 'Enter' });
+      expect(mockSubmitAnswer).not.toHaveBeenCalled();
+    });
   });
 });
