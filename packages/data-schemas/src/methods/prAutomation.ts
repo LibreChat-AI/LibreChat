@@ -4,9 +4,16 @@ import type { PRAutomationTrustLevel } from 'librechat-data-provider';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationState } from 'librechat-data-provider';
 import type * as t from '~/types/prAutomation';
+import { activeExpirationFilter } from '~/utils/retention';
 import { createIndexesWithRetry } from '~/utils/retry';
 
 const PROJECTION = '-_id -__v';
+/**
+ * A deletion fence is not a user decision. Enabling must never clear it, or a webhook could
+ * claim work for a conversation or account that is being removed.
+ */
+const DELETION_STOP_CODES: PRAutomationStopCode[] = ['conversation_deleting', 'account_deleting'];
+const RESTARTABLE = { state: 'stopped', stopCode: { $nin: DELETION_STOP_CODES } };
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
 const SETTLEABLE_STATES: PRAutomationState[] = ['fixing', 'needs_user'];
 const SETTLED_STATES: PRAutomationState[] = ['waiting', 'needs_user'];
@@ -44,6 +51,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
     maxBots: number,
+    repository: string,
   ) => Promise<t.PRAutomationBotResult>;
   removePRAutomationBot: (key: t.PRAutomationKey, botId: number) => Promise<t.IPRAutomation | null>;
 } {
@@ -127,17 +135,17 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     );
     const revive = trust != null ? { trust } : {};
     if (binding == null) {
-      await PRAutomation.updateOne({ ...filter, state: 'stopped' }, reset(revive), options);
+      await PRAutomation.updateOne({ ...filter, ...RESTARTABLE }, reset(revive), options);
     } else {
       const { repository } = binding;
       const otherRepository = { repository: { $ne: repository } };
       await PRAutomation.updateOne(
-        { ...filter, state: 'stopped', ...otherRepository },
+        { ...filter, ...RESTARTABLE, ...otherRepository },
         reset({ ...revive, ...binding, trustedBots: [] }),
         options,
       );
       await PRAutomation.updateOne(
-        { ...filter, state: 'stopped', repository },
+        { ...filter, ...RESTARTABLE, repository },
         reset({ ...revive, ...binding }),
         options,
       );
@@ -196,6 +204,22 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const filter = { ...keyFilter(key), ...binding };
     const cutoff = new Date(now.getTime() - maxMinutes * 60_000);
     const runId = randomUUID();
+
+    /**
+     * Conversations leave through the retention index without passing `deleteConvos`, so
+     * the record cannot rely on that cascade. A claim for a conversation that is gone or
+     * past its retention date removes the record instead of starting work for it.
+     */
+    const conversation = await mongoose.models.Conversation.exists({
+      user: key.userId,
+      conversationId: key.conversationId,
+      ...activeExpirationFilter(),
+    });
+    if (conversation == null) {
+      const removed = await PRAutomation.deleteOne(keyFilter(key));
+      const code = removed.deletedCount > 0 ? 'conversation_gone' : 'not_found';
+      return { ok: false, error: { code } };
+    }
 
     /** The window opens at the first claim attempt on an active record, once. */
     await PRAutomation.updateOne(
@@ -308,7 +332,8 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     await PRAutomation.updateMany(
       {
         user: userId,
-        state: { $ne: 'stopped' },
+        /** A user stop is overwritten, because only a deletion code resists a restart. */
+        stopCode: { $nin: DELETION_STOP_CODES },
         ...(conversationIds != null && { conversationId: { $in: conversationIds } }),
       },
       { $set: { state: 'stopped', stopCode } },
@@ -342,12 +367,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   /**
    * Idempotent by numeric id. The limit is the configured `maxBots`, resolved by
    * the caller, and cannot exceed the schema ceiling. A login is stored for
-   * display only.
+   * display only. The approval names the repository it was authorized against and
+   * applies only while the record is still bound to it, so an approval that
+   * overlaps a rebind cannot add a bot to a repository nobody approved it for.
    */
   async function addPRAutomationBot(
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
     maxBots: number,
+    repository: string,
   ): Promise<t.PRAutomationBotResult> {
     if (!Number.isInteger(maxBots) || maxBots < 1 || maxBots > MAX_PR_AUTOMATION_BOTS) {
       throw new RangeError(`maxBots must be an integer from 1 to ${MAX_PR_AUTOMATION_BOTS}`);
@@ -356,6 +384,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const updated = await PRAutomation.findOneAndUpdate(
       {
         ...keyFilter(key),
+        repository,
         'trustedBots.id': { $ne: bot.id },
         [`trustedBots.${maxBots - 1}`]: { $exists: false },
       },
@@ -369,6 +398,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const current = await getPRAutomation(key);
     if (current == null) {
       return { ok: false, error: { code: 'not_found' } };
+    }
+    if (current.repository !== repository) {
+      return { ok: false, error: { code: 'binding_mismatch' } };
     }
     if (current.trustedBots.some((existing) => existing.id === bot.id)) {
       return { ok: true, value: current };

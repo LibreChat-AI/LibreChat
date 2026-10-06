@@ -46,8 +46,15 @@ const toWaiting = () =>
     { user: userId, conversationId: key.conversationId },
     { $set: { state: 'waiting' } },
   );
-const addBot = (id: number, login?: string, limit = maxBots) =>
-  methods.addPRAutomationBot(key, login == null ? { id } : { id, login }, limit);
+const addBot = (id: number, login?: string, limit = maxBots, repository = 'acme/one') =>
+  methods.addPRAutomationBot(key, login == null ? { id } : { id, login }, limit, repository);
+const seedConversation = (fields: Record<string, unknown> = {}) =>
+  mongoose.models.Conversation.create({
+    conversationId: key.conversationId,
+    user: userId,
+    endpoint: 'agents',
+    ...fields,
+  });
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -65,6 +72,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await PRAutomation.deleteMany({});
+  await mongoose.models.Conversation.deleteMany({});
+  await seedConversation();
 });
 
 describe('getPRAutomation', () => {
@@ -130,11 +139,10 @@ describe('enablePRAutomation', () => {
     expect(rebound).toMatchObject({ ...otherRepository, trustedBots: [] });
   });
 
-  test('does not carry a bot approved before any repository was bound', async () => {
+  test('refuses a bot approved before any repository was bound', async () => {
     await methods.enablePRAutomation(key);
-    await addBot(101);
-    const bound = await methods.enablePRAutomation({ ...key, binding: pullOne });
-    expect(bound.trustedBots).toEqual([]);
+    expect(await addBot(101)).toEqual({ ok: false, error: { code: 'binding_mismatch' } });
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([]);
   });
 
   test('keeps approved bots when the same repository is bound to another pull request', async () => {
@@ -142,6 +150,79 @@ describe('enablePRAutomation', () => {
     await addBot(101);
     const rebound = await methods.enablePRAutomation({ ...key, binding: pullTwo });
     expect(rebound).toMatchObject({ pullNumber: 2, trustedBots: [{ id: 101 }] });
+  });
+});
+
+describe('a record stopped by a deletion fence', () => {
+  const deletionCodes = ['conversation_deleting', 'account_deleting'] as const;
+
+  test.each(deletionCodes)(
+    'is not revived by enabling the same pull request (%s)',
+    async (code) => {
+      await enable(pullOne);
+      await methods.stopPRAutomation(key, code);
+      expect(await enable(pullOne)).toMatchObject({ state: 'stopped', stopCode: code });
+    },
+  );
+
+  test.each(deletionCodes)(
+    'is not revived by another pull request in the repository (%s)',
+    async (code) => {
+      await enable(pullOne);
+      await methods.stopPRAutomation(key, code);
+      expect(await enable(pullTwo)).toMatchObject({
+        state: 'stopped',
+        stopCode: code,
+        pullNumber: 1,
+      });
+    },
+  );
+
+  test.each(deletionCodes)('is not revived or rebound to another repository (%s)', async (code) => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, code);
+    expect(await enable(otherRepository)).toMatchObject({
+      state: 'stopped',
+      stopCode: code,
+      repository: 'acme/one',
+    });
+  });
+
+  test.each(deletionCodes)('is not revived without a binding (%s)', async (code) => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, code);
+    expect(await methods.enablePRAutomation(key)).toMatchObject({
+      state: 'stopped',
+      stopCode: code,
+    });
+  });
+
+  test.each(deletionCodes)('still refuses a claim (%s)', async (code) => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, code);
+    await enable(pullOne);
+    expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_active' } });
+  });
+
+  test.each(deletionCodes)('replaces a user stop when a deletion begins (%s)', async (code) => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    await methods.stopPRAutomations(userId, code, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'stopped', stopCode: code });
+    expect(await enable(pullOne)).toMatchObject({ state: 'stopped', stopCode: code });
+  });
+
+  test('keeps a record of another conversation restartable', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    await methods.stopPRAutomations(userId, 'conversation_deleting', ['another-convo']);
+    expect(await methods.getPRAutomation(key)).toMatchObject({ stopCode: 'user_stopped' });
+  });
+
+  test('a user stop is still restartable', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    expect(await enable(pullOne)).toMatchObject({ state: 'idle' });
   });
 });
 
@@ -343,6 +424,58 @@ describe('claimPRAutomationRound', () => {
   });
 });
 
+describe('claiming for a conversation that no longer exists', () => {
+  const gone = { ok: false, error: { code: 'conversation_gone' } };
+
+  test('rejects a claim once the conversation was removed by the retention index', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    expect(await claim(1)).toEqual(gone);
+  });
+
+  test('removes the record so nothing is left to claim later', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    await claim(1);
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
+  test('rejects a claim for a conversation that expired but is not yet purged', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    await seedConversation({ expiredAt: new Date(Date.now() - 60_000) });
+    expect(await claim(1)).toEqual(gone);
+  });
+
+  test('accepts a claim while the conversation retention date is still ahead', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    await seedConversation({ expiredAt: new Date(Date.now() + 3_600_000) });
+    expect((await claim(1)).ok).toBe(true);
+  });
+
+  test('does not spend a round for a conversation that is gone', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    await claim(1);
+    await enable();
+    await seedConversation();
+    expect(await startRound(1)).toMatchObject({ round: 1 });
+  });
+
+  test('keeps reporting not_found when there is no record at all', async () => {
+    await mongoose.models.Conversation.deleteMany({});
+    expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_found' } });
+  });
+
+  test('only looks at the conversation of the same owner', async () => {
+    await enable();
+    await mongoose.models.Conversation.deleteMany({});
+    await seedConversation({ user: otherUserId });
+    expect(await claim(1)).toEqual(gone);
+  });
+});
+
 describe('settlePRAutomationRound', () => {
   test('settles the round that owns it, including from needs_user', async () => {
     await enable();
@@ -511,6 +644,31 @@ describe('approved bots', () => {
 
   test('reports not_found when the conversation has no record', async () => {
     expect(await addBot(101)).toEqual({ ok: false, error: { code: 'not_found' } });
+  });
+
+  test('refuses a bot approved for a repository the record is not bound to', async () => {
+    await enable(pullOne);
+    expect(await addBot(101, undefined, maxBots, 'acme/two')).toEqual({
+      ok: false,
+      error: { code: 'binding_mismatch' },
+    });
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([]);
+  });
+
+  test('refuses an approval that was authorized before the record was rebound', async () => {
+    await enable(pullOne);
+    await enable(otherRepository);
+    expect(await addBot(101, undefined, maxBots, 'acme/one')).toEqual({
+      ok: false,
+      error: { code: 'binding_mismatch' },
+    });
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([]);
+  });
+
+  test('still treats an already approved bot as success for the bound repository', async () => {
+    await enable(pullOne);
+    await addBot(101);
+    expect((await addBot(101)).ok).toBe(true);
   });
 
   test('removes a bot by id and leaves the others', async () => {

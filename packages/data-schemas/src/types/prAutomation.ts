@@ -88,6 +88,7 @@ export type PRAutomationClaimErrorCode =
   | 'not_found'
   | 'not_active'
   | 'binding_mismatch'
+  | 'conversation_gone'
   | 'round_cap'
   | 'time_cap'
   | 'stale_head';
@@ -98,4 +99,4 @@ export type ClaimPRAutomationRoundResult =
 
 export type PRAutomationBotResult =
   | { ok: true; value: IPRAutomation }
-  | { ok: false; error: { code: 'not_found' | 'bot_limit' } };
+  | { ok: false; error: { code: 'not_found' | 'bot_limit' | 'binding_mismatch' } };
