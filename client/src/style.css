@@ -1560,9 +1560,11 @@ html {
   }
 }
 
+.avatar-stroke,
 .shadow-stroke {
   position: relative;
 }
+.avatar-stroke:after,
 .shadow-stroke:after {
   --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
@@ -1574,7 +1576,9 @@ html {
   right: 0;
   top: 0;
 }
+.dark .avatar-stroke:after,
 .dark .shadow-stroke:after,
+.avatar-stroke:after,
 .shadow-stroke:after {
   box-shadow:
     0 0 transparent,
@@ -1584,6 +1588,7 @@ html {
     var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent),
     var(--tw-shadow);
 }
+.dark .avatar-stroke:after,
 .dark .shadow-stroke:after {
   --tw-shadow: inset 0 0 0 1px hsla(0, 0%, 100%, 0.3);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);

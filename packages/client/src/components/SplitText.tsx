@@ -153,7 +153,7 @@ const SplitText: React.FC<SplitTextProps> = ({
       <p
         ref={ref}
         dir="auto"
-        className={`split-parent inline overflow-hidden ${className}`}
+        className={`inline overflow-hidden ${className}`}
         style={{ textAlign, whiteSpace: 'normal', wordWrap: 'break-word' }}
       >
         {/* The paragraph's auto direction ignores word boxes with their own dir. */}

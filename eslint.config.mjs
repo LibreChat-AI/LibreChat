@@ -327,6 +327,23 @@ export default [
     },
   },
   {
+    // Entries 2 and 4 of packages/client/src/theme/allowlist.md: the third-party brand marks and
+    // the opt-in multicolour illustration carry fixed `fill` literals that must not follow the
+    // theme. The scope is these six files by name, so a new SVG or any other file still reports
+    // its colours; the allowlist stays the record of why each one is here.
+    files: [
+      'packages/client/src/svgs/GoogleIcon.tsx',
+      'packages/client/src/svgs/FacebookIcon.tsx',
+      'packages/client/src/svgs/DiscordIcon.tsx',
+      'packages/client/src/svgs/GeminiIcon.tsx',
+      'packages/client/src/svgs/PaLMIcon.tsx',
+      'packages/client/src/svgs/BirthdayIcon.tsx',
+    ],
+    rules: {
+      'shadcn/no-raw-colors': 'off',
+    },
+  },
+  {
     files: ['**/.eslintrc.js', '**/jest.config.js', 'client/vite.config.ts'],
     languageOptions: {
       globals: {
