@@ -34,6 +34,8 @@ jest.mock('~/cache', () => ({
 jest.mock('~/utils', () => ({
   isUserProvided: (val: string) => val === 'user_provided',
   checkUserKeyExpiry: jest.fn(),
+  resolveHeaders: ({ headers }: { headers?: Record<string, string> }) => ({ ...headers }),
+  applyAxiosProxyConfig: jest.fn(),
 }));
 
 const mockGetCustomEndpointConfig = jest.fn();

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import {
+  Time,
   Providers,
   ReasoningParameterFormat,
   resolveModelReasoning,
@@ -38,8 +39,12 @@ export function useModelReasoning(
   model: string,
 ): { modelReasoning: TModelReasoning | null | undefined; pending: boolean } {
   const enabled = usesReasoningCapabilities(endpointsConfig, endpoint);
-  const { data: capabilities } = useReasoningCapabilitiesQuery(endpoint, { enabled });
-  const paramDefinitions = endpointsConfig?.[endpoint]?.customParams?.paramDefinitions;
+  const customParams = endpointsConfig?.[endpoint]?.customParams;
+  /** Never fresher than the server's own entry: revalidate within five minutes, or within the
+   *  configured lifetime when that is shorter, so a refreshed catalog is seen in time. */
+  const staleTime = Math.min(Time.FIVE_MINUTES, customParams?.reasoningCatalogTtlMs ?? Infinity);
+  const { data: capabilities } = useReasoningCapabilitiesQuery(endpoint, { enabled, staleTime });
+  const paramDefinitions = customParams?.paramDefinitions;
   const pending = enabled && capabilities == null;
   const modelReasoning = useMemo(
     () =>

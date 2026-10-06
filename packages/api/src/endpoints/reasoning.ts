@@ -19,8 +19,8 @@ import type {
   ReasoningCapabilityCache,
   ReasoningCapabilityResult,
 } from '~/types';
+import { isUserProvided, applyAxiosProxyConfig, resolveHeaders } from '~/utils';
 import { usesOpenRouterCatalog } from '~/endpoints/custom/config';
-import { isUserProvided, applyAxiosProxyConfig } from '~/utils';
 import { resolveConfigSecret } from '~/admin/secrets';
 import { standardCache } from '~/cache';
 
@@ -62,9 +62,9 @@ const UNRESTRICTED_EFFORTS: string[] = Object.values(ReasoningEffort).filter(
 );
 
 /**
- * Identity of a catalog lookup: the endpoint and the limits that decide its outcome. Two
- * endpoints sharing a base URL and key but configuring different page or time limits must
- * not share a result, or the first one's limits would govern both.
+ * Identity of a catalog lookup: the endpoint, the headers it sends and the limits that decide its
+ * outcome. Two endpoints sharing a base URL and key but configuring different headers or limits
+ * must not share a result, or the first one's configuration would govern both.
  */
 function cacheKey({
   baseURL,
@@ -73,8 +73,18 @@ function cacheKey({
   maxPages,
   failureTtlMs,
   ttlMs,
+  headers,
 }: ResolvedTarget): string {
-  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages, failureTtlMs, ttlMs]);
+  const sortedHeaders = Object.entries(headers).sort(([a], [b]) => a.localeCompare(b));
+  const identity = JSON.stringify([
+    baseURL,
+    apiKey,
+    timeoutMs,
+    maxPages,
+    failureTtlMs,
+    ttlMs,
+    sortedHeaders,
+  ]);
   return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32);
 }
 
@@ -85,6 +95,47 @@ function safeOrigin(baseURL: string): string {
   } catch {
     return 'invalid-url';
   }
+}
+
+/** A header value that is filled in per user or per request, which a shared catalog cannot honor. */
+const PER_REQUEST_PLACEHOLDER = /\{\{[^}]*\}\}/;
+
+/** An environment variable reference left in a value, which means the variable is not set. */
+const UNRESOLVED_ENV_VARIABLE = /\$\{[^}]*\}/;
+
+/**
+ * The configured headers a catalog request may carry. The catalog is read once with the
+ * administrator's credentials and shared by every user, so a header that resolves per user or per
+ * request (`{{LIBRECHAT_USER_EMAIL}}`, an OpenID token) is never forwarded, and neither is one that
+ * resolves to nothing: an unset environment variable stays a literal `${NAME}` after resolution,
+ * which a proxy would receive as a credential. Static values and environment
+ * variables are forwarded, as inference and the model list forward them, because a proxy that
+ * requires one answers `/models` with an authorization failure otherwise.
+ */
+function staticCatalogHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const candidates = Object.fromEntries(
+    Object.entries(headers ?? {}).filter(([, value]) => !PER_REQUEST_PLACEHOLDER.test(value)),
+  );
+  const resolved = resolveHeaders({ headers: candidates, stripUnresolved: true });
+  return Object.fromEntries(
+    Object.entries(resolved).filter(
+      ([, value]) => value !== '' && !UNRESOLVED_ENV_VARIABLE.test(value),
+    ),
+  );
+}
+
+/**
+ * The headers of one catalog request: the configured ones, plus the API key as a Bearer token
+ * unless a configured `Authorization` header already carries the credential, as the model list does.
+ */
+export function catalogRequestHeaders(
+  apiKey: string,
+  headers: Record<string, string>,
+): Record<string, string> {
+  const hasAuthorization = Object.keys(headers).some(
+    (key) => key.toLowerCase() === 'authorization',
+  );
+  return hasAuthorization ? { ...headers } : { ...headers, Authorization: `Bearer ${apiKey}` };
 }
 
 /** The `/models` URL of an API base, with `/models` on the path and any query kept in place. */
@@ -104,7 +155,7 @@ async function readCatalog(
   target: ResolvedTarget,
   deps: ReasoningCapabilityDeps,
 ): Promise<CatalogModels | undefined> {
-  const { baseURL, apiKey, timeoutMs, maxPages } = target;
+  const { baseURL, apiKey, timeoutMs, maxPages, headers } = target;
   const models: CatalogModels = {};
   const origin = new URL(baseURL).origin;
   const seen = new Set<string>();
@@ -115,7 +166,7 @@ async function readCatalog(
       return undefined;
     }
     seen.add(url);
-    const parsed = pageSchema.safeParse(await deps.fetchPage({ url, apiKey, timeoutMs }));
+    const parsed = pageSchema.safeParse(await deps.fetchPage({ url, apiKey, timeoutMs, headers }));
     if (!parsed.success) {
       return undefined;
     }
@@ -142,7 +193,8 @@ async function readCatalog(
     if (next == null || next === '') {
       return models;
     }
-    const nextURL = new URL(next, origin);
+    /** Relative to the page just read, so `?offset=100` and `models?offset=100` keep its path. */
+    const nextURL: URL = new URL(next, url);
     if (nextURL.origin !== origin) {
       return undefined;
     }
@@ -159,6 +211,7 @@ type ResolvedTarget = {
   maxPages: number;
   failureTtlMs: number;
   ttlMs: number;
+  headers: Record<string, string>;
 };
 
 /**
@@ -192,6 +245,7 @@ function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
     failureTtlMs:
       endpoint.customParams?.reasoningCatalogFailureTtlMs ?? DEFAULT_CATALOG_FAILURE_TTL_MS,
     ttlMs: endpoint.customParams?.reasoningCatalogTtlMs ?? DEFAULT_CATALOG_TTL_MS,
+    headers: staticCatalogHeaders(endpoint.headers),
   };
 }
 
@@ -329,13 +383,15 @@ async function fetchPage({
   url,
   apiKey,
   timeoutMs,
+  headers,
 }: {
   url: string;
   apiKey: string;
   timeoutMs: number;
+  headers: Record<string, string>;
 }): Promise<unknown> {
   const options = applyAxiosProxyConfig(
-    { headers: { Authorization: `Bearer ${apiKey}` }, timeout: timeoutMs },
+    { headers: catalogRequestHeaders(apiKey, headers), timeout: timeoutMs },
     url,
   );
   return (await axios.get(url, options)).data;

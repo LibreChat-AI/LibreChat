@@ -158,6 +158,33 @@ describe('useModelReasoning', () => {
     );
   });
 
+  describe('client freshness follows the configured server lifetime', () => {
+    const withTtl = (reasoningCatalogTtlMs?: number) =>
+      ({
+        OpenRouter: {
+          order: 0,
+          type: 'custom',
+          customParams: { defaultParamsEndpoint: 'openrouter', reasoningCatalogTtlMs },
+        },
+      }) as TEndpointsConfig;
+    const staleTimeFor = (endpoints: TEndpointsConfig) => {
+      renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
+      return mockQuery.mock.calls.at(-1)?.[1].staleTime;
+    };
+
+    it('uses five minutes when the lifetime is the default', () => {
+      expect(staleTimeFor(openRouter)).toBe(300000);
+    });
+
+    it('never exceeds a lifetime shorter than five minutes', () => {
+      expect(staleTimeFor(withTtl(60000))).toBe(60000);
+    });
+
+    it('stays at five minutes for a longer lifetime', () => {
+      expect(staleTimeFor(withTtl(7200000))).toBe(300000);
+    });
+  });
+
   it('requests capabilities for an OpenRouter endpoint', () => {
     renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
 

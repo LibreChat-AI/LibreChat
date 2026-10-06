@@ -1,6 +1,6 @@
 import type { TEndpoint } from 'librechat-data-provider';
 import type { ReasoningCapabilityDeps } from '~/types';
-import { loadReasoningCapabilities, withSupportedEffort } from './reasoning';
+import { loadReasoningCapabilities, withSupportedEffort, catalogRequestHeaders } from './reasoning';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -945,5 +945,121 @@ describe('successful catalog lifetime', () => {
     );
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('catalog request headers', () => {
+  const headersSent = async (headers: Record<string, string>) => {
+    const { deps, fetchSpy } = makeDeps();
+    await loadReasoningCapabilities([endpoint({ headers })], deps);
+    return fetchSpy.mock.calls[0][0].headers;
+  };
+
+  afterEach(() => {
+    delete process.env.PROBE_PROXY_TOKEN;
+  });
+
+  it('forwards a static configured header', async () => {
+    expect(await headersSent({ 'X-Proxy-Tenant': 'acme' })).toEqual({ 'X-Proxy-Tenant': 'acme' });
+  });
+
+  it('resolves an environment variable in a header value', async () => {
+    process.env.PROBE_PROXY_TOKEN = 'env-secret';
+
+    expect(await headersSent({ 'X-Proxy-Token': '${PROBE_PROXY_TOKEN}' })).toEqual({
+      'X-Proxy-Token': 'env-secret',
+    });
+  });
+
+  it('never forwards a header that resolves per user, as the catalog is shared by every user', async () => {
+    const sent = await headersSent({
+      'X-User': '{{LIBRECHAT_USER_EMAIL}}',
+      Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',
+      'X-Static': 'kept',
+    });
+
+    expect(sent).toEqual({ 'X-Static': 'kept' });
+  });
+
+  it('drops a header that mixes text with a per-user placeholder instead of sending the remainder', async () => {
+    const sent = await headersSent({ 'X-Mixed': 'prefix-{{LIBRECHAT_USER_ID}}-suffix' });
+
+    expect(sent).toEqual({});
+  });
+
+  it('drops a header whose environment variable is not set', async () => {
+    expect(await headersSent({ 'X-Proxy-Token': '${PROBE_PROXY_TOKEN}' })).toEqual({});
+  });
+
+  it('keeps endpoints with different headers apart', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'A', headers: { 'X-Tenant': 'a' } }),
+        endpoint({ name: 'B', headers: { 'X-Tenant': 'b' } }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares a lookup between endpoints with the same headers', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'A', headers: { 'X-Tenant': 'a' } }),
+        endpoint({ name: 'B', headers: { 'X-Tenant': 'a' } }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds the API key as a Bearer token unless a configured Authorization header is present', () => {
+    expect(catalogRequestHeaders('sk-key', { 'X-A': '1' })).toEqual({
+      'X-A': '1',
+      Authorization: 'Bearer sk-key',
+    });
+    expect(catalogRequestHeaders('sk-key', { authorization: 'Token proxy' })).toEqual({
+      authorization: 'Token proxy',
+    });
+  });
+});
+
+describe('relative pagination links', () => {
+  const page = (id: string, next: string | null) => ({
+    data: [{ id, reasoning: { supported_efforts: ['low'] } }],
+    links: { next },
+  });
+  const walk = async (next: string) => {
+    const { deps, fetchSpy } = makeDeps(async ({ url }) =>
+      url.includes('offset=') ? page('b/second', null) : page('a/first', next),
+    );
+    const result = await loadReasoningCapabilities([endpoint()], deps);
+    return { result, urls: fetchSpy.mock.calls.map(([params]) => params.url) };
+  };
+
+  it('resolves a query-relative link against the current page', async () => {
+    const { result, urls } = await walk('?offset=1');
+
+    expect(urls[1]).toBe(`${OPENROUTER}/models?offset=1`);
+    expect(Object.keys(result.capabilities.OpenRouter)).toEqual(['a/first', 'b/second']);
+  });
+
+  it('resolves a path-relative link against the current page', async () => {
+    const { urls } = await walk('models?offset=1');
+
+    expect(urls[1]).toBe(`${OPENROUTER}/models?offset=1`);
+  });
+
+  it('still follows a root-relative link and an absolute same-host link', async () => {
+    expect((await walk('/api/v1/models?offset=1')).urls[1]).toBe(`${OPENROUTER}/models?offset=1`);
+    expect((await walk(`${OPENROUTER}/models?offset=1`)).urls[1]).toBe(
+      `${OPENROUTER}/models?offset=1`,
+    );
   });
 });

@@ -9,7 +9,13 @@ export interface ReasoningCapabilityCache {
 /** What a caller supplies so the lookup has no hard-wired client or cache. */
 export interface ReasoningCapabilityDeps {
   /** Returns one page of the provider's model catalog as parsed JSON. */
-  fetchPage: (params: { url: string; apiKey: string; timeoutMs: number }) => Promise<unknown>;
+  fetchPage: (params: {
+    url: string;
+    apiKey: string;
+    timeoutMs: number;
+    /** Static configured headers; the caller adds the API key as a Bearer token. */
+    headers: Record<string, string>;
+  }) => Promise<unknown>;
   cache: ReasoningCapabilityCache;
 }
 
