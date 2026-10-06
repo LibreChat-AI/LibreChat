@@ -525,6 +525,85 @@ describe('createConversationPullRequestsHandler', () => {
       });
     });
 
+    it('counts the time spent reading the config and lanes against the deadline', async () => {
+      /** The reads take most of the 0.2 s deadline, so the lookups get what is left of it, not a fresh 0.2 s. */
+      const lookup = jest.fn(() => new Promise(() => undefined));
+      const slowRead = <T>(value: T, ms: number) =>
+        new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+      const handler = createConversationPullRequestsHandler({
+        getConvosLaneGit: jest.fn(() => slowRead([lane('a')], 150)),
+        getAppConfig: jest.fn(() =>
+          slowRead(configWith({ ...enabled, batchTimeoutSeconds: 0.2 }), 10),
+        ) as never,
+        lookup: lookup as never,
+        env: { GH_TOKEN: 'ghp_secret' },
+      });
+      const out = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+      const started = Date.now();
+      await handler(
+        { user: { id: 'u1' }, body: { conversationIds: ['a'] } } as unknown as ServerRequest,
+        out as unknown as Response,
+      );
+      const took = Date.now() - started;
+      expect(took).toBeLessThan(330);
+      expect(out.json).toHaveBeenCalledWith({
+        results: [{ conversationId: 'a', error: { code: 'UPSTREAM_ERROR' } }],
+      });
+    });
+
+    it('answers when the config or lane read never does, instead of holding the request open', async () => {
+      jest.useFakeTimers();
+      try {
+        const lookup = jest.fn();
+        const handler = createConversationPullRequestsHandler({
+          getConvosLaneGit: jest.fn(() => new Promise(() => undefined)) as never,
+          getAppConfig: jest.fn().mockResolvedValue(configWith(enabled)),
+          lookup: lookup as never,
+          env: { GH_TOKEN: 'ghp_secret' },
+        });
+        const out = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+        const pending = handler(
+          { user: { id: 'u1' }, body: { conversationIds: ['a'] } } as unknown as ServerRequest,
+          out as unknown as Response,
+        );
+        await jest.advanceTimersByTimeAsync(119_000);
+        expect(out.json).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(2_000);
+        await pending;
+        expect(out.status).toHaveBeenCalledWith(503);
+        expect(out.json).toHaveBeenCalledWith({
+          error: 'Pull request lookup is unavailable',
+          code: 'UPSTREAM_ERROR',
+        });
+        expect(lookup).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('starts no lookup when the reads alone used up the deadline', async () => {
+      const lookup = jest.fn().mockResolvedValue({ ok: true, value: pr });
+      const handler = createConversationPullRequestsHandler({
+        getConvosLaneGit: jest.fn(
+          () => new Promise((resolve) => setTimeout(() => resolve([lane('a')]), 120)),
+        ) as never,
+        getAppConfig: jest
+          .fn()
+          .mockResolvedValue(configWith({ ...enabled, batchTimeoutSeconds: 0.05 })),
+        lookup: lookup as never,
+        env: { GH_TOKEN: 'ghp_secret' },
+      });
+      const out = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+      await handler(
+        { user: { id: 'u1' }, body: { conversationIds: ['a'] } } as unknown as ServerRequest,
+        out as unknown as Response,
+      );
+      expect(lookup).not.toHaveBeenCalled();
+      expect(out.json).toHaveBeenCalledWith({
+        results: [{ conversationId: 'a', error: { code: 'UPSTREAM_ERROR' } }],
+      });
+    });
+
     it('does not change the answer of a batch that finishes in time', async () => {
       const { run, res } = batch({ settings: { ...enabled, batchTimeoutSeconds: 5 } });
       await run();
@@ -591,6 +670,48 @@ describe('createConversationPullRequestsHandler', () => {
       await flush();
       expect(held.lookup).toHaveBeenCalledTimes(2);
       expect(held.active()).toBe(0);
+    });
+
+    it("counts slots per credential, so one tenant's stalled lookups do not block another's", async () => {
+      const held = heldLookups();
+      const configFor = (tokenName: string) =>
+        configWith({
+          ...enabled,
+          token: `\${${tokenName}}`,
+          maxConcurrentLookups: 1,
+          batchTimeoutSeconds: 0.2,
+        });
+      /** Each tenant's config names its own token, as principal-scoped configuration can. */
+      const getAppConfig = jest.fn(async (options: { userId?: string; role?: string }) =>
+        configFor(options.userId === 'u2' ? 'TOKEN_TWO' : 'TOKEN_ONE'),
+      );
+      const handler = createConversationPullRequestsHandler({
+        getConvosLaneGit: jest.fn().mockResolvedValue([lane('a')]),
+        getAppConfig: getAppConfig as never,
+        lookup: held.lookup as never,
+        env: { TOKEN_ONE: 'token-one', TOKEN_TWO: 'token-two' },
+      });
+      const call = async (user: string) => {
+        const out = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+        await handler(
+          { user: { id: user }, body: { conversationIds: ['a'] } } as unknown as ServerRequest,
+          out as unknown as Response,
+        );
+        return out;
+      };
+
+      /** The first tenant's only slot is now held by a lookup that outlived its request. */
+      await call('u1');
+      expect(held.active()).toBe(1);
+      /** Same credential: the next request waits for that slot, gives up, and starts nothing. */
+      const same = await call('u1');
+      expect(held.lookup).toHaveBeenCalledTimes(1);
+      expect(same.json).toHaveBeenCalledWith({
+        results: [{ conversationId: 'a', error: { code: 'UPSTREAM_ERROR' } }],
+      });
+      /** Another credential has its own slots, so it is not held behind the first tenant. */
+      await call('u2');
+      expect(held.lookup).toHaveBeenCalledTimes(2);
     });
 
     it('frees the slot when a lookup fails, so later requests are not stuck', async () => {

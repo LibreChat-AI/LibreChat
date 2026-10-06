@@ -4,7 +4,11 @@ import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
 import { Spinner, useToastContext, useMediaQuery } from '@librechat/client';
-import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
+import {
+  Constants,
+  PULL_REQUEST_BATCH_VERSION,
+  supportsConversationTitleOwnership,
+} from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -74,7 +78,10 @@ function Conversation({
   const pullRequestLabelId = useId();
   /** The mark owns the description text; the row points at it only while it is in the page. */
   const [pullRequestDescribed, setPullRequestDescribed] = useState(false);
-  const showPullRequest = startupConfig?.pullRequestsEnabled === true && !isGenerating;
+  const showPullRequest =
+    startupConfig?.pullRequestsEnabled === true &&
+    startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+    !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
@@ -463,7 +470,7 @@ function Conversation({
           it slides left under the pointer, so the mark would move out from under the cursor that
           is trying to reach it. The title is the only thing that gives way. */}
       {showPullRequest && (
-        <span className="mr-1 flex shrink-0 items-center">
+        <span className="flex shrink-0 items-center">
           <PullRequestRowMark
             conversationId={conversationId ?? ''}
             labelId={pullRequestLabelId}

@@ -7,8 +7,10 @@ import type { TConversationPullRequest } from 'librechat-data-provider';
 import PullRequestRowMark from '../RowMark';
 
 const mockGetMany = jest.fn();
-const mockStartup: { current: { pullRequestsEnabled?: boolean } | undefined } = {
-  current: { pullRequestsEnabled: true },
+const mockStartup: {
+  current: { pullRequestsEnabled?: boolean; pullRequestsBatchVersion?: number } | undefined;
+} = {
+  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
 };
 
 jest.mock('~/data-provider/Endpoints', () => ({
@@ -78,7 +80,7 @@ const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMar
 describe('PullRequestRowMark', () => {
   beforeEach(() => {
     mockGetMany.mockReset();
-    mockStartup.current = { pullRequestsEnabled: true };
+    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
   });
 
   it.each([
@@ -117,6 +119,50 @@ describe('PullRequestRowMark', () => {
     fireEvent.click(retry);
     expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
     expect(mockGetMany).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['an older server that has the flag but not the batch route', { pullRequestsEnabled: true }],
+    [
+      'a batch version this client does not know',
+      { pullRequestsEnabled: true, pullRequestsBatchVersion: 2 },
+    ],
+    ['the version without the flag', { pullRequestsBatchVersion: 1 }],
+  ])('does not ask %s, so a rolling upgrade shows no failure marks', async (_label, startup) => {
+    mockStartup.current = startup;
+    const { container } = renderMark();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(mockGetMany).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="convo-pull-request"]')).toBeNull();
+    expect(container.querySelector('[data-testid="convo-pull-request-failed"]')).toBeNull();
+  });
+
+  it('shows the failure when a refresh fails after an empty answer was cached', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGetMany
+        .mockResolvedValueOnce(answer('convo-1', null))
+        .mockRejectedValue(new Error('503'));
+      renderMark();
+      await jest.advanceTimersByTimeAsync(100);
+      expect(screen.queryByTestId('convo-pull-request-failed')).toBeNull();
+      await jest.advanceTimersByTimeAsync(61_000);
+      window.dispatchEvent(new Event('focus'));
+      await jest.advanceTimersByTimeAsync(100);
+      expect(screen.getByTestId('convo-pull-request-failed')).toBeInTheDocument();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps its spacing on the rendered mark, so an absent mark takes no room', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    const first = renderMark();
+    expect(await screen.findByTestId('convo-pull-request')).toHaveClass('mr-1');
+    first.unmount();
+    mockGetMany.mockRejectedValueOnce(new Error('503'));
+    renderMark();
+    expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('mr-1');
   });
 
   it('does not ask when the deployment does not advertise the feature', async () => {

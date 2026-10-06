@@ -82,8 +82,15 @@ export function createPullRequestBatcher({
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new PullRequestBatchError('TIMEOUT')), requestTimeoutMs);
     });
+    /**
+     * `settle` is inside the guarded chain: a response that is not the shape it should be would
+     * otherwise throw out of it, leave these callers waiting forever and, because the queue chains
+     * on this promise, stop every later request. Anything that goes wrong here fails the callers
+     * this request carried and nothing else.
+     */
     return Promise.race([fetchMany(ids), timedOut])
-      .then(settle, fail)
+      .then(settle)
+      .catch(fail)
       .finally(() => clearTimeout(timer));
   };
 

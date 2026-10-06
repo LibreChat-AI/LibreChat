@@ -45,7 +45,7 @@ function PullRequestRowMark({
   const open = Ariakit.useStoreState(store, 'open');
   const { data, isError, refetch } = useRowPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
-  const described = pullRequest != null || (isError && data == null);
+  const described = pullRequest != null || isError;
 
   useEffect(() => {
     onDescribed?.(described);
@@ -54,7 +54,7 @@ function PullRequestRowMark({
 
   /* A first lookup that failed is not the same as a chat with no pull request: say so, and
      offer a retry, instead of leaving the row looking like there is nothing to find. */
-  if (pullRequest == null && isError && data == null) {
+  if (pullRequest == null && isError) {
     const failed = localize('com_ui_pr_load_failed');
     return (
       <Ariakit.HovercardProvider store={store}>
@@ -71,7 +71,7 @@ function PullRequestRowMark({
           onKeyDown={(event: React.KeyboardEvent) => {
             if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
           }}
-          className="focus-visible:ring-text-primary text-status-warning relative flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2"
+          className="focus-visible:ring-text-primary text-status-warning relative mr-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2"
         >
           <TriangleAlert aria-hidden="true" className="size-4 shrink-0" />
         </Ariakit.HovercardAnchor>
@@ -126,7 +126,7 @@ function PullRequestRowMark({
           if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
         }}
         className={cn(
-          'focus-visible:ring-text-primary relative flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2',
+          'focus-visible:ring-text-primary relative mr-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2',
         )}
       >
         <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />

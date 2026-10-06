@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, PULL_REQUEST_BATCH_MAX } from 'librechat-data-provider';
+import {
+  EModelEndpoint,
+  PULL_REQUEST_BATCH_MAX,
+  PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS,
+} from 'librechat-data-provider';
 import type {
   TAgentsEndpoint,
   TConversationPullRequestsEntry,
@@ -60,28 +65,38 @@ const TIMED_OUT = Symbol('timed-out');
  * within one. Waiters are served in order.
  */
 function createLookupLimiter() {
-  let active = 0;
-  const waiting: Array<() => void> = [];
+  type Scope = { active: number; waiting: Array<() => void> };
+  const scopes = new Map<string, Scope>();
   return {
     /** Resolves once a slot is free under `limit`; the caller must `release` exactly once. */
-    acquire(limit: number): Promise<void> {
-      if (active < limit) {
-        active += 1;
+    acquire(scopeKey: string, limit: number): Promise<void> {
+      const scope = scopes.get(scopeKey) ?? { active: 0, waiting: [] };
+      scopes.set(scopeKey, scope);
+      if (scope.active < limit) {
+        scope.active += 1;
         return Promise.resolve();
       }
       return new Promise<void>((resolve) => {
-        waiting.push(() => {
-          active += 1;
+        scope.waiting.push(() => {
+          scope.active += 1;
           resolve();
         });
       });
     },
-    release(limit: number): void {
-      active -= 1;
-      while (waiting.length > 0 && active < limit) waiting.shift()?.();
+    release(scopeKey: string, limit: number): void {
+      const scope = scopes.get(scopeKey);
+      if (scope == null) return;
+      scope.active -= 1;
+      while (scope.waiting.length > 0 && scope.active < limit) scope.waiting.shift()?.();
+      /** An idle scope holds nothing, so credentials that come and go leave no entries behind. */
+      if (scope.active === 0 && scope.waiting.length === 0) scopes.delete(scopeKey);
     },
   };
 }
+
+/** A credential's digest, never the token, names the scope a lookup's slot is counted in. */
+const limiterScope = (token: string): string =>
+  createHash('sha256').update(token).digest('hex').slice(0, 32);
 
 /** Settles with `TIMED_OUT` once `ms` has passed, and never leaves its timer running. */
 async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
@@ -253,14 +268,30 @@ export function createConversationPullRequestsHandler(deps: {
       return;
     }
     try {
-      const [appConfig, lanes] = await Promise.all([
-        deps.getAppConfig({
-          ...getAppConfigOptionsFromUser(req.user),
-          skipRuntimeAugmentation: true,
-          failClosed: true,
-        }),
-        deps.getConvosLaneGit(userId, ids),
-      ]);
+      /**
+       * The clock starts when the request arrives, so the configured deadline bounds everything
+       * after it, including these reads. The configured value is not known until the config has
+       * loaded, so the reads themselves are held to the longest value a deployment may set.
+       */
+      const startedAt = Date.now();
+      const read = await withDeadline(
+        Promise.all([
+          deps.getAppConfig({
+            ...getAppConfigOptionsFromUser(req.user),
+            skipRuntimeAugmentation: true,
+            failClosed: true,
+          }),
+          deps.getConvosLaneGit(userId, ids),
+        ]),
+        PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS * 1000,
+      );
+      if (read === TIMED_OUT) {
+        res
+          .status(503)
+          .json({ error: 'Pull request lookup is unavailable', code: 'UPSTREAM_ERROR' });
+        return;
+      }
+      const [appConfig, lanes] = read;
       const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
         ?.pullRequests;
       const none = (): TConversationPullRequestsResponse => ({
@@ -307,8 +338,9 @@ export function createConversationPullRequestsHandler(deps: {
        * limit and fills the cache for the next request.
        */
       const deadline =
-        Date.now() + (settings.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
+        startedAt + (settings.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
       const limit = settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY;
+      const scope = limiterScope(token);
       const looked = await mapWithLimit(
         ids,
         limit,
@@ -320,12 +352,12 @@ export function createConversationPullRequestsHandler(deps: {
           let abandoned = false;
           /** Holds its slot until the lookup itself ends, whether or not anyone is still waiting. */
           const run = async () => {
-            await limiter.acquire(limit);
+            await limiter.acquire(scope, limit);
             try {
               if (abandoned) return TIMED_OUT;
               return await deps.lookup(lookupInput(settings, token, lane));
             } finally {
-              limiter.release(limit);
+              limiter.release(scope, limit);
             }
           };
           const result = remaining <= 0 ? TIMED_OUT : await withDeadline(run(), remaining);

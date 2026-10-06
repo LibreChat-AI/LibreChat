@@ -1,5 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
+import {
+  Constants,
+  QueryKeys,
+  dataService,
+  PULL_REQUEST_BATCH_VERSION,
+} from 'librechat-data-provider';
 import type { TConversationPullRequestResponse } from 'librechat-data-provider';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { createPullRequestBatcher } from './batch';
@@ -72,7 +77,11 @@ export const useRowPullRequestQuery = (conversationId: string) => {
     [QueryKeys.conversationPullRequest, conversationId],
     () => rowBatcher.load(conversationId),
     {
-      enabled: startupConfig?.pullRequestsEnabled === true && isSavedConversation(conversationId),
+      /** The batch route is newer than the flag: ask only a server that says it has it. */
+      enabled:
+        startupConfig?.pullRequestsEnabled === true &&
+        startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+        isSavedConversation(conversationId),
       staleTime: SETTLED_REFRESH_MS,
       retry: false,
       refetchOnWindowFocus: true,

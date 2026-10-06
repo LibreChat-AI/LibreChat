@@ -179,6 +179,31 @@ describe('createPullRequestBatcher', () => {
       await jest.advanceTimersByTimeAsync(5000);
     });
 
+    it.each([
+      ['no body', undefined],
+      ['a body without results', {}],
+      ['results that are not a list', { results: 'nope' }],
+      ['a result that is not an entry', { results: [null] }],
+    ])(
+      'fails its callers, and not the queue, when the server answers with %s',
+      async (_label, body) => {
+        const fetchMany = jest
+          .fn()
+          .mockResolvedValueOnce(body)
+          .mockResolvedValue({ results: [{ conversationId: 'b', pullRequest: null }] });
+        const { load } = createPullRequestBatcher({ fetchMany, maxBatch: 1 });
+        const bad = load('a').then(
+          () => 'resolved',
+          () => 'rejected',
+        );
+        const good = load('b');
+        await jest.advanceTimersByTimeAsync(50);
+        await expect(bad).resolves.toBe('rejected');
+        await expect(good).resolves.toEqual({ pullRequest: null });
+        expect(fetchMany).toHaveBeenCalledTimes(2);
+      },
+    );
+
     it('keeps sending after a request fails', async () => {
       const fetchMany = jest
         .fn()

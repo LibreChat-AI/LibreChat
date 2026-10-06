@@ -26,6 +26,11 @@ export type TConversationPullRequest = {
  *  request; the lookups themselves stay governed by the configured limits and cache. */
 export const PULL_REQUEST_BATCH_MAX = 50;
 
+/** Version of the batch lookup route. The server advertises it with `pullRequestsEnabled`, and a
+ *  client that lists conversations asks for batches only when it matches, so during a rolling
+ *  upgrade it never sends a batch to a replica that does not have the route yet. */
+export const PULL_REQUEST_BATCH_VERSION = 1 as const;
+
 /** The most a deployment may set `batchTimeoutSeconds` to. The server answers by its own deadline,
  *  so a client that waits just past this never gives up before the server does. */
 export const PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS = 120;

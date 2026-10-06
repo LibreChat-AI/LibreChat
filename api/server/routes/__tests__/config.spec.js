@@ -181,6 +181,7 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('conversationImportMaxFileSize');
       expect(response.body).not.toHaveProperty('insightsEnabled');
       expect(response.body).not.toHaveProperty('pullRequestsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
       expect(response.body).not.toHaveProperty('mcpApps');
     });
 
@@ -683,6 +684,12 @@ describe('GET /api/config', () => {
         });
         const response = await request(createApp(mockUser)).get('/api/config');
         expect(response.body.pullRequestsEnabled).toBe(expected);
+        /** The batch route's version rides with the flag, so a client never sees one without the other. */
+        if (expected) {
+          expect(response.body.pullRequestsBatchVersion).toBe(1);
+        } else {
+          expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
+        }
       },
     );
 

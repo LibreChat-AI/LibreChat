@@ -4,8 +4,10 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
-const mockStartup: { current: { pullRequestsEnabled?: boolean } } = {
-  current: { pullRequestsEnabled: true },
+const mockStartup: {
+  current: { pullRequestsEnabled?: boolean; pullRequestsBatchVersion?: number };
+} = {
+  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
 };
 const mockMarkProps: Array<Record<string, unknown>> = [];
 /** What the mock mark reports to the row, as the real one does once it has text to show. */
@@ -104,7 +106,7 @@ describe('Conversation row pull request', () => {
   beforeEach(() => {
     mockMarkProps.length = 0;
     mockMarkState.described = true;
-    mockStartup.current = { pullRequestsEnabled: true };
+    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
   });
 
   it("keeps the title the conversation's own and puts the pull request beside it, outside the row button", () => {
@@ -138,6 +140,13 @@ describe('Conversation row pull request', () => {
     expect(mockMarkProps[0]).toMatchObject({ conversationId: 'convo-1', selected: true });
   });
 
+  it('reserves no space around the mark, since an absent mark must leave the row unchanged', () => {
+    renderRow();
+    const wrapper = screen.getByTestId('convo-pull-request').parentElement as HTMLElement;
+    expect(wrapper.className).not.toMatch(/\bm[rlxy]?-\d/);
+    expect(wrapper.className).not.toMatch(/\bp[rlxy]?-\d/);
+  });
+
   it('does not point the row at a description that is not in the page', () => {
     mockMarkState.described = false;
     renderRow();
@@ -150,6 +159,7 @@ describe('Conversation row pull request', () => {
   it.each([
     ['not advertised', {}],
     ['advertised off', { pullRequestsEnabled: false }],
+    ['advertised without the batch route', { pullRequestsEnabled: true }],
   ])('draws nothing and describes nothing when the feature is %s', (_label, startup) => {
     mockStartup.current = startup;
     renderRow();
