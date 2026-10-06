@@ -23,9 +23,16 @@ type BatcherOptions = {
   delayMs?: number;
   /** Ids per request; the server refuses more than its own bound. */
   maxBatch?: number;
+  /**
+   * Longest a request may hold the queue. Requests go out one at a time, so one that never
+   * answers would otherwise stop every later one; past this its callers fail and the queue moves
+   * on. The server ends its own batch at 20 s by default, so this sits just above that.
+   */
+  requestTimeoutMs?: number;
 };
 
 const DEFAULT_DELAY_MS = 30;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
  * Collects the conversation ids asked for within a short window and fetches them in one request.
@@ -36,29 +43,44 @@ export function createPullRequestBatcher({
   fetchMany,
   delayMs = DEFAULT_DELAY_MS,
   maxBatch = PULL_REQUEST_BATCH_MAX,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 }: BatcherOptions) {
   const pending = new Map<string, Waiter[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const send = (ids: string[], waiters: Map<string, Waiter[]>) => {
-    fetchMany(ids).then(
-      ({ results }) => {
-        const byId = new Map(results.map((entry) => [entry.conversationId, entry]));
-        for (const [id, list] of waiters) {
-          const entry = byId.get(id);
-          for (const waiter of list) {
-            if (entry != null && 'error' in entry) {
-              waiter.reject(new PullRequestBatchError(entry.error.code));
-            } else {
-              waiter.resolve({ pullRequest: entry?.pullRequest ?? null });
-            }
+  /**
+   * Requests go out one at a time. Each request lets the server run its own number of lookups at
+   * once, so requests in flight together would multiply the limit the operator configured: a long
+   * pinned list, or a second flush while one is still out, would otherwise put several times that
+   * many lookups on GitHub at once. The tail never rejects, so one failed request cannot stall
+   * the ones queued behind it.
+   */
+  let tail: Promise<void> = Promise.resolve();
+
+  const send = (ids: string[], waiters: Map<string, Waiter[]>): Promise<void> => {
+    const settle = ({ results }: TConversationPullRequestsResponse) => {
+      const byId = new Map(results.map((entry) => [entry.conversationId, entry]));
+      for (const [id, list] of waiters) {
+        const entry = byId.get(id);
+        for (const waiter of list) {
+          if (entry != null && 'error' in entry) {
+            waiter.reject(new PullRequestBatchError(entry.error.code));
+          } else {
+            waiter.resolve({ pullRequest: entry?.pullRequest ?? null });
           }
         }
-      },
-      (error: unknown) => {
-        for (const list of waiters.values()) list.forEach((waiter) => waiter.reject(error));
-      },
-    );
+      }
+    };
+    const fail = (error: unknown) => {
+      for (const list of waiters.values()) list.forEach((waiter) => waiter.reject(error));
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new PullRequestBatchError('TIMEOUT')), requestTimeoutMs);
+    });
+    return Promise.race([fetchMany(ids), timedOut])
+      .then(settle, fail)
+      .finally(() => clearTimeout(timer));
   };
 
   const flush = () => {
@@ -71,7 +93,7 @@ export function createPullRequestBatcher({
         waiters.set(id, pending.get(id) ?? []);
         pending.delete(id);
       }
-      send(chunk, waiters);
+      tail = tail.then(() => send(chunk, waiters));
     }
   };
 

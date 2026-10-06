@@ -82,7 +82,10 @@ describe('PullRequestRowMark', () => {
   });
 
   it.each([
-    ['while loading', () => new Promise(() => undefined)],
+    [
+      'while loading',
+      () => new Promise((resolve) => setTimeout(() => resolve(answer('convo-1', null)), 40)),
+    ],
     ['without a pull request', () => Promise.resolve(answer('convo-1', null))],
   ])('renders nothing %s, so the row is unchanged', async (_label, respond) => {
     mockGetMany.mockImplementation(respond);
