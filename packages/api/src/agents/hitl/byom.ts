@@ -1,6 +1,7 @@
 import { Constants } from '@librechat/agents';
 import {
   CODE_APPROVAL_MODES,
+  CodeApprovalModeError,
   getAllowedCodeApprovalModes,
   resolveCodeApprovalMode,
   resolveCodePermissionDecision,
@@ -274,6 +275,16 @@ function permissionDecision(
   return resolveCodePermissionDecision({ mode: effectiveMode, category, decision });
 }
 
+function isCodeApprovalMode(value: unknown): value is CodeApprovalMode {
+  return CODE_APPROVAL_MODES.some((mode) => mode === value);
+}
+
+/**
+ * Validates a requested approval mode against every attached target the turn can run on.
+ * A turn with no attached target has nothing for the mode to govern, so any known mode is
+ * accepted there and resolves to `ask`: a target discovered later still starts gated, and a
+ * stale preference from another workspace never fails a turn that cannot use it.
+ */
 export function resolveAttachedCodeApprovalMode(
   requested: unknown,
   policies: Iterable<AttachedCodeEnvironmentPolicySettings>,
@@ -289,9 +300,15 @@ export function resolveAttachedCodeApprovalMode(
       enabled: false,
     });
   }
+  const targets = [...policies];
+  if (targets.length === 0) {
+    if (requested == null) return undefined;
+    if (!isCodeApprovalMode(requested)) throw new CodeApprovalModeError();
+    return 'ask';
+  }
   let resolved: CodeApprovalMode | undefined;
   let rejection: Error | undefined;
-  for (const policy of policies) {
+  for (const policy of targets) {
     try {
       resolved = resolveCodeApprovalMode(requested, {
         environment: 'attached',
@@ -306,13 +323,50 @@ export function resolveAttachedCodeApprovalMode(
     }
   }
   if (resolved == null && rejection != null) throw rejection;
-  return (
-    resolved ??
-    resolveCodeApprovalMode(requested, {
-      environment: 'attached',
-      allowedModes: CODE_APPROVAL_MODES,
-    })
-  );
+  return resolved;
+}
+
+/** Approvals are on and no agent the turn can reach runs, or may be routed, on an attached
+ *  machine. */
+function makesNoCodeApprovalDecision(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled: boolean,
+): boolean {
+  return approvalsEnabled && policies.length === 0;
+}
+
+/**
+ * The approval mode a turn records on its conversation: the mode it validated against its
+ * attached targets. A turn without one still rejects a value that is not an approval mode, but
+ * records nothing; `getCodeApprovalPreservedFields` keeps the stored mode through its writes.
+ */
+export function resolvePersistedCodeApprovalMode({
+  requested,
+  policies,
+  approvalsEnabled = true,
+}: {
+  requested: unknown;
+  /** Every attached-machine policy the run may execute under (`collectAttachedCodeApprovalPolicies`). */
+  policies: readonly AttachedCodeEnvironmentPolicySettings[];
+  approvalsEnabled?: boolean;
+}): CodeApprovalMode | undefined {
+  const effective = resolveAttachedCodeApprovalMode(requested, policies, approvalsEnabled);
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? undefined : effective;
+}
+
+/**
+ * Conversation fields a turn's writes keep as stored although its save options omit them. A turn
+ * with no attached target makes no approval decision, so the mode stored on whichever
+ * conversation it is saved under, including an `overrideConvoId` target, stays as it is: leaving
+ * a workspace for a turn and returning keeps the reader's pick, and a chat that stores none keeps
+ * offering the remembered one. A kept mode grants nothing on its own and is validated again
+ * against the targets of whichever later turn uses it.
+ */
+export function getCodeApprovalPreservedFields(
+  policies: readonly AttachedCodeEnvironmentPolicySettings[],
+  approvalsEnabled = true,
+): Array<'codeApprovalMode'> {
+  return makesNoCodeApprovalDecision(policies, approvalsEnabled) ? ['codeApprovalMode'] : [];
 }
 
 function exactToolMatcher(toolNames: ReadonlySet<string>): string {

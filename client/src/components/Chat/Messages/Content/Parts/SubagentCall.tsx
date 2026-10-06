@@ -8,6 +8,7 @@ import type {
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { SubagentContentPreview } from '~/components/Chat/Subagents/state';
 import type { SubagentTickerLine } from '~/utils/subagentContent';
 import {
   activeSubagentPanel,
@@ -20,6 +21,7 @@ import { adaptLivePersistedActivity } from '~/components/Chat/Subagents/adapters
 import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
 import { subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
+import { getSubagentPrompt } from '~/components/Chat/Subagents/prompt';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
@@ -54,6 +56,8 @@ interface SubagentCallProps {
    *  runs recorded before the persistence path landed will not have this
    *  field; those fall back to the atom (or the raw `output` string). */
   persistedContent?: TMessageContentParts[];
+  /** The server sent this call as a preview; the panel loads the stored part when opened. */
+  contentPreview?: SubagentContentPreview;
   subagentIdentity?: PartMetadata['subagentIdentity'];
   hideAttachments?: boolean;
 }
@@ -175,6 +179,7 @@ export default function SubagentCall({
   output,
   attachments,
   persistedContent,
+  contentPreview,
   subagentIdentity,
   hideAttachments = false,
 }: SubagentCallProps) {
@@ -267,7 +272,7 @@ export default function SubagentCall({
     shouldThrottleTicker,
   );
 
-  const prompt = typeof args === 'string' ? tryPrompt(args) : extractPrompt(args);
+  const prompt = getSubagentPrompt(args);
 
   /** Base verb-only label ("Running agent" / "Ran agent"). The agent name
    *  is rendered separately as a muted sub-label so "agent" stays a
@@ -345,6 +350,7 @@ export default function SubagentCall({
       ...(prompt == null ? {} : { prompt }),
       ...(backgroundHandle == null ? { legacyOutput: output } : {}),
       ...(persistedContent == null ? {} : { persistedContent }),
+      ...(contentPreview == null ? {} : { contentPreview }),
       initialProgress,
       isSubmitting,
       ...(runStepStatus == null ? {} : { runStepStatus }),
@@ -360,6 +366,7 @@ export default function SubagentCall({
     [
       backgroundHandle,
       canOpenDurablePanel,
+      contentPreview,
       initialProgress,
       isSharedConvo,
       isSubmitting,
@@ -546,23 +553,6 @@ function extractSubagentType(args: SubagentCallProps['args']): string {
   }
   const a = args as { subagent_type?: string } | undefined;
   return a?.subagent_type ?? 'agent';
-}
-
-function extractPrompt(args: Record<string, unknown> | undefined): string | undefined {
-  if (!args) return undefined;
-  for (const key of ['prompt', 'description', 'task', 'instructions']) {
-    const value = args[key];
-    if (typeof value === 'string' && value.trim().length > 0) return value;
-  }
-  return undefined;
-}
-
-function tryPrompt(args: string): string | undefined {
-  try {
-    return extractPrompt(JSON.parse(args) as Record<string, unknown>);
-  } catch {
-    return undefined;
-  }
 }
 
 /** Stable key for a ticker line — helps React reuse the DOM node across

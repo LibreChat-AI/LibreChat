@@ -84,7 +84,7 @@ const AgentCard = memo(
         className={cn(
           /* The article keeps a plain resting fill so the grid slot still reads as a
              card while the surface layer is away being the dialog. */
-          'group rounded-theme-surface bg-surface-secondary relative flex h-full min-h-[17.5rem] min-w-0 flex-col p-5',
+          'group rounded-theme-surface bg-surface-card relative flex h-full min-h-[17.5rem] min-w-0 flex-col p-5',
           className,
         )}
       >
@@ -97,7 +97,7 @@ const AgentCard = memo(
             borderRadius: surfaceRadius,
             willChange: morphing ? 'transform' : undefined,
           }}
-          className="rounded-theme-surface border-border-light bg-surface-secondary group-hover:border-border-medium group-hover:bg-surface-tertiary pointer-events-none absolute inset-0 z-0 border transition-colors duration-150"
+          className="rounded-theme-surface border-border-light bg-surface-card group-hover:border-border-medium group-hover:bg-surface-card-hover pointer-events-none absolute inset-0 z-0 border transition-colors duration-150"
           {...shared}
         />
 
@@ -131,7 +131,7 @@ const AgentCard = memo(
                 size: 'sm',
                 showBorder: false,
                 className:
-                  'rounded-full bg-surface-tertiary ring-1 ring-border-light transition-colors duration-150 group-hover:ring-border-medium',
+                  'rounded-full bg-surface-tertiary ring-1 ring-border-chrome transition-colors duration-150 group-hover:ring-border-chrome-medium',
               })}
             </motion.div>
             {agent.category != null && agent.category !== '' && (
@@ -181,7 +181,7 @@ const AgentCard = memo(
             <motion.span
               aria-hidden="true"
               variants={CARD_HANDOFF_VARIANTS}
-              className="bg-border-light absolute inset-x-0 top-0 h-px"
+              className="bg-border-inset absolute inset-x-0 top-0 h-px"
             />
             {contact != null && (
               <motion.div

@@ -1288,6 +1288,29 @@ html[data-drawer-nav] body {
   border-bottom-right-radius: 0.375rem;
 }
 
+/* The column rules take the inset share of the border-medium edge, so a theme that draws no inset
+ * border keeps the row rules and the outer frame only. Every side edge takes the inset share and
+ * the frame, the first cell's start edge and the last cell's end edge, is put back whole in
+ * logical terms, so a table laid out right-to-left, even under a left-to-right page, keeps the
+ * edge that is visually outermost with no selector on direction. The selectors outrank the cell
+ * rules above, which restate the edge in one declaration, and leave high contrast to its own. */
+html:not(.high-contrast) .markdown :is(th, td) {
+  border-left-color: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+  border-right-color: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+}
+
+html:not(.high-contrast) .markdown :is(th, td):first-child {
+  border-inline-start-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+}
+
+html:not(.high-contrast) .markdown :is(th, td):last-child {
+  border-inline-end-color: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+}
+
 .markdown a {
   text-decoration-line: underline;
   text-underline-offset: 2px;
@@ -1709,14 +1732,14 @@ html {
 .webkit-dark-styles,
 .webkit-dark-styles:focus {
   background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #fff inset;
+  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
 .dark .webkit-dark-styles,
 .dark .webkit-dark-styles:focus {
-  -webkit-text-fill-color: #fff;
+  -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
   background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh #0d0d0d inset;
+  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
 /* Ordered Listing */
@@ -1970,14 +1993,14 @@ html {
   z-index: 150;
   cursor: pointer;
   border-radius: var(--theme-tooltip-radius, 0.275rem);
-  background-color: rgb(var(--surface-primary));
-  padding-top: 0.25rem;
-  padding-bottom: 0.25rem;
-  padding-left: 0.5rem;
-  padding-right: 0.5rem;
-  font-size: 1rem;
-  line-height: 1.5rem;
-  color: rgb(var(--text-primary));
+  background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
+  padding-top: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
+  padding-left: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-right: var(--theme-tooltip-padding-x, 0.5rem);
+  font-size: var(--theme-tooltip-text-size, 1rem);
+  line-height: 1.5;
+  color: rgb(var(--text-tooltip, var(--text-primary)));
   box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
 }
 
@@ -2063,8 +2086,8 @@ html[data-input-modality='keyboard']
   border-radius: var(--theme-menu-radius, 0.7rem);
   border-width: 1px;
   border-style: solid;
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
-  background-color: rgb(var(--surface-primary));
+  border-color: rgb(var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1)));
+  background-color: rgb(var(--surface-popover));
   padding: 0.5rem;
   color: rgb(var(--text-primary));
   /* The `menuShadow` role, whose light default is this literal. */
@@ -2102,7 +2125,7 @@ html[data-input-modality='keyboard']
 }
 
 .popover-ui:where(.dark, .dark *) {
-  background-color: rgb(var(--surface-secondary));
+  background-color: rgb(var(--surface-popover));
   color: rgb(var(--text-secondary));
   box-shadow: var(
     --theme-menu-shadow,

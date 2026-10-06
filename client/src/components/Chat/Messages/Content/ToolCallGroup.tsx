@@ -31,13 +31,14 @@ import {
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
+import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';
-import { SoleToolContext } from './disclosure';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
@@ -141,9 +142,25 @@ export default function ToolCallGroup({
   const labelSettled =
     activityLabelText.length > 0 &&
     (labelPart?.part as { pending?: boolean } | undefined)?.pending !== true;
+  /** A detached task's dispatch step closes with a handle as its output, so
+   *  the call reads as done while the work is still going. Only the code
+   *  cards interpret that handle and say "Running in background"; a generic
+   *  MCP or action row reports the closed step as ran, and the header must
+   *  not contradict the row it sits above. */
+  const detachedRunning = useMemo(
+    () =>
+      toolMetadata.some(
+        (m) =>
+          m.background === 'running' &&
+          !m.cancelled &&
+          !m.failed &&
+          parseToolName(m.name, mcpServerNames).friendlyKey === 'com_ui_tool_name_code',
+      ),
+    [toolMetadata, mcpServerNames],
+  );
   const allCompleted = useMemo(
-    () => labelSettled || toolMetadata.every((m) => m.hasOutput === true),
-    [toolMetadata, labelSettled],
+    () => !detachedRunning && (labelSettled || toolMetadata.every((m) => m.hasOutput === true)),
+    [toolMetadata, labelSettled, detachedRunning],
   );
   const sourceDomains = useMemo(
     () => getSourceDomains(sourceAttachments ?? groupAttachments, 3),
@@ -281,7 +298,9 @@ export default function ToolCallGroup({
   /** Past tense once the turn is settled — matches the Asking/Asked record
    *  card. While a multi-question turn streams, the still-open question's
    *  tool_call part has no output yet, so keep the present tense. */
-  const groupDone = allCompleted || !isSubmitting;
+  /** A detached task keeps the group in the running tense after the response
+   *  ends: its handle is the call's output, but the work is still going. */
+  const groupDone = (allCompleted || !isSubmitting) && !detachedRunning;
   const askQuestionsDone = allAskQuestions && (groupDone || askQuestionsAnswered);
 
   /** One verdict for the header's tense, its glyph and its icon animation —
@@ -291,6 +310,9 @@ export default function ToolCallGroup({
 
   /** For a single-tool group, lead with the tool's own (capitalized) label
    *  instead of the generic "Used 1 tool: name", which reads awkwardly. */
+  const singleToolIsCode =
+    toolMetadata[0]?.name != null &&
+    parseToolName(toolMetadata[0].name, mcpServerNames).friendlyKey === 'com_ui_tool_name_code';
   const singleToolLabel = useMemo(() => {
     const raw = getToolDisplayLabel(toolMetadata[0]?.name ?? '', localize, mcpServerNames);
     return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
@@ -344,6 +366,19 @@ export default function ToolCallGroup({
 
   useEffect(() => {
     if (autoCollapse && !userOverride) {
+      /** A row that held focus goes inert with the collapse, so focus moves to
+       *  the header first rather than falling to the document. */
+      const header = headerRef.current?.querySelector<HTMLElement>('button');
+      const active = document.activeElement;
+      if (
+        header != null &&
+        active != null &&
+        active !== header &&
+        rootRef.current?.contains(active) === true &&
+        !headerRef.current?.contains(active)
+      ) {
+        header.focus();
+      }
       setIsExpanded(false);
     }
   }, [autoCollapse, userOverride]);
@@ -479,6 +514,37 @@ export default function ToolCallGroup({
       );
     }
     if (count === 1) {
+      /** A bare "Code" reads as a category, not as what the call is doing, so
+       *  the code tool says the verb its live row says. Other tools already
+       *  name an action ("Create File"). */
+      if (singleToolLabel && singleToolIsCode) {
+        /** Only a success signal earns "Ran": a detached task's output is its
+         *  handle, a stopped or failed call did not run to the end, and a
+         *  legacy record that was cut off has no output to show for it. */
+        const only = toolMetadata[0];
+        const rawCall = parts.find(({ part }) => part.type === ContentTypes.TOOL_CALL)?.part;
+        const legacyCall =
+          rawCall?.type === ContentTypes.TOOL_CALL
+            ? (rawCall[ContentTypes.TOOL_CALL] as { runStepStatus?: unknown; progress?: number })
+            : undefined;
+        /** The card infers a stop from a legacy record with no step status whose
+         *  progress never reached 1 once the stream is over, and `Part` supplies
+         *  0.1 when the field is absent; the metadata does not. */
+        const interrupted =
+          !isSubmitting && legacyCall?.runStepStatus == null && (legacyCall?.progress ?? 0.1) < 1;
+        if (only?.failed) {
+          return localize('com_ui_failed_subject', { 0: singleToolLabel });
+        }
+        if (only?.cancelled || interrupted) {
+          return localize('com_ui_cancelled');
+        }
+        if (!groupDone) {
+          return localize('com_assistants_running_var', { 0: singleToolLabel });
+        }
+        return only?.hasOutput
+          ? localize('com_assistants_completed_function', { 0: singleToolLabel })
+          : singleToolLabel;
+      }
       return singleToolLabel || localize('com_ui_used_one_tool');
     }
     return localize(groupDone ? 'com_ui_ran_n_actions' : 'com_ui_running_n_actions', {
@@ -567,7 +633,7 @@ export default function ToolCallGroup({
         <button
           type="button"
           className={cn(
-            'text-text-secondary hover:text-text-secondary focus-visible:ring-border-heavy inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
+            'text-text-secondary hover:text-text-secondary focus-visible:ring-focus-subtle inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2 rounded-none bg-transparent p-0 py-1 hover:bg-transparent focus-visible:ring-2 focus-visible:ring-offset-0 focus-visible:outline-none',
             /** An open header is the title of the rows under it, so it is the
              *  one line in the fold set in the primary colour. */
             isExpanded && 'text-text-primary hover:text-text-primary',
@@ -656,57 +722,60 @@ export default function ToolCallGroup({
             />
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
-                <SoleToolContext.Provider value={phaseSole ?? count === 1}>
-                  <div className="flex flex-col py-0.5">
-                    {parts.map(({ part, idx }, partIndex) => {
-                      if (part.type === ContentTypes.THINK) {
-                        const think = part.think;
-                        const reasoning = typeof think === 'string' ? think : (think?.value ?? '');
-                        /** A detached-subagent projection carries an empty THINK
-                         *  part flagged `reasoning_unavailable`, which `Part`
-                         *  renders as a `ReasoningMarker`. `ReasoningCompact` has
-                         *  no text to show and returns null, so the marker has to
-                         *  keep going through the standalone path or it vanishes
-                         *  the moment its call joins a group. */
-                        if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
-                          return renderPart(
-                            part,
-                            idx,
-                            isLast && idx === lastContentIdx,
-                            handleToolExpand,
+                <LoneGroupContext.Provider value={count === 1}>
+                  <SoleToolContext.Provider value={phaseSole ?? count === 1}>
+                    <div className="flex flex-col py-0.5">
+                      {parts.map(({ part, idx }, partIndex) => {
+                        if (part.type === ContentTypes.THINK) {
+                          const think = part.think;
+                          const reasoning =
+                            typeof think === 'string' ? think : (think?.value ?? '');
+                          /** A detached-subagent projection carries an empty THINK
+                           *  part flagged `reasoning_unavailable`, which `Part`
+                           *  renders as a `ReasoningMarker`. `ReasoningCompact` has
+                           *  no text to show and returns null, so the marker has to
+                           *  keep going through the standalone path or it vanishes
+                           *  the moment its call joins a group. */
+                          if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
+                            return renderPart(
+                              part,
+                              idx,
+                              isLast && idx === lastContentIdx,
+                              handleToolExpand,
+                            );
+                          }
+                          const streaming = isSubmitting && idx === lastContentIdx;
+                          const isAfterTool =
+                            partIndex > 0 &&
+                            parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
+                          /** Mirrors the standalone `Reasoning` path: the authored
+                           *  label wins, generic text is only a fallback. */
+                          const generatedLabel = part.reasoning_label?.trim();
+                          const label =
+                            generatedLabel ||
+                            (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
+                          return (
+                            <ReasoningCompact
+                              key={`reasoning-${idx}`}
+                              partKeyIndex={getPartKeyIndex(part, idx)}
+                              reasoning={reasoning}
+                              label={label}
+                              showThinking={showThinking}
+                              isAfterTool={isAfterTool}
+                              isStreaming={streaming}
+                            />
                           );
                         }
-                        const streaming = isSubmitting && idx === lastContentIdx;
-                        const isAfterTool =
-                          partIndex > 0 &&
-                          parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
-                        /** Mirrors the standalone `Reasoning` path: the authored
-                         *  label wins, generic text is only a fallback. */
-                        const generatedLabel = part.reasoning_label?.trim();
-                        const label =
-                          generatedLabel ||
-                          (streaming ? localize('com_ui_thinking') : localize('com_ui_thoughts'));
-                        return (
-                          <ReasoningCompact
-                            key={`reasoning-${idx}`}
-                            partKeyIndex={getPartKeyIndex(part, idx)}
-                            reasoning={reasoning}
-                            label={label}
-                            showThinking={showThinking}
-                            isAfterTool={isAfterTool}
-                            isStreaming={streaming}
-                          />
+                        return renderPart(
+                          part,
+                          idx,
+                          isLast && idx === lastContentIdx,
+                          handleToolExpand,
                         );
-                      }
-                      return renderPart(
-                        part,
-                        idx,
-                        isLast && idx === lastContentIdx,
-                        handleToolExpand,
-                      );
-                    })}
-                  </div>
-                </SoleToolContext.Provider>
+                      })}
+                    </div>
+                  </SoleToolContext.Provider>
+                </LoneGroupContext.Provider>
               </FailedRevealContext.Provider>
             </ToolAuthWarningContext.Provider>
             {hasPendingAuthRequest && <ToolAuthWarning className="mt-2.5 mb-1" />}

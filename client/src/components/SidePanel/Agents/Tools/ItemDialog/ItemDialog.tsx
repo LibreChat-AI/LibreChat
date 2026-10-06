@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { OGDialog, OGDialogContent } from '@librechat/client';
 import type { AgentItem } from '../items/types';
 import { AgentPickerPortalContext } from '../../Advanced/AgentList';
@@ -17,10 +17,25 @@ export default function ItemDialog({ item, agentId, onClose }: Props) {
   const isOrchestration =
     item?.kind === 'builtin' && (item.id === 'subagents' || item.id === 'handoffs');
   const isAction = item?.kind === 'action';
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const setContent = useCallback((node: HTMLDivElement | null) => {
+    contentRef.current = node;
+    setPortalElement(node);
+  }, []);
+
+  /** Without this, Radix focuses the first focusable element, which for orchestration items is
+   *  the info hover card trigger, so the card opens on focus as soon as the dialog does. */
+  const handleOpenAutoFocus = (event: Event) => {
+    event.preventDefault();
+    contentRef.current?.focus();
+  };
   return (
     <OGDialog open={item !== null} onOpenChange={(next) => !next && onClose()}>
       <OGDialogContent
-        ref={setPortalElement}
+        ref={setContent}
+        tabIndex={-1}
+        focusOutline="hidden"
+        onOpenAutoFocus={handleOpenAutoFocus}
         className={cn(
           'w-11/12 gap-0 rounded-2xl p-0 md:max-h-[85dvh]',
           isOrchestration ? 'overflow-visible' : 'overflow-hidden',

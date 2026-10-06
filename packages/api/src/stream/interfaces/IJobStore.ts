@@ -172,6 +172,9 @@ export interface SerializableJobData {
 
   /** Whether this generation replaces an existing assistant branch. */
   isRegenerate?: boolean;
+  /** Whether this generation is a manual context compaction; the abort paths
+   * read it to stamp the stopped row with the compaction's identity. */
+  compact?: boolean;
   /** Exact normalized MCP placeholder identity for this turn. */
   mcpRequestBody?: MCPRuntimeRequestBody;
   /** Exact assistant-message fields authored by the user during this running job. */
@@ -462,6 +465,7 @@ export type JobMetadataPatch = Partial<
     SerializableJobData,
     | 'responseMessageId'
     | 'isRegenerate'
+    | 'compact'
     | 'mcpRequestBody'
     | 'userSubmittedPaths'
     | 'userSubmittedMessageFieldPaths'

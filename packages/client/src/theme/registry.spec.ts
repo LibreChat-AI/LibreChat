@@ -10,6 +10,7 @@ import {
   fromLegacyTheme,
   libreChatTheme,
   resolveTheme,
+  layerRoleSources,
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
@@ -303,6 +304,65 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
   });
 
+  it('keeps chrome and inset borders at the full border-light share unless a theme lowers them', () => {
+    const quiet: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0', insetBorderAlpha: '0.5' } } },
+    };
+    const loud: ThemeDefinition = {
+      version: 1,
+      name: 'loud-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '2' } } },
+    };
+
+    expect(defaultAppearance.chromeBorderAlpha).toBe('1');
+    expect(defaultAppearance.insetBorderAlpha).toBe('1');
+    expect(validateThemeDefinition(quiet)).toEqual([]);
+    expect(resolveTheme(quiet, 'light').appearance).toMatchObject({
+      chromeBorderAlpha: '0',
+      insetBorderAlpha: '0.5',
+    });
+    expect(validateThemeDefinition(loud)).toEqual([
+      'Invalid appearance value for chromeBorderAlpha: 2',
+    ]);
+  });
+
+  it('keeps destructive actions solid unless a theme asks for the tint', () => {
+    const soft: ThemeDefinition = {
+      version: 1,
+      name: 'soft-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'soft' } } },
+    };
+    const bogus = {
+      version: 1,
+      name: 'bogus-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'outline' } } },
+    } as unknown as ThemeDefinition;
+
+    expect(defaultAppearance.destructiveStyle).toBe('fill');
+    expect(validateThemeDefinition(soft)).toEqual([]);
+    expect(resolveTheme(soft, 'light').appearance.destructiveStyle).toBe('soft');
+    expect(validateThemeDefinition(bogus)).toEqual([
+      'Invalid appearance value for destructiveStyle: outline',
+    ]);
+  });
+
+  it('rings subtle focus in the heavy border for a theme that predates the role', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'heavy-border-reference',
+        modes: { light: { colors: { 'rgb-border-heavy': '10 20 30' } } },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-focus-subtle']).toBe('10 20 30');
+    expect(defaultTheme['rgb-focus-subtle']).toBe(defaultTheme['rgb-border-heavy']);
+    expect(darkTheme['rgb-focus-subtle']).toBe(darkTheme['rgb-border-heavy']);
+  });
+
   it('accepts table lengths in px or rem, zero included, and rejects other units', () => {
     const withTable = (tableCellSpaceY: string, tableRowStroke: string) =>
       ({
@@ -484,6 +544,51 @@ describe('theme registry', () => {
 
     expect(explicit.colors['rgb-switch-thumb']).toBe('1 2 3');
     expect(untouched.colors['rgb-switch-thumb']).toBe(darkTheme['rgb-switch-thumb']);
+  });
+
+  it('keeps the tooltip and the error alert on the roles a theme repainted before they existed', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-overlays',
+        modes: {
+          light: {
+            colors: {
+              'rgb-surface-primary': '20 21 22',
+              'rgb-text-primary': '1 2 3',
+              'rgb-status-error-subtle': '4 5 6',
+              'rgb-status-error-border': '7 8 9',
+            },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-surface-tooltip']).toBe('20 21 22');
+    expect(resolved.colors['rgb-text-tooltip']).toBe('1 2 3');
+    expect(resolved.colors['rgb-alert-error-fill']).toBe('4 5 6');
+    expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
+  });
+
+  it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-tooltip',
+        modes: {
+          dark: { colors: { 'rgb-surface-primary': '20 21 22', 'rgb-surface-tooltip': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+    const untouched = resolveTheme(
+      { version: 1, name: 'no-surface', modes: { dark: { colors: {} } } },
+      'dark',
+    );
+
+    expect(explicit.colors['rgb-surface-tooltip']).toBe('1 2 3');
+    expect(untouched.colors['rgb-surface-tooltip']).toBe(darkTheme['rgb-surface-tooltip']);
   });
 
   it('keeps a self-sticking table header on the dialog surface a theme repainted', () => {
@@ -952,6 +1057,62 @@ describe('theme registry', () => {
       labelSize: '1rem',
       labelLeading: '1.25',
       labelFontWeight: '700',
+    });
+  });
+
+  describe('layering roles', () => {
+    const layerTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'layering-reference',
+      modes,
+    });
+
+    it('resolves every layer to the surface it followed before it had a name', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors } = resolveTheme(layerTheme({}), mode);
+        layerRoleSources.forEach(([role, light, dark]) => {
+          expect([role, colors[role]]).toEqual([role, colors[mode === 'dark' ? dark : light]]);
+        });
+      }
+    });
+
+    it('names the legacy surface of each layer outright', () => {
+      const legacy: Record<string, [string, string]> = {
+        'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+        'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-nav-hover': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-nav-selected': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-tab-selected': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-menu': ['rgb-presentation', 'rgb-presentation'],
+        'rgb-surface-popover': ['rgb-surface-primary', 'rgb-surface-secondary'],
+        'rgb-border-menu': ['rgb-border-light', 'rgb-border-light'],
+        'rgb-surface-composer': ['rgb-surface-chat', 'rgb-surface-chat'],
+        'rgb-surface-search': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+      };
+      expect(
+        Object.fromEntries(layerRoleSources.map(([role, light, dark]) => [role, [light, dark]])),
+      ).toEqual(legacy);
+    });
+
+    it('keeps a theme that repaints a surface on that layer, and lets it name the role', () => {
+      const { colors } = resolveTheme(
+        layerTheme({
+          light: {
+            colors: {
+              'rgb-surface-tertiary': '10 20 30',
+              'rgb-surface-primary-alt': '40 50 60',
+              'rgb-surface-card-hover': '1 2 3',
+            },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-surface-user-message']).toBe('10 20 30');
+      expect(colors['rgb-surface-tab-selected']).toBe('10 20 30');
+      expect(colors['rgb-surface-canvas']).toBe('40 50 60');
+      expect(colors['rgb-surface-card-hover']).toBe('1 2 3');
     });
   });
 

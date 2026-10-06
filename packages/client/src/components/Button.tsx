@@ -61,12 +61,12 @@ const buttonVariantRecipe = cva(
         default:
           'bg-button-primary text-text-inverted hover:bg-button-primary-hover hover:active:bg-surface-inverted-pressed',
         destructive:
-          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
+          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover theme-destructive-soft:bg-surface-destructive/10 theme-destructive-soft:text-text-destructive theme-destructive-soft:hover:bg-surface-destructive/14 theme-destructive-soft:hover:active:bg-surface-destructive/17',
         outline:
           'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /** An outlined filter whose pressed state stays visible between activations. */
         'outline-toggle':
-          'text-text-primary border border-border-light bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
+          'text-text-primary border border-border-control bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
         /**
          * A selectable answer inside a question card. `outline` is wrong here:
          * its `border-light` edge measures ~1.2:1 against the panel these sit
@@ -135,7 +135,7 @@ const buttonVariantRecipe = cva(
          * lag rather than polish.
          */
         'header-action':
-          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-xl border border-border-chrome bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller
@@ -157,7 +157,7 @@ const buttonVariantRecipe = cva(
          * is inset because the row sits flush against the panel it opens.
          */
         disclosure:
-          'w-full justify-start focus-visible:ring-border-heavy focus-visible:ring-offset-0 disabled:opacity-100',
+          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
@@ -210,6 +210,12 @@ const buttonVariantRecipe = cva(
       },
     },
     compoundVariants: [
+      /* An outlined icon button is chrome: a theme that draws no chrome outline leaves it ghost-shaped. */
+      {
+        variant: ['outline', 'subtle'],
+        size: ['icon', 'icon-sm', 'icon-xs', 'icon-theme'],
+        class: 'border-border-chrome',
+      },
       {
         variant: 'subtle',
         shape: 'unset',

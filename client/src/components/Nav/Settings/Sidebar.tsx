@@ -79,7 +79,7 @@ export default function Sidebar({
               onClick={() => onSelectTab(tab.id)}
               className={cn(
                 'text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary rounded-theme-control flex shrink-0 items-center justify-between gap-2 px-3 py-2.5 text-sm transition-colors focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset md:py-2',
-                'data-[state=active]:bg-surface-tertiary data-[state=active]:text-text-primary',
+                'data-[state=active]:bg-surface-tab-selected data-[state=active]:text-text-primary',
               )}
             >
               <span className="flex min-w-0 items-center gap-2 [&>svg]:shrink-0">

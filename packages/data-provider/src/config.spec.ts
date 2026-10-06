@@ -1114,6 +1114,109 @@ describe('attached code environment user config schema', () => {
   });
 });
 
+describe('agent pull request config', () => {
+  const parse = (pullRequests?: unknown) =>
+    configSchema.safeParse({ version: '1.0', endpoints: { agents: { pullRequests } } });
+
+  it('is off by default and absent when not configured', () => {
+    const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
+    expect(absent.endpoints?.agents?.pullRequests).toBeUndefined();
+    const empty = configSchema.parse({
+      version: '1.0',
+      endpoints: { agents: { pullRequests: {} } },
+    });
+    expect(empty.endpoints?.agents?.pullRequests).toEqual({
+      enabled: false,
+      cacheTtlSeconds: 30,
+      requestTimeoutSeconds: 10,
+      lookupTimeoutSeconds: 30,
+      maxCheckRunPages: 10,
+      maxCandidatePullRequests: 10,
+      maxHeadComparisons: 3,
+      cacheMaxEntries: 500,
+      cacheMaxCredentials: 256,
+    });
+  });
+
+  const enabled = {
+    enabled: true,
+    token: '${GITHUB_PULL_REQUEST_TOKEN}',
+    allowedRepositories: ['LibreChat-AI/LibreChat'],
+  };
+
+  it('accepts an enabled block with a token reference and an allowed repository', () => {
+    expect(parse(enabled).success).toBe(true);
+  });
+
+  it('requires a token reference when enabled', () => {
+    expect(parse({ ...enabled, token: undefined }).success).toBe(false);
+  });
+
+  it('requires at least one allowed repository when enabled, so a worker cannot name its own', () => {
+    expect(parse({ ...enabled, allowedRepositories: undefined }).success).toBe(false);
+    expect(parse({ ...enabled, allowedRepositories: [] }).success).toBe(false);
+  });
+
+  it.each(['LibreChat-AI/*', 'o/r', 'My.Org/my_repo-2'])('accepts the repository %s', (repo) => {
+    expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(true);
+  });
+
+  it.each(['*/*', '*', 'owner', 'o/r/extra', '../x', 'o/..', 'a b/c', 'o/*x', ''])(
+    'rejects %p as an allowed repository',
+    (repo) => {
+      expect(parse({ ...enabled, allowedRepositories: [repo] }).success).toBe(false);
+    },
+  );
+
+  it.each(['ghp_abcdef', '${bad name}', '$GITHUB_TOKEN', '${}'])(
+    'rejects %s as a token because only a reference is allowed',
+    (token) => {
+      expect(parse({ ...enabled, token }).success).toBe(false);
+    },
+  );
+
+  it.each([
+    ['requestTimeoutSeconds', 0],
+    ['requestTimeoutSeconds', 61],
+    ['lookupTimeoutSeconds', 0],
+    ['lookupTimeoutSeconds', 121],
+    ['maxCheckRunPages', 0],
+    ['maxCheckRunPages', 51],
+    ['maxCheckRunPages', 1.5],
+    ['maxCandidatePullRequests', 0],
+    ['maxCandidatePullRequests', 101],
+    ['maxHeadComparisons', -1],
+    ['maxHeadComparisons', 21],
+    ['maxHeadComparisons', 1.5],
+    ['cacheMaxEntries', 9],
+    ['cacheMaxEntries', 100_001],
+    ['cacheMaxEntries', 1.5],
+    ['cacheMaxCredentials', 0],
+    ['cacheMaxCredentials', 10_001],
+    ['cacheMaxCredentials', 1.5],
+  ])('rejects %s of %s', (field, value) => {
+    expect(parse({ [field]: value }).success).toBe(false);
+  });
+
+  it('accepts the documented bounds', () => {
+    expect(
+      parse({
+        requestTimeoutSeconds: 60,
+        lookupTimeoutSeconds: 120,
+        maxCheckRunPages: 50,
+        maxCandidatePullRequests: 100,
+        maxHeadComparisons: 20,
+        cacheMaxEntries: 100_000,
+      }).success,
+    ).toBe(true);
+    expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
+  });
+
+  it.each([4, 3601, 1.5])('rejects a cache lifetime of %s seconds', (cacheTtlSeconds) => {
+    expect(parse({ cacheTtlSeconds }).success).toBe(false);
+  });
+});
+
 describe('agent background completion batch config', () => {
   it('defaults and bounds automatic completion coalescing', () => {
     const defaults = configSchema.parse({
@@ -2644,4 +2747,34 @@ describe('workspace admission configuration', () => {
       ).toBe(false);
     },
   );
+});
+
+describe('GitHub comparison configuration', () => {
+  it('keeps outbound comparison disabled unless explicitly enabled', () => {
+    expect(configSchema.parse({ version: '1.0' }).githubCompare).toBeUndefined();
+    expect(configSchema.parse({ version: '1.0', githubCompare: {} }).githubCompare).toEqual({
+      enabled: false,
+      timeoutMs: 10000,
+    });
+    expect(
+      configSchema.parse({ version: '1.0', githubCompare: { enabled: true, timeoutMs: 2000 } })
+        .githubCompare,
+    ).toEqual({
+      enabled: true,
+      timeoutMs: 2000,
+    });
+  });
+  it.each([0, -1, 30001, 1.5, '10000'])('rejects invalid timeout %p', (timeoutMs) => {
+    expect(configSchema.safeParse({ version: '1.0', githubCompare: { timeoutMs } }).success).toBe(
+      false,
+    );
+  });
+  it('rejects unknown comparison settings', () => {
+    expect(
+      configSchema.safeParse({
+        version: '1.0',
+        githubCompare: { enabled: true, baseURL: 'https://other.test' },
+      }).success,
+    ).toBe(false);
+  });
 });

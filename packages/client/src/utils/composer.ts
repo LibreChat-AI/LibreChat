@@ -8,7 +8,9 @@ import { cn } from './utils';
  * padding, and feature-specific overrides stay with each owner.
  */
 export const composerSurfaceClasses = (): string =>
-  cn('border border-border-light bg-surface-chat text-text-primary transition-all duration-200');
+  cn(
+    'border border-border-light bg-surface-composer text-text-primary transition-all duration-200',
+  );
 
 /** Elevation states for the composer surface. `within` is the CSS-only
  *  equivalent of the managed focused/blurred pair for surfaces that do not

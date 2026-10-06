@@ -350,6 +350,7 @@ describe('socialLogin', () => {
         name: 'New User',
         emailVerified: true,
         appConfig: expect.any(Object),
+        lookup: { findUser, provider, providerId: googleId, email },
       });
 
       expect(callback).toHaveBeenCalledWith(null, newUser);

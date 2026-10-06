@@ -106,6 +106,41 @@ describe('theme color tokens', () => {
     expect(css).toContain('color-mix(in oklab, rgb(var(--surface-primary)) 50%');
   });
 
+  it('draws the chrome and inset borders as border-light at the theme share', async () => {
+    const css = await generate(['border-border-chrome', 'border-border-inset']);
+
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
+  });
+
+  it('draws the chrome heavy border as border-heavy at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-heavy']);
+
+    expect(css).toContain(
+      'rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
+  it('draws the chrome medium border as border-medium at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
+  it('draws the inset medium border as border-medium at the inset share', async () => {
+    const css = await generate(['border-border-inset-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
+  });
+
   it.each(['./theme.css', '../../../../client/src/style.css'])(
     '%s preserves closed compatibility palettes without declaring them as semantic tokens',
     async (repositoryEntry) => {

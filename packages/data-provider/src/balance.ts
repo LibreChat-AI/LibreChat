@@ -1,3 +1,5 @@
+import type { TBalanceResponse } from './types';
+
 export const REFILL_INTERVAL_UNITS = [
   'seconds',
   'minutes',
@@ -6,6 +8,10 @@ export const REFILL_INTERVAL_UNITS = [
   'weeks',
   'months',
 ] as const;
+
+export const BALANCE_REFILL_MODES = ['add', 'reset'] as const;
+
+export type BalanceRefillMode = (typeof BALANCE_REFILL_MODES)[number];
 
 export type RefillIntervalUnit = (typeof REFILL_INTERVAL_UNITS)[number];
 
@@ -57,4 +63,43 @@ export function getRefillEligibilityDate(
       return result;
     }
   }
+}
+
+/** Whether the configured refill/reset period has elapsed. */
+export function isBalanceRefillDue(
+  record: Pick<
+    TBalanceResponse,
+    | 'refillMode'
+    | 'autoRefillEnabled'
+    | 'refillAmount'
+    | 'lastRefill'
+    | 'refillIntervalValue'
+    | 'refillIntervalUnit'
+  >,
+  now: Date,
+): boolean {
+  if (!record.autoRefillEnabled || !(record.refillAmount != null && record.refillAmount > 0)) {
+    return false;
+  }
+  if (
+    record.refillMode === 'reset' &&
+    !(
+      record.refillIntervalValue != null &&
+      Number.isInteger(record.refillIntervalValue) &&
+      record.refillIntervalValue > 0
+    )
+  ) {
+    return false;
+  }
+  const lastRefill = new Date(record.lastRefill ?? 0);
+  if (isNaN(lastRefill.getTime())) {
+    return true;
+  }
+  const eligibleAt = getRefillEligibilityDate(
+    lastRefill,
+    record.refillIntervalValue ?? 0,
+    record.refillIntervalUnit ?? 'days',
+  );
+  // Date setters can round a fractional interval down to the same instant.
+  return (record.refillMode !== 'reset' || eligibleAt > lastRefill) && now >= eligibleAt;
 }
