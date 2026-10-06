@@ -228,10 +228,7 @@
   },
   "client/src/components/Chat/Input/Files/Table/DataTable.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
+      "count": 13
     }
   },
   "client/src/components/Chat/Input/HeaderOptions.tsx": {
@@ -360,13 +357,10 @@
   },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 1
+      "count": 2
     },
     "shadcn/no-inline-styles": {
       "count": 2
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
@@ -459,14 +453,8 @@
     "shadcn/no-inline-styles": {
       "count": 9
     },
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 6
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 3
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
@@ -531,9 +519,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Reasoning.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
     "shadcn/no-inline-styles": {
       "count": 4
     },
@@ -551,7 +536,7 @@
   },
   "client/src/components/Chat/Messages/Content/Parts/SteerPart.tsx": {
     "shadcn/no-unknown-classes": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Summary.tsx": {

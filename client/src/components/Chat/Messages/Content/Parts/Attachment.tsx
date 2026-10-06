@@ -132,7 +132,6 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return (
       <div
         className={cn(
-          'file-attachment-container',
           'transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
@@ -153,7 +152,6 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   return (
     <div
       className={cn(
-        'file-attachment-container',
         'transition-all duration-300 ease-out',
         isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
       )}
@@ -333,7 +331,7 @@ const TextAttachment = memo(
     return (
       <div
         className={cn(
-          'text-attachment-container flex w-full flex-col gap-1.5',
+          'flex w-full flex-col gap-1.5',
           'transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
@@ -415,7 +413,6 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   return (
     <div
       className={cn(
-        'image-attachment-container',
         'transition-all duration-500 ease-out',
         isLoaded ? 'scale-100 opacity-100' : 'scale-[0.98] opacity-0',
       )}

@@ -80,10 +80,10 @@ export function buildEntry(id: string, msg: TMessage, node?: HTMLElement): Messa
 }
 
 const USER_TURN_SELECTOR = '.user-turn';
-const STEER_RENDER_CLASS = 'steer-render';
+const STEER_RENDER_ATTRIBUTE = 'data-steer-render';
 /** One query, document order: steer nodes interleave at their in-thread
  *  position INSIDE the response that absorbed them. */
-const ENTRY_NODE_SELECTOR = `.message-render, .${STEER_RENDER_CLASS}`;
+const ENTRY_NODE_SELECTOR = `.message-render, [${STEER_RENDER_ATTRIBUTE}]`;
 
 /** Rail-relevant node: a message row or an in-thread steer part. The mutation
  *  filter must match BOTH — a steer node swap (optimistic → persisted) or
@@ -91,7 +91,7 @@ const ENTRY_NODE_SELECTOR = `.message-render, .${STEER_RENDER_CLASS}`;
 function isEntryNode(node: HTMLElement): boolean {
   return (
     node.classList?.contains('message-render') === true ||
-    node.classList?.contains(STEER_RENDER_CLASS) === true
+    node.hasAttribute?.(STEER_RENDER_ATTRIBUTE) === true
   );
 }
 
@@ -165,7 +165,7 @@ function getMessageEntries(root: ParentNode, messagesById: Map<string, TMessage>
       continue;
     }
     seen.add(id);
-    if (node.classList.contains(STEER_RENDER_CLASS)) {
+    if (node.hasAttribute(STEER_RENDER_ATTRIBUTE)) {
       entries.push(buildSteerEntry(node, id));
       continue;
     }
