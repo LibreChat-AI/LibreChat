@@ -159,6 +159,7 @@ export const registry: SettingEntry[] = [
       localizationKey: 'com_nav_show_lia',
       switchId: 'showLia',
       hoverCardText: 'com_nav_info_show_lia',
+      beta: true,
     }),
   },
   {
