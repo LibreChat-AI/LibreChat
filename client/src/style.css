@@ -1589,6 +1589,15 @@ html {
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
 }
 
+/* Auto-height reveals over a grid (rows 0fr to 1fr) share the resize tween with
+ * `Collapse`, `McpOAuthDialog`, `MCPToolItem` and `McpSection`; pair with
+ * `motion-reduce:transition-none`. */
+@utility resize-rows {
+  transition-property: grid-template-rows;
+  transition-duration: var(--resize-dur);
+  transition-timing-function: var(--resize-ease);
+}
+
 .assistant-item {
   position: relative;
 }

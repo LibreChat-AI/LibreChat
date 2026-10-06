@@ -1307,11 +1307,6 @@
       "count": 5
     }
   },
-  "client/src/components/Prompts/editor/Markdown.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Prompts/editor/PromptEditor.tsx": {
     "shadcn/no-restyle": {
       "count": 11
@@ -1574,9 +1569,6 @@
     }
   },
   "client/src/components/SidePanel/Agents/MCPToolItem.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
     "shadcn/no-restyle": {
       "count": 4
     }
@@ -1622,7 +1614,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 1
     },
     "shadcn/no-restyle": {
       "count": 4
@@ -1651,7 +1643,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 10
+      "count": 8
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ToolCard.tsx": {
@@ -1937,7 +1929,7 @@
   },
   "client/src/components/Skills/tree/SkillFileEditor.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-restyle": {
       "count": 18
