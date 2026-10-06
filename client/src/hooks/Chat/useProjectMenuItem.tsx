@@ -29,10 +29,8 @@ export default function useProjectMenuItem({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const assignMutation = useAssignConversationToProjectMutation();
-  const { data, isError, hasNextPage, fetchNextPage, isFetchingNextPage } =
+  const { data, isError, hasNextPage, fetchNextPage, refetch, isFetchingNextPage } =
     useProjectsInfiniteQuery({ sortBy: 'name', sortDirection: 'asc', limit: 100 }, { enabled });
-
-  const projects = data?.pages.flatMap((page) => page.projects) ?? [];
 
   const assign = (projectId: string | null) => {
     assignMutation.mutate(
@@ -56,6 +54,17 @@ export default function useProjectMenuItem({
     );
   };
 
+  const trigger: t.MenuItemProps = {
+    label: localize('com_ui_change_project'),
+    icon: <FolderInput className={iconClass} aria-hidden="true" />,
+  };
+  /** A disabled query still exposes cached data, and every row of the project page mounts this hook,
+   *  so a closed menu builds nothing: the items exist only while their menu is open. */
+  if (!enabled) {
+    return { ...trigger, subItems: [{ label: localize('com_ui_loading'), disabled: true }] };
+  }
+
+  const projects = data?.pages.flatMap((page) => page.projects) ?? [];
   const subItems: t.MenuItemProps[] = [];
   if (projects.length > 0) {
     for (const project of projects) {
@@ -83,7 +92,19 @@ export default function useProjectMenuItem({
     subItems.push({ label: localize(emptyKey), disabled: true });
   }
 
-  if (hasNextPage) {
+  /** A failed request keeps whatever pages already loaded, so the failure is shown beside them
+   *  with the retry that repeats the request that failed. */
+  if (isError) {
+    if (projects.length > 0) {
+      subItems.push({ label: localize('com_ui_projects_load_error'), disabled: true });
+    }
+    subItems.push({
+      label: localize('com_ui_retry'),
+      onClick: () => (projects.length > 0 ? fetchNextPage() : refetch()),
+      disabled: isFetchingNextPage,
+      hideOnClick: false,
+    });
+  } else if (hasNextPage) {
     subItems.push({
       label: localize('com_ui_load_more'),
       onClick: () => fetchNextPage(),
@@ -103,9 +124,5 @@ export default function useProjectMenuItem({
     );
   }
 
-  return {
-    label: localize('com_ui_change_project'),
-    icon: <FolderInput className={iconClass} aria-hidden="true" />,
-    subItems,
-  };
+  return { ...trigger, subItems };
 }

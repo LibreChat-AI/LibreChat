@@ -16,7 +16,10 @@ const mockState = {
   startupConfig: undefined as Record<string, unknown> | undefined,
   projects: undefined as { _id: string; name: string }[] | undefined,
   projectsError: false,
+  hasNextPage: false,
 };
+const mockFetchNextPage = jest.fn();
+const mockRefetch = jest.fn();
 const mockProjectsConfig: { current?: { enabled?: boolean } } = {};
 const mockClient: { current: QueryClient | null } = { current: null };
 const mockCloseMenu = jest.fn();
@@ -60,8 +63,9 @@ jest.mock('~/data-provider', () => ({
     return {
       data: mockState.projects && { pages: [{ projects: mockState.projects }] },
       isError: mockState.projectsError,
-      hasNextPage: false,
-      fetchNextPage: jest.fn(),
+      hasNextPage: mockState.hasNextPage,
+      fetchNextPage: mockFetchNextPage,
+      refetch: mockRefetch,
       isFetchingNextPage: false,
     };
   },
@@ -94,9 +98,9 @@ jest.mock('../useExportShare', () => ({
   }),
 }));
 
-const setup = (readOnly = false) =>
+const setup = (readOnly = false, isMenuOpen = false) =>
   renderHook(() =>
-    useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly }),
+    useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly, isMenuOpen }),
   );
 const labels = (items: MenuItemProps[]) =>
   items.filter((item) => item.show !== false && item.separate !== true).map((item) => item.label);
@@ -119,6 +123,7 @@ describe('useChatOptions', () => {
     mockState.startupConfig = undefined;
     mockState.projects = undefined;
     mockState.projectsError = false;
+    mockState.hasNextPage = false;
     mockProjectsConfig.current = undefined;
   });
 
@@ -164,7 +169,7 @@ describe('useChatOptions', () => {
 
   it('folds project removal into the change project submenu instead of a top-level item', () => {
     mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-1' };
-    const { result } = setup();
+    const { result } = setup(false, true);
 
     expect(labels(result.current.items)).not.toContain('com_ui_remove_from_project');
     expect(labels(find(result.current.items, 'com_ui_change_project').subItems ?? [])).toContain(
@@ -173,7 +178,8 @@ describe('useChatOptions', () => {
   });
 
   it('offers removal inside the submenu only when the chat is in a project', () => {
-    const { result } = setup();
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    const { result } = setup(false, true);
 
     expect(
       labels(find(result.current.items, 'com_ui_change_project').subItems ?? []),
@@ -186,7 +192,7 @@ describe('useChatOptions', () => {
       { _id: 'project-2', name: 'Beta' },
     ];
     mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-2' };
-    const { result } = setup();
+    const { result } = setup(false, true);
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
 
     expect(find(subItems, 'Alpha').ariaChecked).toBe(false);
@@ -198,7 +204,7 @@ describe('useChatOptions', () => {
       { _id: 'project-1', name: 'Alpha' },
       { _id: 'project-2', name: 'Beta' },
     ];
-    const { result } = setup();
+    const { result } = setup(false, true);
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
 
     expect(find(subItems, 'Alpha').ariaRole).toBe('menuitemradio');
@@ -207,7 +213,7 @@ describe('useChatOptions', () => {
 
   it('assigns the picked project and mirrors it into the open chat', () => {
     mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
-    const { result } = setup();
+    const { result } = setup(false, true);
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
 
     act(() => find(subItems, 'Alpha').onClick?.({} as never));
@@ -236,8 +242,48 @@ describe('useChatOptions', () => {
     expect(mockProjectsConfig.current?.enabled).toBe(true);
   });
 
+  it('builds no project rows while the menu is closed, even when the list is cached', () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    const { result, rerender } = renderHook(
+      ({ isMenuOpen }) =>
+        useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, isMenuOpen }),
+      { initialProps: { isMenuOpen: false } },
+    );
+    const rows = () => labels(find(result.current.items, 'com_ui_change_project').subItems ?? []);
+    expect(rows()).not.toContain('Alpha');
+
+    rerender({ isMenuOpen: true });
+    expect(rows()).toContain('Alpha');
+  });
+
+  it('keeps the loaded projects and offers a retry when the next page fails', () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = true;
+    mockState.projectsError = true;
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    expect(labels(subItems)).toEqual(
+      expect.arrayContaining(['Alpha', 'com_ui_projects_load_error', 'com_ui_retry']),
+    );
+    expect(labels(subItems)).not.toContain('com_ui_load_more');
+    expect(find(subItems, 'com_ui_retry').hideOnClick).toBe(false);
+    act(() => find(subItems, 'com_ui_retry').onClick?.({} as never));
+    expect(mockFetchNextPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers a retry when the first page fails', () => {
+    mockState.projectsError = true;
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    act(() => find(subItems, 'com_ui_retry').onClick?.({} as never));
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
+    expect(mockFetchNextPage).not.toHaveBeenCalled();
+  });
+
   it('shows a loading row, then an empty row, then a failed row in the submenu', () => {
-    const { result, rerender } = setup();
+    const { result, rerender } = setup(false, true);
     const rows = () => find(result.current.items, 'com_ui_change_project').subItems ?? [];
     expect(rows()[0]).toMatchObject({ label: 'com_ui_loading', disabled: true });
 
@@ -289,7 +335,7 @@ describe('useChatOptions', () => {
 
   it('mirrors a landed project removal into the open chat', () => {
     mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-1' };
-    const { result } = setup();
+    const { result } = setup(false, true);
 
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
     act(() => find(subItems, 'com_ui_remove_from_project').onClick?.({} as never));
