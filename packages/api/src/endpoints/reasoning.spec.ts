@@ -1,3 +1,4 @@
+import { getModelReasoning } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { ReasoningCapabilityDeps } from '~/types';
 import { loadReasoningCapabilities, withSupportedEffort, catalogRequestHeaders } from './reasoning';
@@ -1273,6 +1274,55 @@ describe('catalogs whose model list is scoped to the requesting user', () => {
     expect(result.unavailable).toEqual([]);
   });
 
+  it('reads an endpoint whose only per-request header is request metadata, as in the documented example', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [
+        endpoint({
+          models: { fetch: true, default: ['a/b'] },
+          headers: { 'x-librechat-body-parentmessageid': '{{LIBRECHAT_BODY_PARENTMESSAGEID}}' },
+        }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][0].headers).toEqual({});
+  });
+
+  it.each([
+    '{{LIBRECHAT_USER_EMAIL}}',
+    'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+    '{{LIBRECHAT_GRAPH_ACCESS_TOKEN}}',
+  ])('skips an endpoint with the identity-dependent header value %s', async (value) => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ models: { fetch: true, default: ['a/b'] }, headers: { 'X-Id': value } })],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('checks a stored effort on the documented example configuration', async () => {
+    const { deps, fetchSpy } = makeDeps();
+    const stored = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
+
+    const result = await withSupportedEffort(
+      stored,
+      endpoint({
+        models: { fetch: true, default: ['a/b'] },
+        headers: { 'x-librechat-body-parentmessageid': '{{LIBRECHAT_BODY_PARENTMESSAGEID}}' },
+      }),
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ model: 'openai/gpt-6.1-sol' });
+  });
+
   it('still reads an endpoint that fetches models for everyone alike', async () => {
     const { deps, fetchSpy } = makeDeps();
 
@@ -1308,14 +1358,40 @@ describe('model ids that name Object.prototype members', () => {
     ],
   };
 
-  it('records them as ordinary models without touching the prototype', async () => {
+  it('records them as own entries, so none is lost to the prototype setter', async () => {
     const { deps } = makeDeps(async () => protoCatalog);
 
     const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
 
-    expect(Object.prototype.hasOwnProperty.call(map.OpenRouter, 'constructor')).toBe(true);
-    expect(Object.getPrototypeOf(map.OpenRouter)).not.toEqual({ efforts: ['high'] });
+    expect(Object.keys(map.OpenRouter).sort()).toEqual(['__proto__', 'a/b', 'constructor']);
     expect(({} as Record<string, unknown>).efforts).toBeUndefined();
+  });
+
+  it('serves them through the JSON response and finds them on the client', async () => {
+    const { deps } = makeDeps(async () => protoCatalog);
+    const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
+
+    const received = JSON.parse(JSON.stringify(map));
+
+    expect(getModelReasoning(received, 'OpenRouter', '__proto__')).toEqual({
+      efforts: ['high'],
+      mandatory: false,
+    });
+    expect(getModelReasoning(received, 'OpenRouter', 'constructor')).toEqual({
+      efforts: ['low'],
+      mandatory: false,
+    });
+  });
+
+  it('keeps an endpoint named __proto__ as an own entry', async () => {
+    const { deps } = makeDeps();
+
+    const { capabilities: map } = await loadReasoningCapabilities(
+      [endpoint({ name: '__proto__' })],
+      deps,
+    );
+
+    expect(Object.keys(map)).toEqual(['__proto__']);
   });
 
   it('does not throw when a stored effort sits on such an unlisted model', async () => {

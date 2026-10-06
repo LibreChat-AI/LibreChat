@@ -815,4 +815,38 @@ describe('initializeCustom: stored reasoning effort', () => {
 
     expect(sent.reasoning_effort).toBe('max');
   });
+
+  it('starts the catalog lookup while the model list is still being fetched', async () => {
+    const { fetchModels } = jest.requireMock('~/endpoints/models');
+    const events: string[] = [];
+    fetchModels.mockReset().mockImplementation(async () => {
+      events.push('models-start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      events.push('models-end');
+      return [];
+    });
+    const fetchPage = jest.fn(async () => {
+      events.push('catalog-start');
+      return catalog;
+    });
+    const { deps } = makeDeps(fetchPage);
+    const params = createParams({ baseURL: OPENROUTER });
+    params.endpoint = 'openrouter';
+    mockGetCustomEndpointConfig.mockReturnValue({
+      name: 'OpenRouter',
+      apiKey: 'sk-test-key',
+      baseURL: OPENROUTER,
+      models: { fetch: true },
+    });
+    params.model_parameters = { model: sol, reasoning_effort: 'max' };
+    params.reasoningCapabilityDeps = deps;
+
+    await initializeCustom(params);
+
+    expect(events.indexOf('catalog-start')).toBeGreaterThan(-1);
+    expect(events.indexOf('catalog-start')).toBeLessThan(events.indexOf('models-end'));
+    expect(mockGetOpenAIConfig.mock.calls[0][1].modelOptions).not.toHaveProperty(
+      'reasoning_effort',
+    );
+  });
 });

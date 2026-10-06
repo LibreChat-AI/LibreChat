@@ -105,6 +105,12 @@ function safeOrigin(baseURL: string): string {
 /** A header value that is filled in per user or per request, which a shared catalog cannot honor. */
 const PER_REQUEST_PLACEHOLDER = /\{\{[^}]*\}\}/;
 
+/** Placeholders that carry the request's own ids (`{{LIBRECHAT_BODY_PARENTMESSAGEID}}`), not who is
+ *  asking. They do not change which models a user is offered, so they do not scope the model list;
+ *  the documented OpenRouter example sets one. Any other placeholder (user fields, OpenID tokens, an
+ *  unknown name) is treated as identity-dependent. */
+const REQUEST_METADATA_PLACEHOLDER = /\{\{LIBRECHAT_BODY_[A-Z_]+\}\}/g;
+
 /** An environment variable reference left in a value, which means the variable is not set. */
 const UNRESOLVED_ENV_VARIABLE = /\$\{[^}]*\}/;
 
@@ -161,7 +167,9 @@ async function readCatalog(
   deps: ReasoningCapabilityDeps,
 ): Promise<CatalogModels | undefined> {
   const { baseURL, apiKey, timeoutMs, maxPages, headers } = target;
-  const models: CatalogModels = {};
+  /** Null-prototype, because model ids are unrestricted strings: assigning `__proto__` into an
+   *  ordinary object would set its prototype instead of creating an entry. */
+  const models: CatalogModels = Object.create(null);
   const origin = new URL(baseURL).origin;
   const seen = new Set<string>();
   let url: string | null = catalogURL(baseURL);
@@ -255,7 +263,8 @@ function exposedCapabilities(
 
 /**
  * Whether the models a user is offered for this endpoint depend on who is asking: the model list
- * is fetched with `models.userIdQuery`, or with configured headers that resolve per request.
+ * is fetched with `models.userIdQuery`, or with configured headers that resolve to the user's
+ * identity or credentials. Headers that only carry request ids do not count.
  */
 function hasUserScopedModelList(endpoint: TEndpoint): boolean {
   if (endpoint.models?.userIdQuery === true) {
@@ -263,7 +272,9 @@ function hasUserScopedModelList(endpoint: TEndpoint): boolean {
   }
   return (
     endpoint.models?.fetch === true &&
-    Object.values(endpoint.headers ?? {}).some((value) => PER_REQUEST_PLACEHOLDER.test(value))
+    Object.values(endpoint.headers ?? {}).some((value) =>
+      PER_REQUEST_PLACEHOLDER.test(value.replace(REQUEST_METADATA_PLACEHOLDER, '')),
+    )
   );
 }
 
@@ -386,7 +397,10 @@ export async function loadReasoningCapabilities(
   });
   const catalogs = await Promise.all(targets.map((target) => resolveCatalog(target, deps)));
 
-  const result: ReasoningCapabilityResult = { capabilities: {}, unavailable: [] };
+  const result: ReasoningCapabilityResult = {
+    capabilities: Object.create(null) as ReasoningCapabilityResult['capabilities'],
+    unavailable: [],
+  };
   targets.forEach(({ name, exposedModels }, index) => {
     const entry = catalogs[index];
     if (entry == null) {

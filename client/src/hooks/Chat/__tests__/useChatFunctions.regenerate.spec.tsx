@@ -35,7 +35,7 @@ const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
-const mockCapabilitiesState: { current?: { status: string } } = {};
+const mockCapabilitiesState: { current?: { status: string; fetchStatus?: string } } = {};
 const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) =>
   queryKey[0] === QueryKeys.reasoningCapabilities ? mockCapabilitiesState.current : undefined,
 );
@@ -700,13 +700,13 @@ describe('useChatFunctions ask', () => {
         },
       },
     });
-    const replay = () => {
+    const replay = (value: TReasoningOverride = override) => {
       const { result, setSubmission } = renderAsk([], 'openrouter-conversation', {
         endpoint: 'OpenRouter' as TConversation['endpoint'],
         model,
       });
       act(() => {
-        result.current.ask({ text: 'Think' }, { overrideReasoning: override });
+        result.current.ask({ text: 'Think' }, { overrideReasoning: value });
       });
       return (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
     };
@@ -757,6 +757,41 @@ describe('useChatFunctions ask', () => {
       mockCapabilitiesState.current = { status: 'error' };
 
       expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override while an expired entry is refreshed, although its data is cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'success', fetchStatus: 'fetching' } as never;
+
+      expect(replay()).toBeUndefined();
+    });
+
+    describe('an Auto override, which sends no effort', () => {
+      const auto = { key: 'reasoning_effort', value: '' } as TReasoningOverride;
+
+      it('is kept while the capabilities have not loaded', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept when the capabilities request failed', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept for a model the loaded catalog lists without effort selection', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: [] } } },
+          expiresInMs: 60000,
+        };
+
+        expect(replay(auto)).toEqual(auto);
+      });
     });
 
     it('keeps an override for a model the loaded catalog does not list', () => {

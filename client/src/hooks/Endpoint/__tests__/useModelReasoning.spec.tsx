@@ -5,6 +5,7 @@ import { useModelReasoning } from '../useModelReasoning';
 /** `undefined` is a query that is loading or failed: both leave the hook without data. */
 let mockCapabilities: TReasoningCapabilityMap | undefined;
 let mockErrored = false;
+let mockFetching = false;
 const mockQuery = jest.fn();
 jest.mock('~/data-provider', () => ({
   useReasoningCapabilitiesQuery: (endpoint: string, config: { enabled?: boolean }) => {
@@ -16,6 +17,7 @@ jest.mock('~/data-provider', () => ({
           ? { capabilities: mockCapabilities, expiresInMs: 3_600_000 }
           : undefined,
       isError: enabled && mockErrored,
+      isFetching: enabled && mockFetching,
     };
   },
 }));
@@ -42,6 +44,7 @@ const withDefinition = {
 beforeEach(() => {
   mockCapabilities = undefined;
   mockErrored = false;
+  mockFetching = false;
   mockQuery.mockClear();
 });
 
@@ -74,6 +77,29 @@ describe('useModelReasoning', () => {
 
     expect(result.current.modelReasoning).toBeNull();
     expect(result.current.pending).toBe(true);
+  });
+
+  it('hides the efforts while an expired entry is being refreshed in the background', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockFetching = true;
+
+    const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+
+    expect(result.current.modelReasoning).toBeNull();
+    expect(result.current.pending).toBe(true);
+  });
+
+  it('shows the refreshed efforts once the background request finishes', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockFetching = true;
+    const { result, rerender } = renderHook(() =>
+      useModelReasoning(openRouter, 'OpenRouter', model),
+    );
+
+    mockFetching = false;
+    rerender();
+
+    expect(result.current.modelReasoning).toEqual({ efforts: ['low', 'high'] });
   });
 
   it('shows the efforts again once the refresh succeeds', () => {

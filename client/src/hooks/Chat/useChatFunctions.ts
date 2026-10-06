@@ -9,6 +9,7 @@ import {
   Constants,
   QueryKeys,
   ContentTypes,
+  ReasoningEffort,
   EModelEndpoint,
   getEndpointField,
   resolveModelReasoning,
@@ -53,6 +54,7 @@ import {
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -535,13 +537,20 @@ export default function useChatFunctions({
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
       const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
-      /* A failed refresh leaves the previous data cached, but the efforts are then unknown. */
+      /* A failed or running refresh leaves the previous data cached, but the efforts are then
+         unknown, as they are in the editors. */
+      const capabilitiesState = queryClient.getQueryState(capabilitiesKey);
       const capabilitiesData =
-        queryClient.getQueryState(capabilitiesKey)?.status === 'error'
+        capabilitiesState?.status === 'error' || capabilitiesState?.fetchStatus === 'fetching'
           ? undefined
           : queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey)?.capabilities;
+      /* Auto sends no effort, so no catalog can refuse it and a restored one is always kept. */
+      const clearsEffort =
+        reasoningOverride.key === 'reasoning_effort' &&
+        reasoningOverride.value === ReasoningEffort.unset &&
+        usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '');
       /* A replayed override is checked against the loaded per-model efforts. While they are
-         unknown (never requested, in flight or failed) `resolveModelReasoning` offers nothing, so
+         unknown (never requested, running or failed) `resolveModelReasoning` offers nothing, so
          the override is omitted rather than sent and refused by the server. */
       const supportedSetting =
         effectiveEndpoint == null
@@ -554,7 +563,7 @@ export default function useChatFunctions({
               reasoningFormat: customParams?.reasoningFormat,
               paramDefinitions: customParams?.paramDefinitions,
               modelReasoning:
-                effectiveModel == null
+                effectiveModel == null || clearsEffort
                   ? undefined
                   : resolveModelReasoning({
                       capabilities: capabilitiesData,
