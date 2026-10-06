@@ -61,9 +61,19 @@ endpoints:
   agents:
     capabilities: ["file_search", "web_search", "context", "ask_user_question", "tools"]
 
+  # The sandbox is an AWS channel-program account: Bedrock refuses Anthropic
+  # models there. These are the models it does serve on demand in eu-west-2, so
+  # requests stay in London; each was checked with streaming and tool use.
   bedrock:
     models:
       - 'amazon.nova-lite-v1:0'
+      - 'openai.gpt-oss-120b-1:0'
+      - 'qwen.qwen3-235b-a22b-2507-v1:0'
+      - 'moonshotai.kimi-k2.5'
+      - 'deepseek.v3.2'
+      - 'mistral.devstral-2-123b'
+      - 'zai.glm-5'
+      - 'nvidia.nemotron-super-3-120b'
 
 modelSpecs:
   list:
@@ -73,3 +83,45 @@ modelSpecs:
       preset:
         endpoint: 'bedrock'
         model: 'amazon.nova-lite-v1:0'
+    - name: 'bedrock-gpt-oss-120b'
+      label: 'gpt-oss-120b (Bedrock)'
+      description: 'OpenAI open-weight 120B model via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'openai.gpt-oss-120b-1:0'
+    - name: 'bedrock-qwen3-235b'
+      label: 'Qwen3 235B (Bedrock)'
+      description: 'Qwen3 235B A22B 2507 via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'qwen.qwen3-235b-a22b-2507-v1:0'
+    - name: 'bedrock-kimi-k2-5'
+      label: 'Kimi K2.5 (Bedrock)'
+      description: 'Moonshot AI Kimi K2.5 via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'moonshotai.kimi-k2.5'
+    - name: 'bedrock-deepseek-v3-2'
+      label: 'DeepSeek V3.2 (Bedrock)'
+      description: 'DeepSeek V3.2 via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'deepseek.v3.2'
+    - name: 'bedrock-devstral-2'
+      label: 'Devstral 2 (Bedrock)'
+      description: 'Mistral AI Devstral 2 123B, tuned for coding, via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'mistral.devstral-2-123b'
+    - name: 'bedrock-glm-5'
+      label: 'GLM-5 (Bedrock)'
+      description: 'Z.ai GLM-5 via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'zai.glm-5'
+    - name: 'bedrock-nemotron-super-3'
+      label: 'Nemotron Super 3 (Bedrock)'
+      description: 'NVIDIA Nemotron Super 3 120B via AWS Bedrock (eu-west-2, on-demand)'
+      preset:
+        endpoint: 'bedrock'
+        model: 'nvidia.nemotron-super-3-120b'
