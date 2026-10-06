@@ -3,7 +3,7 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
 /**
  * ClickHouse reference theme, built from Click UI's design tokens
  * (github.com/ClickHouse/click-ui, `src/theme/tokens/variables.light.ts` and
- * `variables.dark.ts` at tag v0.13.0, bb744e8255a3c97635d2fdc9a546c266b5b8a3e0). The tokens it
+ * `variables.dark.ts` at tag v0.14.0, c161141f4efc9fd8e8c951cd15a367d333902999). The tokens it
  * cites are pinned in `clickui.json`, and `clickui.spec.ts` fails on drift in either one.
  *
  * This is the deliberately different theme that proves the engine repaints the
