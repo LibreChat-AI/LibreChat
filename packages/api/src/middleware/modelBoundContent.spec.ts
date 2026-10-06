@@ -1587,6 +1587,34 @@ describe('assertModelBoundContent', () => {
     ).toThrow('Submitted content contains a private context');
   });
 
+  it('does not traverse unrelated initialized tool schemas while checking agent files', () => {
+    const hydratedFile = {
+      file_id: 'file-agent-context',
+      filename: 'context.txt',
+      filepath: '/uploads/context.txt',
+      text: 'safe canonical context',
+    };
+
+    expect(() =>
+      assertModelBoundContent({
+        filters,
+        agents: [
+          {
+            instructions: 'Safe agent instructions',
+            toolDefinitions: [
+              {
+                name: 'deep_tool',
+                description: 'Safe tool description',
+                parameters: makeDeepModelParameter(),
+              },
+            ],
+            requestAttachments: [hydratedFile],
+          } as never,
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it('accepts only agent resource IDs backed by inspectable hydrated resource files', () => {
     const filters: FiltersConfig = {
       files: {

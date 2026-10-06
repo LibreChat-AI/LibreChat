@@ -840,6 +840,27 @@ function getHydratedAgentFiles(
   return files;
 }
 
+/**
+ * Restricts opaque-file checks to the runtime fields that can actually carry
+ * agent file references. Runtime agents also contain initialized tool schemas;
+ * walking those unrelated schemas just because an attachment was hydrated can
+ * exhaust the locator traversal budget before any file field is inspected.
+ */
+function getAgentFileReferenceInput(
+  agent: AgentContentInput | null | undefined,
+): RuntimeAgentFileContainer | undefined {
+  if (agent == null) {
+    return undefined;
+  }
+  const runtimeAgent = agent as RuntimeAgentFileContainer;
+  return {
+    attachments: runtimeAgent.attachments,
+    requestAttachments: runtimeAgent.requestAttachments,
+    agentContextAttachments: runtimeAgent.agentContextAttachments,
+    tool_resources: runtimeAgent.tool_resources,
+  };
+}
+
 function isFragmentWithinPath(fragment: TextContentFragment, path: JsonPointer): boolean {
   return fragment.path === path || fragment.path.startsWith(`${path}/`);
 }
@@ -3879,7 +3900,7 @@ function inspectModelBoundContent(
     }
     assertInspectableFileInput(
       input.filters,
-      omitResolvedCanonicalFileLocators(agent, agentFilesById, {
+      omitResolvedCanonicalFileLocators(getAgentFileReferenceInput(agent), agentFilesById, {
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),
