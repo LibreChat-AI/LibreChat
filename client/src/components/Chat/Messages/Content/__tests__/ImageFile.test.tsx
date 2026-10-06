@@ -1,6 +1,6 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
 import { FileSources } from 'librechat-data-provider';
+import { render, screen, fireEvent } from '@testing-library/react';
 import ImageFile from '../ImageFile';
 
 const mockRefetch = jest.fn();

@@ -1,6 +1,8 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
 import { Constants, ContentTypes } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import Part from '../Part';
 
@@ -106,8 +108,15 @@ describe('Part image alignment', () => {
         filepath: '/images/upload.png',
       },
     } as TMessageContentParts;
+    const queryClient = new QueryClient();
+    const Providers = ({ children }: { children: React.ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <RecoilRoot>{children}</RecoilRoot>
+      </QueryClientProvider>
+    );
     const { rerender } = render(
       <Part part={imagePart} isSubmitting={false} showCursor={false} isCreatedByUser={false} />,
+      { wrapper: Providers },
     );
     expect(screen.getByTestId('image')).toHaveAttribute('data-aligned-right', 'false');
 
