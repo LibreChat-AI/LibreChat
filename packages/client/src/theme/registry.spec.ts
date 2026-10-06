@@ -1469,6 +1469,7 @@ describe('theme registry', () => {
       ['lg', 'textLg', 'leadingLg'],
       ['xl', 'textXl', 'leadingXl'],
       ['2xl', 'text2xl', 'leading2xl'],
+      ['3xl', 'text3xl', 'leading3xl'],
     ] as const;
     const declared = (name: string) =>
       new RegExp(`--${name}:\\s*([^;]+);`).exec(tailwind)?.[1].trim();
@@ -1479,11 +1480,31 @@ describe('theme registry', () => {
     });
   });
 
-  /** ClickHouse is the exception: it takes Click UI's `font.sizes.6` (2rem) for `2xl` by owner
-   *  decision, which passes the unthemed `text-3xl`. */
-  it('keeps the default theme’s largest themed step below the unthemed text-3xl', () => {
-    expect(parseFloat(defaultAppearance.text2xl)).toBeLessThan(1.875);
-    expect(clickHouseTheme.modes.light?.appearance?.text2xl).toBe('2rem');
+  /** A heading never shrinks as the scale rises, and the largest themed step stays at or below
+   *  Tailwind's unthemed `text-4xl` (2.25rem). */
+  it('keeps the type scale monotonic in every bundled theme', () => {
+    const sizes = [
+      'textXs',
+      'textSm',
+      'textBase',
+      'textLg',
+      'textXl',
+      'text2xl',
+      'text3xl',
+    ] as const;
+    const appearances = [
+      defaultAppearance,
+      ...Object.values(clickHouseTheme.modes).map((mode) => ({
+        ...defaultAppearance,
+        ...mode?.appearance,
+      })),
+    ];
+
+    appearances.forEach((appearance) => {
+      const rems = sizes.map((size) => parseFloat(appearance[size]));
+      expect(rems).toEqual([...rems].sort((a, b) => a - b));
+      expect(rems[rems.length - 1]).toBeLessThanOrEqual(2.25);
+    });
   });
 
   it('accepts ratio and length line heights and rejects anything else', () => {

@@ -476,12 +476,14 @@ const appearanceValidators = {
   text2xs: isLength,
   text1xs: isLength,
   text1sm: isLength,
+  text3xl: isLength,
   leadingXs: isLineHeight,
   leadingSm: isLineHeight,
   leadingBase: isLineHeight,
   leadingLg: isLineHeight,
   leadingXl: isLineHeight,
   leading2xl: isLineHeight,
+  leading3xl: isLineHeight,
   /** A dialog's edge stroke width, inline padding and title-to-description gap, and its title's
    *  size, leading, weight and family. */
   dialogStroke: isLength,

@@ -457,12 +457,14 @@ const clickHouseShape = {
   textLg: '1.125rem', // typography.font.sizes.4
   textXl: '1.25rem', // typography.font.sizes.5
   text2xl: '2rem', // typography.font.sizes.6
+  text3xl: '2rem', // typography.font.sizes.6, Click UI's largest step, so a heading never shrinks as the scale rises
   leadingXs: '1.5', // typography.font.line-height.1
   leadingSm: '1.5', // typography.font.line-height.1
   leadingBase: '1.5', // typography.font.line-height.1
   leadingLg: '1.5', // typography.font.line-height.1
   leadingXl: '1.5', // typography.font.line-height.1
   leading2xl: '1.5', // typography.font.line-height.1
+  leading3xl: '1.5', // typography.font.line-height.1
   shadow2xs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowXs: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5

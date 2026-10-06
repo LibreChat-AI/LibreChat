@@ -436,8 +436,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
   own padding, size or weight class replaces the role.
 - `text-3xs`, `text-2xs`, `text-1xs`, `text-1sm` - The 10, 11, 13 and 15px steps (`text3xs`, `text2xs`, `text1xs`, `text1sm`); they set a size only, never a line height.
-- `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
-  `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
+- `text-xs` to `text-3xl` - Sizes and line heights read `textXs`..`text3xl` and
+  `leadingXs`..`leading3xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
 - `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,

@@ -247,6 +247,8 @@
   --text-2xs: var(--theme-text-2xs);
   --text-1xs: var(--theme-text-1xs);
   --text-1sm: var(--theme-text-1sm);
+  --text-3xl: var(--theme-text-3xl);
+  --text-3xl--line-height: var(--theme-text-3xl-leading);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);
