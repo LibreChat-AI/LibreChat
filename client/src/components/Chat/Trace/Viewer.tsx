@@ -2,7 +2,7 @@ import { useId, useRef, useMemo, useState, useEffect, useCallback, useDeferredVa
 import axios from 'axios';
 import { useAtom } from 'jotai';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, dataService, resolveTraceViewerConfig } from 'librechat-data-provider';
+import { QueryKeys, resolveTraceViewerConfig } from 'librechat-data-provider';
 import { Button, Spinner, EmptyState, FilterInput, buttonVariants } from '@librechat/client';
 import {
   X,
@@ -29,6 +29,7 @@ import type { TranslationKeys } from '~/hooks';
 import {
   keepNewestTracePage,
   useGetStartupConfig,
+  fetchConversationMessages,
   useGetLangfuseSessionLinkQuery,
   useConversationTraceRecordsQuery,
 } from '~/data-provider';
@@ -112,7 +113,7 @@ export default function Viewer({
   /** The chat's own messages, already loaded underneath the trace; they are only read, never fetched here. */
   const { data: messages } = useQuery<TMessage[]>(
     [QueryKeys.messages, conversationId],
-    () => dataService.getMessagesByConvoId(conversationId),
+    () => fetchConversationMessages(conversationId),
     { enabled: false },
   );
 
@@ -369,7 +370,7 @@ export default function Viewer({
     if (recordsQuery.isLoading) {
       return (
         <div role="status" className="flex flex-1 items-center justify-center gap-2">
-          <Spinner className="size-5 text-text-secondary" />
+          <Spinner className="text-text-secondary size-5" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       );
@@ -413,7 +414,7 @@ export default function Viewer({
     const cachedReadFailed = recordsQuery.isError && recordsQuery.data != null;
     return (
       <>
-        <div className="flex flex-col gap-3 border-b border-border-light px-3 py-3 md:px-4">
+        <div className="border-border-light flex flex-col gap-3 border-b px-3 py-3 md:px-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Summary
               summary={model.summary}
@@ -422,7 +423,7 @@ export default function Viewer({
               currency={currency}
             />
             {recordsQuery.hasNextPage === true && (
-              <p className="text-xs text-text-secondary">
+              <p className="text-text-secondary text-xs">
                 {localize('com_ui_trace_partial', { 0: String(records.length) })}
               </p>
             )}
@@ -487,7 +488,7 @@ export default function Viewer({
             </Button>
             <div className="ml-auto flex items-center gap-1">
               {view != null && (
-                <span className="text-xs tabular-nums text-text-secondary" aria-live="polite">
+                <span className="text-text-secondary text-xs tabular-nums" aria-live="polite">
                   {selectionText()}
                 </span>
               )}
@@ -519,7 +520,7 @@ export default function Viewer({
         <div className="relative flex min-h-0 flex-1">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {rows.length === 0 ? (
-              <p role="status" className="p-4 text-sm text-text-secondary">
+              <p role="status" className="text-text-secondary p-4 text-sm">
                 {localize('com_ui_trace_no_matches')}
               </p>
             ) : (
@@ -544,10 +545,10 @@ export default function Viewer({
               />
             )}
             {(recordsQuery.hasNextPage === true || cachedReadFailed) && (
-              <div className="flex flex-wrap items-center justify-center gap-2 border-t border-border-light p-2">
+              <div className="border-border-light flex flex-wrap items-center justify-center gap-2 border-t p-2">
                 {cachedReadFailed && (
                   <>
-                    <span role="alert" className="text-xs text-status-error">
+                    <span role="alert" className="text-status-error text-xs">
                       {localize(errorMessageKey(recordsQuery.error))}
                     </span>
                     <Button
@@ -605,9 +606,9 @@ export default function Viewer({
       aria-labelledby={headingId}
       data-testid="trace-viewer"
       onKeyDown={handleKeyDown}
-      className="absolute inset-0 z-20 flex flex-col bg-presentation text-text-primary"
+      className="bg-surface-primary-alt text-text-primary absolute inset-0 z-20 flex flex-col"
     >
-      <div className="flex h-[52px] shrink-0 items-center gap-2 border-b border-border-light px-2 md:px-4">
+      <div className="border-border-light flex h-[52px] shrink-0 items-center gap-2 border-b px-2 md:px-4">
         <h2 id={headingId} className="text-base font-semibold">
           {localize('com_ui_trace_title')}
         </h2>

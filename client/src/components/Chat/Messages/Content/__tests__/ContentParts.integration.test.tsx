@@ -1,9 +1,14 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { ContentTypes, Tools } from 'librechat-data-provider';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { EventSubmission, TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
+import useAttachments from '~/hooks/Messages/useAttachments';
+import { ParallelColumns } from '../ParallelContent';
 import ContentParts from '../ContentParts';
+import { FOLD_GLYPH_CLASS } from '../rows';
+import { litFoldPath } from '../rail';
 import { Text } from '../Parts';
 
 jest.mock('~/hooks', () => ({
@@ -33,6 +38,37 @@ jest.mock('~/hooks/MCP', () => {
   return {
     useMCPIconMap: () => new Map(),
     useMCPServerNames: () => mcpServerNames,
+  };
+});
+
+jest.mock('~/components/MCPUIResource', () => {
+  const ReactActual = jest.requireActual('react') as typeof React;
+  const MCPAppSuppressionContext = ReactActual.createContext<ReadonlySet<TAttachment> | null>(null);
+  return {
+    MCPAppSuppressionContext,
+    MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => {
+      const suppressed = ReactActual.useContext(MCPAppSuppressionContext);
+      const visible = (attachments ?? []).filter((attachment) => !suppressed?.has(attachment));
+      if (visible.length === 0) {
+        return null;
+      }
+      return (
+        <div
+          data-testid="mcp-app-attachments"
+          data-owners={visible
+            .map((attachment) => {
+              const owned = attachment as TAttachment & { agentId?: string; stepId?: string };
+              const resources = (attachment.ui_resources ?? []) as Array<{
+                resourceId: string;
+              }>;
+              return `${owned.agentId ?? 'none'}/${owned.stepId ?? 'none'}/${resources
+                .map((resource) => resource.resourceId)
+                .join('+')}`;
+            })
+            .join(',')}
+        />
+      );
+    },
   };
 });
 
@@ -502,6 +538,336 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
       '1',
     ]);
   });
+
+  it('routes repeated App call ids by agent and exact-or-fallback host step', () => {
+    const content = [
+      makeMcpToolCall('call_0', true, 'step-1', 'agent-a'),
+      makeTextPart('between calls'),
+      makeMcpToolCall('call_0', true, undefined, 'agent-a'),
+      makeTextPart('between agents'),
+      makeMcpToolCall('call_0', true, 'step-1', 'agent-b'),
+    ];
+    const appResource = (resourceId: string) => ({
+      resourceId,
+      uri: 'ui://demo/view',
+      mimeType: 'text/html;profile=mcp-app',
+      toolName: 'show_app',
+      serverName: 'demo',
+    });
+    const attachments = [
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId: 'step-1',
+        [Tools.ui_resources]: [appResource('alpha')],
+      },
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_0',
+        agentId: 'agent-a',
+        stepId: 'step-2',
+        [Tools.ui_resources]: [appResource('beta')],
+      },
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_0',
+        agentId: 'agent-b',
+        stepId: 'step-1',
+        [Tools.ui_resources]: [appResource('gamma')],
+      },
+    ] as unknown as TAttachment[];
+
+    renderContentParts({ ...baseProps, content, attachments });
+
+    expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
+      ['agent-a/step-1/alpha,agent-a/step-2/beta,agent-b/step-1/gamma'],
+    );
+  });
+
+  it('retains one App view through created and durable response identity hydration', () => {
+    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
+    const attachments = [
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_app',
+        agentId: 'agent-a',
+        stepId: 'step-1',
+        [Tools.ui_resources]: [
+          {
+            resourceId: 'app',
+            uri: 'ui://demo/view',
+            mimeType: 'text/html;profile=mcp-app',
+            toolName: 'show_app',
+            serverName: 'demo',
+          },
+        ],
+      },
+    ] as unknown as TAttachment[];
+    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
+      <RecoilRoot>
+        <ContentParts
+          {...baseProps}
+          content={content}
+          attachments={attachments}
+          isSubmitting
+          isLatestMessage
+          messageId="local-user_"
+          renderOwnerId="local-user"
+          conversationId={String(Constants.NEW_CONVO)}
+          {...props}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame({}));
+    const appView = screen.getByTestId('mcp-app-attachments');
+
+    /** `createdHandler` replaces both the user-derived response id and new-chat conversation id,
+     * while `clientQueueParentMessageId` keeps this response linked to its submission. */
+    rerender(frame({ messageId: 'server-user_', conversationId: 'conversation-1' }));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+
+    /** `finalHandler` installs the durable response and drops the client-only owner anchor. */
+    rerender(
+      frame({
+        messageId: 'server-response',
+        conversationId: 'conversation-1',
+        renderOwnerId: undefined,
+        isSubmitting: false,
+      }),
+    );
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+  });
+
+  it('keeps the message-owned App while activity, grouping, and parallel presentation change', () => {
+    const appCall = makeMcpToolCall('call_app', true, 'step-1', 'agent-a');
+    const otherCall = makeMcpToolCall('call_other', true, 'step-1', 'agent-b');
+    const attachment = {
+      type: Tools.ui_resources,
+      toolCallId: 'call_app',
+      agentId: 'agent-a',
+      stepId: 'step-1',
+      [Tools.ui_resources]: [
+        {
+          resourceId: 'app',
+          uri: 'ui://demo/view',
+          mimeType: 'text/html;profile=mcp-app',
+          toolName: 'show_app',
+          serverName: 'demo',
+        },
+      ],
+    } as unknown as TAttachment;
+    const frame = (content: TMessageContentParts[]) => (
+      <RecoilRoot>
+        <ContentParts
+          {...baseProps}
+          content={content}
+          attachments={[attachment]}
+          messageId="response_"
+          renderOwnerId="user-parent"
+          conversationId="conversation-1"
+          isSubmitting
+          isLatestMessage
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame([appCall]));
+    const appView = screen.getByTestId('mcp-app-attachments');
+
+    /** A second adjacent call changes the sequential card presentation. */
+    rerender(frame([appCall, otherCall]));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+
+    /** A server phase marker claims the calls after the App has mounted. */
+    rerender(frame([appCall, otherCall, makePhasePart(0, 2, 'Rendered the scene')]));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+
+    /** Discovering a second lane moves the tool rows into parallel columns. */
+    const parallel = [
+      { ...(appCall as object), agentId: 'agent-a', groupId: 7 },
+      { ...(otherCall as object), agentId: 'agent-b', groupId: 7 },
+    ] as unknown as TMessageContentParts[];
+    rerender(frame(parallel));
+    expect(screen.getByTestId('mcp-app-attachments')).toBe(appView);
+  });
+
+  it('remounts an App for a same-parent regeneration and a real sibling switch', () => {
+    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
+    const attachments = [
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_app',
+        agentId: 'agent-a',
+        stepId: 'step-1',
+        [Tools.ui_resources]: [
+          {
+            resourceId: 'app',
+            uri: 'ui://demo/view',
+            mimeType: 'text/html;profile=mcp-app',
+            toolName: 'show_app',
+            serverName: 'demo',
+          },
+        ],
+      },
+    ] as unknown as TAttachment[];
+    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
+      <RecoilRoot>
+        <ContentParts
+          {...baseProps}
+          content={content}
+          attachments={attachments}
+          conversationId="conversation-1"
+          {...props}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(
+      frame({ messageId: 'first-response', renderOwnerId: undefined, isSubmitting: false }),
+    );
+    const settledView = screen.getByTestId('mcp-app-attachments');
+
+    /** Regeneration deliberately reuses the user-parent anchor, so the settled → submitting
+     * transition must rotate scope rather than treating the shared parent as response identity. */
+    rerender(
+      frame({
+        messageId: 'first-response_',
+        renderOwnerId: 'same-user-parent',
+        isSubmitting: true,
+        isLatestMessage: true,
+      }),
+    );
+    const regeneratedView = screen.getByTestId('mcp-app-attachments');
+    expect(regeneratedView).not.toBe(settledView);
+
+    rerender(
+      frame({
+        messageId: 'other-sibling',
+        renderOwnerId: undefined,
+        isSubmitting: false,
+        isLatestMessage: false,
+        siblingIdx: 1,
+      }),
+    );
+    expect(screen.getByTestId('mcp-app-attachments')).not.toBe(regeneratedView);
+  });
+
+  it('does not carry an active App into another conversation or an unsupported durable transition', () => {
+    const content = [makeMcpToolCall('call_app', true, 'step-1', 'agent-a')];
+    const attachments = [
+      {
+        type: Tools.ui_resources,
+        toolCallId: 'call_app',
+        agentId: 'agent-a',
+        stepId: 'step-1',
+        [Tools.ui_resources]: [
+          {
+            resourceId: 'app',
+            uri: 'ui://demo/view',
+            mimeType: 'text/html;profile=mcp-app',
+            toolName: 'show_app',
+            serverName: 'demo',
+          },
+        ],
+      },
+    ] as unknown as TAttachment[];
+    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>>) => (
+      <RecoilRoot>
+        <ContentParts
+          {...baseProps}
+          content={content}
+          attachments={attachments}
+          isSubmitting
+          isLatestMessage
+          messageId="response_"
+          renderOwnerId="user-parent"
+          conversationId="conversation-1"
+          {...props}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame({}));
+    const originalView = screen.getByTestId('mcp-app-attachments');
+
+    rerender(frame({ messageId: 'other-response_', conversationId: 'conversation-2' }));
+    const otherConversationView = screen.getByTestId('mcp-app-attachments');
+    expect(otherConversationView).not.toBe(originalView);
+
+    /** A durable id while still submitting is supported only when the response owner remains
+     * explicit (the Assistants sync path spreads the initial response). Owner loss belongs to
+     * `finalHandler`, which also ends submission. */
+    rerender(
+      frame({
+        messageId: 'unexpected-durable-response',
+        conversationId: 'conversation-2',
+        renderOwnerId: undefined,
+      }),
+    );
+    expect(screen.getByTestId('mcp-app-attachments')).not.toBe(otherConversationView);
+  });
+
+  it('retains resumed App steps through the SSE atom, merge hook, and content router', () => {
+    const content = [
+      makeMcpToolCall('call_0', true, 'step-1', 'agent-a'),
+      makeTextPart('resume boundary'),
+      makeMcpToolCall('call_0', true, 'step-2', 'agent-a'),
+    ];
+    const appResource = (resourceId: string) => ({
+      resourceId,
+      uri: 'ui://demo/view',
+      mimeType: 'text/html;profile=mcp-app',
+      toolName: 'show_app',
+      serverName: 'demo',
+    });
+    const alpha = {
+      type: Tools.ui_resources,
+      messageId: 'msg1',
+      toolCallId: 'call_0',
+      agentId: 'agent-a',
+      stepId: 'step-1',
+      [Tools.ui_resources]: [appResource('alpha')],
+    } as unknown as TAttachment;
+    const beta = {
+      type: Tools.ui_resources,
+      messageId: 'msg1',
+      toolCallId: 'call_0',
+      agentId: 'agent-a',
+      stepId: 'step-2',
+      [Tools.ui_resources]: [appResource('beta')],
+    } as unknown as TAttachment;
+
+    const ResumeHarness = () => {
+      const handleAttachment = useAttachmentHandler();
+      const { attachments } = useAttachments({ messageId: 'msg1', attachments: [alpha] });
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => handleAttachment({ data: beta, submission: {} as EventSubmission })}
+          >
+            {'stream beta'}
+          </button>
+          <ContentParts {...baseProps} content={content} attachments={attachments} />
+        </>
+      );
+    };
+
+    render(
+      <RecoilRoot>
+        <ResumeHarness />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
+      ['agent-a/step-1/alpha'],
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'stream beta' }));
+
+    expect(screen.getAllByTestId('mcp-app-attachments').map((view) => view.dataset.owners)).toEqual(
+      ['agent-a/step-1/alpha,agent-a/step-2/beta'],
+    );
+  });
+
   it('keeps a manually expanded completed tool group open when its content index shifts', () => {
     const content = [makeMcpToolCall('t1'), makeMcpToolCall('t2')];
     const nextContent = [makeTextPart('streamed preface'), ...content];
@@ -1307,7 +1673,7 @@ describe('ContentParts — live activity fold', () => {
   const intentCall = (id: string, intent: string, output = ''): TMessageContentParts =>
     ({
       type: ContentTypes.TOOL_CALL,
-      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: `{"intent":"${intent}`, output },
+      [ContentTypes.TOOL_CALL]: { id, name: 'lookup', args: JSON.stringify({ intent }), output },
     }) as unknown as TMessageContentParts;
 
   const liveHeader = () =>
@@ -1327,6 +1693,46 @@ describe('ContentParts — live activity fold', () => {
     expect(liveHeader()).toHaveTextContent('Querying the graph');
     expect(screen.queryByTestId('tool-call')).toBeNull();
     expect(screen.queryByRole('button', { name: /^Running 2 actions/ })).toBeNull();
+  });
+
+  it('keeps the folded status preparing until measured dispatch, then restores its intent', () => {
+    jest.useFakeTimers();
+    const frame = (args: string, toolDispatchedAt?: number) => (
+      <RecoilRoot>
+        <ContentParts
+          {...liveProps}
+          content={[
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: {
+                id: 't1',
+                name: 'lookup',
+                args,
+                output: '',
+                toolPreparationStartedAt: 100,
+                toolDispatchedAt,
+              },
+            },
+          ]}
+        />
+      </RecoilRoot>
+    );
+    const { rerender } = render(frame('{"intent":"Querying the graph","query":"SELECT'));
+    const card = screen.getByTestId('activity-phase-card');
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    expect(liveHeader()).not.toHaveTextContent('Querying the graph');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}'));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(liveHeader()).toHaveTextContent('com_ui_tool_preparing');
+    rerender(frame('{"intent":"Querying the graph","query":"SELECT 1"}', 200));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(liveHeader()).toHaveTextContent('Querying the graph');
+    expect(liveHeader()).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('folds from the very first call so the block never changes shape as calls arrive', () => {
@@ -1816,5 +2222,54 @@ describe('ContentParts — live activity fold', () => {
       'aria-expanded',
       'true',
     );
+  });
+});
+
+describe('fold paths in parallel columns', () => {
+  it('marks real lane boundaries and selects the header owning each output', () => {
+    const { container } = render(
+      <div data-fold-root="">
+        <div data-fold-panel="">
+          <button type="button" tabIndex={-1} aria-hidden="true" data-fold-rail="" />
+          <ParallelColumns
+            columns={[
+              {
+                agentId: 'left',
+                parts: [{ idx: 0, part: { type: ContentTypes.TEXT, text: 'left' } }],
+              },
+              {
+                agentId: 'right',
+                parts: [{ idx: 1, part: { type: ContentTypes.TEXT, text: 'right' } }],
+              },
+            ]}
+            groupId={1}
+            messageId="parallel-fold"
+            isSubmitting={false}
+            lastContentIdx={1}
+            renderPart={(_part, idx) => (
+              <div key={idx}>
+                <span className={FOLD_GLYPH_CLASS} data-testid={`lane-glyph-${idx}`} />
+                <pre data-testid={`lane-output-${idx}`} />
+              </div>
+            )}
+          />
+        </div>
+      </div>,
+    );
+    expect(container.querySelectorAll('[data-fold-column]')).toHaveLength(2);
+    const root = container.querySelector('[data-fold-root]')!;
+    const rail = container.querySelector<HTMLElement>('[data-fold-rail]')!;
+    rail.getBoundingClientRect = () => ({ top: 40 }) as DOMRect;
+    screen.getByTestId('lane-glyph-0').getBoundingClientRect = () =>
+      ({ top: 300, height: 20 }) as DOMRect;
+    screen.getByTestId('lane-glyph-1').getBoundingClientRect = () =>
+      ({ top: 50, height: 20 }) as DOMRect;
+    const cache = new WeakMap<Element, Element[]>();
+    expect(litFoldPath(root, screen.getByTestId('lane-output-0'), 350, cache)).toEqual([
+      { rail, length: 268, end: true },
+    ]);
+    expect(litFoldPath(root, screen.getByTestId('lane-output-1'), 350, cache)).toEqual([
+      { rail, length: 18, end: true },
+    ]);
   });
 });

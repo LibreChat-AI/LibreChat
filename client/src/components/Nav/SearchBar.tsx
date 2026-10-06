@@ -2,10 +2,11 @@ import React, { forwardRef, useState, useCallback, useMemo, useEffect, useRef } 
 import debounce from 'lodash/debounce';
 import { useRecoilState } from 'recoil';
 import { Search, X } from 'lucide-react';
+import { buttonVariants } from '@librechat/client';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
+import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import { useLocalize, useNewConvo } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -35,6 +36,7 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
   const inputRef = useRef<HTMLInputElement>(null);
   const [showClearIcon, setShowClearIcon] = useState(() => (search.query ?? '').length > 0);
   const focusSearchAriaKey = useShortcutAriaKey('focusSearch');
+  const shortcutDisplay = useShortcutDisplay('focusSearch');
 
   const clearSearch = useCallback(
     (pathname?: string) => {
@@ -103,6 +105,25 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
     [setSearchState, clearSearch, debouncedSetDebouncedQuery],
   );
 
+  /** Escape empties the field rather than only leaving it: a stale query keeps the
+   *  results route mounted, so dismissing the search has to dismiss what it found.
+   *  Stopped here so it does not also close the drawer the field sits in. An IME
+   *  composing text owns Escape, which cancels the composition, not the search. */
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.code === 'Space') {
+        e.stopPropagation();
+        return;
+      }
+      if (e.key === 'Escape' && text !== '' && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        e.stopPropagation();
+        clearText(location.pathname);
+      }
+    },
+    [clearText, location.pathname, text],
+  );
+
   const handleKeyUp = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
       const { value } = e.target as HTMLInputElement;
@@ -139,22 +160,23 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
   return (
     <div
       ref={ref}
-      className="group relative flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg border-2 border-transparent px-3 py-1.5 text-text-primary focus-within:border-ring-primary focus-within:bg-surface-active-alt hover:bg-surface-active-alt"
+      /** A field, resting on a fill of its own: the sidebar and the content beside
+       *  it share one surface now, so a transparent box with nothing in it read as
+       *  empty space rather than as somewhere to type.
+       *
+       *  No edge on focus, by request. What marks the focused field is its caret and
+       *  the chord appearing in the trailing slot. */
+      className="group bg-surface-search text-text-primary flex h-9 min-w-0 flex-1 cursor-text items-center gap-2 rounded-lg pr-1 pl-2.5"
     >
-      <Search
-        aria-hidden="true"
-        className="absolute left-3 h-4 w-4 text-text-secondary group-focus-within:text-text-primary group-hover:text-text-primary"
-      />
+      <Search aria-hidden="true" className="text-text-secondary size-4 shrink-0" />
       <input
         type="text"
         data-testid="nav-search-input"
         ref={inputRef}
-        className="m-0 mr-0 w-full border-none bg-transparent p-0 pl-7 text-sm leading-tight placeholder-text-secondary placeholder-opacity-100 focus-visible:outline-none group-focus-within:placeholder-text-primary group-hover:placeholder-text-primary"
+        className="placeholder-text-secondary m-0 min-w-0 flex-1 border-none bg-transparent p-0 text-sm leading-tight focus-visible:outline-hidden"
         value={text}
         onChange={onChange}
-        onKeyDown={(e) => {
-          e.code === 'Space' ? e.stopPropagation() : null;
-        }}
+        onKeyDown={handleKeyDown}
         aria-label={localize('com_nav_search_placeholder')}
         aria-keyshortcuts={focusSearchAriaKey}
         placeholder={localize('com_nav_search_placeholder')}
@@ -164,20 +186,37 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
         autoComplete="off"
         dir="auto"
       />
-      <button
-        type="button"
-        aria-label={localize('com_ui_clear_search')}
-        className={cn(
-          'absolute right-[7px] flex h-5 w-5 items-center justify-center rounded-full border-none bg-transparent p-0 transition-opacity duration-200',
-          showClearIcon ? 'opacity-100' : 'opacity-0',
-          isSmallScreen === true ? 'right-[16px]' : '',
-        )}
-        onClick={() => clearText(location.pathname)}
-        tabIndex={showClearIcon ? 0 : -1}
-        disabled={!showClearIcon}
-      >
-        <X className="h-5 w-5 cursor-pointer" aria-hidden="true" />
-      </button>
+      {showClearIcon ? (
+        <button
+          type="button"
+          aria-label={localize('com_ui_clear_search')}
+          className={cn(
+            buttonVariants({ variant: 'ghost', size: 'icon-xs' }),
+            /** One radius step inside the field it sits in, and the same 4px from
+             *  the top, the bottom and the trailing edge, so the field's corner and
+             *  the button's corner are concentric. */
+            'text-text-secondary hover:text-text-primary shrink-0 rounded-md',
+          )}
+          onClick={() => clearText(location.pathname)}
+        >
+          <X className="size-4" aria-hidden="true" />
+        </button>
+      ) : (
+        /** The chord that reaches this field, shown once the field has focus and not
+         *  in the resting sidebar, where it would be one more thing printed on a
+         *  surface meant to be quiet. It keeps its width either way, so nothing
+         *  shifts as it appears. Absent on touch, where there is no chord to press,
+         *  and while there is a query, where the clear takes the slot. */
+        shortcutDisplay !== '' &&
+        isSmallScreen !== true && (
+          <kbd
+            aria-hidden="true"
+            className="bg-surface-tertiary text-text-secondary pointer-events-none shrink-0 rounded-md px-1.5 py-0.5 font-sans text-xs font-medium opacity-0 group-focus-within:opacity-100"
+          >
+            {shortcutDisplay}
+          </kbd>
+        )
+      )}
     </div>
   );
 });

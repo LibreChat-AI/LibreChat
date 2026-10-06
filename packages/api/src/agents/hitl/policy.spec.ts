@@ -1,3 +1,5 @@
+import { createToolPolicyHook } from '@librechat/agents';
+import { ReasoningEffort } from 'librechat-data-provider';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import {
   resolveToolApprovalPolicy,
@@ -17,10 +19,12 @@ import {
   sanitizeResumeModelParameters,
   pickResumeContext,
   applyResumeContext,
+  applyResumeRequest,
   applyResumeModelParameters,
   exemptAskUserQuestionFromApproval,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
+  isToolBlockedByApprovalPolicy,
 } from './policy';
 
 describe('isToolApprovalPauseCapable', () => {
@@ -424,10 +428,11 @@ describe('toClientPendingAction', () => {
     ],
   };
 
-  test('omits server-only replay state, keeping the fields the client renders from', () => {
+  test('omits server-only replay and project context state', () => {
     const full = buildPendingAction(payload, {
       streamId: 'stream-1',
       conversationId: 'conv-1',
+      projectContextKey: 'project:p1:r2',
       requestFingerprint: 'fp-hash',
       requestFingerprintV2: 'fp-v2-hash',
       resumeContext: {
@@ -438,6 +443,7 @@ describe('toClientPendingAction', () => {
         version: 1,
         targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
       },
+      toolApprovalAliases: [{ name: 'shell', aliasName: 'legacy_shell' }],
     });
 
     const clientSafe = toClientPendingAction(full);
@@ -446,6 +452,8 @@ describe('toClientPendingAction', () => {
     expect(clientSafe?.requestFingerprint).toBeUndefined();
     expect(clientSafe?.requestFingerprintV2).toBeUndefined();
     expect(clientSafe?.codeExecutionBinding).toBeUndefined();
+    expect(clientSafe?.toolApprovalAliases).toBeUndefined();
+    expect(clientSafe?.projectContextKey).toBeUndefined();
     expect(clientSafe?.actionId).toBe(full.actionId);
     expect(clientSafe?.streamId).toBe('stream-1');
     expect(clientSafe?.payload).toBe(full.payload);
@@ -457,6 +465,8 @@ describe('toClientPendingAction', () => {
       version: 1,
       targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
     });
+    expect(full.projectContextKey).toBe('project:p1:r2');
+    expect(full.toolApprovalAliases).toEqual([{ name: 'shell', aliasName: 'legacy_shell' }]);
   });
 
   test('passes through nullish input', () => {
@@ -626,6 +636,19 @@ describe('captureResumeModelParameters', () => {
     ).toEqual({ thinking: false, effort: 'low' });
   });
 
+  test('the validated one-shot reasoning selection wins on resume and re-enables thinking', () => {
+    expect(
+      captureResumeModelParameters(
+        {
+          thinking: false,
+          effort: 'low',
+          reasoningOverride: { key: 'effort', value: 'max' },
+        },
+        { thinking: { type: 'adaptive' }, invocationKwargs: { output_config: { effort: 'max' } } },
+      ),
+    ).toEqual({ thinking: true, effort: 'max' });
+  });
+
   test('resolved params still fill gaps the body lacks (normalized to UI form)', () => {
     expect(
       captureResumeModelParameters(
@@ -793,6 +816,14 @@ describe('computeAgentRequestFingerprint', () => {
 });
 
 describe('pickResumeContext / applyResumeContext', () => {
+  it('captures the trusted reasoning snapshot alongside the body fields', () => {
+    const base = { key: 'reasoning_effort' as const, hadValue: true, value: 'low' };
+    const ctx = pickResumeContext({ endpoint: 'agents' }, base);
+    expect(ctx).toEqual({ endpoint: 'agents', reasoningOverrideBase: base });
+    expect(ctx.reasoningOverrideBase).not.toBe(base);
+    expect(pickResumeContext({ endpoint: 'agents' }, null)).toEqual({ endpoint: 'agents' });
+  });
+
   it('picks only the graph-determining fields (incl. addedConvo + timezone), dropping unrelated keys', () => {
     const ctx = pickResumeContext({
       endpoint: 'agents',
@@ -805,6 +836,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       timezone: 'America/New_York',
       // Graph-determining: skill allowed-tools union into the tool set.
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       // Graph-determining: feeds the ephemeral agent id / checkpoint namespace (#14253).
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
@@ -823,6 +855,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       addedConvo: { agent_id: 'secondary' },
       timezone: 'America/New_York',
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
       codeEnvironmentMode: 'attached',
@@ -979,6 +1012,42 @@ describe('pickResumeContext / applyResumeContext', () => {
   });
 });
 
+describe('applyResumeRequest', () => {
+  it('restores the body, the reasoning snapshot and the generation params together', () => {
+    const reasoningOverrideBase = { key: 'reasoning_effort' as const, hadValue: false };
+    const req: {
+      body: Record<string, unknown>;
+      reasoningOverrideBase?: typeof reasoningOverrideBase;
+      resumeReplayed?: boolean;
+    } = { body: { conversationId: 'c', addedConvo: { endpoint: 'x' } } };
+    applyResumeRequest(req, {
+      endpoint: 'agents',
+      reasoningOverrideBase,
+      model_parameters: { temperature: 0.3, conversationId: 'forged' },
+    });
+    expect(req.body).toEqual({ conversationId: 'c', endpoint: 'agents', temperature: 0.3 });
+    expect(req.reasoningOverrideBase).toEqual(reasoningOverrideBase);
+    expect(req.reasoningOverrideBase).not.toBe(reasoningOverrideBase);
+    /* Marks the request as carrying trusted replayed state, so a replayed
+       override that no longer validates degrades instead of refusing. */
+    expect(req.resumeReplayed).toBe(true);
+  });
+
+  it('leaves the reasoning snapshot unset when the paused turn had none', () => {
+    const req: { body: Record<string, unknown>; reasoningOverrideBase?: undefined } = {
+      body: {},
+    };
+    applyResumeRequest(req, { endpoint: 'agents' });
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('is a no-op without a persisted context', () => {
+    const req = { body: { ephemeralAgent: null } };
+    applyResumeRequest(req, undefined);
+    expect(req).toEqual({ body: { ephemeralAgent: null } });
+  });
+});
+
 describe('applyResumeModelParameters', () => {
   it('replays generation params without replacing routing or resume identity fields (#14946)', () => {
     const body: Record<string, unknown> = {
@@ -1126,4 +1195,31 @@ describe('collectAliasMatcherNames', () => {
     expect(regex.test('c_mcp_acme')).toBe(true);
     expect(regex.test('xc_mcp_acme')).toBe(false);
   });
+});
+
+test.each([
+  { mode: 'dontAsk' as const },
+  { mode: 'dontAsk' as const, allow: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], deny: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['other*'] },
+  { mode: 'bypass' as const },
+  { mode: 'default' as const },
+])('concrete fallback denial matches the SDK baseline: %j', async (config) => {
+  const policy = { enabled: true, ...config };
+  const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+  const result = await hook(
+    {
+      hook_event_name: 'PreToolUse',
+      runId: 'test',
+      toolName: 'query_mcp_db',
+      toolInput: {},
+      toolUseId: 'call',
+    },
+    new AbortController().signal,
+  );
+  expect(isToolBlockedByApprovalPolicy(policy, 'query_mcp_db')).toBe(result.decision === 'deny');
+  if (result.decision === 'deny')
+    expect(isToolApprovalPauseCapable(policy, true, ['query_mcp_db'])).toBe(false);
 });

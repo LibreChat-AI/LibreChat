@@ -43,7 +43,7 @@ import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
 import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
 import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
-import { clearMessagesCache, cn } from '~/utils';
+import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
 import Convo from './Convo';
 import store from '~/store';
@@ -55,17 +55,6 @@ const iconButtonClassName = cn(
   buttonVariants({ variant: 'section-action', size: 'icon-xs' }),
   'shrink-0',
 );
-
-/** The same control on a project row rather than beside the heading. The row
- *  itself already fills on hover, so the variant's hover surface would leave
- *  the button reading as a second, weaker hover on top of it. These take the
- *  active fill instead — the same one the row's own selected state uses — both
- *  under the pointer and while the menu they own is open. */
-const rowActionClassName = cn(
-  iconButtonClassName,
-  'hover:bg-surface-active hover:text-text-primary',
-);
-const rowActionOpenClassName = 'bg-surface-active text-text-primary';
 
 const noop = () => {};
 
@@ -100,7 +89,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
   );
   /** Collapse keeps its children mounted, so without this every project row in
    *  the sidebar would fetch its chats on load whether or not it is open. */
-  const { data, isLoading } = useConversationsInfiniteQuery(
+  const { data, isLoading, isError, refetch } = useConversationsInfiniteQuery(
     { projectId, sortBy: 'updatedAt', sortDirection: 'desc' },
     { staleTime: 30000, cacheTime: 300000, enabled: expanded },
   );
@@ -126,9 +115,26 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
     );
   }
 
+  /** Chats scopes itself to chats outside any project, so a project whose own list failed
+   *  says so and offers a retry rather than reading as empty. */
+  if (isError && conversations.length === 0) {
+    return (
+      <div
+        className="text-text-secondary flex items-center gap-1 py-1.5 pl-2 text-xs"
+        data-testid={`project-chats-error-${projectId}`}
+        role="alert"
+      >
+        <span>{localize('com_ui_chats_load_error')}</span>
+        <Button type="button" variant="ghost" size="sm" onClick={() => refetch()}>
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    );
+  }
+
   if (conversations.length === 0) {
     return (
-      <div className="py-1.5 pl-2 text-xs text-text-secondary">
+      <div className="text-text-secondary py-1.5 pl-2 text-xs">
         {localize('com_ui_no_project_chats')}
       </div>
     );
@@ -152,7 +158,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
           variant="ghost"
           size="sm"
           onClick={onShowAll}
-          className="ml-1 mt-0.5 h-auto rounded-md px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:text-text-primary"
+          className="text-text-secondary hover:text-text-primary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium transition-colors"
         >
           {localize('com_ui_show_all')}
         </Button>
@@ -182,8 +188,18 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
-    const [isRenameOpen, setIsRenameOpen] = useState(false);
+    /** The dialog items keep the menu open so it does not steal focus from the
+     *  dialog mounting beside it; closing the dialog closes the menu too. */
+    const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
+      setOpen(open);
+      if (!open) {
+        setIsMenuOpen(false);
+      }
+    };
     const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+    const [isEditOpen, setIsEditOpen] = useState(false);
+    const editMenuRef = useRef<HTMLButtonElement>(null);
+    const deleteMenuRef = useRef<HTMLButtonElement>(null);
     const projectChatPath = `/c/${Constants.NEW_CONVO}?projectId=${encodeURIComponent(project._id)}`;
 
     /* The whole item, header plus its expanded chats, is the drop target for
@@ -259,33 +275,40 @@ const ProjectItem = memo(
         {
           id: `${menuId}-open`,
           label: localize('com_ui_open_project'),
-          icon: <Folder className="size-4 text-text-secondary" aria-hidden="true" />,
+          icon: <Folder className="text-text-secondary size-4" aria-hidden="true" />,
           onClick: openProject,
         },
         {
           id: `${menuId}-rename`,
           label: localize('com_ui_edit_project'),
-          icon: <Pencil className="size-4 text-text-secondary" aria-hidden="true" />,
-          onClick: () => setIsRenameOpen(true),
+          icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
+          onClick: () => setIsEditOpen(true),
+          hideOnClick: false,
+          ref: editMenuRef,
+          render: (props) => <button {...props} />,
         },
         {
           id: `${menuId}-delete`,
           label: localize('com_ui_delete'),
-          icon: <Trash2 className="size-4 text-text-secondary" aria-hidden="true" />,
+          icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
           onClick: () => setIsDeleteOpen(true),
+          hideOnClick: false,
+          ref: deleteMenuRef,
+          render: (props) => <button {...props} />,
         },
       ],
       [localize, menuId, openProject],
     );
 
     return (
-      <li className="list-none" ref={projectRowRef}>
+      <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
           className={cn(
-            'group/project-row relative flex h-9 items-center rounded-lg text-sm text-text-primary hover:bg-surface-hover',
-            isActive && 'bg-surface-active-alt hover:bg-surface-active-alt',
-            !isActive && isMenuOpen && 'bg-surface-hover',
-            isDropOver && canDrop && 'bg-surface-active-alt ring-1 ring-inset ring-border-medium',
+            'group text-text-primary relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
+            isActive || isMenuOpen || (isDropOver && canDrop)
+              ? 'bg-surface-nav-selected'
+              : 'hover:bg-surface-nav-hover',
+            isDropOver && canDrop && 'ring-border-medium ring-1 ring-inset',
           )}
         >
           <button
@@ -294,32 +317,23 @@ const ProjectItem = memo(
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={expanded}
             aria-label={project.name}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pl-1.5 pr-16 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary"
+            className="focus-visible:ring-text-primary flex w-full max-w-full min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pr-16 pl-1.5 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
           >
             <ChevronRight
               className={cn(
-                'h-3.5 w-3.5 shrink-0 text-text-tertiary transition-transform duration-200',
+                'text-text-tertiary h-3.5 w-3.5 shrink-0 transition-transform duration-200',
                 expanded && 'rotate-90',
               )}
               aria-hidden="true"
             />
-            <Folder className="h-4 w-4 shrink-0 text-text-secondary" aria-hidden="true" />
-            <span className="min-w-0 truncate">{project.name}</span>
+            <Folder className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-full min-w-0 truncate wrap-anywhere">{project.name}</span>
           </button>
           <div
-            className={cn(
-              /* The 4px between the two controls, and from the row's trailing
-                 edge, that a pinned chat keeps between its unpin badge and its
-                 overflow menu. */
-              'absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-1',
-              isMenuOpen
-                ? 'opacity-100'
-                : [
-                    '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:transition-opacity',
-                    'group-hover/project-row:opacity-100',
-                    'has-[:focus-visible]:opacity-100',
-                  ],
-            )}
+            /* The 4px between the two controls, and from the row's trailing edge,
+               that a pinned chat keeps between its unpin badge and its overflow
+               menu. Each control reveals itself. */
+            className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-1"
           >
             <TooltipAnchor
               description={localize('com_ui_new_chat_in_project', { name: project.name })}
@@ -327,7 +341,7 @@ const ProjectItem = memo(
                 <a
                   href={projectChatPath}
                   aria-label={localize('com_ui_new_chat_in_project', { name: project.name })}
-                  className={rowActionClassName}
+                  className={rowActionClasses({ visible: isMenuOpen })}
                   onClick={startChat}
                 >
                   <NewChatIcon className="h-4 w-4" />
@@ -341,12 +355,13 @@ const ProjectItem = memo(
               menuId={menuId}
               isOpen={isMenuOpen}
               setIsOpen={setIsMenuOpen}
-              className="z-[125] min-w-44"
+              className="z-[125]"
+              minWidth="11rem"
               iconClassName="mr-2 text-text-secondary"
               trigger={
                 <Ariakit.MenuButton
                   aria-label={localize('com_ui_more_options')}
-                  className={cn(rowActionClassName, isMenuOpen && rowActionOpenClassName)}
+                  className={rowActionClasses({ open: isMenuOpen })}
                 >
                   <Ellipsis className="h-4 w-4" aria-hidden="true" />
                 </Ariakit.MenuButton>
@@ -356,15 +371,27 @@ const ProjectItem = memo(
           </div>
         </div>
         <Collapse open={expanded} className="pl-2">
-          <ProjectChatsInline
-            projectId={project._id}
-            expanded={expanded}
-            toggleNav={toggleNav}
-            onShowAll={openProject}
-          />
+          <div className="pt-1">
+            <ProjectChatsInline
+              projectId={project._id}
+              expanded={expanded}
+              toggleNav={toggleNav}
+              onShowAll={openProject}
+            />
+          </div>
         </Collapse>
-        <ProjectEditDialog open={isRenameOpen} onOpenChange={setIsRenameOpen} project={project} />
-        <ProjectDeleteDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen} project={project} />
+        <ProjectEditDialog
+          open={isEditOpen}
+          onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
+          project={project}
+          triggerRef={editMenuRef}
+        />
+        <ProjectDeleteDialog
+          open={isDeleteOpen}
+          onOpenChange={(open) => closeMenuWith(setIsDeleteOpen, open)}
+          project={project}
+          triggerRef={deleteMenuRef}
+        />
       </li>
     );
   },
@@ -428,18 +455,22 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     if (isLoading && projects.length === 0) {
       return (
         <div className="flex justify-start py-2 pl-2">
-          <Spinner className="h-4 w-4 text-text-secondary" />
+          <Spinner className="text-text-secondary h-4 w-4" />
         </div>
       );
     }
 
     if (projects.length === 0) {
       return (
+        /* `section-action` owns the quiet-secondary-until-hovered treatment these
+         *  entries share with the section's other controls; only the row shape is
+         *  the caller's. */
         <Button
           type="button"
-          variant="ghost"
+          variant="section-action"
+          size="sm"
           onClick={() => setIsCreateOpen(true)}
-          className="flex h-9 w-full justify-start gap-2 rounded-lg px-2 text-sm font-normal text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+          className="flex w-full justify-start"
         >
           <FolderPlus className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="truncate">{localize('com_ui_new_project')}</span>
@@ -448,7 +479,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     }
 
     return (
-      <ul className="m-0 list-none p-0">
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {projects.map((project) => (
           <ProjectItem
             key={project._id}
@@ -462,9 +493,10 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
           <li className="list-none">
             <Button
               type="button"
-              variant="ghost"
+              variant="section-action"
+              size="xs"
               onClick={openProjects}
-              className="flex h-8 w-full justify-start rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+              className="flex w-full justify-start"
             >
               {localize('com_ui_all_projects')}
             </Button>
@@ -479,8 +511,8 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
   }
 
   return (
-    <div className="flex flex-col px-3 text-sm">
-      <div className="flex h-8 w-full items-center pr-2">
+    <div className="flex flex-col px-3 pt-3 text-sm">
+      <div className="flex h-8 w-full items-center pr-1">
         <button
           type="button"
           onClick={() => {
@@ -490,7 +522,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
           className={cn(buttonVariants({ variant: 'section-header' }), 'group min-w-0 flex-1')}
           aria-expanded={isExpanded}
         >
-          <span className="select-none truncate">{localize('com_ui_projects')}</span>
+          <span className="truncate select-none">{localize('com_ui_projects')}</span>
           <ChevronDown
             className={cn(
               'h-3 w-3 shrink-0 transition-transform duration-200',

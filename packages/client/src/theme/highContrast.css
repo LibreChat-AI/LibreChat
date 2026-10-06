@@ -39,7 +39,8 @@
 html.high-contrast [data-active-item],
 html.high-contrast .select-item:focus-visible,
 html.high-contrast [data-state='selected'],
-html.high-contrast :is(.bg-surface-active, .bg-surface-active-alt):not(span) {
+html.high-contrast
+  :is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected):not(span) {
   outline: 3px solid rgb(var(--text-primary)) !important;
   outline-offset: -3px;
 }
@@ -50,7 +51,7 @@ html.high-contrast :is(.bg-surface-active, .bg-surface-active-alt):not(span) {
  * fragment separately. It still needs a cue, so it inverts instead — the same
  * treatment the mode gives `::selection`, 21:1 and with no geometry to wrap.
  */
-html.high-contrast span:is(.bg-surface-active, .bg-surface-active-alt) {
+html.high-contrast span:is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected) {
   background-color: rgb(var(--text-primary));
   color: rgb(var(--surface-primary));
 }

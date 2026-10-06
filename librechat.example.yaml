@@ -7,6 +7,28 @@ version: 1.3.17
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Chat Projects: the ceilings a single project may reach. Every field is optional and
+# defaults to the value shown, which is the behavior when the block is absent.
+projects:
+  # Reference files that may be attached to one project (maximum 500).
+  maxFiles: 50
+  # Characters of project instructions stored and sent as guidance (maximum 200000).
+  maxInstructionsLength: 16000
+  # Characters of the project description shown in the workspace and sidebar (maximum 10000).
+  maxDescriptionLength: 1000
+
+# Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
+# can run to megabytes, though their cards render collapsed. The web client asks for bounded
+# previews when it loads a conversation (the start and end of each long output, arguments
+# with their long strings shortened, no subagent transcripts) and loads a call in full when
+# the reader opens it. Clients that do not ask, exports and share links get full content.
+# Every field is optional and defaults to the value shown; enabled: false always sends the
+# full payload.
+# toolCallPreviews:
+#   enabled: true
+#   outputChars: 512   # characters of each output kept, half from the start and half from the end
+#   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central
@@ -58,6 +80,8 @@ cache: true
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)
 # fileStrategy: "s3"
+# Maximum rows returned when GET /files receives an explicit `limit` query parameter.
+# fileListLimit: 100
 
 # Granular file storage strategies (new format - recommended)
 # Allows different storage strategies for different file types
@@ -143,8 +167,36 @@ cache: true
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # Allow renaming a running chat or one with a placeholder title (default: true).
+  # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
+  # title-generation jobs have drained. While false, rename is disabled for running chats
+  # and unowned placeholder titles; other actions stay available.
+  # runningChatRename: true
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
+  # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
+  # historyCacheTtlMs: 60000
+  # historyCacheRecent: 1
+  # Deployment theme applied to every user, in both light and dark mode (default: unset).
+  # It is not saved to the browser, outranks REACT_APP_THEME_* colors and stored themes,
+  # and yields to the high-contrast modes. Either a bundled theme name (librechat, clickhouse):
+  # theme: clickhouse
+  # or an inline definition. Colors are space-separated RGB triplets keyed by rgb-* token:
+  # theme:
+  #   version: 1
+  #   name: acme
+  #   modes:
+  #     light:
+  #       colors:
+  #         rgb-surface-primary: '255 255 255'
+  #         rgb-surface-submit: '21 21 21'
+  #       appearance:
+  #         controlRadius: '0.25rem'
+  #     dark:
+  #       colors:
+  #         rgb-surface-primary: '31 31 28'
+  #         rgb-surface-submit: '250 255 105'
   # Enable/disable file search as a chatarea selection (default: true)
   # Note: This setting does not disable the Agents File Search Capability.
   # To disable the Agents Capability, see the Agents Endpoint configuration instead.
@@ -207,6 +259,9 @@ interface:
     public: false
   bookmarks: true
   multiConvo: true
+  # Allow the artifacts pane to be moved into its own browser window
+  # (desktop only; the mobile sheet is unaffected). Default: true.
+  artifactUndocking: true
   agents:
     use: true
     create: true
@@ -249,6 +304,23 @@ interface:
   fileCitations: true
   # Show the thumbs up/thumbs down feedback buttons on responses (default: true)
   feedback: true
+  # Unseen-reply alerts: what this deployment lets a reader turn on. Each field gates a
+  # capability; the preference itself stays per device, because notification permission and
+  # audio output belong to the machine the reader is sitting at. Sidebar unread dots and
+  # Mark as unread are not gated here, they are part of the conversation list.
+  # replyNotifications:
+  #   tabBadge: true # Allow the unseen count in the tab title and favicon (default: true)
+  #   desktop: true # Allow readers to turn on desktop notifications for replies (default: true)
+  #   sound: true # Allow readers to turn on the reply chime (default: true)
+  #   # How many conversations one background poll looks at (1-100, default: 100). The list's
+  #   # own maximum page is the ceiling, so covering a deployment whose replies outpace one
+  #   # page is not a matter of raising this.
+  #   pollLimit: 100
+  #   # Milliseconds between list checks while a tab is away (10000-600000, default: 30000).
+  #   pollIntervalMs: 30000
+  #   # Milliseconds between list refreshes while a tab is focused (60000-300000, default: 300000).
+  #   # It renews the snapshot the unread count reads, so it cannot be slower than five minutes.
+  #   focusedRefreshMs: 300000
   # Conversation trace viewer: a waterfall of the model calls and tool spans behind
   # each response, read from the deployment's Langfuse project. The control only
   # appears on the requesting user's own conversations with a sampled trace, and
@@ -327,8 +399,10 @@ interface:
   # Defaults to the temporary chat retention policy when omitted.
   # generalChatRetention: 2160 # 90 days, independently of temporary chats
   # Existing stored deadlines are not migrated when these settings change.
-  # Retention mode: "all" applies expiry to all data types, "temporary" (default) only to temporary chats
-  # Before switching from "all" back to "temporary", remove retention deadlines from non-temporary data
+  # Retention mode: "temporary" (default) applies expiry only to chats users mark temporary;
+  # "all" applies expiry to all data types while keeping chats visible in history;
+  # "ephemeral" forces every chat to be temporary (always on, not user-toggleable) and applies expiry to all data.
+  # Before switching from "all"/"ephemeral" back to "temporary", remove retention deadlines from non-temporary data
   # that should stop expiring:
   # db.conversations.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
   # db.messages.updateMany({ isTemporary: false, expiredAt: { $ne: null } }, { $unset: { expiredAt: 1 } })
@@ -348,6 +422,17 @@ interface:
 #    size: "normal"      # Options: "normal", "compact", "flexible", or "invisible"
 
 # Example Registration Object Structure (optional)
+# Changing the registered email address from Settings > Account.
+# Omitted, these fall back to ALLOW_EMAIL_CHANGE and a 15-minute link.
+# emailChange:
+#   enabled: true
+#   tokenTTLSeconds: 900
+
+# Passkey (WebAuthn) enrollment limits.
+# Omitted, perUserMax falls back to MAX_PASSKEYS_PER_USER, then 20.
+# passkeys:
+#   perUserMax: 20
+
 registration:
   socialLogins: ['github', 'google', 'discord', 'openid', 'facebook', 'apple', 'saml']
   # allowedDomains:
@@ -364,10 +449,13 @@ registration:
 #   enabled: false
 #   startBalance: 20000
 #   autoRefillEnabled: false
-#   refillIntervalValue: 30
+#   refillIntervalValue: 30 # Reset mode requires a positive integer
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   # Deploy reset-capable servers to every replica before selecting 'reset'.
+#   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
+#   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
 # Example Transactions settings
 # Controls whether to save transaction records to the database
@@ -426,6 +514,10 @@ registration:
 #     - '127.0.0.1:8080'
 
 # rateLimits:
+#   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
+#   mcpApps:
+#     resourcesPerMinute: 120
+#     toolCallsPerMinute: 60
 #   # Shared account budget for all authenticated 2FA management operations.
 #   # Always active; successful and failed requests count. Uses Redis when enabled.
 #   # Minimum 3, so enable -> verify -> confirm can complete within one window.
@@ -445,6 +537,17 @@ registration:
 #     ipWindowInMinutes: 60  # Rate limit window for conversation imports per IP
 #     userMax: 50
 #     userWindowInMinutes: 60  # Rate limit window for conversation imports per user
+#   # Asking for a change of the registered email, per authenticated user.
+#   emailChange:
+#     userMax: 3
+#     userWindowInMinutes: 2
+#   # Opening a verification link. The endpoint is unauthenticated, so the source
+#   # address is bounded as well as the account the link names.
+#   emailChangeConfirm:
+#     ipMax: 20
+#     ipWindowInMinutes: 2
+#     userMax: 2
+#     userWindowInMinutes: 2
 
 # Agent Actions domain restrictions (OpenAPI spec validation)
 # SECURITY: If not configured, SSRF targets are blocked (localhost, private IPs, .internal/.local TLDs).
@@ -503,6 +606,9 @@ actions:
 # Supports wildcards: '*.example.com' matches 'api.example.com', 'staging.example.com', etc.
 # Supports protocol/port restrictions: 'https://api.example.com:8443' restricts to specific protocol/port.
 # mcpSettings:
+#   # New MCP Apps require explicit opt-in. If omitted, legacy inline HTML remains enabled;
+#   # false disables both MCP Apps and legacy inline HTML.
+#   apps: true
 #   allowedDomains:
 #     - 'host.docker.internal'    # Docker host access (required for Docker setups)
 #     - 'localhost'               # Local development
@@ -519,6 +625,17 @@ actions:
 #   allowedAddresses:
 #     - 'host.docker.internal:8080'
 #     - '127.0.0.1:8080'
+
+# Deployment-owned MCP App sandbox settings. These cannot be overridden by role, group, or user
+# configuration. Set url to a dedicated origin routed to /api/mcp/sandbox. Defaults are shown.
+# mcpAppSandbox:
+#   url: https://mcp-sandbox.example.com/api/mcp/sandbox
+#   maxSourcesPerDirective: 32
+#   maxSerializedLength: 4096
+#   maxPersistedAppBytes: 1048576
+#   maxAdmissionRequestsPerMinute: 240
+#   maxActiveViews: 3  # simultaneous interactive App views per browser
+#   maxActionPreviewChars: 16384  # App tool arguments and chat message preview
 
 # Example MCP Servers Object Structure
 # mcpServers:
@@ -605,6 +722,13 @@ endpoints:
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
   #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
   #   maxToolCallArgBytes: 65536
   #   # (optional) Abort a run once a single model generation emits more than this many stream events.
   #   # Defense in depth against looping provider streams. Disabled by default.
@@ -658,6 +782,15 @@ endpoints:
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
+  #   # Live child activity, independent of the completed transcript.
+  #   subagentActivity:
+  #     replayTtlMs: 300000 # Increase for long silent tool calls.
+  #     publicationTimeoutMs: 1000
+  #     retryAttempts: 3
+  #     retryBaseDelayMs: 100
+  #     recoveryDelayMs: 1000
+  #     memoryMaxStreams: 1000 # Non-Redis replay cache.
+  #     memoryMaxBytes: 16777216
   #   fileSharing:
   #     enabled: false
   #     allowSiblingSharing: false # permit explicitly named sibling/descendant recipients
@@ -673,12 +806,20 @@ endpoints:
   #   skills:
   #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
-  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "chain", "ocr"]
+  #   # web_search controls only LibreChat's external pipeline, not provider-native search.
+  #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
+  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
   #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
+  #     # Maximum additional machines per agent; default 32, supported ceiling 128.
+  #     maxEnvironmentChoices: 32
   #     # Keep move-only behavior unless attach/detach is explicitly enabled.
   #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
   #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
@@ -725,6 +866,17 @@ endpoints:
   #             # Maximum Bash execution budget the model may request per call.
   #             # Omit to preserve the historical 30-second limit. Hard cap: 300000.
   #             maxCommandTimeoutMs: 120000
+  #             # Foreground Bash default when timeoutMs is omitted. Omit to keep 30000.
+  #             # Clamped to the effective admin, worker, and verified HTTP ceilings.
+  #             # Background calls still default to the effective maximum.
+  #             # Programmatic Bash uses this only when timeout is omitted; explicit
+  #             # values keep the same negotiated ceiling. Its SDK has a 1000 ms floor
+  #             # and cannot run under a smaller ceiling; use bash_tool for those budgets.
+  #             # defaultCommandTimeoutMs: 60000
+  #             # Attached read_file window when max_lines is omitted. Omit to keep 200.
+  #             # Valid range: 1–500 lines; the existing byte budget still applies.
+  #             # defaultReadFileLines: 500
+  #             # New strict fields require all LibreChat API replicas to be updated first.
   #             # Optional total HTTP budget per workspace tool call, including
   #             # admission, retries, worst-case execution, settlement, and delivery.
   #             # Do NOT enable until every LibreChat API replica recognizes this
@@ -765,18 +917,55 @@ endpoints:
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:
   #     completionWakeups: true
+  #     # Deliver a conversation's ready results together in one wake-up. On by default; set false
+  #     # during a rolling upgrade while replicas from releases without it still serve traffic.
+  #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
+  #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
+  #   # a code worker built from LibreChat-AI/code-interpreter#311 or later that reports its
+  #   # branch, with CODEAPI_BRIDGE_LANE_GIT=true set on the Code API; without both, every chat
+  #   # simply shows no pull request. It also needs a GitHub token held on the server. Use a
+  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests",
+  #   # "Checks" and "Contents" permissions. Without "Checks" every matched pull request fails to
+  #   # load, and without "Contents" a chat whose branch has moved on since its last command does.
+  #   pullRequests:
+  #     enabled: false
+  #     # Environment variable reference only, never the token itself.
+  #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
+  #     # Repositories the token may be used for, as owner/name or owner/*. Required: a worker
+  #     # reports its own repository, and only these are ever looked up with the server's token.
+  #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
+  #     cacheTtlSeconds: 30
+  #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
+  #     # repositories and branches are active at once, or fresh results are evicted and GitHub is asked again.
+  #     cacheMaxEntries: 500
+  #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
+  #     # past it. When principals configure different values, the largest applies.
+  #     cacheMaxCredentials: 256
+  #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
+  #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
+  #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
+  #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
+  #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
   #   toolApproval:
+  #     # Opt in after all replicas have been upgraded. Agent tool rows then expose
+  #     # Always ask, Always approve, Ask once per chat, and Ask once then always approve.
+  #     # Explicit administrator ask/deny rules and hooks remain authoritative.
+  #     agentModes: false
+  #     grantLookupTimeoutMs: 3000
   #     enabled: true
   #     mode: default # default, dontAsk, or bypass
   #     allow: ["mcp:trusted-server:read_*"]
   #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
   #     ask: ["mcp:*:*"]
   #     reason: "Review {tool} before it runs."
+  #     allowAlways: false # Offer "Always allow" to stop prompting for a tool for the rest of a conversation
   #   # (optional) Persist Agent runs paused for approval or Ask User. MongoDB is the durable default.
   #   checkpointer:
   #     type: mongo # mongo (default) or memory (single-process development only)
@@ -1421,8 +1610,12 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
-#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       action: audit # `block` (default), `audit`, or opt-in `redact`
+#       # `redact` transforms fresh, text-only interactive Agent chat submissions with a clientRequestId.
+#       # Edits, resumes, files, quotes, other endpoints, and other fields still use blocking checks.
+#       # Requires a valid CREDS_KEY. Preserve that key for owner-original recovery; changing it
+#       # makes existing originals unavailable. Text remains canonical/filtered in ordinary exports.
+#       # Originals are an encrypted, unindexed sidecar field, deleted/expired with the message.
 #       # maxCharacters: 65536 # bounded total inspected text per transformation session
 #       # maxMatches: 256 # bounded matches per transformation session
 #       # Custom patterns may set category: email, phone, name, credential, or custom.

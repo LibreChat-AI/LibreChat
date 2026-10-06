@@ -47,6 +47,13 @@ function withDocumentedEdges(schema: ZodTypeAny): ZodTypeAny {
   });
 }
 
+/**
+ * `instructionsPrompt` (the Builder's link to a native prompt group) is Builder-only: the
+ * Management API's create/update/response schemas omit it entirely (see
+ * `packages/api/src/agents/management.ts`), so this document never carries the field —
+ * neither the full link shape a request could send nor the restricted stub a Builder
+ * response can carry (`packages/api/src/agents/instructions/access.ts`).
+ */
 const agentCreateRequestSchema = withDocumentedEdges(agentManagementCreateSchema);
 const agentUpdateRequestSchema = withDocumentedEdges(agentManagementUpdateSchema);
 const agentResponseSchema = withDocumentedEdges(agentManagementResponseSchema);

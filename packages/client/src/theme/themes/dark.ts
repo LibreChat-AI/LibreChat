@@ -11,6 +11,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-text-secondary-alt': '153 150 150', // #999696 (gray-400)
   'rgb-text-tertiary': '153 150 150', // #999696 (gray-400)
   'rgb-text-muted': '179 182 189', // #b3b6bd (Click UI text.muted)
+  'rgb-badge-label': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-text-warning': '245 158 11', // #f59e0b (amber-500)
   'rgb-text-destructive': '248 113 113', // #f87171 (red-400)
   'rgb-shimmer-base': '255 255 255', // #ffffff, carried at 0.8 alpha
@@ -20,11 +21,14 @@ export const darkTheme: IThemeRGB = {
   'rgb-link': '96 165 250', // #60a5fa (blue-400)
   'rgb-link-hover': '147 197 253', // #93c5fd (blue-300)
   'rgb-link-visited': '192 132 252', // #c084fc (purple-400)
+  'rgb-link-prose': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-accent-primary': '65 167 157', // #41a79d
   'rgb-accent-primary-hover': '109 200 185', // #6dc8b9
 
   // Ring colors (not defined in dark mode, using default)
   'rgb-ring-primary': '89 89 89', // #595959 (gray-500)
+  'rgb-focus-outline': '255 255 255', // #ffffff
+  'rgb-focus-control': '236 236 236', // #ececec (gray-100)
 
   // Header colors
   'rgb-header-primary': '47 47 47', // #2f2f2f (gray-700)
@@ -36,6 +40,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-active-alt': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-hover': '57 57 57', // #393939 (gray-650)
   'rgb-surface-hover-alt': '66 66 66', // #424242 (gray-600)
+  'rgb-surface-pressed': '57 57 57', // #393939 (gray-650), the hover fill
   'rgb-surface-composer-hover': '66 66 66', // #424242 (gray-600)
   'rgb-surface-primary': '13 13 13', // #0d0d0d (gray-900)
   'rgb-chart-widget-surface': '40 40 40', // #282828 (Click UI chart widget)
@@ -47,27 +52,63 @@ export const darkTheme: IThemeRGB = {
   'rgb-surface-tertiary': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-tertiary-alt': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-dialog': '18 18 18', // #121212 (legacy dark dialog)
+  'rgb-dialog-title': '236 236 236', // #ececec (gray-100, matching text-primary)
   'rgb-surface-overlay': '0 0 0', // #000 (black)
+  'rgb-surface-media-overlay': '0 0 0', // #000 (black, over the user's media in both modes)
+  'rgb-text-on-media': '255 255 255', // #fff (white)
   'rgb-surface-submit': '4 120 87', // #047857 (green-700)
   'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
   'rgb-surface-destructive': '153 27 27', // #991b1b (red-800)
   'rgb-surface-destructive-hover': '127 29 29', // #7f1d1d (red-900)
   'rgb-surface-chat': '47 47 47', // #2f2f2f (gray-700)
   'rgb-surface-code': '33 33 33', // #212121 (gray-800)
+  'rgb-surface-code-body': '23 23 23', // #171717 (gray-850)
+  'rgb-surface-code-inline': '66 66 66', // #424242 (gray-600)
+  'rgb-prose-bullet': '57 57 57', // #393939 (gray-650)
+  'rgb-prose-quote-bar': '57 57 57', // #393939 (gray-650)
+  'rgb-surface-qr': '255 255 255', // #fff (white, so the code stays scannable)
   'rgb-surface-inverted': '255 255 255', // #fff (white)
   'rgb-surface-inverted-hover': '236 236 236', // #ececec (gray-100)
+  'rgb-surface-inverted-pressed': '236 236 236', // #ececec (gray-100), the hover fill
+  'rgb-button-primary': '255 255 255', // #fff (white, matching surface-inverted)
+  'rgb-button-primary-hover': '236 236 236', // #ececec (gray-100, matching surface-inverted-hover)
   'rgb-text-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-fixed': '255 255 255', // #fff (white) — same in light + dark
   'rgb-surface-fixed-hover': '236 236 236', // #ececec (gray-100) — same in light + dark
   'rgb-text-fixed': '33 33 33', // #212121 (gray-800) — same in light + dark
 
   // Border colors
-  'rgb-border-light': '47 47 47', // #2f2f2f (gray-700)
-  'rgb-border-medium': '66 66 66', // #424242 (gray-600)
-  'rgb-border-medium-alt': '66 66 66', // #424242 (gray-600)
+  'rgb-border-light': '33 33 33', // #212121 (gray-800)
+  'rgb-border-medium': '57 57 57', // #393939 (gray-650)
+  'rgb-border-medium-alt': '57 57 57', // #393939 (gray-650)
   'rgb-border-heavy': '89 89 89', // #595959 (gray-500)
   'rgb-border-xheavy': '153 150 150', // #999696 (gray-400)
+  'rgb-drawer-edge': '153 150 150', // #999696 (gray-400, matching border-xheavy)
   'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
+  'rgb-border-control': '33 33 33', // #212121 (gray-800), the stock field edge
+  'rgb-border-field-focus': '236 236 236', // #ececec (gray-100, matching focus-control)
+  'rgb-focus-subtle': '89 89 89', // #595959 (gray-500, matching border-heavy)
+  'rgb-field-fill': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
+  'rgb-field-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  'rgb-surface-tooltip': '13 13 13', // matching surface-primary
+  'rgb-text-tooltip': '236 236 236', // matching text-primary
+  'rgb-alert-error-fill': '69 10 10', // matching status-error-subtle
+  'rgb-alert-error-border': '153 27 27', // matching status-error-border
+  'rgb-surface-canvas': '23 23 23', // matching surface-primary-alt
+  'rgb-surface-user-message': '47 47 47', // matching surface-tertiary
+  'rgb-surface-card': '33 33 33', // matching surface-secondary
+  'rgb-surface-card-hover': '47 47 47', // matching surface-tertiary
+  'rgb-surface-nav-hover': '47 47 47', // matching surface-active-alt
+  'rgb-surface-nav-selected': '47 47 47', // matching surface-active-alt
+  'rgb-surface-tab-selected': '47 47 47', // matching surface-tertiary
+  'rgb-surface-menu': '33 33 33', // matching presentation
+  'rgb-surface-popover': '33 33 33', // matching surface-secondary
+  'rgb-border-menu': '33 33 33', // matching border-light
+  'rgb-surface-composer': '47 47 47', // matching surface-chat
+  'rgb-surface-search': '33 33 33', // matching surface-secondary
+  'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
+  'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
+  'rgb-border-disabled': '57 57 57', // #393939 (gray-650)
 
   // Status colors
   'rgb-status-success': '110 231 183', // #6ee7b7 (green-300)
@@ -107,6 +148,21 @@ export const darkTheme: IThemeRGB = {
 
   // Brand colors
   'rgb-brand-purple': '171 104 255', // #ab68ff
+  'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
+  'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
+  'rgb-avatar-edge': '240 246 252', // #f0f6fc at 10%, a hairline that only shows against a dark page
+  'rgb-illustration-subtle': '175 193 255', // #afc1ff
+  'rgb-illustration': '121 137 255', // #7989ff
+  'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-file-document': '255 85 136', // #ff5588
+  'rgb-file-sheet': '16 163 127', // #10a37f
+  'rgb-file-code': '255 110 60', // #ff6e3c
+  'rgb-file-artifact': '45 48 92', // #2d305c
+  'rgb-file-audio': '255 107 53', // #ff6b35
+  'rgb-file-video': '139 92 246', // #8b5cf6
+  'rgb-file-generic': '0 0 255', // #0000ff
+  'rgb-file-ink': '255 255 255', // #ffffff
 
   /** Code syntax highlighting, measured against the `surface-code` fill. The
    *  comment and meta values are the flattened equivalents of the alpha-blended
@@ -139,6 +195,9 @@ export const darkTheme: IThemeRGB = {
   /** Unchecked switch track. 3.38:1 against the page and the `surface-primary`
    *  thumb, 5.74:1 against the checked `surface-inverted` track. */
   'rgb-switch-unchecked': '102 102 102', // #666666
+  'rgb-switch-thumb': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
+  'rgb-table-header-text': '205 205 205', // #cdcdcd (gray-300, matching text-secondary)
+  'rgb-table-header-fill': '18 18 18', // #121212 (matching surface-dialog)
 
   // Presentation
   'rgb-presentation': '33 33 33', // #212121 (gray-800)

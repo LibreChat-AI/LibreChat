@@ -48,11 +48,11 @@ export default function McpOAuthDialog({
 
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
-      <OGDialogContent className="w-11/12 max-w-md overflow-hidden rounded-2xl">
+      <OGDialogContent className="w-11/12 max-w-md overflow-x-hidden overflow-y-auto rounded-2xl">
         <div className="flex items-center gap-2">
           {iconUrl && !iconError && (
             <span
-              className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md bg-white"
+              className="bg-surface-fixed flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md"
               aria-hidden="true"
             >
               <img
@@ -64,15 +64,15 @@ export default function McpOAuthDialog({
               />
             </span>
           )}
-          <OGDialogTitle className="text-base font-semibold leading-6 text-text-primary">
+          <OGDialogTitle className="text-base leading-6 font-semibold">
             {localize('com_nav_mcp_connect_server', { 0: serverName })}
           </OGDialogTitle>
         </div>
-        <OGDialogDescription className="text-sm text-text-secondary">
+        <OGDialogDescription className="text-text-secondary text-sm">
           {localize('com_ui_mcp_oauth_description')}
         </OGDialogDescription>
 
-        <div className="flex flex-col gap-3 p-1">
+        <div className="flex min-w-0 flex-col gap-3 p-1">
           {/* Auto-height reveal via grid-template-rows 0fr -> 1fr so the QR slides
            * open smoothly without a hardcoded height, matching MCPToolItem. */}
           <div
@@ -88,15 +88,18 @@ export default function McpOAuthDialog({
                   showQR ? 'opacity-100' : 'opacity-0',
                 )}
               >
-                <div className="rounded-2xl bg-white p-4 shadow-lg">
+                <div className="bg-surface-qr max-w-full min-w-0 rounded-2xl p-4 shadow-lg">
+                  {/* size is only the no-CSS fallback; the rem width is what renders,
+                      so the code follows the dialog instead of staying at 180px. */}
                   <QRCodeSVG
                     value={oauthUrl}
                     size={180}
+                    className="h-auto w-[11.25rem] max-w-full"
                     marginSize={2}
                     title={localize('com_ui_mcp_oauth_qr_code_description')}
                   />
                 </div>
-                <span className="text-xs text-text-secondary">
+                <span className="text-text-secondary text-xs">
                   {localize('com_ui_mcp_oauth_scan_qr')}
                 </span>
               </div>
@@ -111,7 +114,7 @@ export default function McpOAuthDialog({
               value={oauthUrl}
               aria-label={localize('com_ui_copy_link')}
               onFocus={(event) => event.currentTarget.select()}
-              className="pr-10 text-text-secondary"
+              className="text-text-secondary pr-10"
               data-testid="mcp-oauth-url"
             />
             <CopyButton
@@ -123,11 +126,11 @@ export default function McpOAuthDialog({
                   copyUrl(setIsCopying);
                 }
               }}
-              className="absolute right-1 top-1/2 -translate-y-1/2"
+              className="absolute top-1/2 right-1 -translate-y-1/2"
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="outline"
@@ -142,11 +145,11 @@ export default function McpOAuthDialog({
             <Button
               type="button"
               variant="submit"
-              className="flex-1"
+              className="h-auto min-h-10 min-w-0 flex-1 basis-40 whitespace-normal"
               onClick={() => openInNewTab(oauthUrl)}
             >
               {localize('com_ui_continue_oauth')}
-              <ExternalLink className="size-4" aria-hidden="true" />
+              <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
             </Button>
           </div>
         </div>

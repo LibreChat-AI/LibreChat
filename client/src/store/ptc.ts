@@ -1,26 +1,5 @@
 import { atomFamily } from 'recoil';
-import type { PtcToolCallStatus } from 'librechat-data-provider';
-
-/**
- * A row's outcome. Widens the wire status with `interrupted`, which the
- * backend never sends: it is what the client concludes locally about a call
- * that was still running when a stream gap swallowed its settling event.
- */
-export type PtcTraceStatus = PtcToolCallStatus | 'interrupted';
-
-/** One tool call a programmatic (PTC) program made from inside the sandbox. */
-export interface PtcTraceEntry {
-  /** Stable id from the backend; the settle event updates this row in place. */
-  callId: string;
-  /** Inner tool id, e.g. `search_code_mcp_github`. */
-  name: string;
-  status: PtcTraceStatus;
-  /** `key=value` preview of the call's input. */
-  args?: string;
-  /** Truncated failure message on a failed call. */
-  error?: string;
-  durationMs?: number;
-}
+import type { PtcTrace } from '~/common';
 
 /**
  * Stable identity for one PTC invocation in its parent message. Providers
@@ -38,13 +17,6 @@ export const ptcTraceKey = (parentMessageId: string, toolCallId: string) =>
  * ever-growing array and the card would render a row per call.
  */
 export const PTC_TRACE_MAX_ENTRIES = 100;
-
-/** One PTC program's trace: the retained tail plus what the cap discarded. */
-export interface PtcTrace {
-  entries: PtcTraceEntry[];
-  /** Rows evicted by {@link PTC_TRACE_MAX_ENTRIES}, so the cap is never silent. */
-  dropped: number;
-}
 
 /** Shared empty value — one reference, so untouched atoms compare equal. */
 export const EMPTY_PTC_TRACE: PtcTrace = { entries: [], dropped: 0 };

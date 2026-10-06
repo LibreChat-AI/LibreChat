@@ -2,6 +2,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
+import { useToolContentPending } from '../disclosure';
 import { useLocalize } from '~/hooks';
 
 interface CodeWindowHeaderProps {
@@ -17,15 +18,19 @@ export default function CodeWindowHeader({ language, code, diffStats }: CodeWind
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
+    if (contentPending) {
+      return;
+    }
     setIsCopied(true);
     copy(code.trim(), { format: 'text/plain' });
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setIsCopied(false), 3000);
-  }, [code]);
+  }, [code, contentPending]);
 
   return (
-    <div className="flex items-center justify-between bg-surface-primary-alt px-1.5 py-1.5 font-sans text-xs text-text-secondary dark:bg-transparent">
+    <div className="text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
       <span className="flex items-center gap-1.5 pl-1.5 text-xs font-medium">
         <LangIcon lang={language} className="size-3.5 shrink-0" />
         {language}
@@ -47,7 +52,12 @@ export default function CodeWindowHeader({ language, code, diffStats }: CodeWind
           </>
         )}
       </span>
-      <CopyButton isCopied={isCopied} onClick={handleCopy} label={localize('com_ui_copy_code')} />
+      <CopyButton
+        isCopied={isCopied}
+        onClick={handleCopy}
+        disabled={contentPending}
+        label={localize('com_ui_copy_code')}
+      />
     </div>
   );
 }

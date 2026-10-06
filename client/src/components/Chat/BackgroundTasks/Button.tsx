@@ -103,7 +103,7 @@ function BackgroundTasksButton({
             store={popover}
             aria-label={triggerLabel}
             data-testid="header-background-tasks-button"
-            className="relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-light bg-presentation text-text-primary transition-all ease-in-out hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary"
+            className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
           >
             <ListTodo className="icon-md" aria-hidden="true" />
             {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (
@@ -111,7 +111,7 @@ function BackgroundTasksButton({
                 aria-hidden="true"
                 data-testid="background-tasks-indicator"
                 className={cn(
-                  'absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-presentation',
+                  'ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2',
                   failedCount > 0 || incomplete ? 'bg-status-warning' : 'bg-status-info',
                   activeCount > 0 && 'animate-pulse motion-reduce:animate-none',
                 )}
@@ -129,11 +129,11 @@ function BackgroundTasksButton({
         finalFocus={disclosureRef}
         aria-label={title}
         className={cn(
-          'z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col rounded-xl border border-border-medium bg-surface-secondary text-text-primary shadow-lg focus:outline-none',
+          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none',
           wide ? 'w-[36rem]' : 'w-80',
         )}
       >
-        <div className="flex items-center gap-1 px-3 pb-2 pt-3">
+        <div className="flex items-center gap-1 px-3 pt-3 pb-2">
           <Ariakit.PopoverHeading className="flex-1 text-sm font-semibold">
             {title}
           </Ariakit.PopoverHeading>
@@ -156,16 +156,16 @@ function BackgroundTasksButton({
         </div>
         <div className="space-y-4 overflow-y-auto px-3 pb-3">
           {incomplete && (
-            <p role="status" className="text-sm text-status-warning">
+            <p role="status" className="text-status-warning text-sm">
               {localize('com_ui_background_tasks_incomplete')}
             </p>
           )}
           {view.loadFailed && (
-            <div role="alert" className="text-sm text-status-error">
+            <div role="alert" className="text-status-error text-sm">
               <p>{localize('com_ui_background_tasks_load_failed')}</p>
               <button
                 type="button"
-                className="rounded px-2 py-1 text-text-primary underline focus-visible:ring-2 focus-visible:ring-ring-primary"
+                className="text-text-primary focus-visible:ring-ring-primary rounded px-2 py-1 underline focus-visible:ring-2"
                 onClick={() => void view.retry()}
               >
                 {localize('com_ui_retry')}
@@ -193,7 +193,7 @@ function BackgroundTasksButton({
                         disabled={!anyStoppable || view.isStopping}
                         onClick={() => void view.stopAll()}
                         data-testid="background-tasks-stop-all"
-                        className={cn(iconButtonClass, 'border border-border-medium')}
+                        className={cn(iconButtonClass, 'border-border-medium border')}
                       >
                         <Square className="size-3 fill-current" aria-hidden="true" />
                       </button>
@@ -211,7 +211,7 @@ function BackgroundTasksButton({
             </Section>
           )}
           {view.stopFailed && (
-            <p role="alert" className="px-3 pb-3 text-sm text-status-error">
+            <p role="alert" className="text-status-error px-3 pb-3 text-sm">
               {localize('com_ui_background_tasks_stop_failed')}
             </p>
           )}

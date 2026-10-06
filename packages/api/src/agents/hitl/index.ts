@@ -1,4 +1,5 @@
 export * from './policy';
+export * from './allow';
 export * from './admission';
 export * from './runtime';
 export * from './resume';
@@ -10,3 +11,6 @@ export * from './hookLoader';
 export * from './askUserQuestionTool';
 export * from './answers';
 export * from './byom';
+export * from './modes';
+export * from './controller';
+export * from './metadata';

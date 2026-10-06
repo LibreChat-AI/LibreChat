@@ -1,6 +1,6 @@
 import { createContext, useRef, useContext, RefObject, ReactNode } from 'react';
 import { toCanvas } from 'html-to-image';
-import { ThemeContext, isDark } from '@librechat/client';
+import { ThemeContext, isDark, readThemeColor } from '@librechat/client';
 import { completeProgressiveRowMounts } from '~/hooks/Messages/useProgressiveRowMount';
 
 type ScreenshotContextType = {
@@ -20,6 +20,13 @@ export class ScreenshotLimitError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'ScreenshotLimitError';
+  }
+}
+
+export class ScreenshotTargetError extends Error {
+  constructor() {
+    super('Screenshot target changed or is unavailable.');
+    this.name = 'ScreenshotTargetError';
   }
 }
 
@@ -62,11 +69,8 @@ export const useScreenshot = () => {
      *  an export matches the selected appearance and the state colours keep the
      *  contrast they were calibrated against. The token is a channel triplet,
      *  not a colour, so it has to be wrapped before html-to-image sees it. */
-    const canvasTriplet = getComputedStyle(document.documentElement)
-      .getPropertyValue('--surface-primary')
-      .trim();
     const fallbackBackground = isDark(theme) ? '#171717' : 'white';
-    const backgroundColor = canvasTriplet ? `rgb(${canvasTriplet})` : fallbackBackground;
+    const backgroundColor = readThemeColor('--surface-primary') ?? fallbackBackground;
     const canvas = await toCanvas(node, {
       backgroundColor,
       pixelRatio,
@@ -81,17 +85,33 @@ export const useScreenshot = () => {
     return blob;
   };
 
-  const captureScreenshot = async (): Promise<Blob> => {
+  const captureScreenshot = async (canCapture?: (node: HTMLElement) => boolean): Promise<Blob> => {
     if (ref instanceof Function) {
       throw new Error('Ref callback is not supported.');
     }
-    /** A capture taken while a long thread is still progressively mounting
-     *  would clone a truncated DOM; force the remaining rows in first. */
-    await completeProgressiveRowMounts();
-    if (ref?.current) {
-      return takeScreenShot(ref.current);
+    const node = ref?.current;
+    if (!node) {
+      throw new ScreenshotTargetError();
     }
-    throw new Error('Ref is not attached to any element.');
+    const conversationId = node.dataset.conversationId;
+    const assertTarget = () => {
+      if (
+        !conversationId ||
+        !node.isConnected ||
+        ref?.current !== node ||
+        node.dataset.conversationId !== conversationId ||
+        canCapture?.(node) === false
+      ) {
+        throw new ScreenshotTargetError();
+      }
+    };
+    assertTarget();
+    /** Pin the transcript before mounting or cloning can yield to navigation. */
+    await completeProgressiveRowMounts();
+    assertTarget();
+    const image = await takeScreenShot(node);
+    assertTarget();
+    return image;
   };
 
   return { screenshotTargetRef: ref, captureScreenshot };

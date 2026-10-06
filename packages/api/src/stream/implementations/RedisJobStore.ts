@@ -2,6 +2,8 @@ import { logger } from '@librechat/data-schemas';
 import { createContentAggregator } from '@librechat/agents';
 import {
   ContentTypes,
+  scheduleMCPOutcomeSchema,
+  isScheduleMCPAuthorizationFailure,
   StepEvents,
   getRunStepDurationMs,
   getRunStepCloseMetadata,
@@ -30,6 +32,8 @@ import type {
   SteerReceipt,
   SteerReceiptInput,
   ParkedSteerClaim,
+  ScheduleCleanupScope,
+  ScheduleProviderOwner,
 } from '~/stream/interfaces/IJobStore';
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
@@ -51,13 +55,27 @@ import {
   MAX_COALESCED_EVENTS,
   resolveCoalesceWindowMs,
 } from '~/stream/internal/coalescing';
+import {
+  SCHEDULE_MCP_RECEIPT_LUA,
+  SCHEDULE_RETENTION_LUA,
+} from '~/stream/internal/scheduleReceipts';
+import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
+import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
+
+/** Each retention re-arm requires new publication, even at the same generation epoch. */
+const SCHEDULE_MEMBERSHIP_INVALIDATE_LUA =
+  'local function invalidateScheduleMembership(key, hset) ' +
+  'for i = 1, #hset, 2 do if hset[i] == "preserveForScheduleReconcile" and hset[i+1] == "1" then ' +
+  'redis.call("HINCRBY", key, "__scheduleMembershipRevision", 1) ' +
+  'redis.call("HDEL", key, "__scheduleMembershipEpoch") ' +
+  'redis.call("HSET", key, "__scheduleMembershipPending", "1") return end end end ';
 
 type ReasoningLabelOverlay = {
   stepId: string;
@@ -134,6 +152,8 @@ function assertCreateIdempotencyArguments(
  *   ]
  */
 const JOB_CAS_LUA =
+  SCHEDULE_MCP_RECEIPT_LUA +
+  SCHEDULE_MEMBERSHIP_INVALIDATE_LUA +
   'if redis.call("HGET", KEYS[1], "status") ~= ARGV[1] then return 0 end ' +
   'if ARGV[2] ~= "" and redis.call("HGET", KEYS[1], "pendingActionId") ~= ARGV[2] then return 0 end ' +
   'if ARGV[3] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[3] then return 0 end ' +
@@ -179,11 +199,17 @@ const JOB_CAS_LUA =
   'or (item.createdAt and (type(item.createdAt) ~= "number" or item.createdAt < 0)) ' +
   'or (item.recoveringCreatedAt and (type(item.recoveringCreatedAt) ~= "number" or item.recoveringCreatedAt < 0)) then return 0 end ' +
   'validatedPrior[#validatedPrior + 1] = item end end end ' +
-  'local hdelCount = tonumber(ARGV[13]) ' +
+  'local currentReceipt = redis.call("HGET", KEYS[1], "scheduleOutcomeError") ' +
+  'local clearReceipt = false local hdelCount = tonumber(ARGV[13]) ' +
+  'for i = 14, 13 + hdelCount do if ARGV[i] == "scheduleOutcome" or ARGV[i] == "scheduleOutcomeError" then clearReceipt = true end end ' +
   'local idx = 14 ' +
   'for i = 1, hdelCount do redis.call("HDEL", KEYS[1], ARGV[idx]) idx = idx + 1 end ' +
   'local hset = {} ' +
   'for i = idx, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  'local originalReceipt = nil for i = 1, #hset, 2 do if hset[i] == "scheduleOutcomeError" then originalReceipt = hset[i+1] end end ' +
+  SCHEDULE_MCP_FAILURE_PATCH_LUA +
+  'hset = retainScheduleReceipt(hset, currentReceipt, clearReceipt, originalReceipt) ' +
+  'invalidateScheduleMembership(KEYS[1], hset) ' +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if terminal then redis.call("HSET", KEYS[1], "steersClosed", "1") end ' +
   // A same-status pause-barrier release does not carry pendingAction again.
@@ -192,7 +218,7 @@ const JOB_CAS_LUA =
   'if not terminal and redis.call("HGET", KEYS[1], "status") == "requires_action" then ' +
   'local currentTtl = redis.call("TTL", KEYS[1]) ' +
   'if currentTtl > ttl then ttl = currentTtl end end ' +
-  'redis.call("EXPIRE", KEYS[1], ttl) ' +
+  'expireScheduleJob(KEYS[1], ttl) ' +
   'local effectiveReceiptTtl = receiptTtl ' +
   'if not terminal and ttl > effectiveReceiptTtl then effectiveReceiptTtl = ttl end ' +
   'if terminal and parkedTtl > effectiveReceiptTtl then effectiveReceiptTtl = parkedTtl end ' +
@@ -356,6 +382,7 @@ const REPLACEMENT_RECEIPT_ACK_LUA =
  *   evidence expired, the finite expected epoch is echoed with verified=false.
  */
 const JOB_CREATE_LUA =
+  SCHEDULE_RETENTION_LUA +
   'if ARGV[8] ~= "" then local claimRaw = redis.call("GET", KEYS[10]) ' +
   'if not claimRaw then return { "", "", "0", "claim_lost" } end ' +
   'local ok, claim = pcall(cjson.decode, claimRaw) ' +
@@ -405,7 +432,7 @@ const JOB_CREATE_LUA =
   'if retainedEpoch and (not previousCreatedAt or retainedEpoch > previousCreatedAt) then ' +
   'previousCreatedAt = retainedEpoch observedCreatedAt = retainedEpochRaw ' +
   'observedStatus = nil observedConversationId = nil observedActive = false end ' +
-  'if observedActive and (replacedTerminalHostActionPending == "1" or replacedDetachedTerminalHostActionPending == "1") then ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" or (observedActive and (replacedTerminalHostActionPending == "1" or replacedDetachedTerminalHostActionPending == "1")) then ' +
   'return { previousUserId or "", previousTenantId or "", "0", "predecessor_mismatch", ' +
   'observedCreatedAt, observedStatus or "", observedConversationId or "", "1", "1" } end ' +
   'if ARGV[13] == "1" and observedActive then ' +
@@ -582,7 +609,8 @@ const JOB_CREATE_LUA =
   'if replacedConversationId then redis.call("HSET", KEYS[1], "__replacedConversationId", replacedConversationId) end end ' +
   'if #replacementChain > 0 then redis.call("HSET", KEYS[1], "__replacedGenerations", cjson.encode(replacementChain)) end ' +
   'if ARGV[10] ~= "2" then redis.call("HDEL", KEYS[1], "checkpointNamespace") end ' +
-  'redis.call("EXPIRE", KEYS[1], ttl) ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" then redis.call("HSET", KEYS[1], "__scheduleMembershipPending", "1", "__scheduleMembershipRevision", "1") end ' +
+  'expireScheduleJob(KEYS[1], ttl) ' +
   'redis.call("SET", KEYS[7], tostring(createdAt), "EX", ttl + generationEpochGraceTtl) ' +
   'if ARGV[8] ~= "" then local claimRaw = redis.call("GET", KEYS[10]) ' +
   'local claimTtl = redis.call("PTTL", KEYS[10]) local ok, claim = pcall(cjson.decode, claimRaw) ' +
@@ -610,21 +638,39 @@ const JOB_CREATE_LUA =
  *   ]
  */
 const JOB_UPDATE_LUA =
+  SCHEDULE_MCP_RECEIPT_LUA +
+  SCHEDULE_MEMBERSHIP_INVALIDATE_LUA +
   'if redis.call("EXISTS", KEYS[1]) == 0 then return 0 end ' +
   'if ARGV[1] ~= "" and redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
-  'local hset = {} ' +
+  'local hset = {} local releaseRetention = false ' +
   'for i = 6, #ARGV do hset[#hset + 1] = ARGV[i] end ' +
+  'for i = 6, #ARGV, 2 do if ARGV[i] == "preserveForScheduleReconcile" and ARGV[i+1] == "0" then releaseRetention = true end end ' +
+  'local originalReceipt = nil for i = 1, #hset, 2 do if hset[i] == "scheduleOutcomeError" then originalReceipt = hset[i+1] end end ' +
+  SCHEDULE_MCP_FAILURE_PATCH_LUA +
+  'hset = retainScheduleReceipt(hset, redis.call("HGET", KEYS[1], "scheduleOutcomeError"), false, originalReceipt) ' +
+  'invalidateScheduleMembership(KEYS[1], hset) ' +
   'if #hset > 0 then redis.call("HSET", KEYS[1], unpack(hset)) end ' +
   'if ARGV[2] == "1" then ' +
   'local completedTtl = tonumber(ARGV[3]) ' +
   'local chunksTtl = tonumber(ARGV[4]) ' +
   'local runStepsTtl = tonumber(ARGV[5]) ' +
-  'redis.call("EXPIRE", KEYS[1], completedTtl) ' +
+  'expireScheduleJob(KEYS[1], completedTtl) ' +
   'redis.call("DEL", KEYS[4]) ' +
   'if chunksTtl == 0 then redis.call("DEL", KEYS[2]) else redis.call("EXPIRE", KEYS[2], chunksTtl) end ' +
   'if runStepsTtl == 0 then redis.call("DEL", KEYS[3]) else redis.call("EXPIRE", KEYS[3], runStepsTtl) end ' +
   'end ' +
+  'if ARGV[2] ~= "1" then local terminal = redis.call("HGET", KEYS[1], "status") ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" then redis.call("PERSIST", KEYS[1]) ' +
+  'elseif releaseRetention and (terminal == "complete" or terminal == "error" or terminal == "aborted") then expireScheduleJob(KEYS[1], tonumber(ARGV[3])) end end ' +
   'return 1';
+
+/** A durable creation/read acknowledges only its own indexed epoch, never a replacement. */
+const SCHEDULE_MEMBERSHIP_COMMIT_LUA =
+  'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") ~= "1" then return 0 end ' +
+  'if (redis.call("HGET", KEYS[1], "__scheduleMembershipRevision") or "") ~= ARGV[2] then return 0 end ' +
+  'redis.call("HSET", KEYS[1], "__scheduleMembershipEpoch", ARGV[1]) ' +
+  'redis.call("HDEL", KEYS[1], "__scheduleMembershipPending") return 1';
 
 /** Owner membership must outlive every paused job and must never shorten a peer's TTL. */
 const OWNER_MEMBERSHIP_RECONCILE_LUA =
@@ -684,12 +730,12 @@ const PROVIDER_DRAIN_LUA =
   'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
   'redis.call("HSET", KEYS[1], "providerDrained", "1") return 1';
 
-/** Recover a terminal host action whose provider-owning process disappeared
- * after the terminal CAS. `completedAt` is immutable for this generation, so
- * the deadline cannot be extended by retry enumeration. */
+/** Legacy host-action recovery. Scheduled obligations require exact segment
+ * acknowledgement; elapsed time is not evidence that their provider drained. */
 const RECOVER_TERMINAL_PROVIDER_DRAIN_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
-  'if redis.call("HGET", KEYS[1], "terminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "detachedAgentEventTerminalHostActionPending") ~= "1" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" or redis.call("HEXISTS", KEYS[1], "scheduleId") == 1 then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "terminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "detachedAgentEventTerminalHostActionPending") ~= "1" and redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") ~= "1" then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "providerDrained") ~= "0" then return 0 end ' +
   'local completedAt = tonumber(redis.call("HGET", KEYS[1], "completedAt") or "") ' +
   'if not completedAt or completedAt > tonumber(ARGV[2]) then return 0 end ' +
@@ -698,6 +744,17 @@ const RECOVER_TERMINAL_PROVIDER_DRAIN_LUA =
 /** Exact initial provider-start fence. The controller rechecks account
  * deletion before this CAS; an abort/replacement that wins next prevents the
  * provider from starting after destructive cleanup has begun. */
+/** Only a host-confirmed stopped process may release this exact stale segment.
+ * Any resumed activity, replacement, or differently-bound owner invalidates the proof. */
+const RECOVER_SCHEDULE_PROVIDER_OWNER_LUA =
+  'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "status") ~= "error" or redis.call("HGET", KEYS[1], "error") ~= "Scheduled generation owner became unavailable" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") ~= "1" or redis.call("HGET", KEYS[1], "providerDrained") ~= "0" then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] or redis.call("HGET", KEYS[1], "scheduleId") ~= ARGV[3] or redis.call("HGET", KEYS[1], "scheduledFor") ~= ARGV[4] then return 0 end ' +
+  'if redis.call("HGET", KEYS[1], "userId") ~= ARGV[5] or (redis.call("HGET", KEYS[1], "tenantId") or "") ~= ARGV[6] then return 0 end ' +
+  'if (redis.call("HGET", KEYS[1], "lastActiveAt") or ARGV[1]) ~= ARGV[7] then return 0 end ' +
+  'redis.call("HSET", KEYS[1], "providerDrained", "1", "error", "Scheduled provider owner termination confirmed") return 1';
+
 const PROVIDER_BEGIN_LUA =
   'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
   'if redis.call("HGET", KEYS[1], "providerExecutionId") ~= ARGV[2] then return 0 end ' +
@@ -804,7 +861,10 @@ const STALE_JOB_DELETE_LUA =
   'for i = 8, 9 do local ttl = redis.call("TTL", KEYS[i]) ' +
   'if ttl >= 0 and ttl < tonumber(ARGV[4]) then redis.call("EXPIRE", KEYS[i], ARGV[4]) end end ' +
   'redis.call("SET", KEYS[7], ARGV[1], "EX", tonumber(ARGV[5])) ' +
-  'redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]) ' +
+  'if redis.call("HGET", KEYS[1], "preserveForScheduleReconcile") == "1" then ' +
+  'redis.call("HSET", KEYS[1], "status", "error", "completedAt", ARGV[2], "error", "Scheduled generation owner became unavailable", "steersClosed", "1") ' +
+  'redis.call("PERSIST", KEYS[1]) redis.call("DEL", KEYS[4], KEYS[5]) ' +
+  'else redis.call("DEL", KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5]) end ' +
   'return 1';
 
 /**
@@ -840,6 +900,7 @@ const STALE_JOB_DELETE_LUA =
  *          parkedSteersTtl, generationEpochGraceTtl]
  */
 const CHUNK_APPEND_LUA =
+  SCHEDULE_RETENTION_LUA +
   'local currentCreatedAt = redis.call("HGET", KEYS[2], "createdAt") ' +
   'if not currentCreatedAt then return 0 end ' +
   'if ARGV[3] ~= "" and currentCreatedAt ~= ARGV[3] then return 0 end ' +
@@ -879,7 +940,7 @@ const CHUNK_APPEND_LUA =
   'local run = tonumber(ARGV[2]) ' +
   'local target = run ' +
   'local jobTtl = redis.call("TTL", KEYS[2]) ' +
-  'if jobTtl < target then redis.call("EXPIRE", KEYS[2], target) ' +
+  'if jobTtl < target then expireScheduleJob(KEYS[2], target) ' +
   'elseif jobTtl > target then target = jobTtl end ' +
   'local recoveryTarget = target ' +
   'if redis.call("HGET", KEYS[2], "recoveredSteerId") then ' +
@@ -922,6 +983,7 @@ const CHUNK_APPEND_LUA =
  *          generationEpochGraceTtl, eventJson...]
  */
 const CHUNK_APPEND_BATCH_LUA =
+  SCHEDULE_RETENTION_LUA +
   'local currentCreatedAt = redis.call("HGET", KEYS[2], "createdAt") ' +
   'if not currentCreatedAt then return 0 end ' +
   'if ARGV[2] ~= "" and currentCreatedAt ~= ARGV[2] then return 0 end ' +
@@ -932,7 +994,7 @@ const CHUNK_APPEND_BATCH_LUA =
   'local run = tonumber(ARGV[1]) ' +
   'local target = run ' +
   'local jobTtl = redis.call("TTL", KEYS[2]) ' +
-  'if jobTtl < target then redis.call("EXPIRE", KEYS[2], target) ' +
+  'if jobTtl < target then expireScheduleJob(KEYS[2], target) ' +
   'elseif jobTtl > target then target = jobTtl end ' +
   'local recoveryTarget = target ' +
   'if redis.call("HGET", KEYS[2], "recoveredSteerId") then ' +
@@ -1705,6 +1767,8 @@ const KEYS = {
   /** Terminal jobs that still owe a durable host lifecycle hook (global set). Retains
    *  the aborted approval-expiry job for cross-replica / post-restart hook retry. */
   terminalHostActionJobs: 'stream:terminal_host_action',
+  /** Versioned, epoch-bound schedule settlement/release retry hints. */
+  scheduleReconcileJobs: 'stream:schedule_reconcile:v1',
   /** Versioned recovery lane for detached Event Actor completion generations.
    * Pre-detached replicas only scan `terminalHostActionJobs`, so they cannot
    * claim a generation whose host hook requires both invocation identities. */
@@ -1842,6 +1906,7 @@ interface PendingChunkAppendBatch {
 }
 
 export class RedisJobStore implements IJobStoreV2 {
+  readonly durableScheduleReceipts = true;
   readonly detachedAgentEventActionStoreMode = 'distributed' as const;
 
   private redis: Redis | Cluster;
@@ -1879,6 +1944,9 @@ export class RedisJobStore implements IJobStoreV2 {
 
   /** Cleanup interval in ms (1 minute) */
   private cleanupIntervalMs = 60000;
+  private readonly scheduleMembershipRevisions = new WeakMap<SerializableJobData, string>();
+  private scheduleReconcileCursor = '0';
+  private scheduleReconcileMembers: string[] = [];
 
   constructor(redis: Redis | Cluster, options?: RedisJobStoreOptions) {
     this.redis = instrumentIORedisClient(redis, RedisUseCases.GENERATION_STREAM);
@@ -2273,6 +2341,8 @@ export class RedisJobStore implements IJobStoreV2 {
       // chain before deciding whether it is safe to proceed.
       throw new Error('Created job membership could not be verified');
     }
+    if (currentJob.preserveForScheduleReconcile === true)
+      await this.commitScheduleMembership(streamId, currentJob);
     this.clearPredecessorLocalState(streamId, currentJob.createdAt);
 
     if (replacedJob != null) {
@@ -2291,7 +2361,37 @@ export class RedisJobStore implements IJobStoreV2 {
     if (!data || Object.keys(data).length === 0) {
       return null;
     }
-    return this.deserializeJob(data);
+    const job = this.deserializeJob(data);
+    if (
+      job.preserveForScheduleReconcile === true &&
+      data.__scheduleMembershipEpoch !== data.createdAt
+    ) {
+      // Durable Mongo run identities can find a hash after its creator died before cross-slot writes.
+      const recovered = await this.reconcileJobMembership(streamId, { initialJob: job });
+      if (recovered === undefined) throw new Error('Retained creation membership recovery failed');
+      if (recovered?.preserveForScheduleReconcile === true)
+        await this.commitScheduleMembership(streamId, recovered);
+      return recovered;
+    }
+    return job;
+  }
+
+  private async readJob(streamId: string): Promise<SerializableJobData | null> {
+    const data = await this.redis.hgetall(KEYS.job(streamId));
+    return data && Object.keys(data).length > 0 ? this.deserializeJob(data) : null;
+  }
+
+  private async commitScheduleMembership(
+    streamId: string,
+    job: SerializableJobData,
+  ): Promise<void> {
+    await this.redis.eval(
+      SCHEDULE_MEMBERSHIP_COMMIT_LUA,
+      1,
+      KEYS.job(streamId),
+      String(job.createdAt),
+      this.scheduleMembershipRevisions.get(job) ?? '',
+    );
   }
 
   async acknowledgeReplacedJobs(
@@ -2348,7 +2448,15 @@ export class RedisJobStore implements IJobStoreV2 {
     }
 
     const terminal = requestedTerminal;
-    const observedJob = terminal ? await this.getJob(streamId) : null;
+    const observedJob =
+      terminal || (updates.preserveForScheduleReconcile === false && expectedCreatedAt == null)
+        ? await this.getJob(streamId)
+        : null;
+    let reconcileEpoch: number | undefined;
+    if (updates.preserveForScheduleReconcile === true)
+      reconcileEpoch = await this.retainScheduleReconcile(streamId, expectedCreatedAt);
+    else if (updates.preserveForScheduleReconcile === false)
+      reconcileEpoch = expectedCreatedAt ?? observedJob?.createdAt;
     const completedTtl =
       updates.terminalPersistencePending === true ||
       observedJob?.terminalPersistencePending === true
@@ -2362,7 +2470,9 @@ export class RedisJobStore implements IJobStoreV2 {
       KEYS.chunks(streamId),
       KEYS.runSteps(streamId),
       KEYS.steers(streamId),
-      expectedCreatedAt != null ? String(expectedCreatedAt) : '',
+      expectedCreatedAt != null || reconcileEpoch != null
+        ? String(expectedCreatedAt ?? reconcileEpoch)
+        : '',
       terminal ? '1' : '0',
       String(completedTtl),
       String(this.ttl.chunksAfterComplete),
@@ -2373,6 +2483,16 @@ export class RedisJobStore implements IJobStoreV2 {
       return;
     }
 
+    if (reconcileEpoch != null) {
+      if (updates.preserveForScheduleReconcile === false)
+        await this.acknowledgeScheduleReconcile(streamId, reconcileEpoch);
+      else
+        await this.redis.sadd(
+          KEYS.scheduleReconcileJobs,
+          terminalHostActionMember(streamId, reconcileEpoch),
+        );
+    }
+    if (updates.preserveForScheduleReconcile === true && !terminal) await this.getJob(streamId);
     if (terminal) {
       const currentJob = await this.reconcileJobMembership(streamId, {
         previousJob: observedJob,
@@ -2492,6 +2612,25 @@ export class RedisJobStore implements IJobStoreV2 {
     );
   }
 
+  async recoverScheduleProviderOwnerLoss(owner: ScheduleProviderOwner): Promise<boolean> {
+    return (
+      Number(
+        await this.redis.eval(
+          RECOVER_SCHEDULE_PROVIDER_OWNER_LUA,
+          1,
+          KEYS.job(owner.streamId),
+          String(owner.createdAt),
+          owner.providerExecutionId,
+          owner.scheduleId,
+          owner.scheduledFor,
+          owner.userId,
+          owner.tenantId ?? '',
+          String(owner.lastActiveAt),
+        ),
+      ) === 1
+    );
+  }
+
   async markProviderExecutionDrained(
     streamId: string,
     expectedCreatedAt: number,
@@ -2560,7 +2699,10 @@ export class RedisJobStore implements IJobStoreV2 {
       left.tenantId === right.tenantId &&
       left.providerDrained === right.providerDrained &&
       left.terminalPersistencePending === right.terminalPersistencePending &&
-      left.terminalHostActionPending === right.terminalHostActionPending
+      left.terminalHostActionPending === right.terminalHostActionPending &&
+      left.preserveForScheduleReconcile === right.preserveForScheduleReconcile &&
+      (this.scheduleMembershipRevisions.get(left) ?? '') ===
+        (this.scheduleMembershipRevisions.get(right) ?? '')
     );
   }
 
@@ -2645,6 +2787,8 @@ export class RedisJobStore implements IJobStoreV2 {
           ? this.redis.sadd(KEYS.requiresActionJobs, streamId)
           : this.redis.srem(KEYS.requiresActionJobs, streamId),
       ];
+      if (job?.preserveForScheduleReconcile === true)
+        operations.push(this.redis.sadd(KEYS.scheduleReconcileJobs, terminalMember!));
       if (job?.terminalHostActionPending === true) {
         operations.push(this.redis.sadd(terminalHostActionIndex, terminalMember!));
         operations.push(this.redis.srem(otherTerminalHostActionIndex, terminalMember!));
@@ -2683,10 +2827,12 @@ export class RedisJobStore implements IJobStoreV2 {
         );
       }
       await Promise.all(operations);
-      return this.getJob(streamId);
+      return this.readJob(streamId);
     }
 
     const pipeline = this.redis.pipeline();
+    if (job?.preserveForScheduleReconcile === true)
+      pipeline.sadd(KEYS.scheduleReconcileJobs, terminalMember!);
     if (statusKey === KEYS.runningJobs) {
       pipeline.sadd(KEYS.runningJobs, streamId);
     } else {
@@ -2761,7 +2907,7 @@ export class RedisJobStore implements IJobStoreV2 {
     let currentJob = options.initialJob ?? null;
     try {
       if (options.initialJob === undefined) {
-        currentJob = await this.getJob(streamId);
+        currentJob = await this.readJob(streamId);
       }
 
       for (let attempt = 0; attempt < MEMBERSHIP_RECONCILE_MAX_ATTEMPTS; attempt++) {
@@ -2864,6 +3010,12 @@ export class RedisJobStore implements IJobStoreV2 {
     const key = KEYS.job(streamId);
     const terminal = this.statusSetKey(to) === null;
     const terminalJob = terminal ? await this.getJob(streamId) : null;
+    let reconcileEpoch: number | undefined;
+    if (patch?.preserveForScheduleReconcile === true)
+      reconcileEpoch = await this.retainScheduleReconcile(streamId, expectCreatedAt);
+    else if (patch?.preserveForScheduleReconcile === false)
+      reconcileEpoch =
+        expectCreatedAt ?? terminalJob?.createdAt ?? (await this.getJob(streamId))?.createdAt;
     const detachedTerminalHostActionPending =
       terminal &&
       patch?.terminalHostActionPending === true &&
@@ -2949,7 +3101,9 @@ export class RedisJobStore implements IJobStoreV2 {
       KEYS.steerReceiptOrder(streamId),
       from,
       expectActionId ?? '',
-      expectCreatedAt != null ? String(expectCreatedAt) : '',
+      expectCreatedAt != null || reconcileEpoch != null
+        ? String(expectCreatedAt ?? reconcileEpoch)
+        : '',
       notAfterMs != null ? String(notAfterMs) : '',
       String(ttl),
       terminal ? '1' : '0',
@@ -2976,6 +3130,15 @@ export class RedisJobStore implements IJobStoreV2 {
       return null;
     }
 
+    if (reconcileEpoch != null) {
+      if (patch?.preserveForScheduleReconcile === false)
+        await this.acknowledgeScheduleReconcile(streamId, reconcileEpoch);
+      else
+        await this.redis.sadd(
+          KEYS.scheduleReconcileJobs,
+          terminalHostActionMember(streamId, reconcileEpoch),
+        );
+    }
     // 2) Same-slot TTL/content changes happened atomically in the CAS. Cross-slot
     //    indexes are reconciled last and verified against the durable hash.
     const currentJob = await this.reconcileJobMembership(streamId, {
@@ -3133,6 +3296,11 @@ export class RedisJobStore implements IJobStoreV2 {
       return false;
     }
 
+    if (
+      targetCreatedAt != null &&
+      (observedJob?.scheduleId != null || observedJob?.preserveForScheduleReconcile === true)
+    )
+      await this.acknowledgeScheduleReconcile(streamId, targetCreatedAt);
     const currentJob = await this.reconcileJobMembership(streamId, {
       initialJob: null,
       previousJob: observedJob,
@@ -3147,6 +3315,10 @@ export class RedisJobStore implements IJobStoreV2 {
     observedJob: SerializableJobData,
     now: number,
   ): Promise<boolean> {
+    // The cross-slot hint must exist before stale recovery retires running membership.
+    // Failed index writes leave the running generation available for a later cleanup pass.
+    if (observedJob.preserveForScheduleReconcile === true)
+      await this.retainScheduleReconcile(streamId, observedJob.createdAt);
     const deleted = await this.redis.eval(
       STALE_JOB_DELETE_LUA,
       9,
@@ -3170,7 +3342,6 @@ export class RedisJobStore implements IJobStoreV2 {
     }
 
     const currentJob = await this.reconcileJobMembership(streamId, {
-      initialJob: null,
       previousJob: observedJob,
     });
     this.clearLocalStateUnlessActive(streamId, currentJob, observedJob.createdAt);
@@ -3207,6 +3378,112 @@ export class RedisJobStore implements IJobStoreV2 {
     return jobs.filter(
       (job): job is SerializableJobData => job != null && job.status === 'requires_action',
     );
+  }
+
+  private async retainScheduleReconcile(
+    streamId: string,
+    createdAt?: number,
+  ): Promise<number | undefined> {
+    const epoch = createdAt ?? (await this.getJob(streamId))?.createdAt;
+    if (epoch != null)
+      await this.redis.sadd(KEYS.scheduleReconcileJobs, terminalHostActionMember(streamId, epoch));
+    return epoch;
+  }
+
+  private async acknowledgeScheduleReconcile(streamId: string, createdAt: number): Promise<void> {
+    const member = terminalHostActionMember(streamId, createdAt);
+    await this.redis.srem(KEYS.scheduleReconcileJobs, member);
+    // Global hints and same-slot hashes cannot share a Redis Cluster transaction.
+    // Repair a concurrent re-arm; retain writers also confirm the hint after their CAS.
+    const current = await this.getJob(streamId);
+    if (current?.createdAt === createdAt && current.preserveForScheduleReconcile === true)
+      await this.redis.sadd(KEYS.scheduleReconcileJobs, member);
+  }
+
+  async hasScheduleCleanupObligation(scope: ScheduleCleanupScope): Promise<boolean> {
+    let cursor = '0';
+    do {
+      const [next, members] = await this.redis.sscan(
+        KEYS.scheduleReconcileJobs,
+        cursor,
+        'COUNT',
+        100,
+      );
+      cursor = next;
+      if (members.length === 0) continue;
+      const indexed = members.map(parseTerminalHostActionMember);
+      const fields = [
+        'createdAt',
+        'scheduleId',
+        'userId',
+        'providerDrained',
+        'terminalPersistencePending',
+        'terminalHostActionPending',
+      ] as const;
+      let values: Array<Array<string | null>>;
+      if (this.isCluster) {
+        // A page spans hash slots. Let Cluster route independent commands to their nodes.
+        values = await Promise.all(
+          indexed.map(({ streamId }) => this.redis.hmget(KEYS.job(streamId), ...fields)),
+        );
+      } else {
+        const pipeline = this.redis.pipeline();
+        for (const { streamId } of indexed) pipeline.hmget(KEYS.job(streamId), ...fields);
+        const rows = await pipeline.exec();
+        if (!rows) throw new Error('Schedule cleanup read unavailable');
+        values = rows.map(([error, value]) => {
+          if (error) throw error;
+          return value as Array<string | null>;
+        });
+      }
+      for (let index = 0; index < values.length; index++) {
+        const [epoch, scheduleId, userId, provider, persistence, host] = values[index];
+        if (
+          !scheduleId ||
+          epoch !== String(indexed[index].createdAt) ||
+          (scope.scheduleId && scheduleId !== scope.scheduleId) ||
+          (scope.userId && userId !== scope.userId)
+        )
+          continue;
+        if (provider === '0' || persistence === '1' || host === '1') return true;
+      }
+    } while (cursor !== '0');
+    return false;
+  }
+
+  async getScheduleReconcileJobs(limit: number): Promise<SerializableJobData[]> {
+    if (this.scheduleReconcileMembers.length === 0) {
+      const [cursor, members] = await this.redis.sscan(
+        KEYS.scheduleReconcileJobs,
+        this.scheduleReconcileCursor,
+        'COUNT',
+        limit,
+      );
+      this.scheduleReconcileCursor = cursor;
+      this.scheduleReconcileMembers = members;
+    }
+    const members = this.scheduleReconcileMembers.splice(0, limit);
+    const held = await Promise.all(
+      members.map(async (member) => {
+        const { streamId, createdAt } = parseTerminalHostActionMember(member);
+        let job = await this.getJob(streamId);
+        if (!job || job.createdAt !== createdAt) {
+          await this.redis.srem(KEYS.scheduleReconcileJobs, member);
+          return null;
+        }
+        if (job.preserveForScheduleReconcile !== true) {
+          // Successful retain writers confirm after CAS; repair a concurrent re-arm too.
+          await this.acknowledgeScheduleReconcile(streamId, job.createdAt);
+          return null;
+        }
+        if (job.status === 'running') {
+          if (await this.deleteStaleRunningJob(streamId, job, Date.now()))
+            job = await this.getJob(streamId);
+        }
+        return job;
+      }),
+    );
+    return held.filter((job): job is SerializableJobData => job != null);
   }
 
   async getTerminalHostActionJobs(): Promise<SerializableJobData[]> {
@@ -3270,6 +3547,8 @@ export class RedisJobStore implements IJobStoreV2 {
           migrate.push(terminalHostActionMember(job.streamId, job.createdAt));
         }
         if (
+          !job.scheduleId &&
+          job.preserveForScheduleReconcile !== true &&
           job.providerDrained === false &&
           job.completedAt != null &&
           job.completedAt <= providerLossCutoff
@@ -3339,11 +3618,21 @@ export class RedisJobStore implements IJobStoreV2 {
     const held = [...heldByGeneration.values()];
     if (held.length > 0 && this.ttl.requiresAction > 0) {
       await Promise.all(
-        held.flatMap((job) =>
-          [KEYS.job(job.streamId), KEYS.chunks(job.streamId), KEYS.runSteps(job.streamId)].map(
-            (key) => this.redis.expire(key, this.ttl.requiresAction).catch(() => undefined),
+        held.flatMap((job) => [
+          this.redis
+            .eval(
+              SCHEDULE_RETENTION_LUA +
+                'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end expireScheduleJob(KEYS[1], tonumber(ARGV[2])) return 1',
+              1,
+              KEYS.job(job.streamId),
+              String(job.createdAt),
+              String(this.ttl.requiresAction),
+            )
+            .catch(() => undefined),
+          ...[KEYS.chunks(job.streamId), KEYS.runSteps(job.streamId)].map((key) =>
+            this.redis.expire(key, this.ttl.requiresAction).catch(() => undefined),
           ),
-        ),
+        ]),
       );
     }
     return [...readyByGeneration.values()];
@@ -3356,12 +3645,13 @@ export class RedisJobStore implements IJobStoreV2 {
     // and configured evidence-TTL reset happen atomically. The global retry
     // member includes this generation, so removing it cannot affect a successor.
     const cleared = (await this.redis.eval(
-      'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
+      SCHEDULE_RETENTION_LUA +
+        'if redis.call("HGET", KEYS[1], "createdAt") ~= ARGV[1] then return 0 end ' +
         'local detachedStatus = redis.call("HGET", KEYS[1], "detachedAgentEventTerminalStatus") ' +
         'if detachedStatus then redis.call("HSET", KEYS[1], "status", detachedStatus) end ' +
         'redis.call("HDEL", KEYS[1], "terminalHostActionPending", "detachedAgentEventTerminalHostActionPending", "detachedAgentEventTerminalStatus") ' +
         'if detachedStatus then redis.call("HDEL", KEYS[1], "lastActiveAt") end ' +
-        'if tonumber(ARGV[2]) > 0 then redis.call("EXPIRE", KEYS[1], ARGV[2]) else redis.call("DEL", KEYS[1]) end ' +
+        'expireScheduleJob(KEYS[1], tonumber(ARGV[2])) ' +
         'if tonumber(ARGV[3]) > 0 then redis.call("EXPIRE", KEYS[2], ARGV[3]) else redis.call("DEL", KEYS[2]) end ' +
         'if tonumber(ARGV[4]) > 0 then redis.call("EXPIRE", KEYS[3], ARGV[4]) else redis.call("DEL", KEYS[3]) end ' +
         'return 1',
@@ -4302,6 +4592,18 @@ export class RedisJobStore implements IJobStoreV2 {
       // Pass event string directly - GraphEvents values are lowercase strings
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       aggregateContent({ event: event.event as any, data: event.data as any });
+
+      // The SDK aggregator rebuilds tool calls from known fields only, so the
+      // server-stamped executor is copied back from the stored completion.
+      if (event.event === 'on_run_step_completed') {
+        const completed = (event.data as { result?: Agents.ToolEndEvent }).result;
+        const executor = completed?.tool_call?.executor;
+        const index = completed?.id != null ? replayedStepIndices.get(completed.id) : undefined;
+        const part = index != null ? contentParts[index] : undefined;
+        if (executor != null && part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+          part.tool_call.executor = executor;
+        }
+      }
     }
 
     const reasoningIndices = new Set([
@@ -5345,10 +5647,14 @@ export class RedisJobStore implements IJobStoreV2 {
       userMessage: data.userMessage ? JSON.parse(data.userMessage) : undefined,
       responseMessageId: data.responseMessageId || undefined,
       isRegenerate: data.isRegenerate != null ? data.isRegenerate === '1' : undefined,
+      compact: data.compact != null ? data.compact === '1' : undefined,
       mcpRequestBody: data.mcpRequestBody ? JSON.parse(data.mcpRequestBody) : undefined,
       userSubmittedPaths: data.userSubmittedPaths ? JSON.parse(data.userSubmittedPaths) : undefined,
       userSubmittedMessageFieldPaths: data.userSubmittedMessageFieldPaths
         ? JSON.parse(data.userSubmittedMessageFieldPaths)
+        : undefined,
+      preResumeProvenance: data.preResumeProvenance
+        ? JSON.parse(data.preResumeProvenance)
         : undefined,
       createdEventEmitted: data.createdEventEmitted === '1',
       sender: data.sender || undefined,
@@ -5388,6 +5694,10 @@ export class RedisJobStore implements IJobStoreV2 {
         ? JSON.parse(data.agentEventSuspension)
         : undefined,
       agentEventLegacyTurnToken: data.agentEventLegacyTurnToken || undefined,
+      scheduleMCPCompletion:
+        data.scheduleMCPCompletion === undefined
+          ? undefined
+          : parseScheduleMCPCompletion(data.scheduleMCPCompletion, true),
       scheduleId: data.scheduleId || undefined,
       scheduledFor: data.scheduledFor || undefined,
       scheduleConfigRevision: data.scheduleConfigRevision
@@ -5402,6 +5712,17 @@ export class RedisJobStore implements IJobStoreV2 {
           ? data.scheduleOutcome
           : undefined,
       scheduleOutcomeError: data.scheduleOutcomeError || undefined,
+      scheduleMCPFailure: (() => {
+        if (!data.scheduleMCPFailure) return;
+        try {
+          const parsed = scheduleMCPOutcomeSchema.safeParse(JSON.parse(data.scheduleMCPFailure));
+          return parsed.success && isScheduleMCPAuthorizationFailure(parsed.data)
+            ? parsed.data
+            : undefined;
+        } catch {
+          return;
+        }
+      })(),
       preserveForScheduleReconcile:
         data.preserveForScheduleReconcile != null
           ? data.preserveForScheduleReconcile === '1'
@@ -5588,6 +5909,7 @@ export class RedisJobStore implements IJobStoreV2 {
         configurable: true,
       });
     }
+    this.scheduleMembershipRevisions.set(job, data.__scheduleMembershipRevision ?? '');
     return job;
   }
 

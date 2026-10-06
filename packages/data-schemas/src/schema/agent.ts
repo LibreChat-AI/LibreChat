@@ -95,7 +95,28 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
       type: String,
     },
     code_workspace_id: { type: String },
+    code_environment_ids: { type: [String], default: undefined },
     repositoryInstructions: { type: String, enum: ['prefer', 'defer', 'off'] },
+    instructionsPrompt: {
+      type: new Schema(
+        {
+          source: { type: String, enum: ['native'], required: true },
+          groupId: { type: String, required: true },
+          selection: {
+            type: new Schema(
+              {
+                type: { type: String, enum: ['production', 'exact'], required: true },
+                promptId: { type: String },
+              },
+              { _id: false },
+            ),
+            required: true,
+          },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
     git_identity: {
       type: new Schema(
         {
@@ -176,6 +197,9 @@ agentSchema.index({ id: 1, tenantId: 1 }, { unique: true });
 agentSchema.index({ mcpServerNames: 1, tenantId: 1 });
 agentSchema.index({ updatedAt: -1, _id: 1 });
 agentSchema.index({ tenantId: 1, updatedAt: -1, _id: 1 });
+// Supports newest and oldest scans; oldest reverses the complete key pattern.
+agentSchema.index({ createdAt: -1, _id: 1 });
+agentSchema.index({ tenantId: 1, createdAt: -1, _id: 1 });
 agentSchema.index({ 'edges.to': 1 });
 
 export default agentSchema;

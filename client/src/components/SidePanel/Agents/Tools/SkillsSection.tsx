@@ -267,7 +267,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
       <div className="flex items-center justify-between gap-3">
         <span
           id="skills-mode-label"
-          className="block text-xs font-medium uppercase tracking-wide text-text-secondary"
+          className="text-text-secondary block text-xs font-medium tracking-wide uppercase"
         >
           {localize('com_ui_skills')}
         </span>
@@ -277,7 +277,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               type="button"
               onClick={onAdd}
               aria-label={localize('com_ui_skills_add_row')}
-              className="flex size-7 items-center justify-center rounded-lg text-text-secondary transition hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+              className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex size-7 items-center justify-center rounded-lg transition focus:outline-hidden focus-visible:ring-2"
             >
               <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
             </button>
@@ -286,7 +286,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
             options={modeOptions}
             value={mode}
             onChange={handleModeChange}
-            buttonClassName="!h-7 !px-2.5 !text-xs"
+            size="sm"
             aria-labelledby="skills-mode-label"
           />
         </div>
@@ -306,7 +306,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               role="alert"
               className={cn(
                 ROW,
-                'justify-between rounded-lg border-[0.5px] border-border-light text-sm text-text-secondary',
+                'border-border-light text-text-secondary justify-between rounded-lg border-[0.5px] text-sm',
               )}
             >
               <span className="truncate">{localize('com_ui_skills_load_error')}</span>
@@ -323,7 +323,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
           </>
         )}
         {bodyMode === SkillsScope.all && !catalogError && (
-          <div className="overflow-hidden rounded-lg border-[0.5px] border-border-light">
+          <div className="border-border-light overflow-hidden rounded-lg border-[0.5px]">
             <button
               type="button"
               onClick={() => setAllExpanded((prev) => !prev)}
@@ -331,24 +331,24 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               aria-controls="skills-all-list"
               className={cn(
                 ROW,
-                'w-full text-left transition-colors hover:bg-surface-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+                'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
               )}
             >
               <ChevronRight
                 className={cn(
-                  'size-4 shrink-0 text-text-secondary transition-transform',
+                  'text-text-secondary size-4 shrink-0 transition-transform',
                   allExpanded && 'rotate-90',
                 )}
                 aria-hidden="true"
               />
-              <span className="truncate text-sm text-text-primary">{countLabel}</span>
+              <span className="text-text-primary truncate text-sm">{countLabel}</span>
             </button>
             {/** Mounted only while expanded: an always-present wrapper left the
              *   container's divider stacked on its bottom border. */}
             {allExpanded && (
               <ul
                 id="skills-all-list"
-                className="divide-y-[0.5px] divide-border-light border-t-[0.5px] border-border-light"
+                className="divide-border-light border-border-light divide-y-[0.5px] border-t-[0.5px]"
               >
                 {availableSkills.map((item) => (
                   <li key={item.id}>
@@ -359,11 +359,11 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                         ROW,
                         // `transition-none` beats the global `all` transition, so
                         // the highlight lands on the frame the pointer enters.
-                        'w-full text-left transition-none hover:bg-surface-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+                        'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-none focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
-                      <span className="truncate text-sm text-text-secondary">{item.name}</span>
+                      <span className="text-text-secondary truncate text-sm">{item.name}</span>
                     </button>
                   </li>
                 ))}
@@ -377,29 +377,29 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
              *   name. `has-[...]` drops it while the remove button is hovered,
              *   leaving only that button lit. */}
             {items.length > 0 && (
-              <ul className="divide-y-[0.5px] divide-border-light overflow-hidden rounded-lg border-[0.5px] border-border-light">
+              <ul className="divide-border-light border-border-light divide-y-[0.5px] overflow-hidden rounded-lg border-[0.5px]">
                 {items.map((item) => (
                   <li
                     key={item.id}
-                    className="flex items-center transition-colors hover:bg-surface-secondary has-[[data-skill-remove]:hover]:bg-transparent"
+                    className="hover:bg-surface-secondary flex items-center transition-colors has-[[data-skill-remove]:hover]:bg-transparent"
                   >
                     <button
                       type="button"
                       onClick={() => onInfo(item)}
                       className={cn(
                         ROW,
-                        'min-w-0 flex-1 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring-primary',
+                        'focus-visible:ring-ring-primary min-w-0 flex-1 text-left focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
-                      <span className="truncate text-sm text-text-primary">{item.name}</span>
+                      <span className="text-text-primary truncate text-sm">{item.name}</span>
                     </button>
                     <button
                       type="button"
                       data-skill-remove=""
                       onClick={() => onRemove(item)}
                       aria-label={localize('com_ui_skills_remove', { name: item.name })}
-                      className="mr-2 flex size-6 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-tertiary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+                      className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-ring-primary mr-2 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-hidden focus-visible:ring-2"
                     >
                       <X className="size-3.5" aria-hidden="true" />
                     </button>
@@ -413,11 +413,11 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               <button
                 type="button"
                 onClick={onAdd}
-                className="flex w-full flex-col items-center gap-1 rounded-xl border border-dashed border-border-light px-2 py-4 text-text-secondary transition-colors hover:border-border-medium hover:bg-surface-secondary hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+                className="border-border-medium text-text-secondary hover:border-border-heavy hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-ring-primary flex w-full flex-col items-center gap-1 rounded-xl border border-dashed px-2 py-4 transition-colors focus:outline-hidden focus-visible:ring-2"
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 <span className="text-xs">{localize('com_ui_skills_add_row')}</span>
-                <span className="text-[11px] text-text-secondary">
+                <span className="text-text-secondary text-[11px]">
                   {localize('com_ui_skills_empty_hint')}
                 </span>
               </button>

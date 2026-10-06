@@ -38,15 +38,17 @@ jest.mock('~/models', () => {
 
 jest.mock('~/server/middleware', () => ({
   requireJwtAuth: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => {
+  configMiddleware: jest.fn((req, res, next) => {
     req.config = mockAppConfig;
     next();
-  },
+  }),
   promptUsageLimiter: (req, res, next) => next(),
   canAccessPromptViaGroup: jest.requireActual('~/server/middleware').canAccessPromptViaGroup,
   canAccessPromptGroupResource:
     jest.requireActual('~/server/middleware').canAccessPromptGroupResource,
 }));
+
+const { configMiddleware } = require('~/server/middleware');
 
 let app;
 let mongoServer;
@@ -344,7 +346,7 @@ describe('Prompt Routes - ACL Permissions', () => {
       const promptData = {
         prompt: {
           prompt: 'Group prompt content',
-          // Remove 'name' from prompt - it's not in the schema
+          type: 'text',
         },
         group: {
           name: 'Test Group',
@@ -735,6 +737,54 @@ describe('Prompt Routes - ACL Permissions', () => {
       // Verify prompt still exists
       const prompt = await Prompt.findById(authorPrompt._id);
       expect(prompt).toBeTruthy();
+    });
+
+    it('should run configMiddleware so the handler receives the configured value', async () => {
+      configMiddleware.mockClear();
+
+      await request(app)
+        .delete(`/api/prompts/${testPrompt._id}`)
+        .query({ groupId: testGroup._id.toString() })
+        .expect(200);
+
+      expect(configMiddleware).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('DELETE /api/prompts/groups/:groupId - Delete Prompt Group', () => {
+    let testGroup;
+
+    beforeEach(async () => {
+      testGroup = await PromptGroup.create({
+        name: 'Delete Group Test Group',
+        category: 'testing',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+        productionId: new ObjectId(),
+      });
+
+      await grantPermission({
+        principalType: PrincipalType.USER,
+        principalId: testUsers.owner._id,
+        resourceType: ResourceType.PROMPTGROUP,
+        resourceId: testGroup._id,
+        accessRoleId: AccessRoleIds.PROMPTGROUP_OWNER,
+        grantedBy: testUsers.owner._id,
+      });
+    });
+
+    afterEach(async () => {
+      await Prompt.deleteMany({});
+      await PromptGroup.deleteMany({});
+      await AclEntry.deleteMany({});
+    });
+
+    it('should run configMiddleware so the handler receives the configured value', async () => {
+      configMiddleware.mockClear();
+
+      await request(app).delete(`/api/prompts/groups/${testGroup._id}`).expect(200);
+
+      expect(configMiddleware).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1325,6 +1375,340 @@ describe('Prompt Routes - ACL Permissions', () => {
 
       expect(page2.body.promptGroups).toHaveLength(1); // 6 total, 5 on page 1, 1 on page 2
       expect(page2.body.has_more).toBe(false);
+    });
+  });
+});
+
+async function responseOf(pending) {
+  const { status, body } = await pending;
+  return { status, body };
+}
+
+describe('Prompt Routes - response and failure compatibility', () => {
+  let consoleErrorSpy;
+  let group;
+  let revision;
+
+  beforeEach(async () => {
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+    ({ group, prompt: revision } = await createAccessiblePromptGroup({
+      name: 'Compatibility Group',
+      prompt: 'Compatibility prompt',
+    }));
+  });
+
+  afterEach(async () => {
+    consoleErrorSpy.mockRestore();
+    jest.restoreAllMocks();
+    await Prompt.deleteMany({});
+    await PromptGroup.deleteMany({});
+    await AclEntry.deleteMany({});
+  });
+
+  it('rejects a group whose initial prompt has no type', async () => {
+    await request(app)
+      .post('/api/prompts')
+      .send({ prompt: { prompt: 'Untyped prompt' }, group: { name: 'Untyped Group' } })
+      .expect(400, { error: 'Prompt type must be "text" or "chat"' });
+
+    await expect(PromptGroup.countDocuments({ name: 'Untyped Group' })).resolves.toBe(0);
+  });
+
+  it('sends 404 from the access check for a malformed ID', async () => {
+    const notFound = (resourceType) => ({
+      status: 404,
+      body: { error: 'Not Found', message: `${resourceType} not found` },
+    });
+    expect(await responseOf(request(app).get('/api/prompts/groups/not-an-id'))).toEqual(
+      notFound(ResourceType.PROMPTGROUP),
+    );
+    expect(await responseOf(request(app).get('/api/prompts/not-an-id'))).toEqual(
+      notFound(ResourceType.PROMPTGROUP),
+    );
+  });
+
+  it('sends 500 from the access check when the database read fails', async () => {
+    const accessFailure = {
+      status: 500,
+      body: {
+        error: 'Internal Server Error',
+        message: 'Failed to check resource access permissions',
+      },
+    };
+    jest.spyOn(PromptGroup, 'aggregate').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+    expect(await responseOf(request(app).get(`/api/prompts/groups/${group._id}`))).toEqual(
+      accessFailure,
+    );
+
+    jest.spyOn(Prompt, 'findOne').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+    expect(await responseOf(request(app).get(`/api/prompts/${revision._id}`))).toEqual(
+      accessFailure,
+    );
+  });
+
+  it('adds a revision from the editor payload, which includes groupId', async () => {
+    const response = await request(app)
+      .post(`/api/prompts/groups/${group._id}/prompts`)
+      .send({ prompt: { prompt: 'Second revision', type: 'chat', groupId: group._id.toString() } })
+      .expect(200);
+
+    expect(response.body.prompt).toEqual(
+      expect.objectContaining({
+        prompt: 'Second revision',
+        type: 'chat',
+        groupId: group._id.toString(),
+        author: testUsers.owner._id.toString(),
+      }),
+    );
+    await expect(Prompt.countDocuments({ groupId: group._id })).resolves.toBe(2);
+  });
+
+  it('sends the legacy 200 message when saving a revision fails', async () => {
+    jest.spyOn(Prompt, 'create').mockRejectedValueOnce(new Error('database unavailable'));
+
+    const response = await request(app)
+      .post(`/api/prompts/groups/${group._id}/prompts`)
+      .send({ prompt: { prompt: 'Lost revision', type: 'text' } })
+      .expect(200);
+
+    expect(response.body).toEqual({ message: 'Error saving prompt' });
+  });
+
+  it('returns the group detail with its full Production revision', async () => {
+    const response = await request(app).get(`/api/prompts/groups/${group._id}`).expect(200);
+
+    expect(response.body._id).toBe(group._id.toString());
+    expect(response.body.productionPrompt).toEqual(
+      expect.objectContaining({
+        _id: revision._id.toString(),
+        prompt: 'Compatibility prompt',
+        type: 'text',
+        groupId: group._id.toString(),
+      }),
+    );
+  });
+
+  it('returns 404 from the handler when a capability bypass reads a missing group', async () => {
+    setTestUser(app, testUsers.admin);
+
+    const response = await request(app).get(`/api/prompts/groups/${new ObjectId()}`).expect(404);
+
+    expect(response.body).toEqual({ message: 'Prompt group not found' });
+  });
+
+  it('returns an empty 200 when a capability bypass reads a missing revision', async () => {
+    setTestUser(app, testUsers.admin);
+
+    const response = await request(app).get(`/api/prompts/${new ObjectId()}`).expect(200);
+
+    expect(response.text).toBe('');
+  });
+
+  it('returns revision history newest first with management fields', async () => {
+    const newer = await Prompt.create({
+      prompt: 'Newer revision',
+      author: testUsers.owner._id,
+      type: 'text',
+      groupId: group._id,
+      createdAt: new Date(Date.now() + 1000),
+    });
+
+    const response = await request(app)
+      .get('/api/prompts')
+      .query({ groupId: group._id.toString() })
+      .expect(200);
+
+    expect(response.body.map((item) => item._id)).toEqual([
+      newer._id.toString(),
+      revision._id.toString(),
+    ]);
+    expect(response.body[0]).toEqual(
+      expect.objectContaining({ author: testUsers.owner._id.toString(), type: 'text' }),
+    );
+  });
+
+  it('keeps the malformed and denied revision-history responses', async () => {
+    expect(
+      await responseOf(request(app).get('/api/prompts').query({ groupId: 'not-an-id' })),
+    ).toEqual({ status: 400, body: { error: 'Invalid groupId' } });
+
+    setTestUser(app, testUsers.noAccess);
+    expect(
+      await responseOf(request(app).get('/api/prompts').query({ groupId: group._id.toString() })),
+    ).toEqual({
+      status: 403,
+      body: { error: 'Insufficient permissions to view prompts in this group' },
+    });
+  });
+
+  it('sends the legacy 200 message when revision history fails', async () => {
+    jest.spyOn(Prompt, 'find').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+
+    const response = await request(app)
+      .get('/api/prompts')
+      .query({ groupId: group._id.toString() })
+      .expect(200);
+
+    expect(response.body).toEqual({ message: 'Error getting prompts' });
+  });
+
+  it('returns the updated group document fields from a metadata update', async () => {
+    const response = await request(app)
+      .patch(`/api/prompts/groups/${group._id}`)
+      .send({ name: 'Renamed Group', command: 'renamed' })
+      .expect(200);
+
+    expect(Object.keys(response.body).sort()).toEqual(
+      [
+        '__v',
+        '_id',
+        'author',
+        'authorName',
+        'category',
+        'command',
+        'createdAt',
+        'name',
+        'numberOfGenerations',
+        'oneliner',
+        'productionId',
+        'updatedAt',
+      ].sort(),
+    );
+    expect(response.body).toEqual(
+      expect.objectContaining({ name: 'Renamed Group', command: 'renamed' }),
+    );
+  });
+
+  it('sends the legacy 200 message when a metadata update fails', async () => {
+    jest.spyOn(PromptGroup, 'findOneAndUpdate').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+
+    const response = await request(app)
+      .patch(`/api/prompts/groups/${group._id}`)
+      .send({ name: 'Renamed Group' })
+      .expect(200);
+
+    expect(response.body).toEqual({ message: 'Error updating prompt group' });
+  });
+
+  it('sends the legacy 200 message when a capability bypass promotes a missing revision', async () => {
+    setTestUser(app, testUsers.admin);
+
+    const response = await request(app)
+      .patch(`/api/prompts/${new ObjectId()}/tags/production`)
+      .expect(200);
+
+    expect(response.body).toEqual({ message: 'Error making prompt production' });
+  });
+
+  it('does not promote when the preliminary read of a capability bypass fails', async () => {
+    const candidate = await Prompt.create({
+      prompt: 'Candidate revision',
+      author: testUsers.owner._id,
+      type: 'text',
+      groupId: group._id,
+    });
+    setTestUser(app, testUsers.admin);
+    jest.spyOn(Prompt, 'findOne').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+    const promote = jest.spyOn(PromptGroup, 'findByIdAndUpdate');
+
+    await request(app)
+      .patch(`/api/prompts/${candidate._id}/tags/production`)
+      .expect(500, { error: 'Error updating prompt production' });
+
+    expect(promote).not.toHaveBeenCalled();
+    const stored = await PromptGroup.findById(group._id).lean();
+    expect(stored.productionId.toString()).toBe(revision._id.toString());
+  });
+
+  it('requires groupId for revision history, including READ_PROMPTS callers', async () => {
+    const missingGroupId = { status: 400, body: { error: 'Invalid or missing groupId' } };
+    expect(await responseOf(request(app).get('/api/prompts'))).toEqual(missingGroupId);
+
+    setTestUser(app, testUsers.admin);
+    expect(await responseOf(request(app).get('/api/prompts'))).toEqual(missingGroupId);
+  });
+
+  it('reuses the records that the access check loaded', async () => {
+    const readGroup = jest.spyOn(PromptGroup, 'aggregate');
+    await request(app).get(`/api/prompts/groups/${group._id}`).expect(200);
+    expect(readGroup).toHaveBeenCalledTimes(1);
+
+    const readRevision = jest.spyOn(Prompt, 'findOne');
+    await request(app).get(`/api/prompts/${revision._id}`).expect(200);
+    expect(readRevision).toHaveBeenCalledTimes(1);
+
+    readRevision.mockClear();
+    await request(app).patch(`/api/prompts/${revision._id}/tags/production`).expect(200);
+    // The access check reads once; the mutation's own `findById` is the second call.
+    expect(readRevision).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns 500 for GET /groups without limit or pageSize', async () => {
+    expect(await responseOf(request(app).get('/api/prompts/groups'))).toEqual({
+      status: 500,
+      body: { error: 'Error getting prompt groups' },
+    });
+  });
+
+  it('returns the full catalog array from GET /all with the public flag', async () => {
+    const response = await request(app).get('/api/prompts/all').expect(200);
+
+    expect(response.body).toEqual([
+      expect.objectContaining({
+        _id: group._id.toString(),
+        productionPrompt: { _id: revision._id.toString(), prompt: 'Compatibility prompt' },
+      }),
+    ]);
+    expect(response.body[0].isPublic).toBeUndefined();
+  });
+
+  it('keeps the Usage responses', async () => {
+    const recordUsage = () => request(app).post(`/api/prompts/groups/${group._id}/use`);
+    expect(await responseOf(recordUsage())).toEqual({
+      status: 200,
+      body: { numberOfGenerations: 1 },
+    });
+
+    jest.spyOn(PromptGroup, 'findByIdAndUpdate').mockImplementationOnce(() => {
+      throw new Error('database unavailable');
+    });
+    expect(await responseOf(recordUsage())).toEqual({
+      status: 500,
+      body: { error: 'Error recording prompt usage' },
+    });
+  });
+
+  it('keeps the revision and group deletion responses', async () => {
+    await request(app)
+      .delete(`/api/prompts/${revision._id}`)
+      .expect(400, { error: 'Invalid or missing groupId' });
+
+    const response = await request(app)
+      .delete(`/api/prompts/${revision._id}`)
+      .query({ groupId: group._id.toString() })
+      .expect(200);
+
+    expect(response.body).toEqual({
+      prompt: 'Prompt deleted successfully',
+      promptGroup: { message: 'Prompt group deleted successfully', id: group._id.toString() },
+    });
+    await expect(PromptGroup.countDocuments({ _id: group._id })).resolves.toBe(0);
+  });
+
+  it('keeps the group deletion response', async () => {
+    expect(await responseOf(request(app).delete(`/api/prompts/groups/${group._id}`))).toEqual({
+      status: 200,
+      body: { message: 'Prompt group deleted successfully' },
     });
   });
 });

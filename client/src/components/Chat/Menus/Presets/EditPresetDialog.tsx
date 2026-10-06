@@ -143,7 +143,7 @@ const EditPresetDialog = ({
 
   return (
     <OGDialog open={presetModalVisible} onOpenChange={handleOpenChange} triggerRef={triggerRef}>
-      <OGDialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col overflow-y-visible bg-surface-dialog md:h-auto md:max-h-[90vh] md:max-w-[75vw] md:rounded-theme-surface lg:max-w-[950px]">
+      <OGDialogContent className="bg-surface-dialog md:rounded-theme-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col overflow-y-visible md:h-auto md:max-h-[90vh] md:max-w-[75vw] lg:max-w-[59.375rem]">
         <OGDialogTitle className="shrink-0">
           {localize('com_ui_edit_preset_title', { title: preset?.title })}
         </OGDialogTitle>
@@ -163,7 +163,7 @@ const EditPresetDialog = ({
               value={(title as string | undefined) ?? ''}
               onChange={onTitleChange}
               placeholder={localize('com_endpoint_set_custom_name')}
-              className="h-9 w-full rounded-theme-control border-border-medium px-3 py-2"
+              className="rounded-theme-control border-border-medium h-9 w-full px-3 py-2"
             />
           </div>
           <div className="flex w-full flex-col">
@@ -191,7 +191,7 @@ const EditPresetDialog = ({
           {/* PopoverButtons section */}
           <div className="flex w-full">
             <PopoverButtons
-              buttonClass="ml-0 w-full border border-border-medium p-2 h-[40px] justify-center mt-0"
+              buttonClass="ml-0 w-full border border-border-medium p-2 h-[2.5rem] justify-center mt-0"
               iconClass="hidden lg:block w-4"
               endpoint={endpoint}
               endpointType={endpointType}
@@ -200,7 +200,7 @@ const EditPresetDialog = ({
           </div>
 
           {/* Separator */}
-          <div className="w-full border-t border-border-medium" />
+          <div className="border-border-medium w-full border-t" />
 
           {/* Settings section. The shared component ships a fixed-height scroll
               box; overriding it to auto lets the dialog own the single scroll
@@ -210,13 +210,13 @@ const EditPresetDialog = ({
               conversation={preset}
               setOption={setOption}
               isPreset={true}
-              className="h-auto overflow-visible text-text-primary md:h-auto"
+              className="text-text-primary h-auto overflow-visible md:h-auto"
             />
           </div>
         </div>
 
         {/* Action buttons */}
-        <div className="flex shrink-0 justify-end gap-2 border-t border-border-medium pt-3">
+        <div className="border-border-medium flex shrink-0 justify-end gap-2 border-t pt-3">
           <Button variant="outline" onClick={exportPreset}>
             {localize('com_endpoint_export')}
           </Button>

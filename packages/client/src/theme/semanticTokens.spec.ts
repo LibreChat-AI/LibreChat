@@ -1,9 +1,11 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeRGB } from './types';
+import type { IThemeAppearance, IThemeRGB } from './types';
+import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
-import { createTailwindColors } from './utils/createTailwindColors';
+import { fieldControl } from '../components/Field';
 import { defaultTheme } from './themes/default';
+import { defaultAppearance } from './registry';
 import { darkTheme } from './themes/dark';
 
 const sharedComponents = [
@@ -30,9 +32,13 @@ const sharedDialogComponents = [
 ];
 
 describe('shared component color guardrail', () => {
-  it('keeps shared primitives free of direct palette utilities and hex colors', () => {
+  it('keeps shared primitives free of direct palette utilities and raw colors', () => {
     const directPalette =
-      /(?:bg|text|border|ring|from|via|to)-(?:gray|red|green|blue|purple|amber|yellow|orange|pink|indigo|violet|teal|cyan|slate|zinc|neutral|stone)-\d/;
+      /(?:bg|text|border|ring|from|via|to|fill|stroke)-(?:(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d|white\b|black\b)/;
+    /** Literal colors only: `rgb(var(--token))` reads the theme at paint time,
+     *  which is exactly what a shared primitive is supposed to do. */
+    const rawColor =
+      /#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{4}|[0-9a-f]{3})\b|(?:rgb|hsl)a?\((?!\s*var\()/i;
     /** Only CSS-legal hex lengths (3, 4, 6, 8). `{3,8}` also matched a five-
      *  digit issue reference in a comment — see the PR number in
      *  `OriginalDialog.tsx` — which reads as a color to a regex and to nobody
@@ -43,7 +49,7 @@ describe('shared component color guardrail', () => {
       const source = readFileSync(join(__dirname, '..', 'components', component), 'utf8');
 
       expect(source).not.toMatch(directPalette);
-      expect(source).not.toMatch(hexColor);
+      expect(source).not.toMatch(rawColor);
     });
 
     /** The guardrail still has to catch what it exists for. */
@@ -66,39 +72,30 @@ describe('shared component color guardrail', () => {
 
 describe('dark dialog surface', () => {
   it('matches the legacy rendered background in CSS and the runtime theme', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--gray-875:\s*18 18 18;/);
-    expect(appStyles).toMatch(/--surface-dialog:\s*var\(--gray-875\);/);
+    expect(stockStyles).toMatch(/--gray-875:\s*18 18 18;/);
+    expect(stockStyles).toMatch(/--surface-dialog:\s*var\(--gray-875\);/);
     expect(darkTheme['rgb-surface-dialog']).toBe('18 18 18');
   });
 });
 
 describe('dark hover surface', () => {
   it('uses the gray-650 midpoint in both CSS and the runtime theme', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--gray-650:\s*57 57 57;/);
-    expect(appStyles).toMatch(/--surface-hover:\s*var\(--gray-650\);/);
+    expect(stockStyles).toMatch(/--gray-650:\s*57 57 57;/);
+    expect(stockStyles).toMatch(/--surface-hover:\s*var\(--gray-650\);/);
     expect(darkTheme['rgb-surface-hover']).toBe('57 57 57');
   });
 });
 
 describe('composer hover surface', () => {
   it('keeps light hover unchanged and uses the lighter dark hover surface', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-200\);/);
-    expect(appStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-600\);/);
+    expect(stockStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-200\);/);
+    expect(stockStyles).toMatch(/--surface-composer-hover:\s*var\(--gray-600\);/);
     expect(defaultTheme['rgb-surface-composer-hover']).toBe('227 227 227');
     expect(darkTheme['rgb-surface-composer-hover']).toBe('66 66 66');
   });
@@ -106,12 +103,9 @@ describe('composer hover surface', () => {
 
 describe('dark destructive text', () => {
   it('uses red-400 without changing the status error token', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    expect(appStyles).toMatch(/--text-destructive:\s*var\(--red-400\);/);
+    expect(stockStyles).toMatch(/--text-destructive:\s*var\(--red-400\);/);
     expect(darkTheme['rgb-text-destructive']).toBe('248 113 113');
     expect(darkTheme['rgb-status-error']).toBe('252 165 165');
   });
@@ -129,9 +123,20 @@ describe('shared field and dropdown interaction styles', () => {
      *  assert the primitives still compose it rather than restating the classes. */
     const field = readFileSync(join(__dirname, '..', 'components', 'Field.ts'), 'utf8');
 
-    expect(field).toMatch(/focus-visible:border-border-medium/);
+    expect(field).toMatch(/\bborder-border-control\b/);
+    expect(field).not.toMatch(/\bborder-border-(?:light|medium)\b/);
     expect(field).toMatch(/focus-visible:ring-2/);
-    expect(field).toMatch(/focus-visible:ring-text-primary/);
+    expect(field).toMatch(/focus-visible:ring-focus-control/);
+    /** The fill and ink classes the field-fill e2e scenarios probe in the browser. */
+    expect(fieldControl.split(' ')).toEqual(
+      expect.arrayContaining([
+        'lc-field',
+        'bg-transparent',
+        'text-field-text',
+        'theme-field-fill:bg-field-fill',
+        'theme-field-fill:disabled:hover:bg-field-fill',
+      ]),
+    );
 
     const composers: Array<[string, RegExp]> = [
       ['Input.tsx', /\bfieldControl\b/],
@@ -156,7 +161,14 @@ describe('shared field and dropdown interaction styles', () => {
     );
     expect(appStyles).toMatch(/html\[data-input-modality='pointer'\]/);
     expect(appStyles).toMatch(/html\[data-input-modality='keyboard'\]/);
-    expect(appStyles).toMatch(/outline:\s*2px solid rgb\(var\(--text-primary\)\) !important;/);
+    expect(appStyles).toMatch(
+      /outline:\s*var\(--theme-focus-ring-width, 2px\) solid rgb\(var\(--focus-control\)\) !important;\s*outline-offset:\s*var\(--theme-focus-ring-offset, 2px\) !important;/,
+    );
+    /** The global outline, in both its layered and its unlayered dark rule, reads the roles. */
+    const roleOutline =
+      ':focus-visible \\{\\s*outline: var\\(--theme-focus-ring-width, 2px\\) solid rgb\\(var\\(--focus-outline\\)\\);\\s*outline-offset: var\\(--theme-focus-ring-offset, 2px\\);';
+    expect(appStyles).toMatch(new RegExp(`@layer base \\{\\s*${roleOutline}`));
+    expect(appStyles).toMatch(new RegExp(`\\.dark ${roleOutline}`));
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
   });
 
@@ -179,6 +191,7 @@ const canvasSurfaces: Array<keyof IThemeRGB> = [
   'rgb-surface-dialog',
   'rgb-surface-chat',
   'rgb-surface-code',
+  'rgb-surface-code-body',
   'rgb-presentation',
 ];
 
@@ -236,11 +249,20 @@ describe.each([
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s theme text contrast', (_name, theme: IThemeRGB) => {
   it('keeps neutral text at WCAG AA on every surface it renders on', () => {
     expect(belowAA(theme, neutralTextTokens, [...canvasSurfaces, 'rgb-surface-tertiary'])).toEqual(
       [],
     );
+  });
+
+  it('keeps the tooltip label and the error alert text at WCAG AA', () => {
+    const tooltip = belowAA(theme, ['rgb-text-tooltip'], ['rgb-surface-tooltip']);
+    const alert = belowAA(theme, ['rgb-status-error'], ['rgb-alert-error-fill']);
+
+    expect({ tooltip, alert }).toEqual({ tooltip: [], alert: [] });
   });
 
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {
@@ -298,15 +320,12 @@ describe('categorical series scale', () => {
     });
   });
 
-  it('keeps the app CSS defaults in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS defaults in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     seriesTokens.forEach((token) => {
       const property = token.slice(4);
-      const declared = [...appStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
+      const declared = [...stockStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
         (match) => match[1].trim(),
       );
 
@@ -315,12 +334,12 @@ describe('categorical series scale', () => {
     });
   });
 
-  it('exposes each slot as a Tailwind utility backed by its CSS variable', () => {
-    const colors = createTailwindColors();
+  it('exposes each slot as a Tailwind color backed by its CSS variable', () => {
+    const tokens = readFileSync(join(__dirname, 'tokens.css'), 'utf8');
 
     seriesTokens.forEach((token) => {
       const property = token.slice(4);
-      expect(colors[property]).toBe(`rgb(var(--${property}) / <alpha-value>)`);
+      expect(tokens).toContain(`--color-${property}: rgb(var(--${property}));`);
     });
   });
 });
@@ -330,6 +349,8 @@ describe.each([
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s series contrast', (_name, theme: IThemeRGB) => {
   it('keeps every series slot at the 3:1 mark floor on its consumer surfaces', () => {
     const failures = seriesTokens.flatMap((token) =>
@@ -353,6 +374,28 @@ describe.each([
 
     expect(failures).toEqual([]);
   });
+
+  /** Identity labels (`SeriesLabel`: action methods, principal types) are small text, so the
+   *  series hue never paints the glyphs: the label takes `text-secondary` at AA
+   *  and the hue rides on a leading dot at the 3:1 mark floor, both on the rows
+   *  and popover options that host them, at rest and while hovered or active. */
+  it('keeps identity labels at AA and their hue dots at the 3:1 mark floor', () => {
+    const hosts: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-surface-secondary',
+      'rgb-surface-tertiary',
+      'rgb-surface-dialog',
+    ];
+    const dots: Array<keyof IThemeRGB> = [...seriesTokens, 'rgb-status-error'];
+    const dotFailures = dots.flatMap((token) =>
+      hosts.flatMap((surface) => {
+        const ratio = contrast(toRgb(theme, token), toRgb(theme, surface));
+        return ratio < WCAG_MARK_MIN ? [`${token} dot on ${surface}: ${ratio.toFixed(2)}:1`] : [];
+      }),
+    );
+
+    expect([...dotFailures, ...belowAA(theme, ['rgb-text-secondary'], hosts)]).toEqual([]);
+  });
 });
 
 describe.each([
@@ -360,6 +403,34 @@ describe.each([
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s control focus', (_name, theme: IThemeRGB) => {
+  it('keeps the keyboard focus ring at the 3:1 floor on every control canvas', () => {
+    const ring = toRgb(theme, 'rgb-focus-control');
+    const surfaces: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-presentation',
+      'rgb-surface-secondary',
+      'rgb-surface-dialog',
+    ];
+
+    const failures = surfaces.flatMap((surface) => {
+      const ratio = contrast(ring, toRgb(theme, surface));
+      return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+  });
+});
+
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s skill indicators', (_name, theme: IThemeRGB) => {
   it('keeps informational marks at the 3:1 floor on every skill surface', () => {
     const indicator = toRgb(theme, 'rgb-status-info');
@@ -388,6 +459,8 @@ describe.each([
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s success fill', (_name, theme: IThemeRGB) => {
   it('carries its label at WCAG AA', () => {
     const ratio = contrast(
@@ -409,14 +482,11 @@ describe.each([
 describe('success fill defaults', () => {
   /** Both copies have to move together: the value is a tuned hex rather than a
    *  palette step, so the stylesheet cannot alias it to a `--green-*` step. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--status-success-strong:\s*([^;]+);/g)].map((match) =>
-      match[1].trim(),
+    const declared = [...stockStyles.matchAll(/--status-success-strong:\s*([^;]+);/g)].map(
+      (match) => match[1].trim(),
     );
 
     /** One declaration for `html`, one for `.dark`, and both must match. */
@@ -442,6 +512,8 @@ describe.each([
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s verified fill', (_name, theme: IThemeRGB) => {
   it('carries its check at the 3:1 mark floor', () => {
     const ratio = contrast(toRgb(theme, 'rgb-status-verified'), toRgb(theme, 'rgb-text-on-status'));
@@ -470,13 +542,10 @@ describe.each([
 describe('verified fill defaults', () => {
   /** Tuned values rather than palette steps in either mode, so the stylesheet
    *  cannot alias them to a `--blue-*` step and both copies move together. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--status-verified:\s*([^;]+);/g)].map((match) =>
+    const declared = [...stockStyles.matchAll(/--status-verified:\s*([^;]+);/g)].map((match) =>
       match[1].trim(),
     );
 
@@ -487,26 +556,72 @@ describe('verified fill defaults', () => {
   });
 });
 
+/**
+ * The default avatar's glyph is a graphical object under WCAG 1.4.11, so it needs 3:1 on its fill.
+ * The bundled dark theme keeps the 2.6:1 its avatar painted before the role existed: the glyph is
+ * decorative (aria-hidden beside the account name), and raising it is tracked on its own.
+ */
+it('keeps the bundled dark avatar glyph no fainter than it painted before its role', () => {
+  expect(
+    contrast(toRgb(darkTheme, 'rgb-avatar-text'), toRgb(darkTheme, 'rgb-avatar-fill')),
+  ).toBeGreaterThanOrEqual(2.6);
+});
+
+describe.each([
+  ['default', defaultTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s default avatar', (_name, theme: IThemeRGB) => {
+  it('keeps the glyph at the 3:1 mark floor against its fill', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-avatar-text'), toRgb(theme, 'rgb-avatar-fill')),
+    ).toBeGreaterThanOrEqual(WCAG_MARK_MIN);
+  });
+});
+
 /** The shared `Switch` paints this track, so it travels with the package rather
  *  than the app stylesheet. It is a UI component boundary under WCAG 1.4.11 and
- *  has to stay distinct from the `surface-primary` thumb on it and from the
+ *  has to stay distinct from the `switch-thumb` knob on it and from the
  *  `surface-inverted` fill it swaps with when checked. */
 describe.each([
   ['default', defaultTheme],
   ['dark', darkTheme],
   ['high contrast light', highContrastLightTheme],
   ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
 ])('%s switch track', (_name, theme: IThemeRGB) => {
   it('keeps the unchecked track at the 3:1 mark floor against thumb and checked fill', () => {
     const track = toRgb(theme, 'rgb-switch-unchecked');
-    (['rgb-surface-primary', 'rgb-surface-inverted'] as Array<keyof IThemeRGB>).forEach(
-      (surface) => {
-        expect({ surface, ok: contrast(track, toRgb(theme, surface)) >= WCAG_MARK_MIN }).toEqual({
-          surface,
-          ok: true,
-        });
-      },
-    );
+    (['rgb-switch-thumb', 'rgb-surface-inverted'] as Array<keyof IThemeRGB>).forEach((surface) => {
+      expect({ surface, ok: contrast(track, toRgb(theme, surface)) >= WCAG_MARK_MIN }).toEqual({
+        surface,
+        ok: true,
+      });
+    });
+  });
+});
+
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s table header', (_name, theme: IThemeRGB) => {
+  it('keeps column names readable on the header fill', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-table-header-text'), toRgb(theme, 'rgb-surface-secondary')),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps column names readable on a self-sticking header', () => {
+    expect(
+      contrast(toRgb(theme, 'rgb-table-header-text'), toRgb(theme, 'rgb-table-header-fill')),
+    ).toBeGreaterThanOrEqual(4.5);
   });
 });
 
@@ -514,13 +629,10 @@ describe('switch track defaults', () => {
   /** The app stylesheet only restates the registry now: the contrast modes used
    *  to carry their own `html.high-contrast` overrides here, which the published
    *  package never shipped. */
-  it('keeps the app CSS in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
-    const declared = [...appStyles.matchAll(/--switch-unchecked:\s*([^;]+);/g)].map((match) =>
+    const declared = [...stockStyles.matchAll(/--switch-unchecked:\s*([^;]+);/g)].map((match) =>
       match[1].trim(),
     );
 
@@ -528,6 +640,43 @@ describe('switch track defaults', () => {
       defaultTheme['rgb-switch-unchecked'],
       darkTheme['rgb-switch-unchecked'],
     ]);
+  });
+
+  it('declares table column names on the secondary text they were before the role', () => {
+    const appStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
+
+    expect([...appStyles.matchAll(/--table-header-text:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
+      'var(--text-secondary)',
+    ]);
+    expect(defaultTheme['rgb-table-header-text']).toBe(defaultTheme['rgb-text-secondary']);
+    expect(darkTheme['rgb-table-header-text']).toBe(darkTheme['rgb-text-secondary']);
+  });
+
+  it('declares the self-sticking header fill on the dialog surface it was before the role', () => {
+    const appStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
+
+    expect([...appStyles.matchAll(/--table-header-fill:\s*([^;]+);/g)].map((m) => m[1])).toEqual([
+      'var(--surface-dialog)',
+    ]);
+    [defaultTheme, darkTheme, highContrastLightTheme, highContrastDarkTheme].forEach((theme) =>
+      expect(theme['rgb-table-header-fill']).toBe(theme['rgb-surface-dialog']),
+    );
+  });
+
+  it('ships the no-rule table default with the package', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
+
+    expect(stockStyles).toContain(`--theme-table-row-stroke: ${defaultAppearance.tableRowStroke};`);
+  });
+
+  it('declares the stock thumb the registry paints', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
+
+    const declared = [...stockStyles.matchAll(/--switch-thumb:\s*([^;]+);/g)].map((match) =>
+      match[1].trim(),
+    );
+
+    expect(declared).toEqual([defaultTheme['rgb-switch-thumb'], darkTheme['rgb-switch-thumb']]);
   });
 });
 
@@ -546,15 +695,12 @@ describe('syntax highlighting palette', () => {
     });
   });
 
-  it('keeps the app CSS defaults in step with the runtime themes', () => {
-    const appStyles = readFileSync(
-      join(__dirname, '..', '..', '..', '..', 'client', 'src', 'style.css'),
-      'utf8',
-    );
+  it('keeps the stock CSS defaults in step with the runtime themes', () => {
+    const stockStyles = readFileSync(join(__dirname, 'defaults.css'), 'utf8');
 
     syntaxTokens.forEach((token) => {
       const property = token.slice(4);
-      const declared = [...appStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
+      const declared = [...stockStyles.matchAll(new RegExp(`--${property}:\\s*([^;]+);`, 'g'))].map(
         (match) => match[1].trim(),
       );
 
@@ -573,5 +719,204 @@ describe('syntax highlighting palette', () => {
 
     expect(hljsRules.length).toBeGreaterThan(0);
     expect(hljsRules.filter((body) => /#[0-9a-f]{3,8}|hsla?\(/i.test(body))).toEqual([]);
+  });
+});
+
+/** `border-control` is the only edge a form control has (`Field`, `Select`,
+ *  `InputOTP`, the dropdown and combobox triggers). The stock light and dark
+ *  palettes keep it at their quiet `border-light` value by design; the high
+ *  contrast and ClickHouse palettes hold it to the WCAG 1.4.11 3:1 floor. */
+const controlCanvases: Array<keyof IThemeRGB> = [...canvasSurfaces, 'rgb-surface-tertiary'];
+
+describe.each([
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s control border', (_name, theme: IThemeRGB) => {
+  it('keeps the form-control outline at the 3:1 floor on every canvas', () => {
+    const outline = toRgb(theme, 'rgb-border-control');
+    const failures = controlCanvases.flatMap((surface) => {
+      const ratio = contrast(outline, toRgb(theme, surface));
+      return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+  });
+});
+
+/** WCAG 2.4.13 holds a focus indicator to 3:1 against what it is drawn on. The
+ *  global outline and the primitives' ring are theme roles, so every bundled
+ *  palette carries both at that floor on its canvases. */
+describe.each([
+  ['default light', defaultTheme],
+  ['default dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s focus roles', (_name, theme: IThemeRGB) => {
+  it.each(['rgb-focus-outline', 'rgb-focus-control'] as const)(
+    'keeps %s at the 3:1 floor on every canvas',
+    (role) => {
+      const focus = toRgb(theme, role);
+      const failures = canvasSurfaces.flatMap((surface) => {
+        const ratio = contrast(focus, toRgb(theme, surface));
+        return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+      });
+
+      expect(failures).toEqual([]);
+    },
+  );
+});
+
+describe('focus role defaults', () => {
+  /** The default theme's outline was literal black and white and its primitives
+   *  drew their ring in the primary ink; the roles reproduce both. */
+  it('reproduces the outline and ring the default theme drew before the roles', () => {
+    expect([defaultTheme['rgb-focus-outline'], darkTheme['rgb-focus-outline']]).toEqual([
+      '0 0 0',
+      '255 255 255',
+    ]);
+    expect([defaultTheme['rgb-focus-control'], darkTheme['rgb-focus-control']]).toEqual([
+      defaultTheme['rgb-text-primary'],
+      darkTheme['rgb-text-primary'],
+    ]);
+  });
+});
+
+describe('state role defaults', () => {
+  /** A pointer press lands on a hovered control, so the default press shows the
+   *  hover fill it always did; only a theme that names a pressed fill changes it. */
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('presses %s controls in their hover fills', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-surface-pressed']).toBe(theme['rgb-surface-hover']);
+    expect(theme['rgb-surface-inverted-pressed']).toBe(theme['rgb-surface-inverted-hover']);
+  });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('fills %s primary buttons with the inverted surface', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-button-primary']).toBe(theme['rgb-surface-inverted']);
+    expect(theme['rgb-button-primary-hover']).toBe(theme['rgb-surface-inverted-hover']);
+  });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('sets %s dialog titles and badge labels in the primary ink', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-dialog-title']).toBe(theme['rgb-text-primary']);
+    expect(theme['rgb-badge-label']).toBe(theme['rgb-text-primary']);
+  });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps %s badge labels at AA on the resting badge fill', (_name, theme: IThemeRGB) => {
+    const ink = toRgb(theme, 'rgb-badge-label');
+    /** A hovered or selected badge is labeled in the primary ink, so only the resting fill counts. */
+    const fills: Array<keyof IThemeRGB> = ['rgb-surface-chat'];
+
+    const failures = fills.flatMap((fill) => {
+      const ratio = contrast(ink, toRgb(theme, fill));
+      return ratio < 4.5 ? [`${fill}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+  });
+
+  it.each([
+    ['default light', defaultTheme],
+    ['default dark', darkTheme],
+    ['high contrast light', highContrastLightTheme],
+    ['high contrast dark', highContrastDarkTheme],
+  ])('edges %s focused fields in the focus ring color', (_name, theme: IThemeRGB) => {
+    expect(theme['rgb-border-field-focus']).toBe(theme['rgb-focus-control']);
+  });
+
+  it.each([
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps the %s focused field edge at 3:1 on every field canvas', (_name, theme: IThemeRGB) => {
+    const edge = toRgb(theme, 'rgb-border-field-focus');
+    const canvases: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-presentation',
+      'rgb-surface-secondary',
+      'rgb-surface-dialog',
+    ];
+
+    const failures = canvases.flatMap((canvas) => {
+      const ratio = contrast(edge, toRgb(theme, canvas));
+      return ratio < WCAG_MARK_MIN ? [`${canvas}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+  });
+
+  it.each([
+    ['clickhouse light', clickHouseLightTheme],
+    ['clickhouse dark', clickHouseDarkTheme],
+  ])('keeps %s dialog titles at AA on the dialog surface', (_name, theme: IThemeRGB) => {
+    expect(
+      contrast(toRgb(theme, 'rgb-dialog-title'), toRgb(theme, 'rgb-surface-dialog')),
+    ).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+/**
+ * The dialog scrims are `surface-overlay` at each family's opacity role. A scrim
+ * dims the page it covers and never lifts it (Click UI's dark scrim is a lighter
+ * gray, which the ClickHouse theme declines for that reason), and on a light
+ * canvas the dimmed page separates the dialog by the 3:1 a non-text boundary
+ * needs. Dark canvases draw that boundary with the dialog's own border instead.
+ */
+const scrimRoles = ['scrimOpacity', 'alertScrimOpacity', 'modalScrimOpacity'] as const;
+const clickHouseAppearance = (mode: 'light' | 'dark'): IThemeAppearance => ({
+  ...defaultAppearance,
+  ...clickHouseTheme.modes[mode]?.appearance,
+});
+
+describe.each([
+  ['default light', defaultTheme, defaultAppearance, true],
+  ['default dark', darkTheme, defaultAppearance, false],
+  ['high contrast light', highContrastLightTheme, defaultAppearance, true],
+  ['high contrast dark', highContrastDarkTheme, defaultAppearance, false],
+  ['clickhouse light', clickHouseLightTheme, clickHouseAppearance('light'), true],
+  ['clickhouse dark', clickHouseDarkTheme, clickHouseAppearance('dark'), false],
+])('%s scrims', (_name, theme: IThemeRGB, appearance: IThemeAppearance, lightCanvas: boolean) => {
+  it.each(scrimRoles)('%s dims the page without lifting it', (role) => {
+    const alpha = Number(appearance[role]);
+    const overlay = toRgb(theme, 'rgb-surface-overlay');
+    const page = toRgb(theme, 'rgb-surface-primary');
+    const dimmed = page.map(
+      (channel, index) => overlay[index] * alpha + channel * (1 - alpha),
+    ) as Rgb;
+
+    expect(luminance(dimmed)).toBeLessThanOrEqual(luminance(page));
+    if (lightCanvas) {
+      expect(contrast(toRgb(theme, 'rgb-surface-dialog'), dimmed)).toBeGreaterThanOrEqual(
+        WCAG_MARK_MIN,
+      );
+    }
+  });
+});
+
+describe('scrim defaults', () => {
+  it('reproduce the opacities each dialog family drew before the roles', () => {
+    expect(scrimRoles.map((role) => defaultAppearance[role])).toEqual(['0.8', '0.9', '0.65']);
   });
 });

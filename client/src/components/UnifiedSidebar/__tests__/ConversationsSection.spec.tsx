@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
 import { HTML5Backend } from 'react-dnd-html5-backend';
@@ -26,6 +27,20 @@ const mockUseFavorites = jest.fn(() => ({
 }));
 const mockUseGetConversationTags = jest.fn(() => ({ data: [] as unknown[] }));
 const mockConversationsRender = jest.fn();
+/** The projects the section reads to word an empty Chats list; none, loaded, by default. */
+type ProjectsResult = {
+  data?: { pages: { projects: unknown[]; nextCursor: null }[]; pageParams: undefined[] };
+  isSuccess: boolean;
+  isError?: boolean;
+};
+const mockUseProjectsInfiniteQuery = jest.fn(
+  (): ProjectsResult => ({
+    data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+    isSuccess: true,
+  }),
+);
+/** What the chats list asks the server for, captured per render. */
+const mockListParams = jest.fn();
 const mockSetChatsExpanded = jest.fn();
 const mockMoveToTop = jest.fn();
 const mockUseTitleGeneration = jest.fn(() => {
@@ -74,6 +89,7 @@ jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ isAuthenticated: true }),
   useLocalStorage: () => [true, mockSetChatsExpanded],
   useNavScrolling: () => ({ moveToTop: mockMoveToTop }),
+  useScrollFade: () => ({ attach: jest.fn(), hasMore: false }),
   useFavorites: () => mockUseFavorites(),
   useShowMarketplace: () => false,
   useNewConvo: () => ({ newConversation: jest.fn() }),
@@ -82,8 +98,14 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   __esModule: true,
-  useConversationsInfiniteQuery: () => mockConversationsResult,
+  useConversationsInfiniteQuery: (params: Record<string, unknown>) => {
+    mockListParams(params);
+    return mockConversationsResult;
+  },
   usePinnedConversationsQuery: () => mockPinnedResult,
+  /** The section reads the same projects ProjectsSection does, to tell an empty
+   *  unassigned list from an empty account; these specs carry no projects. */
+  useProjectsInfiniteQuery: () => mockUseProjectsInfiniteQuery(),
   useTitleGeneration: () => mockUseTitleGeneration(),
   useGetEndpointsQuery: () => ({ data: {}, isLoading: false }),
   useGetStartupConfig: () => ({ data: { modelSpecs: { list: [] } } }),
@@ -103,18 +125,15 @@ jest.mock('~/hooks/Input/useSelectMention', () => ({
 
 jest.mock('~/components/Conversations', () => {
   const { memo } = jest.requireActual('react');
-  const ConversationsStub = memo(function ConversationsStub({
-    conversations,
-    isSearchLoading,
-    isError,
-    onRetry,
-  }: {
+  const ConversationsStub = memo(function ConversationsStub(props: {
+    accountHasProjects?: boolean;
     conversations: Array<{ conversationId: string; title: string }>;
     isSearchLoading: boolean;
     isError: boolean;
     onRetry: () => void;
   }) {
-    mockConversationsRender();
+    const { conversations, isSearchLoading, isError, onRetry } = props;
+    mockConversationsRender(props);
     const localize: (key: string) => string = jest.requireMock('~/hooks').useLocalize();
     let body: React.ReactNode = conversations.map((convo) => (
       <span key={convo.conversationId}>{convo.title}</span>
@@ -162,6 +181,7 @@ jest.mock('~/components/Nav/Favorites/FavoriteItem', () => ({
   default: () => <div data-testid="favorite-item-stub" />,
 }));
 
+import { showProjectChatsAtom } from '~/components/Conversations/chatFilters';
 import ConversationsSection from '../ConversationsSection';
 import store from '~/store';
 
@@ -282,6 +302,124 @@ describe('ConversationsSection streaming re-renders', () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+describe('ConversationsSection project chats', () => {
+  beforeEach(() => {
+    mockListParams.mockClear();
+  });
+
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  /** A project chat is shown only under its project, not twice, unless the user opts in. */
+  it('asks only for chats that belong to no project by default', async () => {
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams).toHaveBeenCalled();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
+  });
+
+  /** Turned on, a chat filed in a project is listed under Chats too, with its folder badge. */
+  it('lists project chats under Chats once they are shown', async () => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, true));
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
+  });
+
+  /** Searching is how a chat is found, and Projects is not rendered while a search
+   *  is on: excluding project chats there would make them unreachable. */
+  it('searches across every chat, project or not', async () => {
+    let setSearch: SetterOrUpdater<SearchState>;
+
+    function SearchController() {
+      setSearch = useSetRecoilState(store.search);
+      return null;
+    }
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RecoilRoot>
+          <BrowserRouter>
+            <DndProvider backend={HTML5Backend}>
+              <SearchController />
+              <ConversationsSection />
+            </DndProvider>
+          </BrowserRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    await settleRenders();
+
+    act(() => {
+      setSearch({
+        query: 'draft',
+        debouncedQuery: 'draft',
+        enabled: true,
+        isTyping: false,
+        isSearching: true,
+      });
+    });
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({
+      search: 'draft',
+      projectId: undefined,
+    });
+  });
+});
+
+describe('ConversationsSection empty Chats wording', () => {
+  const lastAccountHasProjects = () =>
+    (mockConversationsRender.mock.calls.at(-1)?.[0] as { accountHasProjects?: boolean })
+      .accountHasProjects;
+
+  /** The empty wording only distinguishes an empty account while Chats leaves project
+   *  chats to their projects. */
+  beforeEach(() => {
+    mockConversationsRender.mockClear();
+    mockUseProjectsInfiniteQuery.mockReset();
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  it('calls the account empty only once its projects have loaded and there are none', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+      isSuccess: true,
+    });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(false);
+  });
+
+  it('does not call the account empty while its projects are still loading', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({ data: undefined, isSuccess: false });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(true);
+  });
+
+  it('lists every chat when the projects failed to load, so project chats keep a way back', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: undefined,
+      isSuccess: false,
+      isError: true,
+    });
+    mockListParams.mockClear();
+    renderSection();
+    await settleRenders();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({ projectId: undefined }),
+    );
+    expect(lastAccountHasProjects()).toBe(false);
+  });
 });
 
 describe('ConversationsSection search refetch', () => {

@@ -21,6 +21,7 @@ const mockCanAccessSharedLink = jest.fn((req, _res, next) => {
   next();
 });
 const mockGetAppConfig = jest.fn();
+const mockPrepareResultToolCallPreviews = jest.fn(() => async (result) => result);
 const mockShareIpLimiter = jest.fn((_req, _res, next) => next());
 const mockShareUserLimiter = jest.fn((_req, _res, next) => next());
 const mockParseSharedLinksPageSize = jest.fn(() => 10);
@@ -78,6 +79,7 @@ const mockCreateShareContentPreflight = jest.fn((filters, options = {}) => {
 });
 
 jest.mock('@librechat/api', () => ({
+  prepareResultToolCallPreviews: (...args) => mockPrepareResultToolCallPreviews(...args),
   resolveDownloadPath: (file) => file.storageKey || file.filepath,
   assertModelBoundContent: (...args) => mockAssertModelBoundContent(...args),
   assertSharedFileMetadataAllowed: (...args) => mockAssertSharedFileMetadataAllowed(...args),
@@ -128,27 +130,29 @@ jest.mock('@librechat/data-schemas', () => ({
   SystemCapabilities: { ACCESS_ADMIN: 'access:admin' },
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  PermissionTypes: {
-    SHARED_LINKS: 'SHARED_LINKS',
-  },
-  Permissions: {
-    CREATE: 'CREATE',
-    SHARE_PUBLIC: 'SHARE_PUBLIC',
-  },
-  RetentionMode: {
-    ALL: 'all',
-    TEMPORARY: 'temporary',
-  },
-  FileSources: {
-    local: 'local',
-    s3: 's3',
-    cloudfront: 'cloudfront',
-    azure_blob: 'azure_blob',
-    firebase: 'firebase',
-    text: 'text',
-  },
-}));
+jest.mock('librechat-data-provider', () => {
+  const RetentionMode = { ALL: 'all', TEMPORARY: 'temporary', EPHEMERAL: 'ephemeral' };
+  return {
+    PermissionTypes: {
+      SHARED_LINKS: 'SHARED_LINKS',
+    },
+    Permissions: {
+      CREATE: 'CREATE',
+      SHARE_PUBLIC: 'SHARE_PUBLIC',
+    },
+    RetentionMode,
+    isAllDataRetention: (mode) => mode === RetentionMode.ALL || mode === RetentionMode.EPHEMERAL,
+    isForcedTemporaryRetention: (mode) => mode === RetentionMode.EPHEMERAL,
+    FileSources: {
+      local: 'local',
+      s3: 's3',
+      cloudfront: 'cloudfront',
+      azure_blob: 'azure_blob',
+      firebase: 'firebase',
+      text: 'text',
+    },
+  };
+});
 
 jest.mock('mongoose', () => ({
   models: {
@@ -1499,6 +1503,33 @@ describe('share fork route', () => {
       messages: share.messages,
       shareId: share.shareId,
     });
+  });
+
+  it("shapes a cross-tenant fork with the recipient's preview bounds, not the owner's", async () => {
+    const forkResult = { conversation: { conversationId: 'convo-456' }, messages: [{ id: 'm' }] };
+    const previewed = { ...forkResult, messages: [{ id: 'previewed' }] };
+    const previewResult = jest.fn().mockResolvedValue(previewed);
+    mockPrepareResultToolCallPreviews.mockImplementationOnce((req, deps) => {
+      expect(req.user).toMatchObject({ id: 'viewer', tenantId: 'tenant-viewer' });
+      expect(req.config).toEqual({ owner: true });
+      deps.getAppConfig({ userId: req.user.id, tenantId: req.user.tenantId });
+      return previewResult;
+    });
+    forkSharedConversation.mockResolvedValue(forkResult);
+    mockShareTenantId = 'tenant-owner';
+    mockSharedLinkConfigMiddleware.mockImplementationOnce((req, _res, next) => {
+      req.config = { owner: true };
+      next();
+    });
+
+    const response = await request(
+      buildApp({ user: { id: 'viewer', role: 'USER', tenantId: 'tenant-viewer' } }),
+    ).post('/api/share/share-123/fork?toolPreviews=1');
+
+    expect(response.status).toBe(201);
+    expect(response.body).toEqual(previewed);
+    expect(previewResult).toHaveBeenCalledWith(forkResult);
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ userId: 'viewer', tenantId: 'tenant-viewer' });
   });
 
   it('forces snapshotFiles=false into the fork when the file snapshot kill switch is active', async () => {

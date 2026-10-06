@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
+import type { IUser } from '~/types';
 import { createUserMethods } from './user';
 import { signPayload } from '~/crypto';
-import type { IUser } from '~/types';
 
 jest.mock('~/crypto', () => ({
   signPayload: jest.fn(),
@@ -46,6 +46,7 @@ describe('User Methods', () => {
           username: mockUser.username,
           provider: mockUser.provider,
           email: mockUser.email,
+          issuedAtMs: expect.any(Number),
         },
         secret: 'test-secret',
         expirationTime: 900, // 15 minutes in seconds (DEFAULT_SESSION_EXPIRY / 1000)
@@ -64,6 +65,7 @@ describe('User Methods', () => {
           username: mockUser.username,
           provider: mockUser.provider,
           email: mockUser.email,
+          issuedAtMs: expect.any(Number),
         },
         secret: 'test-secret',
         expirationTime: 900, // 15 minutes in seconds (DEFAULT_SESSION_EXPIRY / 1000)
@@ -82,6 +84,7 @@ describe('User Methods', () => {
           username: mockUser.username,
           provider: mockUser.provider,
           email: mockUser.email,
+          issuedAtMs: expect.any(Number),
         },
         secret: 'test-secret',
         expirationTime: 1800, // 30 minutes in seconds
@@ -101,6 +104,7 @@ describe('User Methods', () => {
           username: mockUser.username,
           provider: mockUser.provider,
           email: mockUser.email,
+          issuedAtMs: expect.any(Number),
         },
         secret: 'test-secret',
         expirationTime: 0, // 0 seconds

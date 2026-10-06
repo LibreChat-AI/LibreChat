@@ -18,6 +18,7 @@ import {
 import type { AppConfig, IConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import type { CustomConfigLoadMode } from './loader';
+import { checkAppConfigTheme } from './theme';
 
 const BASE_CONFIG_KEY = '_BASE_';
 
@@ -51,12 +52,23 @@ function scopeEndpointList<T extends { name?: string; tenantId?: string }>(
   hiddenEndpoints: ReadonlySet<string>,
 ): T[] | undefined {
   if (!endpoints) return endpoints;
-  const scoped = endpoints.filter(
-    (endpoint) =>
-      (!endpoint.tenantId || endpoint.tenantId === tenantId) &&
-      !hiddenEndpoints.has(normalizeEndpointName(endpoint.name ?? '')),
-  );
-  return scoped.length === endpoints.length ? endpoints : scoped;
+  const tenantNames = new Set<string>();
+  const scoped = endpoints.filter((endpoint) => {
+    const name = normalizeEndpointName(endpoint.name ?? '');
+    if ((endpoint.tenantId && endpoint.tenantId !== tenantId) || hiddenEndpoints.has(name)) {
+      return false;
+    }
+    if (endpoint.tenantId) tenantNames.add(name);
+    return true;
+  });
+  const selected =
+    tenantNames.size === 0
+      ? scoped
+      : scoped.filter(
+          (endpoint) =>
+            endpoint.tenantId || !tenantNames.has(normalizeEndpointName(endpoint.name ?? '')),
+        );
+  return selected.length === endpoints.length ? endpoints : selected;
 }
 
 function scopeModelSpecs(
@@ -146,6 +158,33 @@ export type AppConfigPrincipal = {
   principalType: string;
   principalId?: string | Types.ObjectId;
 };
+
+/**
+ * Applies the loader's theme rules to a theme a DB override replaced. Unknown colors are left
+ * out as they are for the YAML theme; an override theme the client would reject counts as unset,
+ * so the principal keeps the base theme instead of losing its theme to a bad override.
+ */
+function checkOverrideTheme(baseConfig: AppConfig, merged: AppConfig): AppConfig {
+  const baseTheme = baseConfig.interfaceConfig?.theme;
+  if (merged.interfaceConfig?.theme === baseTheme) {
+    return merged;
+  }
+  const { appConfig, errors, warnings } = checkAppConfigTheme(merged);
+  if (warnings.length > 0) {
+    logger.warn(
+      '[getAppConfig] interface.theme from a config override names tokens this version ignores:\n' +
+        warnings.map((warning) => `- ${warning}`).join('\n'),
+    );
+  }
+  if (errors.length === 0) {
+    return appConfig;
+  }
+  logger.warn(
+    '[getAppConfig] Ignoring interface.theme from a config override; the base theme applies instead:\n' +
+      errors.map((error) => `- ${error}`).join('\n'),
+  );
+  return { ...merged, interfaceConfig: { ...merged.interfaceConfig, theme: baseTheme } };
+}
 
 /**
  * Materializes inferable model-spec fields (an omitted `preset.endpoint` for
@@ -244,6 +283,19 @@ export function getAppConfigOptionsFromUser(
   };
 }
 
+/**
+ * A route that decides policy from the resolved configuration must not be handed the base
+ * configuration when principal or override resolution fails, because the base can be broader
+ * than the scope that should have decided. The caller supplies the reader, so the selection
+ * of that policy lives here rather than in the middleware that assigns the result.
+ */
+export function resolveStrictAppConfig(
+  getAppConfig: (options: GetAppConfigOptions) => Promise<AppConfig | undefined>,
+  user?: AppConfigUserLike | null,
+): Promise<AppConfig | undefined> {
+  return getAppConfig({ ...getAppConfigOptionsFromUser(user), failClosed: true });
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 let _strictOverride: boolean | undefined;
@@ -270,6 +322,27 @@ function overrideCacheKey(
   const principal =
     userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
   return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
+}
+
+/**
+ * Per-host late binding for method adapters constructed before the config service. The service
+ * installs its reader during composition; no module-global registry or cached budget is involved.
+ */
+export function createMessageBudgetReader(): {
+  initialize: (reader: (options?: GetAppConfigOptions) => Promise<AppConfig>) => void;
+  getBudget: () => Promise<number | undefined>;
+} {
+  let readConfig: ((options?: GetAppConfigOptions) => Promise<AppConfig>) | undefined;
+  return {
+    initialize(reader) {
+      readConfig = reader;
+    },
+    async getBudget() {
+      if (!readConfig) throw new Error('Message App budget reader has not been initialized');
+      const config = await readConfig({ baseOnly: true });
+      return config.mcpAppSandbox?.maxPersistedMessageBytes;
+    },
+  };
 }
 
 // ── Service factory ──────────────────────────────────────────────────
@@ -508,7 +581,10 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       const configs = await getApplicableConfigs(principals);
       if (configs.length > 0) {
         merged = scopeCustomEndpoints(
-          materializeConfigModelSpecs(mergeConfigOverrides(scopedBaseConfig, configs)),
+          checkOverrideTheme(
+            scopedBaseConfig,
+            materializeConfigModelSpecs(mergeConfigOverrides(scopedBaseConfig, configs)),
+          ),
           effectiveTenantId,
           hiddenEndpoints,
         );

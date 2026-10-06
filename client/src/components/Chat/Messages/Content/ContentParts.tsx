@@ -1,6 +1,6 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
-import { ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
 import type {
   TMessageContentParts,
   SearchResultData,
@@ -24,6 +24,7 @@ import {
   reasoningDisclosure,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
+  SoleToolContext,
 } from './disclosure';
 import {
   groupActivityPhases,
@@ -31,7 +32,9 @@ import {
   getActivityLabelText,
 } from '~/utils/activityLabels';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
+import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
+import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
 import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
@@ -98,6 +101,52 @@ const getSiblingStepIds = (
     }
   }
   return siblingStepIds.size === 0 ? undefined : siblingStepIds;
+};
+
+const buildToolCallStepOwners = (
+  content: Array<TMessageContentParts | undefined> | undefined,
+): ReadonlyMap<string, readonly ToolCallStepOwner[]> => {
+  const owners = new Map<string, ToolCallStepOwner[]>();
+  for (const part of content ?? []) {
+    if (part == null) {
+      continue;
+    }
+    const toolCallId = getToolCallId(part);
+    const stepId = getPartStepId(part);
+    if (toolCallId === '' || stepId == null) {
+      continue;
+    }
+    const entries = owners.get(toolCallId) ?? [];
+    entries.push({ stepId, agentId: getPartAgentId(part) });
+    owners.set(toolCallId, entries);
+  }
+  return owners;
+};
+
+const collectMessageAppAttachments = (
+  content: Array<TMessageContentParts | undefined> | undefined,
+  attachments: TAttachment[] | undefined,
+): TAttachment[] => {
+  const attachmentMap = mapAttachments(attachments ?? []);
+  const ownersByToolCallId = buildToolCallStepOwners(content);
+  const collected = new Set<TAttachment>();
+  for (const part of content ?? []) {
+    if (part == null) {
+      continue;
+    }
+    const routed = filterAttachmentsForPart(
+      attachmentMap[getToolCallId(part)],
+      getPartAgentId(part),
+      getPartStepId(part),
+      getSiblingStepIds(part, ownersByToolCallId),
+    );
+    for (const attachment of routed ?? []) {
+      if (attachment.type === Tools.ui_resources) {
+        collected.add(attachment);
+      }
+    }
+  }
+  return Array.from(collected);
 };
 
 const getToolGroupId = (parts: PartWithIndex[], fallbackScope: number): string => {
@@ -191,20 +240,28 @@ const PartWithContext = memo(function PartWithContext({
         ])
       : undefined;
 
+  const renderPart = (renderedPart: TMessageContentParts) => (
+    <Part
+      part={renderedPart}
+      attachments={partAttachments}
+      isSubmitting={isSubmitting}
+      key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
+      isCreatedByUser={isCreatedByUser}
+      isLast={holdsCursor}
+      showCursor={holdsCursor}
+      hideAttachments={hideAttachments}
+      onToolExpand={onToolExpand}
+    />
+  );
+
   return (
     <MessageContext.Provider value={contextValue}>
       <ToolDisclosureKeyContext.Provider value={toolDisclosureKey}>
-        <Part
-          part={part}
-          attachments={partAttachments}
-          isSubmitting={isSubmitting}
-          key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
-          isCreatedByUser={isCreatedByUser}
-          isLast={holdsCursor}
-          showCursor={holdsCursor}
-          hideAttachments={hideAttachments}
-          onToolExpand={onToolExpand}
-        />
+        {isPreviewedToolCallPart(part) ? (
+          <PreviewedToolCallPart part={part}>{renderPart}</PreviewedToolCallPart>
+        ) : (
+          renderPart(part)
+        )}
       </ToolDisclosureKeyContext.Provider>
     </MessageContext.Provider>
   );
@@ -213,6 +270,8 @@ const PartWithContext = memo(function PartWithContext({
 type ContentPartsProps = {
   content: Array<TMessageContentParts | undefined> | undefined;
   messageId: string;
+  /** Client-only parent anchor carried by one response while its server identities hydrate. */
+  renderOwnerId?: string;
   /**
    * Skill names the user invoked manually via the `$` popover on this turn.
    * `createdHandler` seeds this on the assistant placeholder from
@@ -335,21 +394,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
     if (toolCallStepOwnersById != null) {
       return toolCallStepOwnersById;
     }
-    const owners = new Map<string, ToolCallStepOwner[]>();
-    for (const part of content ?? []) {
-      if (part == null) {
-        continue;
-      }
-      const toolCallId = getToolCallId(part);
-      const stepId = getPartStepId(part);
-      if (toolCallId === '' || stepId == null) {
-        continue;
-      }
-      const entries = owners.get(toolCallId) ?? [];
-      entries.push({ stepId, agentId: getPartAgentId(part) });
-      owners.set(toolCallId, entries);
-    }
-    return owners;
+    return buildToolCallStepOwners(content);
   }, [toolCallStepOwnersById, content]);
   const attachmentsForPart = useCallback(
     (part: TMessageContentParts): TAttachment[] | undefined =>
@@ -1114,19 +1159,25 @@ const ContentPartsBody = memo(function ContentPartsBody({
                 absoluteIndexAt(segment.labelIndex) === lastContentIdx
           }
         >
-          {renderSegment(
-            segment.content,
-            absoluteIndexAt(segment.startIndex),
-            segmentIndices,
-            `phase-content-${cardKey}`,
-            /** Opening a live row should show the calls running, so its
-             *  groups keep their own live expansion rather than the
-             *  settled-phase default of staying shut. */
-            !live,
-            ownsCursor,
-            true,
-            true,
-          )}
+          <SoleToolContext.Provider
+            value={
+              segment.content.filter((part) => part?.type === ContentTypes.TOOL_CALL).length === 1
+            }
+          >
+            {renderSegment(
+              segment.content,
+              absoluteIndexAt(segment.startIndex),
+              segmentIndices,
+              `phase-content-${cardKey}`,
+              /** Opening a live row should show the calls running, so its
+               *  groups keep their own live expansion rather than the
+               *  settled-phase default of staying shut. */
+              !live,
+              ownsCursor,
+              true,
+              true,
+            )}
+          </SoleToolContext.Provider>
         </ActivityPhaseGroup>
       );
     });
@@ -1193,7 +1244,96 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
-  const { attachments, messageId, conversationId, isSubmitting, isLatestMessage } = props;
+  const {
+    attachments,
+    messageId,
+    conversationId,
+    isCreatedByUser,
+    isLatestMessage,
+    isSubmitting,
+    renderOwnerId,
+  } = props;
+  const appRenderIdentity = useRef<{
+    messageId: string;
+    conversationId: string | null | undefined;
+    ownerId: string | undefined;
+    isLatestMessage: boolean;
+    isSubmitting: boolean;
+    scope: number;
+  } | null>(null);
+  const previousIdentity = appRenderIdentity.current;
+  const nextIsLatest = isLatestMessage === true;
+  /** `clientQueueParentMessageId` follows one response through the local-user → created-user
+   *  re-key and disappears when `finalHandler` installs the durable response. It is not unique
+   *  across regenerations, so only an already-active latest response may use it to retain scope. */
+  const startsAnotherRun = previousIdentity?.isSubmitting === false && isSubmitting;
+  const continuesConversation =
+    previousIdentity?.conversationId === conversationId ||
+    (previousIdentity?.conversationId === Constants.NEW_CONVO &&
+      conversationId != null &&
+      conversationId !== Constants.NEW_CONVO);
+  const exactIdentity =
+    previousIdentity?.messageId === messageId &&
+    previousIdentity.conversationId === conversationId &&
+    (previousIdentity.ownerId === renderOwnerId ||
+      previousIdentity.ownerId == null ||
+      renderOwnerId == null);
+  const createdIdentityHydration =
+    !isCreatedByUser &&
+    previousIdentity?.isSubmitting === true &&
+    isSubmitting &&
+    previousIdentity.isLatestMessage &&
+    nextIsLatest &&
+    continuesConversation &&
+    previousIdentity.ownerId != null &&
+    previousIdentity.ownerId === renderOwnerId &&
+    previousIdentity.messageId.endsWith('_');
+  const durableIdentityHydration =
+    !isCreatedByUser &&
+    previousIdentity?.isSubmitting === true &&
+    !isSubmitting &&
+    previousIdentity.isLatestMessage &&
+    nextIsLatest &&
+    continuesConversation &&
+    previousIdentity.ownerId != null &&
+    (renderOwnerId == null || renderOwnerId === previousIdentity.ownerId) &&
+    !messageId.endsWith('_');
+  const continuesResponse =
+    !startsAnotherRun && (exactIdentity || createdIdentityHydration || durableIdentityHydration);
+  if (previousIdentity == null) {
+    appRenderIdentity.current = {
+      messageId,
+      conversationId,
+      ownerId: renderOwnerId,
+      isLatestMessage: nextIsLatest,
+      isSubmitting,
+      scope: 0,
+    };
+  } else if (!continuesResponse) {
+    appRenderIdentity.current = {
+      messageId,
+      conversationId,
+      ownerId: renderOwnerId,
+      isLatestMessage: nextIsLatest,
+      isSubmitting,
+      scope: previousIdentity.scope + 1,
+    };
+  } else {
+    previousIdentity.messageId = messageId;
+    previousIdentity.conversationId = conversationId;
+    previousIdentity.ownerId = renderOwnerId ?? previousIdentity.ownerId;
+    previousIdentity.isLatestMessage = nextIsLatest;
+    previousIdentity.isSubmitting = isSubmitting;
+  }
+  const appRenderScope = appRenderIdentity.current!.scope;
+  const messageAppAttachments = useMemo(
+    () => collectMessageAppAttachments(props.content, attachments),
+    [props.content, attachments],
+  );
+  const suppressedAppAttachments = useMemo<ReadonlySet<TAttachment>>(
+    () => new Set(messageAppAttachments),
+    [messageAppAttachments],
+  );
   const messageContext = useMemo(
     () => ({
       messageId,
@@ -1209,22 +1349,22 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
     conversationId: string | null | undefined;
     disclosures: ToolDisclosures;
   } | null>(null);
-  const previous = toolState.current;
+  const previousToolState = toolState.current;
   /** The optimistic assistant id ends in `_`. Finalization replaces it with
    *  the server id, not a new response. Ordinary sibling/conversation switches
    *  get a fresh map, even if a provider reuses the same tool-call ids. */
   const finalizing =
-    previous?.messageId.endsWith('_') === true &&
+    previousToolState?.messageId.endsWith('_') === true &&
     !messageId.endsWith('_') &&
-    props.isLatestMessage === true;
+    isLatestMessage === true;
   if (
-    previous == null ||
-    previous.conversationId !== conversationId ||
-    (previous.messageId !== messageId && !finalizing)
+    previousToolState == null ||
+    previousToolState.conversationId !== conversationId ||
+    (previousToolState.messageId !== messageId && !finalizing)
   ) {
     toolState.current = { messageId, conversationId, disclosures: new Map() };
   } else {
-    previous.messageId = messageId;
+    previousToolState.messageId = messageId;
   }
   const toolDisclosures = toolState.current!.disclosures;
   const reasoningState = useRef<{ messageId: string; disclosures: ReasoningDisclosures } | null>(
@@ -1254,7 +1394,16 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
       <MediaContext.Provider value={media}>
         <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
           <ToolDisclosureContext.Provider value={toolDisclosures}>
-            <ContentPartsBody {...props} />
+            <MCPAppSuppressionContext.Provider value={suppressedAppAttachments}>
+              {/* A nested message (a subagent's) is not the sole call of the group around it. */}
+              <SoleToolContext.Provider value={undefined}>
+                <ContentPartsBody {...props} />
+              </SoleToolContext.Provider>
+            </MCPAppSuppressionContext.Provider>
+            <MCPAppViews
+              key={`message-apps-${appRenderScope}`}
+              attachments={messageAppAttachments}
+            />
           </ToolDisclosureContext.Provider>
         </ReasoningDisclosureContext.Provider>
       </MediaContext.Provider>

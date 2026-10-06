@@ -2,6 +2,7 @@ import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
+import { pxToRem, useRemScale } from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
 import { useGetMessagesByConvoId } from '~/data-provider';
@@ -253,14 +254,14 @@ const RIB_MESSAGE: RibDims = { baseW: 12, baseH: 3, peakW: 39, peakH: 6 };
  *  from length alone — the only axis a 3px line has left once colour is spent
  *  on the in-view band. */
 const RIB_CURRENT: RibDims = { baseW: 21, baseH: 3, peakW: 39, peakH: 6 };
-/** Row height in px. `peakH` may reach it but never exceed it: the magnifier
+/** Row height in baseline px. `peakH` may reach it but never exceed it: the magnifier
  *  writes into normal flow, and a rib taller than its row would reflow every
  *  rib below the pointer — moving the rail out from under the pointer and
  *  leaving the measured centres (and so the preview and the click target)
  *  pointing at the wrong message. */
 const RIB_ROW_HEIGHT = 6;
 
-/** Vertical falloff radius (content-space px) over which neighbouring ribs magnify. */
+/** Vertical falloff radius, in baseline px, over which neighbouring ribs magnify. */
 const MAG_INFLUENCE = 50;
 /** Delay before the shared preview first opens; subsequent moves reposition instantly. */
 const TOOLTIP_OPEN_DELAY = 60;
@@ -286,7 +287,7 @@ export function magnifyFalloff(distance: number, influence: number): number {
  *  exists to navigate. */
 const indicatorButtonClasses = cn(
   'flex w-full shrink-0 items-center justify-end rounded-sm transition-opacity duration-300',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy',
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
 );
 
 const dimIndicatorClasses =
@@ -331,7 +332,7 @@ const MessageIndicator = memo(function MessageIndicator({
         indicatorButtonClasses,
         isEmphasized || isInView ? 'opacity-100' : dimIndicatorClasses,
       )}
-      style={{ height: RIB_ROW_HEIGHT }}
+      style={{ height: pxToRem(RIB_ROW_HEIGHT) }}
       aria-label={label}
       aria-current={isCurrent ? 'true' : undefined}
       tabIndex={tabIndex}
@@ -340,10 +341,10 @@ const MessageIndicator = memo(function MessageIndicator({
       <span
         className={cn(
           'block rounded-full',
-          entry.isEnd === true || entry.isStart === true ? 'mr-[4.5px]' : '',
+          entry.isEnd === true || entry.isStart === true ? 'mr-[0.28125rem]' : '',
           tone,
         )}
-        style={{ width: dims.baseW, height: dims.baseH }}
+        style={{ width: pxToRem(dims.baseW), height: pxToRem(dims.baseH) }}
       />
     </button>
   );
@@ -355,7 +356,7 @@ const chevronButtonClasses = cn(
   'group-focus-within/nav:text-text-secondary group-focus-within/nav:opacity-100',
   'group-hover/nav:hover:text-text-primary',
   'group-hover/nav:disabled:opacity-30 group-focus-within/nav:disabled:opacity-30',
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-xheavy',
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-border-xheavy',
 );
 
 function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivElement> }) {
@@ -417,6 +418,11 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
   const pointerClientYRef = useRef<number | null>(null);
   const magRafRef = useRef<number | null>(null);
   const reducedMotionRef = useRef(false);
+  /** The resting ribs are sized in rem while magnification writes inline pixels, so
+   *  both the peak dimensions and the reach have to be read into the same units. */
+  const remScale = useRemScale();
+  const remScaleRef = useRef(remScale);
+  remScaleRef.current = remScale;
   const focusedIdRef = useRef<string | null>(null);
   const tipShownRef = useRef(false);
   const tipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -976,6 +982,8 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
       return;
     }
     const reduce = reducedMotionRef.current;
+    const scale = remScaleRef.current;
+    const influence = MAG_INFLUENCE * scale;
     const colRect = col.getBoundingClientRect();
     const scrollTop = col.scrollTop;
     const py = clientY - colRect.top + scrollTop;
@@ -993,13 +1001,13 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
       if (reduce) {
         continue;
       }
-      const t = magnifyFalloff(d, MAG_INFLUENCE);
+      const t = magnifyFalloff(d, influence);
       const dims = rib.dims;
       rib.line.style.transition = 'none';
-      rib.line.style.width = `${(dims.baseW + (dims.peakW - dims.baseW) * t).toFixed(2)}px`;
-      rib.line.style.height = `${(dims.baseH + (dims.peakH - dims.baseH) * t).toFixed(2)}px`;
+      rib.line.style.width = pxToRem(dims.baseW + (dims.peakW - dims.baseW) * t);
+      rib.line.style.height = pxToRem(dims.baseH + (dims.peakH - dims.baseH) * t);
     }
-    if (nearestId != null && nearestD <= MAG_INFLUENCE && !isDraggingRef.current) {
+    if (nearestId != null && nearestD <= influence && !isDraggingRef.current) {
       const top = colRect.top - scrollTop + nearestCenter;
       const right = window.innerWidth - colRect.left + 8;
       focusTooltip(nearestId, top, right);
@@ -1017,8 +1025,8 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
     for (let i = 0; i < layout.length; i++) {
       const rib = layout[i];
       rib.line.style.transition = 'width 140ms ease-out, height 140ms ease-out';
-      rib.line.style.width = `${rib.dims.baseW}px`;
-      rib.line.style.height = `${rib.dims.baseH}px`;
+      rib.line.style.width = pxToRem(rib.dims.baseW);
+      rib.line.style.height = pxToRem(rib.dims.baseH);
     }
   }, [ensureRibLayout]);
 
@@ -1597,7 +1605,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
       aria-label={localize('com_ui_message_nav')}
       aria-keyshortcuts="Shift+Alt+M"
       className={cn(
-        'group/nav absolute right-2 top-1/2 z-40 hidden max-h-[min(24rem,calc(100%-2rem))]',
+        'group/nav absolute top-1/2 right-2 z-40 hidden max-h-[min(24rem,calc(100%-2rem))]',
         '-translate-y-1/2 flex-col items-end gap-1.5 px-1.5 py-2 md:flex',
       )}
     >
@@ -1613,7 +1621,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
 
       {startEntry && (
         <div
-          className="flex w-14 cursor-pointer touch-none select-none flex-col items-stretch"
+          className="flex w-14 cursor-pointer touch-none flex-col items-stretch select-none"
           onPointerDown={handlePointerDown}
           onPointerEnter={handleStartPointerEnter}
           onPointerLeave={clearTooltip}
@@ -1643,7 +1651,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
         onKeyDown={handleColumnKeyDown}
         onScroll={handleColumnScroll}
         data-message-nav-column=""
-        className="relative flex min-h-0 w-14 cursor-pointer touch-none select-none flex-col items-stretch gap-1.5 overflow-y-auto [&::-webkit-scrollbar]:hidden"
+        className="relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {messageEntries.map((entry) => {
@@ -1668,7 +1676,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
 
       {endEntry && (
         <div
-          className="flex w-14 cursor-pointer touch-none select-none flex-col items-stretch"
+          className="flex w-14 cursor-pointer touch-none flex-col items-stretch select-none"
           onPointerDown={handlePointerDown}
           onPointerEnter={handleEndPointerEnter}
           onPointerLeave={clearTooltip}
@@ -1709,7 +1717,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
               transform: 'translateY(-50%)',
               zIndex: 999,
             }}
-            className="pointer-events-none max-w-[280px] rounded-xl border border-border-light bg-surface-secondary px-3 py-2 text-text-secondary shadow-lg"
+            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none max-w-[17.5rem] rounded-xl border px-3 py-2 shadow-lg"
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,

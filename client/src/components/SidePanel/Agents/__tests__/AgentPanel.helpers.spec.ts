@@ -15,6 +15,9 @@ import {
   isAvatarUploadOnlyDirty,
   hasPersistedDirtyFields,
   mayHavePersistedChange,
+  shouldSyncSavedStarters,
+  isSavedAgentOption,
+  computeInstructionsPromptChanged,
 } from '../AgentPanel';
 
 test('the create identity contract excludes the update-only clear sentinel', () => {
@@ -30,6 +33,8 @@ const createForm = (): AgentForm => ({
   name: 'Agent',
   description: null,
   instructions: null,
+  instructionsSource: 'inline',
+  instructionsPrompt: null,
   model: 'gpt-4',
   model_parameters: {
     temperature: 1,
@@ -59,11 +64,47 @@ const createForm = (): AgentForm => ({
 });
 
 describe('composeAgentUpdatePayload', () => {
+  it('preserves a legacy chain on unrelated saves and sends explicit removal', () => {
+    const form = createForm();
+    form.agent_ids = ['first', 'second'];
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.agent_ids,
+    ).toEqual(['first', 'second']);
+    form.agent_ids = [];
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.agent_ids,
+    ).toEqual([]);
+  });
+  it('omits unchanged unavailable machine choices but submits an explicit removal', () => {
+    const form = createForm();
+    form.agent = {
+      ...({ id: 'agent_123', code_environment_ids: ['missing'] } as Agent),
+      value: 'agent_123',
+    };
+    form.code_environment_ids = ['missing'];
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.code_environment_ids,
+    ).toBeUndefined();
+    form.code_environment_ids = [];
+    expect(
+      composeAgentUpdatePayload(form, 'agent_123', undefined, {
+        instructionsPromptChanged: false,
+      }).payload.code_environment_ids,
+    ).toEqual([]);
+  });
   it('includes avatar: null when resetting a persistent agent', () => {
     const form = createForm();
     form.avatar_action = 'reset';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeNull();
   });
@@ -72,7 +113,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.avatar_action = 'reset';
 
-    const { payload } = composeAgentUpdatePayload(form, Constants.EPHEMERAL_AGENT_ID);
+    const { payload } = composeAgentUpdatePayload(form, Constants.EPHEMERAL_AGENT_ID, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeUndefined();
   });
@@ -81,7 +124,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.avatar_action = 'upload';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.avatar).toBeUndefined();
   });
@@ -91,7 +136,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = false;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_sessions).toBe(false);
   });
@@ -103,7 +150,9 @@ describe('composeAgentUpdatePayload', () => {
       search: { allowed_callers: ['code_execution'], defer_loading: true },
     };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.tool_options).toEqual({ search: { defer_loading: true } });
   });
@@ -115,7 +164,9 @@ describe('composeAgentUpdatePayload', () => {
       search: { allowed_callers: ['code_execution'] },
     };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.tool_options).toEqual({
       search: { allowed_callers: ['code_execution'] },
@@ -127,7 +178,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = true;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_sessions).toBe(true);
   });
@@ -137,7 +190,9 @@ describe('composeAgentUpdatePayload', () => {
     form.execute_code = true;
     form.stateful_code_sessions = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_environment).toBe('user');
   });
@@ -148,7 +203,9 @@ describe('composeAgentUpdatePayload', () => {
     form.stateful_code_sessions = true;
     form.stateful_code_environment = 'agent-user';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.stateful_code_environment).toBe('agent-user');
   });
@@ -157,7 +214,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.code_environment_id = null;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.code_environment_id).toBeNull();
   });
@@ -166,7 +225,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.code_environment_id = null;
 
-    const { payload } = composeAgentUpdatePayload(form);
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.code_environment_id).toBeUndefined();
   });
@@ -175,7 +236,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '  Coding Agent  ', email: '  agent@example.com  ' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toEqual({
       name: 'Coding Agent',
@@ -187,7 +250,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toBeNull();
   });
@@ -196,7 +261,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: 'Coding Agent', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toEqual({ name: 'Coding Agent', email: '' });
   });
@@ -205,7 +272,9 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.git_identity = { name: '', email: '' };
 
-    const { payload } = composeAgentUpdatePayload(form);
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.git_identity).toBeUndefined();
   });
@@ -216,7 +285,9 @@ describe('composeAgentUpdatePayload', () => {
     form.skills_enabled = false;
     form.skill_authoring_enabled = true;
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
 
     expect(payload.skills_enabled).toBe(false);
     expect(payload.skill_authoring_enabled).toBe(true);
@@ -245,10 +316,12 @@ describe('composeAgentUpdatePayload', () => {
         topK: 40,
       };
       form.model_parameters = stored;
-      const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-        endpointsConfig: {},
-        startupConfig: {},
-      });
+      const { payload } = composeAgentUpdatePayload(
+        form,
+        'agent_123',
+        { endpointsConfig: {}, startupConfig: {} },
+        { instructionsPromptChanged: false },
+      );
       expect(payload.model_parameters).toEqual(form.model_parameters);
       expect(JSON.parse(JSON.stringify(payload)).model_parameters).toEqual(form.model_parameters);
     },
@@ -259,12 +332,17 @@ describe('composeAgentUpdatePayload', () => {
     form.provider = EModelEndpoint.openAI;
     form.model_parameters.model = 'deployment-override';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-      endpointsConfig: {},
-      startupConfig: {
-        endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+    const { payload } = composeAgentUpdatePayload(
+      form,
+      'agent_123',
+      {
+        endpointsConfig: {},
+        startupConfig: {
+          endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+        },
       },
-    });
+      { instructionsPromptChanged: false },
+    );
 
     expect(payload.model_parameters?.temperature).toBe(1);
     expect(payload.model_parameters?.top_p).toBeUndefined();
@@ -275,12 +353,201 @@ describe('composeAgentUpdatePayload', () => {
     const form = createForm();
     form.provider = 'removed-provider';
 
-    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
-      endpointsConfig: {},
-      startupConfig: {},
-    });
+    const { payload } = composeAgentUpdatePayload(
+      form,
+      'agent_123',
+      { endpointsConfig: {}, startupConfig: {} },
+      { instructionsPromptChanged: false },
+    );
 
     expect(payload.model_parameters).toEqual(form.model_parameters);
+  });
+
+  it('sends edited starters trimmed and without blanks', () => {
+    const form = createForm();
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
+    form.conversation_starters = ['  Plan my week ', '', '   ', 'Summarize'];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.conversation_starters).toEqual(['Plan my week', 'Summarize']);
+  });
+
+  it('sends an empty list so removing every starter clears them', () => {
+    const form = createForm();
+    form.agent = { conversation_starters: ['Plan my week'] } as AgentForm['agent'];
+    form.conversation_starters = [];
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.conversation_starters).toEqual([]);
+  });
+
+  it('leaves untouched stored starters alone, even past the builder cap', () => {
+    const stored = [' Padded ', 'Two', 'Three', 'Four', 'Five', 'Six'];
+    const form = createForm();
+    form.agent = { conversation_starters: stored } as AgentForm['agent'];
+    form.conversation_starters = [...stored];
+    form.name = 'Renamed';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.conversation_starters).toBeUndefined();
+  });
+
+  it('omits starters when the form never loaded them', () => {
+    const { payload } = composeAgentUpdatePayload(createForm(), 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.conversation_starters).toBeUndefined();
+  });
+});
+
+describe('composeAgentUpdatePayload instructionsPrompt', () => {
+  it('omits instructionsPrompt for an unlinked agent left in the default inline mode', () => {
+    const form = createForm();
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).not.toHaveProperty('instructionsPrompt');
+  });
+
+  it('omits instructionsPrompt when the link did not change', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).not.toHaveProperty('instructionsPrompt');
+  });
+
+  it('sends the link with a Production selection when changed', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('sends the link with an exact selection when a specific version is chosen', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'exact', promptId: 'prompt_7' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'exact', promptId: 'prompt_7' },
+    });
+  });
+
+  it('sends null when switching a linked agent back to inline', () => {
+    const form = createForm();
+    form.instructionsSource = 'inline';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
+  });
+
+  it('never re-sends the restricted stub, even if a caller marks it changed', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = { source: 'native', restricted: true };
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', undefined, {
+      instructionsPromptChanged: true,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
+  });
+
+  it('always sends the link on create, even when the changed flag is false', () => {
+    /** A create has no `agent_id` and no stored value to diff against. Gating on the
+     *  caller's changed flag here is how a new agent linked to the same group as
+     *  whatever agent was last open in the panel ends up created with no link at all. */
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = {
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    };
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.instructionsPrompt).toEqual({
+      source: 'native',
+      groupId: 'group_1',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('sends null on create for the default inline mode, even when the changed flag is false', () => {
+    const form = createForm();
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload).toHaveProperty('instructionsPrompt', null);
+  });
+
+  it('never sends the restricted stub on create either', () => {
+    const form = createForm();
+    form.instructionsSource = 'prompt';
+    form.instructionsPrompt = { source: 'native', restricted: true };
+
+    const { payload } = composeAgentUpdatePayload(form, undefined, undefined, {
+      instructionsPromptChanged: false,
+    });
+
+    expect(payload.instructionsPrompt).toBeNull();
   });
 });
 
@@ -472,5 +739,114 @@ describe('mayHavePersistedChange', () => {
     expect(
       mayHavePersistedChange({ name: 'Agent' }, agent({ description: 'before' }), agent()),
     ).toBe(false);
+  });
+});
+
+describe('shouldSyncSavedStarters', () => {
+  const submitted = { agentId: 'agent_a', starters: ['  Plan my week', ''] };
+
+  it('syncs when the rows still hold what the save sent for the same agent', () => {
+    expect(shouldSyncSavedStarters(submitted, { ...submitted }, 'agent_a')).toBe(true);
+  });
+
+  it('keeps starter edits made while the save was in flight', () => {
+    const current = { agentId: 'agent_a', starters: ['  Plan my week', 'Typed during save'] };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('leaves the rows alone after switching to another agent during the save', () => {
+    const current = { agentId: 'agent_b', starters: submitted.starters };
+    expect(shouldSyncSavedStarters(submitted, current, 'agent_a')).toBe(false);
+  });
+
+  it('syncs a create once the form carries the new id, but not another agent', () => {
+    const created = { agentId: '', starters: ['Hi'] };
+    expect(shouldSyncSavedStarters(created, { agentId: '', starters: ['Hi'] }, 'agent_new')).toBe(
+      true,
+    );
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_new', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(true);
+    expect(
+      shouldSyncSavedStarters(created, { agentId: 'agent_b', starters: ['Hi'] }, 'agent_new'),
+    ).toBe(false);
+  });
+
+  it('does nothing without a submitted snapshot', () => {
+    expect(shouldSyncSavedStarters(null, { agentId: 'agent_a', starters: [] }, 'agent_a')).toBe(
+      false,
+    );
+  });
+});
+
+describe('isSavedAgentOption', () => {
+  const option = { id: 'agent_b', conversation_starters: ['  B  '] } as AgentForm['agent'];
+
+  it('merges a save into the option of the agent it was for', () => {
+    expect(isSavedAgentOption(option, 'agent_b')).toBe(true);
+  });
+
+  it('keeps another agent selected while the save was in flight as its own baseline', () => {
+    expect(isSavedAgentOption(option, 'agent_a')).toBe(false);
+  });
+
+  it('ignores a missing option', () => {
+    expect(isSavedAgentOption(undefined, 'agent_a')).toBe(false);
+  });
+});
+
+describe('computeInstructionsPromptChanged', () => {
+  const link = {
+    source: 'native' as const,
+    groupId: 'group_1',
+    selection: { type: 'production' as const },
+  };
+  const otherLink = {
+    source: 'native' as const,
+    groupId: 'group_2',
+    selection: { type: 'production' as const },
+  };
+  const stub = { source: 'native' as const, restricted: true as const };
+
+  it('is unchanged for an unlinked form matching an unlinked agent', () => {
+    expect(computeInstructionsPromptChanged('inline', null, null)).toBe(false);
+    expect(computeInstructionsPromptChanged('inline', null, undefined)).toBe(false);
+  });
+
+  it('is changed when switching from inline to a selected link', () => {
+    expect(computeInstructionsPromptChanged('prompt', link, null)).toBe(true);
+  });
+
+  it('is changed when switching a linked agent back to inline', () => {
+    expect(computeInstructionsPromptChanged('inline', null, link)).toBe(true);
+  });
+
+  it('is changed when picking a different link than the one loaded', () => {
+    expect(computeInstructionsPromptChanged('prompt', otherLink, link)).toBe(true);
+  });
+
+  it('is unchanged when the form still carries the link exactly as loaded', () => {
+    /** This is the case a stale `dirtyFields.instructionsPrompt` gets wrong: the field
+     *  was dirtied by the save that set this link, but the value now matches what the
+     *  server has, so nothing here warrants resending it. */
+    expect(computeInstructionsPromptChanged('prompt', link, link)).toBe(false);
+    expect(computeInstructionsPromptChanged('prompt', { ...link }, link)).toBe(false);
+  });
+
+  it('is unchanged for a restricted stub the editor cannot see, in either direction', () => {
+    expect(computeInstructionsPromptChanged('prompt', stub, stub)).toBe(false);
+    expect(computeInstructionsPromptChanged('prompt', stub, null)).toBe(false);
+  });
+
+  it('is changed when an editor with access replaces a restricted stub with a real link', () => {
+    expect(computeInstructionsPromptChanged('prompt', link, stub)).toBe(true);
+  });
+
+  it('is changed when a restricted stub is switched to Inline, so the removal is sent', () => {
+    /** Both sides resolve to `null` here (inline mode and the stub both do), so a diff
+     *  of resolved values alone can't tell this apart from "still the stub, unchanged"
+     *  above — the stub-aware branch has to settle it directly. */
+    expect(computeInstructionsPromptChanged('inline', null, stub)).toBe(true);
+    expect(computeInstructionsPromptChanged('inline', stub, stub)).toBe(true);
   });
 });

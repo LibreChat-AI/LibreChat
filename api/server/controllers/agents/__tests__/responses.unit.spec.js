@@ -181,6 +181,7 @@ jest.mock('uuid', () => ({
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
     debug: jest.fn(),
+    info: jest.fn(),
     error: jest.fn(),
     warn: jest.fn(),
   },
@@ -199,9 +200,15 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  getConversationWriteContext: (...args) =>
+    jest.requireActual('@librechat/api').getConversationWriteContext(...args),
+  announceReply: jest.fn().mockResolvedValue(undefined),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
   createAgentExecutionContext: (context) => context,
+  resolveApiConversationProject: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').resolveApiConversationProject(...args),
+  ),
   /** Grants both by default; the capability set is what these specs vary. */
   resolveToolRoleGrants: jest.fn(async () => ({
     runCode: true,
@@ -518,6 +525,11 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
 }));
 
+const mockResolveLinkedInstructions = jest.fn();
+jest.mock('~/server/services/Endpoints/agents/linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockResolveLinkedInstructions),
+}));
+
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
@@ -540,8 +552,8 @@ const mockBulkInsertTransactions = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('~/models', () => ({
   getAgent: jest.fn().mockResolvedValue({ id: 'agent-123', name: 'Test Agent' }),
+  getProjectFiles: jest.fn(),
   getFiles: jest.fn(),
-  getUserKey: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn().mockResolvedValue({}),
   updateFilesUsage: jest.fn(),
@@ -1036,7 +1048,7 @@ describe('createResponse controller', () => {
 
     expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123');
     expect(saveMessage).toHaveBeenCalledWith(
-      req,
+      expect.objectContaining({ userId: 'user-123' }),
       expect.objectContaining({
         messageId: 'resp_mock-123',
         isCreatedByUser: false,
@@ -1047,6 +1059,41 @@ describe('createResponse controller', () => {
       { context: 'Responses API - save assistant response' },
     );
   });
+
+  it.each([false, true])(
+    'stores input and output under the retention write context: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      req.config.interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 1 };
+      req.body.isTemporary = false;
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { ...req.body, stream, store: true },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: 'Hello', messageId: 'input-123' },
+      ]);
+      const savedResponse = { messageId: 'resp_mock-123', isTemporary: true };
+      db.saveMessage.mockResolvedValueOnce({ messageId: 'input-123' });
+      db.saveMessage.mockResolvedValueOnce(savedResponse);
+
+      await createResponse(req, res);
+
+      expect(db.saveMessage).toHaveBeenCalledTimes(2);
+      for (const [context] of db.saveMessage.mock.calls) {
+        expect(context).toEqual({
+          userId: 'user-123',
+          isTemporary: false,
+          expiredAt: undefined,
+          interfaceConfig: req.config.interfaceConfig,
+        });
+      }
+      expect(api.announceReply).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ reply: savedResponse }),
+      );
+    },
+  );
 
   describe('execution envelope', () => {
     it('creates the portable run input before agent initialization', async () => {
@@ -2069,7 +2116,7 @@ describe('createResponse controller', () => {
 
     it('should return 404 when conversation is not owned by user', async () => {
       const { validateResponseRequest, sendResponsesErrorResponse } = require('@librechat/api');
-      const { getConvo } = require('~/models');
+      const { getConvo, getAgent } = require('~/models');
       validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -2079,6 +2126,7 @@ describe('createResponse controller', () => {
         },
       });
       getConvo.mockResolvedValueOnce(null);
+      getAgent.mockRejectedValueOnce(new Error('speculative agent lookup failed'));
 
       await createResponse(req, res);
       expect(getConvo).toHaveBeenCalledWith('user-123', 'resp_abc');
@@ -2088,6 +2136,95 @@ describe('createResponse controller', () => {
         'Conversation not found',
         'not_found',
       );
+    });
+    it('starts the agent read while owner-scoped conversation validation is in flight', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      models.getConvo.mockResolvedValueOnce({ conversationId: 'resp_abc', user: 'user-123' });
+      let resolveAgent;
+      models.getAgent.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveAgent = resolve;
+          }),
+      );
+      api.resolveApiConversationProject.mockImplementationOnce(async (...args) => {
+        expect(models.getAgent).toHaveBeenCalledWith({ id: 'agent-123' });
+        resolveAgent({ id: 'agent-123', name: 'Test Agent' });
+        return jest.requireActual('@librechat/api').resolveApiConversationProject(...args);
+      });
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Hello',
+          stream: false,
+          previous_response_id: 'resp_abc',
+        },
+      });
+
+      await createResponse(req, res);
+
+      expect(models.getAgent.mock.invocationCallOrder[0]).toBeLessThan(
+        models.getConvo.mock.invocationCallOrder[0],
+      );
+      expect(api.initializeAgent).toHaveBeenCalled();
+    });
+
+    it('keeps Project-unavailable errors as Responses not-found responses', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Hello',
+          stream: false,
+          previous_response_id: 'resp_abc',
+        },
+      });
+      models.getAgent.mockRejectedValueOnce(new Error('speculative agent lookup failed'));
+      api.resolveApiConversationProject.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        reason: 'unavailable',
+        message: 'Conversation context unavailable',
+      });
+
+      await createResponse(req, res);
+
+      const errorCall = api.sendResponsesErrorResponse.mock.calls.at(-1);
+      expect(errorCall[1]).toBe(404);
+      expect(errorCall[3]).toBe('not_found');
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+    });
+
+    it('rechecks conversation existence after enrollment before provider or persistence work', async () => {
+      const api = require('@librechat/api');
+      const models = require('~/models');
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Hello',
+          stream: false,
+          store: true,
+          previous_response_id: 'resp_abc',
+        },
+      });
+      let deleted = false;
+      models.getConvo.mockImplementation(async () =>
+        deleted ? null : { conversationId: 'resp_abc', user: 'user-123' },
+      );
+      mockEnrollAgentExecution.mockImplementationOnce(async () => {
+        deleted = true;
+        return mockExecution;
+      });
+
+      await createResponse(req, res);
+
+      expect(mockEnrollAgentExecution).toHaveBeenCalledTimes(1);
+      expect(api.initializeAgent).not.toHaveBeenCalled();
+      expect(api.createRun).not.toHaveBeenCalled();
+      expect(models.saveConvo).not.toHaveBeenCalled();
+      expect(models.saveMessage).not.toHaveBeenCalled();
     });
 
     it('should proceed when conversation is owned by user', async () => {
@@ -2168,6 +2305,7 @@ describe('createResponse controller', () => {
         expect.any(String),
         expect.any(String),
       );
+      expect(sendResponsesErrorResponse.mock.calls.at(-1)[3]).toBe('server_error');
     });
   });
 

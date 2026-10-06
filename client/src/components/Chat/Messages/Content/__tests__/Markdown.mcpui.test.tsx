@@ -1,7 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
+import type { TStartupConfig } from 'librechat-data-provider';
 import { useConversationUIResources } from '~/hooks/Messages/useConversationUIResources';
+import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import MarkdownLite from '../MarkdownLite';
 import Markdown from '../Markdown';
@@ -11,10 +13,9 @@ jest.mock('~/hooks/Messages/useConversationUIResources', () => ({
   useConversationUIResources: jest.fn(),
 }));
 
-// Mock @mcp-ui/client to render identifiable elements for assertions
 jest.mock('@mcp-ui/client', () => ({
   UIResourceRenderer: ({ resource }: any) => (
-    <div data-testid="ui-resource-renderer" data-resource-uri={resource?.uri} />
+    <span data-testid="ui-resource-renderer" data-resource-uri={resource?.uri} />
   ),
 }));
 
@@ -22,12 +23,24 @@ const mockUseConversationUIResources = useConversationUIResources as jest.Mocked
   typeof useConversationUIResources
 >;
 
+const renderMarkdown = (content: string, legacyHtmlEnabled = true) =>
+  render(
+    <RecoilRoot>
+      <MCPAppsPolicyProvider
+        startupConfig={{ mcpApps: { enabled: false, legacyHtmlEnabled } } as TStartupConfig}
+        ready
+      >
+        <Markdown content={content} isLatestMessage={false} />
+      </MCPAppsPolicyProvider>
+    </RecoilRoot>,
+  );
+
 describe('Markdown with MCP UI markers (resource IDs)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it('renders two UIResourceRenderer components for markers with resource IDs across separate attachments', () => {
+  it('renders two legacy UI resources for markers with resource IDs across separate attachments', () => {
     // Two tool responses, each produced one ui_resources attachment
     const paris = {
       resourceId: 'abc123',
@@ -57,16 +70,58 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       `Browse these weather cards for more details ${UI_RESOURCE_MARKER}{abc123} ${UI_RESOURCE_MARKER}{def456}`,
     ].join('\n');
 
-    render(
-      <RecoilRoot>
-        <Markdown content={content} isLatestMessage={false} />
-      </RecoilRoot>,
-    );
+    renderMarkdown(content);
 
     const renderers = screen.getAllByTestId('ui-resource-renderer');
     expect(renderers).toHaveLength(2);
     expect(renderers[0]).toHaveAttribute('data-resource-uri', 'ui://weather/paris');
     expect(renderers[1]).toHaveAttribute('data-resource-uri', 'ui://weather/nyc');
+  });
+
+  it('does not mount an App View from a legacy Markdown marker', () => {
+    mockUseConversationUIResources.mockReturnValue(
+      new Map([
+        [
+          'app-resource',
+          {
+            resourceId: 'app-resource',
+            uri: 'ui://weather/app',
+            mimeType: 'text/html;profile=mcp-app',
+            text: '<div>App View</div>',
+            toolName: 'get_weather',
+            serverName: 'weather-server',
+          },
+        ],
+      ]) as any,
+    );
+
+    renderMarkdown(
+      `App resources are rendered with their tool call ${UI_RESOURCE_MARKER}{app-resource}`,
+    );
+
+    expect(screen.queryByTestId('ui-resource-renderer')).not.toBeInTheDocument();
+    expect(document.querySelector('iframe[data-sandbox-url]')).not.toBeInTheDocument();
+  });
+
+  it('does not invoke the legacy renderer for a stored marker while disabled', () => {
+    mockUseConversationUIResources.mockReturnValue(
+      new Map([
+        [
+          'legacy-resource',
+          {
+            resourceId: 'legacy-resource',
+            uri: 'ui://weather/legacy',
+            mimeType: 'text/html',
+            text: '<div>Stored legacy view</div>',
+          },
+        ],
+      ]) as never,
+    );
+
+    renderMarkdown(`Stored result ${UI_RESOURCE_MARKER}{legacy-resource}`, false);
+
+    expect(screen.queryByTestId('ui-resource-renderer')).not.toBeInTheDocument();
+    expect(screen.getByText(/Stored result/)).toBeInTheDocument();
   });
 });
 

@@ -4,7 +4,10 @@ import {
   azureEndpointSchema,
   endpointSchema,
   RetentionMode,
+  isAllDataRetention,
+  isForcedTemporaryRetention,
   configSchema,
+  balanceSchema,
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
@@ -1127,6 +1130,25 @@ describe('configSchema fileStrategy', () => {
   });
 });
 
+describe('configSchema fileListLimit', () => {
+  it('defaults fileListLimit to 100 for existing configurations', () => {
+    const result = configSchema.parse({ version: '1.3.7' });
+    expect(result.fileListLimit).toBe(100);
+  });
+
+  it('accepts a positive integer override', () => {
+    const result = configSchema.safeParse({ version: '1.3.7', fileListLimit: 250 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.fileListLimit).toBe(250);
+    }
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid fileListLimit %p', (fileListLimit) => {
+    expect(configSchema.safeParse({ version: '1.3.7', fileListLimit }).success).toBe(false);
+  });
+});
+
 describe('configSchema skillSync', () => {
   it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
     const result = configSchema.safeParse({
@@ -1470,6 +1492,24 @@ describe('interfaceSchema', () => {
     const result = interfaceSchema.parse({ modelSelect: true });
 
     expect(result.defaultPinnedTools).toBeUndefined();
+  });
+
+  it('accepts the ephemeral retention mode', () => {
+    const result = interfaceSchema.parse({ retentionMode: RetentionMode.EPHEMERAL });
+    expect(result.retentionMode).toBe(RetentionMode.EPHEMERAL);
+    expect(RetentionMode.EPHEMERAL).toBe('ephemeral');
+  });
+
+  it('classifies ephemeral as forced-temporary, all-data retention', () => {
+    expect(isAllDataRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.ALL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isAllDataRetention(undefined)).toBe(false);
+
+    expect(isForcedTemporaryRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isForcedTemporaryRetention(RetentionMode.ALL)).toBe(false);
+    expect(isForcedTemporaryRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isForcedTemporaryRetention(undefined)).toBe(false);
   });
 });
 
@@ -1953,4 +1993,41 @@ describe('interfaceSchema agentSelectorLimit', () => {
     expect(normalizeAgentSelectorLimit(101)).toBe(10);
     expect(normalizeAgentSelectorLimit('10')).toBe(10);
   });
+});
+
+describe('balance refill mode', () => {
+  test('keeps additive refill as the default for existing configurations', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillMode).toBe('add');
+  });
+  test('accepts weekly non-accumulating reset with percentage display', () => {
+    expect(
+      balanceSchema.parse({
+        enabled: true,
+        startBalance: 300000000,
+        autoRefillEnabled: true,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAmount: 300000000,
+        refillMode: 'reset',
+        display: 'percent',
+      }),
+    ).toMatchObject({ refillMode: 'reset', display: 'percent' });
+  });
+  test('rejects unsupported refill modes', () => {
+    expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
+  });
+});
+
+describe('reset interval validation', () => {
+  test.each([0, -1, 0.5, 1.5])(
+    'rejects reset interval %s while preserving additive settings',
+    (refillIntervalValue) => {
+      expect(balanceSchema.safeParse({ refillMode: 'reset', refillIntervalValue }).success).toBe(
+        false,
+      );
+      expect(balanceSchema.safeParse({ refillMode: 'add', refillIntervalValue }).success).toBe(
+        true,
+      );
+    },
+  );
 });

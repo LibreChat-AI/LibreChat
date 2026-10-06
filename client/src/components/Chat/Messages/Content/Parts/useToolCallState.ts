@@ -1,13 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useAtom } from 'jotai';
-import { useRecoilValue } from 'recoil';
+import { useCallback, useContext } from 'react';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
+import { LoneGroupContext, SoleToolContext, useToolExpansion } from '../disclosure';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
-import { useToolDisclosure } from '../disclosure';
-import store from '~/store';
+import useRowHandoff from '../handoff';
 
 interface ToolCallState {
   showCode: boolean;
@@ -22,6 +20,11 @@ interface ToolCallState {
   phase: ToolCallPhase;
   hasOutput: boolean;
   hasContent: boolean;
+  /** Goes on the card's row so focus can follow it out. */
+  rowRef: (node: HTMLElement | null) => void;
+  /** The only call of its group, with a panel to show: the group header is
+   *  already the row, so the card renders its panel alone, held open. */
+  bare: boolean;
 }
 
 export interface UseToolCallStateInput {
@@ -43,6 +46,13 @@ export interface UseToolCallStateInput {
    * cancelled ordinary background tool. Cancellation outranks error-shaped
    * output so the card never relabels an intentional stop as failure. */
   extraCancelled?: boolean;
+  /** Keep the card's own row even as the only call, for a state its phase does
+   *  not carry (a detached task still running after its dispatch step closed). */
+  keepRow?: boolean;
+  /** Whether the panel has a body to show. Defaults to `hasContent`; a card
+   *  whose panel needs more than its input (a read file's output) passes its
+   *  own, so a sole call never loses its row to an empty panel. */
+  panelReady?: boolean;
 }
 
 export default function useToolCallState({
@@ -54,21 +64,11 @@ export default function useToolCallState({
   runStepStatus,
   extraError = false,
   extraCancelled = false,
+  keepRow = false,
+  panelReady,
 }: UseToolCallStateInput): ToolCallState {
-  const autoExpand = useRecoilValue(store.autoExpandTools);
   const hasOutput = output.length > 0;
   const hasContent = hasInput || hasOutput;
-
-  const [expansionOverride, setExpansionOverride] = useAtom(useToolDisclosure());
-  const [defaultExpanded, setDefaultExpanded] = useState(() => autoExpand && hasContent);
-  const showCode = expansionOverride ?? defaultExpanded;
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
-
-  useEffect(() => {
-    if (autoExpand && hasContent) {
-      setDefaultExpanded(true);
-    }
-  }, [autoExpand, hasContent]);
 
   const isClosed = runStepStatus != null;
   /**
@@ -79,13 +79,6 @@ export default function useToolCallState({
    * 0.99 can no longer read as in-flight.
    */
   const rawProgress = useProgress(isClosed ? 1 : initialProgress);
-  const toggleCode = useCallback(() => {
-    const next = !showCode;
-    setExpansionOverride(next);
-    if (next) {
-      onExpand?.();
-    }
-  }, [onExpand, setExpansionOverride, showCode]);
 
   /**
    * One resolution; everything the card shows is a read of this value. The
@@ -100,6 +93,25 @@ export default function useToolCallState({
     hasError: (hasOutput && isError(output)) || extraError,
   });
 
+  /** The only call of its group, settled successfully: the group header is
+   *  already the row, so the card renders its panel alone, held open. While it
+   *  runs, or once it failed or was stopped, the row is the only place that
+   *  says so, and `keepRow` covers a state the phase cannot express. */
+  const lone = useContext(LoneGroupContext);
+  const solo = useContext(SoleToolContext) === true || lone;
+  const bare = solo && (panelReady ?? hasContent) && phase === 'completed' && !keepRow;
+  const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
+  const showCode = bare || expanded;
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
+  const rowRef = useRowHandoff(bare);
+  const toggleCode = useCallback(() => {
+    const next = !showCode;
+    setExpansionOverride(next);
+    if (next) {
+      onExpand?.();
+    }
+  }, [onExpand, setExpansionOverride, showCode]);
+
   return {
     showCode,
     toggleCode,
@@ -108,5 +120,7 @@ export default function useToolCallState({
     phase,
     hasOutput,
     hasContent,
+    rowRef,
+    bare,
   };
 }

@@ -1,8 +1,12 @@
 import React from 'react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { RecoilRoot } from 'recoil';
+import { QueryKeys } from 'librechat-data-provider';
+import { Provider, createStore, useAtomValue } from 'jotai';
 import { render, screen, fireEvent } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import { STEER_ICON } from '~/components/Chat/Steering/identity';
+import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
@@ -70,10 +74,15 @@ function renderPart(
    *  silently test the signed-in state instead of the anonymous share route. */
   user: { name: string; username: string } | null = SEEDED_USER,
 ) {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+
   return render(
-    <RecoilRoot initializeState={({ set }) => user && set(store.user, user as never)}>
-      <SteerPart steer="steered words" steerId="s1" createdAt={1} files={files} />
-    </RecoilRoot>,
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot initializeState={({ set }) => user && set(store.user, user as never)}>
+        <SteerPart steer="steered words" steerId="s1" createdAt={1} files={files} />
+      </RecoilRoot>
+    </QueryClientProvider>,
   );
 }
 
@@ -160,7 +169,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const message = screen.getByText('steered words');
 
-    expect(message.closest('.bg-surface-tertiary')).toHaveClass('rounded-theme-surface');
+    expect(message.closest('.bg-surface-user-message')).toHaveClass('rounded-theme-surface');
     expect(screen.getByRole('heading', { name: 'Danny' })).toHaveClass('sr-only');
     expect(screen.queryByTitle('Danny')).not.toBeInTheDocument();
   });
@@ -225,7 +234,7 @@ describe('SteerPart presentation', () => {
     );
     const quotes = screen.getByTestId('message-quotes');
     expect(quotes).toHaveTextContent('the selected excerpt');
-    expect(quotes.closest('.bg-surface-tertiary')).not.toBeNull();
+    expect(quotes.closest('.bg-surface-user-message')).not.toBeNull();
   });
 
   it('renders no quote block when the steer carried none', () => {
@@ -236,21 +245,24 @@ describe('SteerPart presentation', () => {
 
 describe('SteerPart live receipt draw-in', () => {
   function LiveIdsProbe() {
-    const ids = useRecoilValue(store.liveAppliedSteerIds);
+    const ids = useAtomValue(liveAppliedSteerIdsAtom);
     return <div data-testid="live-ids">{ids.join(',')}</div>;
+  }
+
+  function seededStore(liveIds: string[]) {
+    const jotaiStore = createStore();
+    jotaiStore.set(liveAppliedSteerIdsAtom, liveIds);
+    return jotaiStore;
   }
 
   function renderLive(liveIds: string[]) {
     return render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.user, SEEDED_USER as never);
-          set(store.liveAppliedSteerIds, liveIds);
-        }}
-      >
-        <SteerPart steer="steered words" steerId="s1" createdAt={1} />
-        <LiveIdsProbe />
-      </RecoilRoot>,
+      <Provider store={seededStore(liveIds)}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          <SteerPart steer="steered words" steerId="s1" createdAt={1} />
+          <LiveIdsProbe />
+        </RecoilRoot>
+      </Provider>,
     );
   }
 
@@ -279,28 +291,23 @@ describe('SteerPart live receipt draw-in', () => {
         <LiveIdsProbe />
       </>
     );
+    const jotaiStore = seededStore(['s2']);
     const { rerender } = render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.user, SEEDED_USER as never);
-          set(store.liveAppliedSteerIds, ['s2']);
-        }}
-      >
-        {partFor('s1')}
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          {partFor('s1')}
+        </RecoilRoot>
+      </Provider>,
     );
     expect(appliedChecks()).not.toHaveClass('animate-in');
     expect(screen.getByTestId('live-ids')).toHaveTextContent('s2');
 
     rerender(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.user, SEEDED_USER as never);
-          set(store.liveAppliedSteerIds, ['s2']);
-        }}
-      >
-        {partFor('s2')}
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          {partFor('s2')}
+        </RecoilRoot>
+      </Provider>,
     );
     expect(appliedChecks()).toHaveClass('animate-in');
     expect(screen.getByTestId('live-ids').textContent).toBe('');

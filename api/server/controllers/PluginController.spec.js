@@ -165,6 +165,42 @@ describe('PluginController', () => {
   });
 
   describe('getAvailableTools', () => {
+    it.each([undefined, false, true])(
+      'gates the comparison entry on request policy (%p)',
+      async (enabled) => {
+        require('~/app/clients/tools').availableTools.push({
+          name: 'GitHub Compare',
+          pluginKey: 'github_compare',
+          description: 'compare',
+          agentsOnly: true,
+        });
+        mockReq.baseUrl = '/agents';
+        mockReq.config.githubCompare = { enabled };
+        getCachedTools.mockResolvedValue({
+          github_compare: { type: 'function', function: { name: 'github_compare' } },
+        });
+        await getAvailableTools(mockReq, mockRes);
+        expect(mockRes.json.mock.calls[0][0].map(({ pluginKey }) => pluginKey)).toEqual(
+          enabled === true ? ['github_compare'] : [],
+        );
+      },
+    );
+    it('keeps enabled comparison out of the assistants catalog', async () => {
+      require('~/app/clients/tools').availableTools.push({
+        name: 'GitHub Compare',
+        pluginKey: 'github_compare',
+        description: 'compare',
+        agentsOnly: true,
+      });
+      mockReq.baseUrl = '/assistants';
+      mockReq.config.githubCompare = { enabled: true };
+      getCachedTools.mockResolvedValue({
+        github_compare: { type: 'function', function: { name: 'github_compare' } },
+      });
+      await getAvailableTools(mockReq, mockRes);
+      expect(mockRes.json.mock.calls[0][0]).toEqual([]);
+    });
+
     it('scopes agentsOnly plugins out of the ASSISTANTS listing but keeps them for agents', async () => {
       const cached = {
         ask_user_question: {

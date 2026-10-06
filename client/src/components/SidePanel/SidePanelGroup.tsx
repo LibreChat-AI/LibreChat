@@ -1,6 +1,8 @@
 import { useState, memo } from 'react';
 import { useDefaultLayout } from 'react-resizable-panels';
-import { ResizablePanel, ResizablePanelGroup, useMediaQuery } from '@librechat/client';
+import { ResizablePanel, ResizablePanelGroup } from '@librechat/client';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import ArtifactsPanel from './ArtifactsPanel';
 
 const PANEL_IDS_SINGLE = ['messages-view'];
@@ -14,7 +16,7 @@ interface SidePanelProps {
 
 const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
   const [shouldRenderPanel, setShouldRenderPanel] = useState(panel != null);
-  const isSmallScreen = useMediaQuery('(max-width: 767px)');
+  const isSmallScreen = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: 'side-panel-layout',
@@ -26,25 +28,29 @@ const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
 
   return (
     <>
-      <ResizablePanelGroup
-        orientation="horizontal"
-        defaultLayout={defaultLayout}
-        onLayoutChanged={onLayoutChanged}
-        className="relative flex-1 bg-presentation"
-      >
-        <ResizablePanel defaultSize="50" minSize={minSizeMain} id="messages-view">
-          {children}
-        </ResizablePanel>
+      {/* The surface behind the panels is this group's host, not the group
+          primitive: the resizer owns its own chrome, and the caller owns the
+          backdrop the panels sit on. */}
+      <div className="relative min-w-0 flex-1">
+        <ResizablePanelGroup
+          orientation="horizontal"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+        >
+          <ResizablePanel defaultSize="50" minSize={minSizeMain} id="messages-view">
+            {children}
+          </ResizablePanel>
 
-        {!isSmallScreen && (
-          <ArtifactsPanel
-            panel={panel}
-            minSizeMain={minSizeMain}
-            shouldRender={shouldRenderPanel}
-            onRenderChange={setShouldRenderPanel}
-          />
-        )}
-      </ResizablePanelGroup>
+          {!isSmallScreen && (
+            <ArtifactsPanel
+              panel={panel}
+              minSizeMain={minSizeMain}
+              shouldRender={shouldRenderPanel}
+              onRenderChange={setShouldRenderPanel}
+            />
+          )}
+        </ResizablePanelGroup>
+      </div>
       {panel != null && isSmallScreen && <div className="fixed inset-0 z-[100]">{panel}</div>}
     </>
   );

@@ -13,6 +13,7 @@ describe('retained file deletions', () => {
   beforeEach(() => {
     jest.resetModules();
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   it('persists a retained deletion so a reload can still clean it up', async () => {
@@ -94,6 +95,49 @@ describe('retained file deletions', () => {
     const { takeRetainedFileDeletions } = await import('../files');
 
     expect(takeRetainedFileDeletions()).toEqual([]);
+  });
+
+  it('publishes all submission aliases in one bounded ledger write', async () => {
+    const { markPasteSubmitted, isPasteSubmitted } = await import('../files');
+    const key = 'librechat-submitted-paste-file-ids';
+    localStorage.setItem(
+      key,
+      JSON.stringify(Object.fromEntries(Array.from({ length: 5000 }, (_, i) => [`old-${i}`, 1]))),
+    );
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+
+    markPasteSubmitted('map-key', 'server-id', 'upload-id', 'server-id', undefined, null, '');
+
+    expect(write.mock.calls.filter(([name]) => name === key)).toHaveLength(1);
+    expect(Object.keys(JSON.parse(localStorage.getItem(key) ?? '{}'))).toHaveLength(5000);
+    for (const id of ['map-key', 'server-id', 'upload-id']) {
+      expect(isPasteSubmitted(id)).toBe(true);
+    }
+    expect(isPasteSubmitted('old-4999')).toBe(false);
+  });
+
+  it('does not rewrite the ledger for an empty submission', async () => {
+    const { markPasteSubmitted } = await import('../files');
+    const write = jest.spyOn(Storage.prototype, 'setItem');
+
+    markPasteSubmitted(undefined, null, '');
+
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('retains every batched alias in memory when storage fails', async () => {
+    const { markPasteSubmitted, isPasteSubmitted } = await import('../files');
+    const write = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('Storage unavailable');
+    });
+
+    markPasteSubmitted('server-id', 'upload-id');
+    write.mockRestore();
+
+    expect(isPasteSubmitted('server-id')).toBe(true);
+    expect(isPasteSubmitted('upload-id')).toBe(true);
+    localStorage.setItem('librechat-submitted-paste-file-ids', JSON.stringify({ other: 1 }));
+    expect(isPasteSubmitted('other')).toBe(true);
   });
 
   it('persists submitted paste IDs across reloads', async () => {

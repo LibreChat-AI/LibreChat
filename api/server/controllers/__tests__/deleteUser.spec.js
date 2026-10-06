@@ -34,6 +34,7 @@ const mockCancelAndDrainSubagentThreads = jest.fn();
 const mockQuiesceUserSchedules = jest.fn();
 const mockDeleteSchedulesByUser = jest.fn();
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
+const mockDeletePasskeysByUser = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
@@ -48,6 +49,11 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createEmailChangeService: jest.fn(() => ({
+    requestEmailChange: jest.fn(),
+    confirmEmailChange: jest.fn(),
+  })),
+  createEmailChangeDeps: jest.fn(() => ({})),
   MCPOAuthHandler: {},
   MCPTokenStorage: {},
   normalizeHttpError: jest.fn(),
@@ -81,6 +87,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+  deletePasskeysByUser: (...args) => mockDeletePasskeysByUser(...args),
   deleteAllSharedLinks: (...args) => mockDeleteAllSharedLinks(...args),
   updateUserPlugins: (...args) => mockUpdateUserPlugins(...args),
   deleteUserById: (...args) => mockDeleteUserById(...args),
@@ -214,6 +221,7 @@ function stubDeletionMocks() {
   mockQuiesceUserSchedules.mockResolvedValue(true);
   mockDeleteSchedulesByUser.mockResolvedValue();
   mockRevokeUserCodeEnvironmentWorkers.mockResolvedValue(0);
+  mockDeletePasskeysByUser.mockResolvedValue();
 }
 
 beforeEach(() => {
@@ -239,6 +247,7 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(mockRevokeUserCodeEnvironmentWorkers).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user1' }),
     );
+    expect(mockDeletePasskeysByUser).toHaveBeenCalledWith('user1');
     expect(mockVerifyOTPOrBackupCode).not.toHaveBeenCalled();
     expect(mockBeginAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
       mockPrepareAgentTriggerUserPurge.mock.invocationCallOrder[0],

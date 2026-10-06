@@ -632,7 +632,7 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
         display: 'none',
       }}
       className={cn(
-        'fixed z-50 inline-flex items-center gap-1.5 rounded-full border border-border-light bg-surface-secondary text-sm font-medium text-text-primary shadow-lg transition-colors hover:bg-surface-tertiary',
+        'border-border-chrome bg-surface-secondary text-text-primary hover:bg-surface-tertiary fixed z-50 inline-flex items-center gap-1.5 rounded-full border text-sm font-medium shadow-lg transition-colors',
         /** Comfortable tap target when the selection came from a finger. */
         'px-3 py-1.5 data-[touch=true]:min-h-11 data-[touch=true]:px-4 data-[touch=true]:py-2.5',
       )}

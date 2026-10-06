@@ -1,5 +1,12 @@
 import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
 import {
+  controlBorderFallback,
+  focusFallbacks,
+  overlayFallbacks,
+  pressedFallbacks,
+  primaryButtonFallbacks,
+  primaryInkFallbacks,
+  primaryInkRoles,
   MARK_NEIGHBOURHOOD,
   themeAppearanceProperties,
   themeBrandTokens,
@@ -66,9 +73,84 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--chart-widget-surface', colors['rgb-surface-primary']]);
   }
 
+  /** The switch knob was painted `surface-primary` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-switch-thumb'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
+  }
+
+  /** The field fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
+  Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
+    variables.push([colorProperty(role as keyof IThemeRGB), value]);
+  });
+
+  if (colors['rgb-table-header-text'] === undefined && colors['rgb-text-secondary'] !== undefined) {
+    variables.push(['--table-header-text', colors['rgb-text-secondary']]);
+  }
+
+  if (colors['rgb-table-header-fill'] === undefined && colors['rgb-surface-dialog'] !== undefined) {
+    variables.push(['--table-header-fill', colors['rgb-surface-dialog']]);
+  }
+
   if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
     variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
   }
+
+  if (colors['rgb-focus-subtle'] === undefined && colors['rgb-border-heavy'] !== undefined) {
+    variables.push(['--focus-subtle', colors['rgb-border-heavy']]);
+  }
+
+  const legacyControlBorder = controlBorderFallback(colors);
+  if (legacyControlBorder !== undefined) {
+    variables.push(['--border-control', legacyControlBorder]);
+  }
+
+  const focus = focusFallbacks(colors);
+  if (colors['rgb-focus-outline'] === undefined && focus['rgb-focus-outline'] !== undefined) {
+    variables.push(['--focus-outline', focus['rgb-focus-outline']]);
+  }
+  if (colors['rgb-focus-control'] === undefined && focus['rgb-focus-control'] !== undefined) {
+    variables.push(['--focus-control', focus['rgb-focus-control']]);
+  }
+  if (
+    colors['rgb-border-field-focus'] === undefined &&
+    focus['rgb-border-field-focus'] !== undefined
+  ) {
+    variables.push(['--border-field-focus', focus['rgb-border-field-focus']]);
+  }
+
+  const pressed = pressedFallbacks(colors);
+  if (colors['rgb-surface-pressed'] === undefined && pressed['rgb-surface-pressed'] !== undefined) {
+    variables.push(['--surface-pressed', pressed['rgb-surface-pressed']]);
+  }
+  if (
+    colors['rgb-surface-inverted-pressed'] === undefined &&
+    pressed['rgb-surface-inverted-pressed'] !== undefined
+  ) {
+    variables.push(['--surface-inverted-pressed', pressed['rgb-surface-inverted-pressed']]);
+  }
+
+  const primary = primaryButtonFallbacks(colors);
+  if (colors['rgb-button-primary'] === undefined && primary['rgb-button-primary'] !== undefined) {
+    variables.push(['--button-primary', primary['rgb-button-primary']]);
+  }
+  if (
+    colors['rgb-button-primary-hover'] === undefined &&
+    primary['rgb-button-primary-hover'] !== undefined
+  ) {
+    variables.push(['--button-primary-hover', primary['rgb-button-primary-hover']]);
+  }
+
+  const inks = primaryInkFallbacks(colors);
+  primaryInkRoles.forEach((role) => {
+    const ink = inks[role];
+    if (colors[role] === undefined && ink !== undefined) {
+      variables.push([`--${role.slice(4)}`, ink]);
+    }
+  });
 
   /**
    * Same rule as `resolveTheme`: a theme that paints what the mark is measured
@@ -98,25 +180,77 @@ function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   ]);
 }
 
+/**
+ * Mirrors the applied theme's `disabledStyle` on the root for host stylesheets and tests. Absent
+ * means the default `dim` style. The `theme-disabled:` variants read the inherited
+ * `--theme-disabled-style` property instead, so the nearest themed root decides.
+ */
+export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
+
+/**
+ * Marks a root other than the document one that a legacy palette themes. The stylesheet points
+ * the avatar backdrop at that root's own secondary surface, or its tertiary one under a `.dark`
+ * ancestor, as the document root's alias does, so the backdrop follows a later mode change.
+ */
+export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
+
+/**
+ * Mirrors the applied theme's `fieldFocusStyle` on the root, like `THEME_DISABLED_ATTRIBUTE`.
+ * The `theme-field-border:` variant and `Field.css` read the inherited
+ * `--theme-field-focus-style` property instead, so the nearest themed root decides.
+ */
+export const THEME_FIELD_FOCUS_ATTRIBUTE = 'data-theme-field-focus';
+
+/**
+ * Marks a root that `client/index.html` painted from the cached deployment theme before the
+ * bundle ran. The provider drops that copy before it snapshots the root, so a later restore
+ * returns to the stylesheet rather than to a theme the server may since have withdrawn.
+ */
+export const THEME_BOOT_ATTRIBUTE = 'data-theme-boot';
+
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  root.removeAttribute(THEME_BOOT_ATTRIBUTE);
+}
+
+/** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
+export type ResolvedThemeStyle = {
+  properties: Array<[string, string]>;
+  attributes: Record<string, string>;
+};
+
+export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
+  return {
+    properties: [
+      ...mapColors(theme.colors),
+      ...mapAppearance(theme.appearance),
+      ...themeBrandTokens.map(
+        (token) => [brandProperty(token), theme.brands[token]] as [string, string],
+      ),
+    ],
+    attributes: {
+      'data-theme': theme.name,
+      ...(theme.appearance.disabledStyle === 'fill' && { [THEME_DISABLED_ATTRIBUTE]: 'fill' }),
+      ...(theme.appearance.fieldFocusStyle === 'border' && {
+        [THEME_FIELD_FOCUS_ATTRIBUTE]: 'border',
+      }),
+    },
+  };
 }
 
 export function applyResolvedTheme(
   theme: ResolvedThemeDefinition,
   root: HTMLElement = document.documentElement,
 ): void {
-  const variables = [
-    ...mapColors(theme.colors),
-    ...mapAppearance(theme.appearance),
-    ...themeBrandTokens.map(
-      (token) => [brandProperty(token), theme.brands[token]] as [string, string],
-    ),
-  ];
-
-  variables.forEach(([property, value]) => root.style.setProperty(property, value));
-  root.dataset.theme = theme.name;
+  const { properties, attributes } = describeResolvedTheme(theme);
+  properties.forEach(([property, value]) => root.style.setProperty(property, value));
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  Object.entries(attributes).forEach(([name, value]) => root.setAttribute(name, value));
 }
 
 /**
@@ -132,6 +266,9 @@ export default function applyTheme(
     return;
   }
 
+  if (root !== root.ownerDocument.documentElement) {
+    root.setAttribute(THEME_SCOPE_ATTRIBUTE, '');
+  }
   mapColors(themeRGB, base).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);

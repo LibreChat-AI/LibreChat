@@ -14,6 +14,39 @@ import type { GetAppConfigOptions } from '~/app/service';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+
+/**
+ * Built-in endpoints whose configured `models` list replaces their `*_MODELS`
+ * environment list. Read per request, so principal overrides can narrow them.
+ */
+type ConfiguredModelListEndpoint =
+  | EModelEndpoint.openAI
+  | EModelEndpoint.google
+  | EModelEndpoint.anthropic
+  | EModelEndpoint.bedrock;
+
+const CONFIGURED_MODEL_LIST_ENDPOINTS: readonly ConfiguredModelListEndpoint[] = [
+  EModelEndpoint.openAI,
+  EModelEndpoint.google,
+  EModelEndpoint.anthropic,
+  EModelEndpoint.bedrock,
+];
+
+/**
+ * The model list configured for a built-in endpoint in the resolved config, or
+ * `undefined` when none is set. A configured list replaces the environment list
+ * and makes provider discovery unnecessary.
+ */
+export function configuredModelList(
+  appConfig: AppConfig | null | undefined,
+  endpoint: ConfiguredModelListEndpoint,
+): string[] | undefined {
+  const models = appConfig?.endpoints?.[endpoint]?.models;
+  if (!Array.isArray(models)) {
+    return undefined;
+  }
+  return models.filter((model): model is string => typeof model === 'string');
+}
 import { resolveConfigSecret } from '~/admin/secrets';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
@@ -72,9 +105,11 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
-    const bedrockConfig = appConfig.endpoints?.[EModelEndpoint.bedrock];
-    if (bedrockConfig?.models && Array.isArray(bedrockConfig.models)) {
-      modelsConfig[EModelEndpoint.bedrock] = bedrockConfig.models;
+    for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      const models = configuredModelList(appConfig, endpoint);
+      if (models) {
+        modelsConfig[endpoint] = models;
+      }
     }
 
     if (!Array.isArray(appConfig.endpoints?.[EModelEndpoint.custom])) {

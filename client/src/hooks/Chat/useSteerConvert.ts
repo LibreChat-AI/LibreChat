@@ -3,7 +3,7 @@ import { v4 } from 'uuid';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import type { TPendingSteer } from 'librechat-data-provider';
-import type { QueuedMessage, QueuedMessageOrigin } from '~/store/families';
+import type { QueuedMessage, QueuedMessageOrigin } from '~/hooks/Chat/queue';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { SteerCarriedContext } from '~/utils';
 import {
@@ -17,6 +17,7 @@ import {
   canRestoreRecovery,
 } from '~/components/Chat/Steering/recovery';
 import { fetchStreamStatus, getGenerationProtocolVersion } from '~/data-provider';
+import { queuedMessagesByConvoId } from '~/hooks/Chat/queue';
 import { useFileMapContext } from '~/Providers';
 import store from '~/store';
 
@@ -40,12 +41,18 @@ interface SteerConvertOptions {
    *  consumed by THIS recovery generation. Never set for an arbitrary or
    *  pre-start status response: those can be stale after a successful start. */
   allowPreviouslyConvertedIds?: readonly string[];
+  /** Local failures have no durable receipt to reclaim on a later send. */
+  bindRecoverySource?: boolean;
+  /** Mark the converted rows so the run-end drain leaves them for an explicit
+   *  send. Set for steers the server rejected: sweeping them out of the chip
+   *  surface must not turn a refusal into an automatic new turn. */
+  needsExplicitSend?: boolean;
 }
 
 /**
  * Converts server-reported leftover steers into queued follow-up chips.
  * Converted ids join the applied set so a 202 ACK that lands after the run
- * ended drops its chip instead of re-minting a stranded `pending` one — the
+ * ended drops its chip instead of re-minting a stranded `pending` one: the
  * set must survive run end for exactly that race, so it is capped, not
  * cleared. Safe to call from multiple delivery paths for the same steers
  * (final SSE event AND abort HTTP response): chip removal and queue
@@ -69,6 +76,8 @@ export default function useSteerConvert() {
         steers: ConvertibleSteer[],
         generationProtocolVersion?: GenerationProtocolVersion,
         allowPreviouslyConvertedIds: readonly string[] = [],
+        bindRecoverySource?: boolean,
+        needsExplicitSend?: boolean,
       ) => {
         if (steers.length === 0) {
           return;
@@ -78,7 +87,7 @@ export default function useSteerConvert() {
           snapshot
             .getLoadable(store.activeGenerationProtocolVersionByConvoId(conversationId))
             .getValue();
-        const bindRecoverySource = negotiatedVersion === 2;
+        const shouldBindRecoverySource = bindRecoverySource ?? negotiatedVersion === 2;
         // Restore quotes/skill picks from the local chip (matched by id)
         // before the chips are dropped below: the chip is the only carrier of
         // skill picks, and of quotes accepted by an older server whose queue
@@ -98,7 +107,7 @@ export default function useSteerConvert() {
         // Steers already settled (applied on the server OR converted here on an
         // earlier delivery) must not re-enter the queue. Read BEFORE the append
         // below so a first-time conversion still queues, but a redelivery whose
-        // item was already DRAINED out of the queue is a no-op — without this,
+        // item was already DRAINED out of the queue is a no-op: without this,
         // the queue-only dedup below misses a message the run-end drain already
         // submitted and re-mints it as a stranded queued chip.
         const settledSteerIds = new Set(
@@ -111,12 +120,12 @@ export default function useSteerConvert() {
         set(store.pendingSteersByConvoId(conversationId), (prev) =>
           prev.filter((steer) => !steerIds.has(steer.steerId)),
         );
-        set(store.queuedMessagesByConvoId(conversationId), (prev) => {
+        jotaiStore.set(queuedMessagesByConvoId(conversationId), (prev) => {
           /** A legacy status read is destructive: if a v2 live-final path
            * already created a receipt-bound item before the claim reached an
            * old replica, that source no longer exists. Downgrade the existing
            * item in place to an ordinary local follow-up. */
-          const existing: QueuedMessage[] = bindRecoverySource
+          const existing: QueuedMessage[] = shouldBindRecoverySource
             ? prev
             : prev.map((item) => {
                 const matchesClaimedSource =
@@ -161,7 +170,7 @@ export default function useSteerConvert() {
               const held =
                 jotaiStore.get(recoveryDispositionsFamily(conversationId))[steer.steerId] != null;
               const recoveryFields =
-                bindRecoverySource || held
+                shouldBindRecoverySource || held
                   ? {
                       // One UUID is stable for this queued attempt and all of
                       // its POST retries. A later failed generation re-converts
@@ -172,14 +181,21 @@ export default function useSteerConvert() {
                       ...(steer.clientSteerId && { recoveryClientSteerId: steer.clientSteerId }),
                     }
                   : {};
+              const explicitSend = needsExplicitSend === true ? { needsExplicitSend: true } : {};
               const item =
                 queuedOrigin != null
-                  ? { ...queuedOrigin.item, ...recoveryFields, ...(files && { files }) }
+                  ? {
+                      ...queuedOrigin.item,
+                      ...recoveryFields,
+                      ...explicitSend,
+                      ...(files && { files }),
+                    }
                   : ({
                       id: steer.steerId,
                       text: steer.text,
                       createdAt: steer.createdAt ?? Date.now(),
                       ...recoveryFields,
+                      ...explicitSend,
                       ...(files && files.length > 0 && { files }),
                       // The chip is the usual source, but a reclaimed steer may
                       // have lost its chip to a competing cancel mid-round-trip.
@@ -202,15 +218,27 @@ export default function useSteerConvert() {
           if (fresh.length === 0) {
             return existing;
           }
-          /** Ordinary steer leftovers merge chronologically. A steer that
-           *  originated in this queue restores its exact object/identity and
-           *  captured position instead of being re-minted under the server id. */
-          const ordinary = fresh.filter(({ queuedOrigin }) => queuedOrigin == null);
-          let merged: QueuedMessage[] = [...existing, ...ordinary.map(({ item }) => item)].sort(
-            (a, b) =>
-              Number(b.priority ?? false) - Number(a.priority ?? false) ||
-              a.createdAt - b.createdAt,
-          );
+          // Each new item is placed chronologically (a steer accepted BEFORE
+          // the user queued a later follow-up must drain first) EXCEPT explicit
+          // front-inserts ("Interrupt & send"), whose urgency outranks age.
+          //
+          // Placed rather than sorted: the queue can be reordered by hand from
+          // the rail, and sorting the whole list would quietly restore the order
+          // the messages were written in, changing which one sends next.
+          let merged: QueuedMessage[] = [...existing];
+          const ordinary = fresh
+            .filter(({ queuedOrigin }) => queuedOrigin == null)
+            .map(({ item }) => item)
+            .sort((a, b) => a.createdAt - b.createdAt);
+          for (const item of ordinary) {
+            const at = merged.findIndex(
+              (queued) => queued.priority !== true && queued.createdAt > item.createdAt,
+            );
+            merged.splice(at === -1 ? merged.length : at, 0, item);
+          }
+          /** A steer that originated in this queue restores its exact
+           *  object/identity and captured position instead of being re-minted
+           *  under the server id at a merely chronological spot. */
           for (const { queuedOrigin } of fresh) {
             if (queuedOrigin != null) {
               merged = insertQueuedOrigin(merged, queuedOrigin);
@@ -229,6 +257,8 @@ export default function useSteerConvert() {
         steers,
         options?.generationProtocolVersion,
         options?.allowPreviouslyConvertedIds,
+        options?.bindRecoverySource,
+        options?.needsExplicitSend,
       );
       if (options?.claimParked !== true || steers.length === 0) {
         return;

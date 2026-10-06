@@ -2,6 +2,7 @@ import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
+import { MessageSurfaceContext } from '../../ui/surface';
 import ActivityPhaseGroup from '../ActivityPhaseGroup';
 import { useFailedReveal } from '../reveal';
 
@@ -31,6 +32,19 @@ jest.mock('~/hooks', () => {
       mockScheduleLayoutReconcile(target),
   };
 });
+
+jest.mock('~/components/MCPUIResource', () => ({
+  MCPAppViews: ({ attachments }: { attachments?: TAttachment[] }) => (
+    <>
+      {(attachments ?? [])
+        .filter((item) => item.type === 'ui_resources')
+        .flatMap((item) => item.ui_resources ?? [])
+        .map((resource: { resourceId: string; toolName?: string }, index) => (
+          <iframe key={`${resource.resourceId}:${index}`} title={`MCP App: ${resource.toolName}`} />
+        ))}
+    </>
+  ),
+}));
 
 const LABEL = 'Compared both release paths';
 const NEXT_LABEL = 'Confirmed the rollback path is clean';
@@ -408,7 +422,14 @@ describe('ActivityPhaseGroup', () => {
 
     const trigger = screen.getByRole('button', { name: LABEL });
     fireEvent.click(trigger);
+    const rail = screen.getByTestId('fold-rail');
+    fireEvent.mouseEnter(rail);
+    expect(screen.getByTestId('fold-rail-knob')).toBeInTheDocument();
     fireEvent.click(trigger);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    expect(rail).toBeDisabled();
+    fireEvent.mouseEnter(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
     fireEvent.transitionEnd(screen.getByTestId('activity-phase-panel'));
     expect(screen.getByTestId('phase-content')).toBeInTheDocument();
 
@@ -451,6 +472,33 @@ describe('ActivityPhaseGroup', () => {
     expect(image).toHaveAttribute('href', 'https://example.com/page');
     /** Outside the fold: collapsing the card must not take the media with it. */
     expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(image);
+  });
+
+  test('keeps correlated App views outside the phase panel across disclosure toggles', () => {
+    const appAttachment = {
+      type: Tools.ui_resources,
+      [Tools.ui_resources]: [
+        { resourceId: 'alpha', toolName: 'alpha' },
+        { resourceId: 'beta', toolName: 'beta' },
+      ],
+    } as unknown as TAttachment;
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent attachments={[appAttachment]}>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+
+    const frames = screen.getAllByTitle(/MCP App:/);
+    expect(frames).toHaveLength(2);
+    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(frames[0]);
+    const firstFrame = frames[0];
+
+    const toggle = screen.getByRole('button', { name: LABEL });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+
+    expect(screen.getAllByTitle(/MCP App:/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/MCP App:/)[0]).toBe(firstFrame);
   });
 });
 
@@ -621,6 +669,24 @@ describe('ActivityPhaseGroup open header', () => {
     expect(screen.getByRole('button')).toHaveTextContent('Checking the rollback path');
   });
 
+  test.each(['bg-surface-dialog', 'bg-surface-secondary'] as const)(
+    'paints the sticky header from its hosting %s canvas',
+    (surface) => {
+      render(
+        <MessageSurfaceContext.Provider value={surface}>
+          <ActivityPhaseGroup labelPart={labelPart} hasContent>
+            <div data-testid="phase-content" />
+          </ActivityPhaseGroup>
+        </MessageSurfaceContext.Provider>,
+      );
+      const header = screen.getByRole('button', { name: LABEL });
+      fireEvent.click(header);
+      const pinned = header.parentElement?.parentElement;
+      expect(pinned).toHaveClass('sticky', surface);
+      expect(pinned).not.toHaveClass('bg-surface-primary-alt', 'bg-presentation');
+    },
+  );
+
   test('pins the open header and rails the rows under it', () => {
     render(
       <ActivityPhaseGroup labelPart={labelPart} hasContent>
@@ -631,8 +697,29 @@ describe('ActivityPhaseGroup open header', () => {
     const pinned = header.parentElement?.parentElement;
     expect(pinned).not.toHaveClass('sticky');
     fireEvent.click(header);
-    expect(pinned).toHaveClass('sticky', 'top-0');
+    expect(pinned).toHaveClass('sticky', 'top-0', 'bg-surface-primary-alt');
+    expect(pinned).not.toHaveClass('bg-presentation');
     expect(screen.getByTestId('activity-phase-panel').firstElementChild).toHaveClass('pl-6');
+  });
+
+  test('collapses from its rail, showing the knob on its header while the rail is hovered', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent>
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    const header = screen.getByRole('button', { name: LABEL });
+    fireEvent.click(header);
+    const rail = screen.getByTestId('fold-rail');
+    expect(rail).toHaveAttribute('aria-hidden', 'true');
+    fireEvent.mouseEnter(rail);
+    expect(header).toContainElement(screen.getByTestId('fold-rail-knob'));
+    fireEvent.mouseLeave(rail);
+    expect(screen.queryByTestId('fold-rail-knob')).toBeNull();
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(rail);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
   });
 });
 
@@ -797,6 +884,21 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
         labelPart={makeLabelPart('')}
         hasContent
         liveParts={[thought, call]}
+        showCursor
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
+  });
+
+  test('hides the thought when it streams after tool calls in the same card', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[call, thought]}
         showCursor
       >
         <div data-testid="phase-content" />

@@ -33,6 +33,7 @@ const INVOKE_SKILL_MARKER = 'E2E_INVOKE_SKILL:';
 const ASSERT_PROVIDER_FILE_MARKER = 'E2E_ASSERT_PROVIDER_FILE:';
 const ASSERT_AGENT_CONTEXT_MARKER = 'E2E_ASSERT_AGENT_CONTEXT:';
 const ASSERT_HISTORY_MARKER = 'E2E_ASSERT_HISTORY:';
+const ASSERT_PROJECT_CONTEXT_MARKER = 'E2E_ASSERT_PROJECT_CONTEXT:';
 const ASSERT_QUOTE_MARKER = 'E2E_ASSERT_QUOTE:';
 const REPLY_MARKER = 'E2E_REPLY:';
 const THINK_REPLY_MARKER = 'E2E_THINK_REPLY:';
@@ -44,18 +45,30 @@ const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
 const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
+const PRE_TOKEN_REPLY_MARKER = 'E2E_PRE_TOKEN_REPLY:';
 /** A run that completes having produced no content at all: the shape a
  *  summarizer takes when it returns nothing for a manual compaction. */
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
+const MCP_APP_MARKER = 'E2E_MCP_APP:';
+const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
+const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
+const MCP_LEGACY_MARKER = 'E2E_MCP_LEGACY:';
+const MCP_LEGACY_MIMELESS_MARKER = 'E2E_MCP_LEGACY_MIMELESS:';
+const MCP_LEGACY_ACTION_MARKER = 'E2E_LEGACY_ACTION';
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const TOOL_THEN_THINK_REPLY_MARKER = 'E2E_TOOL_THEN_THINK_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
 const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
+/** A three-question batch; the LONG variant gives the first question a maximum-size prompt. */
+const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
+const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
@@ -67,6 +80,7 @@ const PARAGRAPHS_REPLY_MARKER = 'E2E_PARAGRAPHS_REPLY';
 const MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_MERMAID_ARTIFACT_REPLY';
 const LARGE_MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_LARGE_MERMAID_ARTIFACT_REPLY';
 const HTML_ARTIFACT_REPLY_MARKER = 'E2E_HTML_ARTIFACT_REPLY';
+const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
@@ -99,6 +113,7 @@ const PROVIDER_FILE_ASSERTION_FINAL_TEXT = 'E2E provider file assertion passed';
 const AGENT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E agent context assertion passed';
 const HISTORY_ASSERTION_PRESENT_TEXT = 'E2E history assertion present';
 const HISTORY_ASSERTION_ABSENT_TEXT = 'E2E history assertion absent';
+const PROJECT_CONTEXT_ASSERTION_FINAL_TEXT = 'E2E project context assertion passed';
 const QUOTE_ASSERTION_FINAL_TEXT = 'E2E quote assertion passed';
 const STEER_TOOL_FINAL_TEXT = 'E2E steer tool reply done';
 const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
@@ -106,9 +121,11 @@ const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
 const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
+const MCP_APP_PHASE_FINAL_TEXT = 'E2E MCP App phase complete';
 const ACTIVITY_FAILED_FINAL_TEXT = 'E2E activity failed reply done';
 const SLOW_ECHO_TOOL_NAME_PREFIX = 'slow_echo';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
+const MCP_APP_TOOL_NAME_PREFIX = 'show_app';
 const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
 /** The highlight cancellation scenario has to open the code card and stop the
@@ -440,6 +457,44 @@ function agentContextAssertionResponses({ messages, text }) {
   };
 }
 
+function collectSystemPromptText(messages) {
+  return (messages ?? [])
+    .filter((message) => messageType(message) === 'system')
+    .map((message) => getContentText(message.content))
+    .join('\n');
+}
+
+/**
+ * Project probes deliberately inspect only system messages. The user marker
+ * itself and prior human/history messages must never satisfy this assertion.
+ * An optional second token asserts that a value is absent after a detach/move.
+ */
+function projectContextAssertionResponses({ messages, text }) {
+  const markerIndex = text.indexOf(ASSERT_PROJECT_CONTEXT_MARKER);
+  if (markerIndex === -1) {
+    return null;
+  }
+  const [expected, absent] = text
+    .slice(markerIndex + ASSERT_PROJECT_CONTEXT_MARKER.length)
+    .trim()
+    .split(/\s+/, 2);
+  const systemText = collectSystemPromptText(messages);
+  const foundExpected = expected === '-' || (Boolean(expected) && systemText.includes(expected));
+  const foundAbsent = Boolean(absent) && systemText.includes(absent);
+  if (foundExpected && !foundAbsent) {
+    return {
+      responses: [`${PROJECT_CONTEXT_ASSERTION_FINAL_TEXT}: ${expected || 'absent check'}`],
+    };
+  }
+  return {
+    responses: [
+      `E2E project context assertion failed: expected ${expected || 'a marker'}${
+        absent ? ` without ${absent}` : ''
+      }; saw ${systemText || 'no system context'}`,
+    ],
+  };
+}
+
 /**
  * Answers whether a token from an EARLIER turn still reaches the model. Scans
  * every prompt message except the current user turn: the marker line carries
@@ -523,6 +578,22 @@ function replyResponses(text) {
         [
           ':::artifact{identifier="e2e-html" type="text/html" title="E2E HTML Artifact"}',
           '<h1>HTML sandbox fixture</h1>',
+          ':::',
+        ].join('\n'),
+      ],
+    };
+  }
+
+  if (text.includes(TWO_ARTIFACT_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          ':::artifact{identifier="e2e-first" type="text/html" title="E2E First Artifact"}',
+          '<h1>First sandbox fixture</h1>',
+          ':::',
+          '',
+          ':::artifact{identifier="e2e-second" type="text/html" title="E2E Second Artifact"}',
+          '<h1>Second sandbox fixture</h1>',
           ':::',
         ].join('\n'),
       ],
@@ -684,14 +755,29 @@ function replyResponses(text) {
     return slowReplyResponses(slowName);
   }
 
+  const preTokenName = getMarkerValue(text, PRE_TOKEN_REPLY_MARKER);
+  if (preTokenName) {
+    return { responses: [`E2E pre-token reply ${preTokenName}`], sleep: 10_000 };
+  }
+
   /** Keep a generation live after `created` without producing any content
    * that the abort persistence filter accepts. The browser regression waits
    * for the user row, then interrupts this whitespace-only stream. */
   const emptySlowName = getMarkerValue(text, EMPTY_SLOW_REPLY_MARKER);
   if (emptySlowName) {
+    let invocation = 0;
     return {
-      responses: [' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)],
+      responses: [''],
       sleep: SLOW_CHUNK_DELAY_MS,
+      resolveInvocation: async (messages) => {
+        invocation += 1;
+        return {
+          response:
+            invocation === 1
+              ? ' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)
+              : `E2E empty reply continued ${emptySlowName} ${steerEchoSuffix(messages)}`,
+        };
+      },
     };
   }
 
@@ -1289,6 +1375,155 @@ function steerToolReplyResponses(label, toolNames) {
   };
 }
 
+function mcpAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App unavailable: show_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+/** Two sequential App calls so Provider F creates two labeled activities and
+ *  one enclosing activity phase through the normal graph lifecycle. */
+function mcpAppPhaseResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(MCP_APP_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return { responses: ['E2E MCP App phase unavailable: show_app was not advertised.'] };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_alpha_${label}`,
+              name: toolName,
+              args: { label: `phase alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_mcp_app_phase_beta_${label}`,
+              name: toolName,
+              args: { label: `phase beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${MCP_APP_PHASE_FINAL_TEXT}: ${label}` };
+    },
+  };
+}
+
+function mcpLinkAppResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('show_link_app'));
+  if (!toolName) {
+    return { responses: ['E2E MCP link App unavailable: show_link_app was not advertised.'] };
+  }
+  return {
+    responses: ['', `E2E MCP link App complete: ${label}`],
+    toolCalls: [
+      {
+        id: `call_e2e_mcp_link_app_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function legacyResourceResponses(
+  label,
+  toolNames,
+  { toolPrefix, callIdPrefix, completionPrefix, unavailable },
+) {
+  const candidates = Array.from(toolNames);
+  const toolName =
+    candidates.find((name) => name === toolPrefix) ??
+    candidates.find(
+      (name) =>
+        name.startsWith(toolPrefix) &&
+        (toolPrefix !== 'show_legacy' || !name.startsWith('show_legacy_mimeless')),
+    );
+  if (!toolName) {
+    return { responses: [unavailable] };
+  }
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `${callIdPrefix}_${label}`,
+        name: toolName,
+        args: { label },
+        type: 'tool_call',
+      },
+    ],
+    resolveOnStream: (streamMessages) => {
+      const toolResult = findLastToolMessageText(streamMessages, 'UI Resource ID:');
+      const resourceId = toolResult.match(/UI Resource ID: ([a-f0-9]+)/)?.[1];
+      return resourceId ? { responses: [`${completionPrefix}: \\ui{${resourceId}}`] } : null;
+    },
+  };
+}
+
+function mcpLegacyResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy',
+    callIdPrefix: 'call_e2e_mcp_legacy',
+    completionPrefix: 'Legacy MCP-UI',
+    unavailable: 'E2E legacy MCP-UI unavailable: show_legacy was not advertised.',
+  });
+}
+
+function mcpLegacyMimelessResponses(label, toolNames) {
+  return legacyResourceResponses(label, toolNames, {
+    toolPrefix: 'show_legacy_mimeless',
+    callIdPrefix: 'call_e2e_mcp_legacy_mimeless',
+    completionPrefix: 'MIME-less Legacy MCP-UI',
+    unavailable: 'E2E MIME-less legacy MCP-UI unavailable: tool was not advertised.',
+  });
+}
+
+function mcpLegacyActionResponses(toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith('legacy_action'));
+  if (!toolName) {
+    return { responses: ['E2E legacy action unavailable: legacy_action was not advertised.'] };
+  }
+  return {
+    responses: ['', 'E2E legacy action complete'],
+    toolCalls: [
+      {
+        id: 'call_e2e_mcp_legacy_action',
+        name: toolName,
+        args: { label: 'legacy-view' },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 /**
  * Model-visible injection proof: echoes every steer-injected user message the
  * model actually received (`additional_kwargs.source === 'steer'`, stamped by
@@ -1509,6 +1744,49 @@ function activityPhaseReplyResponses(label, toolNames) {
   };
 }
 
+/**
+ * One tool call, then a slowly streamed `<think>` of several sentences and the
+ * final text. The thought streams after a tool batch, which is the state the
+ * live thought peek must stay hidden in.
+ */
+function toolThenThinkReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E tool then think reply unavailable: no ${STEER_TOOL_NAME_PREFIX} tool advertised.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    sleep: 200,
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_tool_then_think_${label}`,
+              name: toolName,
+              args: { fact: `tool then think ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return {
+        response:
+          '<think>First I read the tool result slowly. Then I weigh what it changes with care. ' +
+          'Next I compare it against the original request. Afterwards I check the edge cases once more. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E tool then think reply done ${label}`,
+      };
+    },
+  };
+}
+
 /** Short prose remains visible while the real tool/label pipeline forms and
  * dissolves folds. The pause before calls lets the browser finish the initial
  * word fade and install its identity/animation observer before that transition. */
@@ -1542,6 +1820,39 @@ function activityProseReplyResponses(label, toolNames) {
         };
       }
       return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+function interruptToolReplyResponses(label, toolNames) {
+  const remember = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  const slow = Array.from(toolNames).find((name) => name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX));
+  if (!remember || !slow) return { responses: ['E2E interrupt tools unavailable'] };
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async (messages) => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: `E2E interrupt tools running ${label}`,
+          toolCalls: [
+            {
+              id: `call_interrupt_fast_${label}`,
+              name: remember,
+              args: { fact: `completed ${label}` },
+              type: 'tool_call',
+            },
+            {
+              id: `call_interrupt_slow_${label}`,
+              name: slow,
+              args: { text: `late ${label}`, delay_ms: 5000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E interrupt tool reply done ${label} ${steerEchoSuffix(messages)}` };
     },
   };
 }
@@ -1652,6 +1963,68 @@ function askUserQuestionResponses(label, toolNames) {
               options: [
                 { label: 'Staging', value: 'staging' },
                 { label: 'Production', value: 'production' },
+              ],
+            },
+          ],
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function askUserQuestionBatchResponses(label, toolNames, { long }) {
+  if (!toolNames.has(ASK_USER_QUESTION_TOOL_NAME)) {
+    return askUserQuestionResponses(label, toolNames);
+  }
+  /** Near the tool's limits: a 2,000-character question and a 4,000-character description. */
+  const longQuestion =
+    `Which environment for ${label}? ${'Explain the deployment target. '.repeat(64)}`
+      .slice(0, 2000)
+      .trim();
+  const longDescription = Array.from(
+    { length: 60 },
+    (_, index) => `Line ${index + 1} of the long clarification for ${label}.`,
+  )
+    .join(' ')
+    .slice(0, 4000);
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `call_e2e_ask_user_questions_${label}`,
+        name: ASK_USER_QUESTION_TOOL_NAME,
+        args: {
+          questions: [
+            {
+              id: 'environment',
+              question: long ? longQuestion : `Which environment for ${label}?`,
+              ...(long ? { description: longDescription } : {}),
+              options: [
+                { label: 'Staging', value: 'staging' },
+                { label: 'Production', value: 'production' },
+                ...(long
+                  ? Array.from({ length: 6 }, (_, index) => ({
+                      label: `Region ${index + 1}: ${'a deliberately long option label '.repeat(4)}`,
+                      value: `region-${index + 1}`,
+                    }))
+                  : []),
+              ],
+            },
+            {
+              id: 'region',
+              question: `Which region for ${label}?`,
+              options: [
+                { label: 'Europe', value: 'europe' },
+                { label: 'Americas', value: 'americas' },
+              ],
+            },
+            {
+              id: 'notes',
+              question: `Anything else for ${label}?`,
+              options: [
+                { label: 'Nothing else', value: 'none' },
+                { label: 'Call me first', value: 'call' },
               ],
             },
           ],
@@ -3104,9 +3477,41 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return statefulCodeResponses(statefulCodeOperation, toolNames);
   }
 
+  const interruptToolLabel = getMarkerValue(text, INTERRUPT_TOOL_REPLY_MARKER);
+  if (interruptToolLabel) return interruptToolReplyResponses(interruptToolLabel, toolNames);
+
   const steerToolLabel = getMarkerValue(text, STEER_TOOL_REPLY_MARKER);
   if (steerToolLabel) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
+  }
+
+  const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
+  if (mcpAppLabel) {
+    return mcpAppResponses(mcpAppLabel, toolNames);
+  }
+
+  const mcpAppPhaseLabel = getMarkerValue(text, MCP_APP_PHASE_MARKER);
+  if (mcpAppPhaseLabel) {
+    return mcpAppPhaseResponses(mcpAppPhaseLabel, toolNames);
+  }
+
+  const mcpLinkAppLabel = getMarkerValue(text, MCP_LINK_APP_MARKER);
+  if (mcpLinkAppLabel) {
+    return mcpLinkAppResponses(mcpLinkAppLabel, toolNames);
+  }
+
+  const mcpLegacyLabel = getMarkerValue(text, MCP_LEGACY_MARKER);
+  if (mcpLegacyLabel) {
+    return mcpLegacyResponses(mcpLegacyLabel, toolNames);
+  }
+
+  const mcpLegacyMimelessLabel = getMarkerValue(text, MCP_LEGACY_MIMELESS_MARKER);
+  if (mcpLegacyMimelessLabel) {
+    return mcpLegacyMimelessResponses(mcpLegacyMimelessLabel, toolNames);
+  }
+
+  if (text.includes(MCP_LEGACY_ACTION_MARKER)) {
+    return mcpLegacyActionResponses(toolNames);
   }
 
   const provisioningTool = provisioningToolResponses({ text, toolNames });
@@ -3134,6 +3539,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
   }
 
+  const toolThenThinkLabel = getMarkerValue(text, TOOL_THEN_THINK_REPLY_MARKER);
+  if (toolThenThinkLabel) {
+    return toolThenThinkReplyResponses(toolThenThinkLabel, toolNames);
+  }
+
   const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
   if (activityProseLabel) {
     return activityProseReplyResponses(activityProseLabel, toolNames);
@@ -3144,9 +3554,48 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityFailedReplyResponses(activityFailedLabel, toolNames);
   }
 
+  const askBatchLabel = getMarkerValue(text, ASK_USER_QUESTIONS_MARKER);
+  const askLongBatchLabel = getMarkerValue(text, ASK_USER_LONG_QUESTIONS_MARKER);
+  if (askBatchLabel || askLongBatchLabel) {
+    return askUserQuestionBatchResponses(askBatchLabel || askLongBatchLabel, toolNames, {
+      long: Boolean(askLongBatchLabel),
+    });
+  }
+
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
   if (askUserQuestionLabel) {
     return askUserQuestionResponses(askUserQuestionLabel, toolNames);
+  }
+
+  if (text.includes('E2E_PRIVATE_TEXT:')) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: (streamMessages) => {
+        const prompt = JSON.stringify(streamMessages);
+        const protectedText =
+          !prompt.includes('alice@example.com') && /EMAIL_1_[a-f0-9]{32}/.test(prompt);
+        return {
+          responses: [
+            protectedText ? 'E2E private model input verified' : 'E2E private model input failed',
+          ],
+        };
+      },
+    };
+  }
+
+  if (text.includes(ASSERT_PROJECT_CONTEXT_MARKER)) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: async (streamMessages, streamOptions, runManager) => {
+        const agentView = await getStreamAgentView({
+          graph,
+          messages: streamMessages,
+          options: streamOptions,
+          runManager,
+        });
+        return projectContextAssertionResponses({ messages: agentView.messages, text });
+      },
+    };
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {

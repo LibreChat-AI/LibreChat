@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { cn } from '~/utils';
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
@@ -159,6 +160,55 @@ function lineNumber(line: DiffLine): number | undefined {
   return line.type === 'del' ? line.oldLine : (line.newLine ?? line.oldLine);
 }
 
+interface DiffRowProps {
+  type: DiffLine['type'];
+  text: string;
+  num?: number;
+  hasLineNumbers: boolean;
+}
+
+/** Primitive props only: `parseUnifiedDiff` rebuilds every line object on each
+ *  streamed delta, so memo has to compare values, not object identity. */
+const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffRowProps) {
+  if (type === 'hunk') {
+    if (!text) {
+      return <div className="border-border-light mx-3 my-1.5 border-t" />;
+    }
+    return <div className="text-text-tertiary px-3 py-0.5 text-[11px] select-none">{text}</div>;
+  }
+  return (
+    <div
+      className={cn(
+        'flex',
+        type === 'add' && 'bg-status-success-subtle',
+        type === 'del' && 'bg-status-error-subtle',
+      )}
+    >
+      {hasLineNumbers && (
+        <span className="text-text-tertiary w-9 shrink-0 pr-1 text-right text-[11px] select-none">
+          {num ?? ''}
+        </span>
+      )}
+      <span
+        className={cn(
+          'shrink-0 text-center font-semibold select-none',
+          hasLineNumbers ? 'w-5' : 'w-6',
+          type === 'add' && 'text-status-success',
+          type === 'del' && 'text-status-error',
+        )}
+      >
+        {LINE_MARKERS[type]}
+      </span>
+      <span className="text-text-primary min-w-0 flex-1 pr-3 break-words whitespace-pre-wrap">
+        {text || ' '}
+      </span>
+    </div>
+  );
+});
+
+/** Index keys are safe: the parser walks the text top to bottom and the stream
+ *  only appends, so a row's index, type and line numbers are stable once
+ *  emitted. Only the trailing, still-growing line changes, and its props do too. */
 export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
   const { lines, hasLineNumbers } = parsed;
   const firstContentIndex = lines.findIndex((line) => line.type !== 'hunk');
@@ -166,50 +216,20 @@ export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
   return (
     <div
       data-testid="diff-view"
-      className="max-h-[300px] overflow-y-auto bg-surface-code py-2 font-mono text-xs leading-5"
+      className="bg-surface-code max-h-[300px] overflow-y-auto py-2 font-mono text-xs leading-5"
     >
       {lines.map((line, index) => {
-        if (line.type === 'hunk') {
-          if (index < firstContentIndex || firstContentIndex === -1) {
-            return null;
-          }
-          if (!line.text) {
-            return <div key={index} className="mx-3 my-1.5 border-t border-border-light" />;
-          }
-          return (
-            <div key={index} className="select-none px-3 py-0.5 text-[11px] text-text-tertiary">
-              {line.text}
-            </div>
-          );
+        if (line.type === 'hunk' && (index < firstContentIndex || firstContentIndex === -1)) {
+          return null;
         }
         return (
-          <div
+          <DiffRow
             key={index}
-            className={cn(
-              'flex',
-              line.type === 'add' && 'bg-status-success-subtle',
-              line.type === 'del' && 'bg-status-error-subtle',
-            )}
-          >
-            {hasLineNumbers && (
-              <span className="w-9 shrink-0 select-none pr-1 text-right text-[11px] text-text-tertiary">
-                {lineNumber(line) ?? ''}
-              </span>
-            )}
-            <span
-              className={cn(
-                'shrink-0 select-none text-center font-semibold',
-                hasLineNumbers ? 'w-5' : 'w-6',
-                line.type === 'add' && 'text-status-success',
-                line.type === 'del' && 'text-status-error',
-              )}
-            >
-              {LINE_MARKERS[line.type]}
-            </span>
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-3 text-text-primary">
-              {line.text || ' '}
-            </span>
-          </div>
+            type={line.type}
+            text={line.text}
+            num={lineNumber(line)}
+            hasLineNumbers={hasLineNumbers}
+          />
         );
       })}
     </div>
