@@ -45,8 +45,9 @@ describe('PullRequestCard', () => {
     const layer = document.createElement('div');
     document.body.appendChild(layer);
     render(<PullRequestCard pullRequest={pr} portalElement={layer} />);
-    await userEvent.hover(screen.getByTestId('pull-request-github-link'));
-    expect(await within(layer).findByText('com_ui_pr_open_in_github')).toBeInTheDocument();
+    await userEvent.tab();
+    expect(screen.getByTestId('pull-request-github-link')).toHaveFocus();
+    expect(await within(layer).findByRole('tooltip')).toHaveTextContent('com_ui_pr_open_in_github');
     layer.remove();
   });
 

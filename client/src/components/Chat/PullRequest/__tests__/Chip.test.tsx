@@ -1,8 +1,8 @@
 import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
-import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
 import PullRequestChip from '../Chip';
 
@@ -30,10 +30,33 @@ jest.mock('~/hooks', () => ({
 const mockAgents: { current: Record<string, { name: string; avatar?: { filepath: string } }> } = {
   current: { 'agent-1': { name: 'Coder' } },
 };
+const mockChat: { current: { conversationId?: string; agent_id?: string } } = {
+  current: { conversationId: 'convo-1', agent_id: 'agent-1' },
+};
 jest.mock('~/Providers', () => ({
   useAgentsMapContext: () => mockAgents.current,
-  useChatContext: () => ({ conversation: { agent_id: 'agent-1' } }),
+  useChatContext: () => ({ conversation: mockChat.current }),
 }));
+
+/**
+ * Ariakit opens a hovercard only for a pointer that is really moving, and only accepts a bare
+ * synthetic hover when NODE_ENV is "test". CI runs the suite with NODE_ENV=development, so the
+ * tests move the pointer the way a browser reports it.
+ */
+let pointerX = 100;
+const movePointerOver = (element: HTMLElement) => {
+  pointerX += 7;
+  fireEvent.mouseMove(element, {
+    screenX: pointerX,
+    screenY: pointerX,
+    movementX: 7,
+    movementY: 7,
+  });
+};
+const movePointerAway = (element: HTMLElement) => {
+  fireEvent.mouseLeave(element);
+  fireEvent.mouseMove(document.body, { screenX: 900, screenY: 900, movementX: 7, movementY: 7 });
+};
 
 const pr: TConversationPullRequest = {
   number: 1234,
@@ -60,6 +83,7 @@ describe('PullRequestChip', () => {
   beforeEach(() => {
     mockGet.mockReset();
     mockAgents.current = { 'agent-1': { name: 'Coder' } };
+    mockChat.current = { conversationId: 'convo-1', agent_id: 'agent-1' };
   });
 
   it('renders nothing while loading, so the header does not shift', () => {
@@ -114,6 +138,18 @@ describe('PullRequestChip', () => {
     expect(dot.parentElement?.querySelector('img')).not.toBeNull();
   });
 
+  it('does not borrow the agent of the previous conversation while the chat state catches up', async () => {
+    mockAgents.current = {
+      'agent-1': { name: 'Coder', avatar: { filepath: '/images/coder.png' } },
+    };
+    mockChat.current = { conversationId: 'previous-convo', agent_id: 'agent-1' };
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    const dot = await screen.findByTestId('pull-request-ci-dot');
+    expect(dot.parentElement?.querySelector('img')).toBeNull();
+    expect(dot.parentElement?.querySelector('svg')).not.toBeNull();
+  });
+
   it('keeps the dot on the pull request icon when the agent has no picture', async () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
@@ -142,7 +178,7 @@ describe('PullRequestChip', () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
     const button = await screen.findByTestId('header-pull-request-button');
-    await userEvent.hover(button);
+    movePointerOver(button);
     const card = await screen.findByTestId('pull-request-card');
     expect(card.closest('[role="dialog"]')).toHaveAccessibleName('com_ui_pull_request');
     expect(button).toHaveAttribute('aria-expanded', 'true');
@@ -152,9 +188,9 @@ describe('PullRequestChip', () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
     const button = await screen.findByTestId('header-pull-request-button');
-    await userEvent.hover(button);
+    movePointerOver(button);
     await screen.findByTestId('pull-request-card');
-    await userEvent.unhover(button);
+    movePointerAway(button);
     await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
     expect(button).toHaveAttribute('aria-expanded', 'false');
   });
@@ -171,10 +207,11 @@ describe('PullRequestChip', () => {
   it('shows the GitHub tooltip inside the open card, so it is not painted behind it', async () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
-    await userEvent.hover(await screen.findByTestId('header-pull-request-button'));
+    movePointerOver(await screen.findByTestId('header-pull-request-button'));
     const card = await screen.findByTestId('pull-request-card');
     const layer = card.closest('[role="dialog"]') as HTMLElement;
-    await userEvent.hover(screen.getByTestId('pull-request-github-link'));
+    await userEvent.tab();
+    act(() => screen.getByTestId('pull-request-github-link').focus());
     expect(await within(layer).findByRole('tooltip')).toHaveTextContent('com_ui_pr_open_in_github');
   });
 

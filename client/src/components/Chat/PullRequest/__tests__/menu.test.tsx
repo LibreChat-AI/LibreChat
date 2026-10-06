@@ -50,6 +50,8 @@ function Harness({ conversationId }: { conversationId: string }) {
           type="button"
           ref={item.ref}
           aria-label={item.ariaLabel}
+          aria-haspopup={item.ariaHasPopup}
+          aria-controls={item.ariaControls}
           data-hide-on-click={String(item.hideOnClick)}
           data-testid="menu-entry"
           onClick={item.onClick}
@@ -62,14 +64,23 @@ function Harness({ conversationId }: { conversationId: string }) {
   );
 }
 
-const renderHarness = (conversationId = 'convo-1') =>
-  render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+const renderHarness = (conversationId = 'convo-1') => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={client}>
       <Harness conversationId={conversationId} />
     </QueryClientProvider>,
   );
+  return {
+    ...view,
+    goTo: (next: string) =>
+      view.rerender(
+        <QueryClientProvider client={client}>
+          <Harness conversationId={next} />
+        </QueryClientProvider>,
+      ),
+  };
+};
 
 describe('usePullRequestMenu', () => {
   beforeEach(() => mockGet.mockReset());
@@ -103,6 +114,35 @@ describe('usePullRequestMenu', () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderHarness();
     expect(await screen.findByTestId('menu-entry')).toHaveAttribute('data-hide-on-click', 'false');
+  });
+
+  it('tells assistive technology it opens a dialog, and which one', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderHarness();
+    const entry = await screen.findByTestId('menu-entry');
+    expect(entry).toHaveAttribute('aria-haspopup', 'dialog');
+    await userEvent.click(entry);
+    const dialog = await screen.findByRole('dialog');
+    expect(entry.getAttribute('aria-controls')).toBe(dialog.id);
+    expect(dialog.id).not.toBe('');
+  });
+
+  it('closes the dialog when the route moves to another conversation, and does not reopen it', async () => {
+    mockGet.mockImplementation((id: string) =>
+      Promise.resolve({ pullRequest: { ...pr, number: id === 'convo-1' ? 1 : 2 } }),
+    );
+    const { goTo } = renderHarness('convo-1');
+    await userEvent.click(await screen.findByTestId('menu-entry'));
+    await screen.findByTestId('pull-request-card');
+
+    goTo('convo-2');
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+    await screen.findByText('com_ui_pr_label:2');
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+
+    goTo('convo-1');
+    await screen.findByText('com_ui_pr_label:1');
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
   });
 
   it('opens the same card in a dialog and returns focus to the entry on close', async () => {

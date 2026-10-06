@@ -81,7 +81,9 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
   const view = presentPullRequest(pullRequest);
   const label = summarizePullRequest(pullRequest, localize);
   const dotClass = view.dotTone == null ? null : TONE_DOT_CLASS[view.dotTone];
-  const agentId = conversation?.agent_id;
+  /** The chat state can lag the route by a render; only its own conversation's agent applies. */
+  const agentId =
+    conversation?.conversationId === conversationId ? conversation.agent_id : undefined;
   const agent = agentId == null ? undefined : agentsMap?.[agentId];
   const avatar = agent?.avatar?.filepath ?? '';
   const hasAvatar = avatar !== '';
