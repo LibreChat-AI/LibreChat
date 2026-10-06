@@ -72,6 +72,8 @@ function Conversation({
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
   const projectLabelId = useId();
   const pullRequestLabelId = useId();
+  /** The mark owns the description text; the row points at it only while it is in the page. */
+  const [pullRequestDescribed, setPullRequestDescribed] = useState(false);
   const showPullRequest = startupConfig?.pullRequestsEnabled === true && !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
@@ -393,7 +395,7 @@ function Conversation({
           describedBy={
             [
               projectBadgeProjectId ? projectLabelId : null,
-              showPullRequest ? pullRequestLabelId : null,
+              showPullRequest && pullRequestDescribed ? pullRequestLabelId : null,
             ]
               .filter(Boolean)
               .join(' ') || undefined
@@ -465,6 +467,7 @@ function Conversation({
           <PullRequestRowMark
             conversationId={conversationId ?? ''}
             labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
             selected={isActiveConvo || isPopoverActive}
           />
         </span>

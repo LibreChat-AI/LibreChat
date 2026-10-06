@@ -53,6 +53,36 @@ const DEFAULT_BATCH_TIMEOUT_SECONDS = 20;
 
 const TIMED_OUT = Symbol('timed-out');
 
+/**
+ * Lookups in flight across every batch request of one handler. A lookup that outlives its
+ * request's deadline keeps running (and keeps its slot) until it really ends, so the next request
+ * cannot start another on top of it: the configured concurrency holds across requests, not only
+ * within one. Waiters are served in order.
+ */
+function createLookupLimiter() {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return {
+    /** Resolves once a slot is free under `limit`; the caller must `release` exactly once. */
+    acquire(limit: number): Promise<void> {
+      if (active < limit) {
+        active += 1;
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        waiting.push(() => {
+          active += 1;
+          resolve();
+        });
+      });
+    },
+    release(limit: number): void {
+      active -= 1;
+      while (waiting.length > 0 && active < limit) waiting.shift()?.();
+    },
+  };
+}
+
 /** Settles with `TIMED_OUT` once `ms` has passed, and never leaves its timer running. */
 async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
   if (ms <= 0) return TIMED_OUT;
@@ -214,6 +244,7 @@ export function createConversationPullRequestsHandler(deps: {
   lookup: PullRequestLookup;
   env: Readonly<Record<string, string | undefined>>;
 }) {
+  const limiter = createLookupLimiter();
   return async (req: ServerRequest, res: Response): Promise<void> => {
     const userId = req.user?.id;
     const ids = parseConversationIds(req.body);
@@ -250,10 +281,21 @@ export function createConversationPullRequestsHandler(deps: {
         return;
       }
 
+      /**
+       * A missing token is a fact about the conversations that needed one, not about the request:
+       * those entries say so, and every other conversation keeps its correct "no pull request".
+       */
       const token = resolveTokenReference(settings.token, deps.env);
       if (token == null) {
         logger.warn('[PullRequests] Enabled without a usable token reference');
-        res.status(503).json({ error: 'Pull requests are not configured', code: 'NOT_CONFIGURED' });
+        res.status(200).json({
+          results: ids.map(
+            (conversationId): TConversationPullRequestsEntry =>
+              eligible.has(conversationId)
+                ? { conversationId, error: { code: 'NOT_CONFIGURED' } }
+                : { conversationId, pullRequest: null },
+          ),
+        });
         return;
       }
 
@@ -266,19 +308,29 @@ export function createConversationPullRequestsHandler(deps: {
        */
       const deadline =
         Date.now() + (settings.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
+      const limit = settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY;
       const looked = await mapWithLimit(
         ids,
-        settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY,
+        limit,
         async (conversationId): Promise<TConversationPullRequestsEntry> => {
           const lane = eligible.get(conversationId);
           if (lane == null) return { conversationId, pullRequest: null };
-          /** Checked before the lookup is created, so nothing starts once time is up. */
+          /** Checked before a slot is taken, so nothing starts once time is up. */
           const remaining = deadline - Date.now();
-          const result =
-            remaining <= 0
-              ? TIMED_OUT
-              : await withDeadline(deps.lookup(lookupInput(settings, token, lane)), remaining);
+          let abandoned = false;
+          /** Holds its slot until the lookup itself ends, whether or not anyone is still waiting. */
+          const run = async () => {
+            await limiter.acquire(limit);
+            try {
+              if (abandoned) return TIMED_OUT;
+              return await deps.lookup(lookupInput(settings, token, lane));
+            } finally {
+              limiter.release(limit);
+            }
+          };
+          const result = remaining <= 0 ? TIMED_OUT : await withDeadline(run(), remaining);
           if (result === TIMED_OUT) {
+            abandoned = true;
             return { conversationId, error: { code: 'UPSTREAM_ERROR' } };
           }
           return result.ok

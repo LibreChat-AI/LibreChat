@@ -1,3 +1,4 @@
+import React, { useEffect } from 'react';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { render, screen } from '@testing-library/react';
@@ -7,6 +8,8 @@ const mockStartup: { current: { pullRequestsEnabled?: boolean } } = {
   current: { pullRequestsEnabled: true },
 };
 const mockMarkProps: Array<Record<string, unknown>> = [];
+/** What the mock mark reports to the row, as the real one does once it has text to show. */
+const mockMarkState = { described: true };
 
 jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
@@ -50,16 +53,30 @@ jest.mock('../ConversationEndpointIcon', () => ({
   default: () => <div data-testid="convo-icon" />,
 }));
 jest.mock('../RenameForm', () => ({ __esModule: true, default: () => <form /> }));
+/** Named with the `mock` prefix so the factory below may reference it, and a real component so
+ *  its hook is legal. It reports its description to the row the way the real mark does. */
+function MockRowMark({
+  labelId,
+  onDescribed,
+  ...rest
+}: Record<string, unknown> & { labelId: string; onDescribed?: (described: boolean) => void }) {
+  mockMarkProps.push({ labelId, ...rest });
+  useEffect(() => {
+    onDescribed?.(mockMarkState.described);
+    return () => onDescribed?.(false);
+  }, [onDescribed]);
+  if (!mockMarkState.described) return null;
+  return (
+    <button type="button" data-testid="convo-pull-request">
+      <span id={labelId} data-testid="mark-description" />
+    </button>
+  );
+}
+const mockRowMark = MockRowMark;
+
 jest.mock('~/components/Chat/PullRequest/RowMark', () => ({
   __esModule: true,
-  default: (props: Record<string, unknown>) => {
-    mockMarkProps.push(props);
-    return (
-      <button type="button" data-testid="convo-pull-request">
-        <span id={String(props.labelId)} data-testid="mark-description" />
-      </button>
-    );
-  },
+  default: (props: Record<string, unknown>) => mockRowMark(props as never),
 }));
 
 import Conversation from '../Convo';
@@ -86,6 +103,7 @@ const rowButton = () => screen.getByRole('button', { name: /^com_ui_conversation
 describe('Conversation row pull request', () => {
   beforeEach(() => {
     mockMarkProps.length = 0;
+    mockMarkState.described = true;
     mockStartup.current = { pullRequestsEnabled: true };
   });
 
@@ -118,6 +136,15 @@ describe('Conversation row pull request', () => {
   it('tells the mark which conversation it is for and that this row is the open one', () => {
     renderRow();
     expect(mockMarkProps[0]).toMatchObject({ conversationId: 'convo-1', selected: true });
+  });
+
+  it('does not point the row at a description that is not in the page', () => {
+    mockMarkState.described = false;
+    renderRow();
+    expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
+    expect(rowButton().getAttribute('aria-describedby')).toBeNull();
+    const ids = (rowButton().getAttribute('aria-describedby') ?? '').split(' ').filter(Boolean);
+    expect(ids.every((id) => document.getElementById(id) != null)).toBe(true);
   });
 
   it.each([

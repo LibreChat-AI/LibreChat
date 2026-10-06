@@ -394,16 +394,29 @@ describe('createConversationPullRequestsHandler', () => {
     });
   });
 
-  it('is not configured only when something would have been looked up', async () => {
-    const withoutLane = batch({ env: {}, lanes: [] });
-    await withoutLane.run();
-    expect(withoutLane.res.status).toHaveBeenCalledWith(200);
-    const withLane = batch({ env: {} });
-    await withLane.run();
-    expect(withLane.res.status).toHaveBeenCalledWith(503);
-    expect(withLane.res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ code: 'NOT_CONFIGURED' }),
-    );
+  it('says not configured only for the conversations that needed the token, and keeps the rest', async () => {
+    const { run, res, lookup } = batch({ env: {}, lanes: [lane('a')] });
+    await run({ conversationIds: ['a', 'ghost'] });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', error: { code: 'NOT_CONFIGURED' } },
+        { conversationId: 'ghost', pullRequest: null },
+      ],
+    });
+  });
+
+  it('answers a plain no pull request when nothing would have needed the token', async () => {
+    const { run, res } = batch({ env: {}, lanes: [] });
+    await run();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', pullRequest: null },
+        { conversationId: 'b', pullRequest: null },
+      ],
+    });
   });
 
   it('collapses duplicate ids so one conversation is looked up once', async () => {
@@ -521,6 +534,78 @@ describe('createConversationPullRequestsHandler', () => {
           { conversationId: 'b', pullRequest: null },
         ].map((entry, index) => (index === 1 ? { ...entry, pullRequest: pr } : entry)),
       });
+    });
+  });
+
+  describe('concurrency across requests', () => {
+    /** Lookups that end only when released, so a request can finish while its lookups still run. */
+    const heldLookups = () => {
+      let active = 0;
+      let peak = 0;
+      const releases: Array<() => void> = [];
+      const lookup = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            active += 1;
+            peak = Math.max(peak, active);
+            releases.push(() => {
+              active -= 1;
+              resolve({ ok: true, value: pr });
+            });
+          }),
+      );
+      return { lookup, releases, active: () => active, peak: () => peak };
+    };
+    const ids = ['a', 'b', 'c', 'd'];
+    const lanes = ids.map((id) => lane(id));
+    const settings = { ...enabled, maxConcurrentLookups: 2, batchTimeoutSeconds: 0.08 };
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+    it('keeps the lookups of a timed-out request inside the limit for the next request', async () => {
+      const held = heldLookups();
+      const handler = batch({ lookup: held.lookup, lanes, settings });
+      await handler.run({ conversationIds: ids });
+      /** The first request has answered, yet its two lookups are still out. */
+      expect(held.active()).toBe(2);
+      const second = handler.run({ conversationIds: ids });
+      await flush();
+      expect(held.lookup).toHaveBeenCalledTimes(2);
+      expect(held.peak()).toBe(2);
+      held.releases.splice(0).forEach((release) => release());
+      await second;
+      held.releases.splice(0).forEach((release) => release());
+      expect(held.peak()).toBe(2);
+    });
+
+    it('starts no lookup for an entry that gave up while it waited behind another request', async () => {
+      const held = heldLookups();
+      const handler = batch({ lookup: held.lookup, lanes, settings });
+      /** The first request ends with its two lookups still holding both slots. */
+      await handler.run({ conversationIds: ids });
+      expect(held.lookup).toHaveBeenCalledTimes(2);
+      /** The second request's entries wait for those slots, and give up at its own deadline. */
+      await handler.run({ conversationIds: ids });
+      expect(held.lookup).toHaveBeenCalledTimes(2);
+      /** Slots free up only now; the entries that already answered must not start work. */
+      held.releases.splice(0).forEach((release) => release());
+      await flush();
+      expect(held.lookup).toHaveBeenCalledTimes(2);
+      expect(held.active()).toBe(0);
+    });
+
+    it('frees the slot when a lookup fails, so later requests are not stuck', async () => {
+      const lookup = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue({ ok: true, value: pr });
+      const handler = batch({
+        lookup,
+        lanes: [lane('a')],
+        settings: { ...enabled, maxConcurrentLookups: 1 },
+      });
+      await handler.run({ conversationIds: ['a'] });
+      await handler.run({ conversationIds: ['a'] });
+      expect(lookup).toHaveBeenCalledTimes(2);
     });
   });
 

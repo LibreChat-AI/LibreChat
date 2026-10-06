@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { Button } from '@librechat/client';
 import { TriangleAlert } from 'lucide-react';
@@ -27,11 +27,14 @@ function PullRequestRowMark({
   conversationId,
   labelId,
   selected,
+  onDescribed,
 }: {
   conversationId: string;
   /** The id the row lists in `aria-describedby`, so a screen reader hears what the colors say. */
   labelId: string;
   selected: boolean;
+  /** Tells the row whether `labelId` is in the page, so it never points at text that is not. */
+  onDescribed?: (described: boolean) => void;
 }) {
   const localize = useLocalize();
   const store = Ariakit.useHovercardStore({
@@ -42,6 +45,12 @@ function PullRequestRowMark({
   const open = Ariakit.useStoreState(store, 'open');
   const { data, isError, refetch } = useRowPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
+  const described = pullRequest != null || (isError && data == null);
+
+  useEffect(() => {
+    onDescribed?.(described);
+    return () => onDescribed?.(false);
+  }, [described, onDescribed]);
 
   /* A first lookup that failed is not the same as a chat with no pull request: say so, and
      offer a retry, instead of leaving the row looking like there is nothing to find. */

@@ -175,6 +175,33 @@ describe('PullRequestRowMark', () => {
     expect(screen.queryByTestId('pull-request-ci-dot')).not.toBeInTheDocument();
   });
 
+  it('tells the row when its description exists, and when it stops existing', async () => {
+    const onDescribed = jest.fn();
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    const { unmount } = renderMark({ onDescribed });
+    await screen.findByTestId('convo-pull-request');
+    expect(onDescribed).toHaveBeenLastCalledWith(true);
+    unmount();
+    expect(onDescribed).toHaveBeenLastCalledWith(false);
+  });
+
+  it('reports no description while loading or without a pull request', async () => {
+    const onDescribed = jest.fn();
+    mockGetMany.mockResolvedValue(answer('convo-1', null));
+    renderMark({ onDescribed });
+    await waitFor(() => expect(mockGetMany).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(onDescribed).not.toHaveBeenCalledWith(true);
+  });
+
+  it('reports a description for a failed lookup too, since it renders the failure text', async () => {
+    const onDescribed = jest.fn();
+    mockGetMany.mockRejectedValueOnce(new Error('503'));
+    renderMark({ onDescribed });
+    await screen.findByTestId('convo-pull-request-failed');
+    expect(onDescribed).toHaveBeenLastCalledWith(true);
+  });
+
   it('writes what the colors say into text the row can announce', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark({ labelId: 'row-pr' });
