@@ -4,6 +4,7 @@ import type { PRAutomationTrustLevel } from 'librechat-data-provider';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationState } from 'librechat-data-provider';
 import type * as t from '~/types/prAutomation';
+import { createIndexesWithRetry } from '~/utils/retry';
 
 const PROJECTION = '-_id -__v';
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
@@ -46,6 +47,24 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   ) => Promise<t.PRAutomationBotResult>;
   removePRAutomationBot: (key: t.PRAutomationKey, botId: number) => Promise<t.IPRAutomation | null>;
 } {
+  let indexesPromise: Promise<void> | null = null;
+
+  /**
+   * The unique `{ user, conversationId }` index is what keeps concurrent first-time enables
+   * from inserting two records that are then claimed independently and exceed the round cap.
+   * With `MONGO_AUTO_INDEX=false` the schema declaration alone never builds it, so it is
+   * ensured before the first write.
+   */
+  function ensureIndexes(): Promise<void> {
+    if (!indexesPromise) {
+      indexesPromise = createIndexesWithRetry(mongoose.models.PRAutomation).catch((error) => {
+        indexesPromise = null;
+        throw error;
+      });
+    }
+    return indexesPromise;
+  }
+
   const keyFilter = ({ userId, conversationId }: t.PRAutomationKey) => ({
     user: userId,
     conversationId,
@@ -69,20 +88,28 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * a fresh run: the round counter, the time window, the claimed heads and the
    * run identity reset, which they could not do from a webhook-triggered turn.
    *
-   * `binding` names the pull request. The repository and the number are one
-   * conditional write, so concurrent requests cannot leave a pair nobody asked
-   * for. A different repository clears the approved bots, which belong to one
-   * repository, and starts a fresh run. A different pull request in the same
-   * repository keeps the bots and starts a fresh run, because the round count,
-   * the time window and the claimed heads describe the previous pull request.
+   * `binding` names the pull request. Each case below is one conditional write that
+   * carries the whole pair and the run reset together, so concurrent requests cannot
+   * leave a pair nobody asked for, and a stopped record is revived only by the write
+   * that binds it: a binding that is rejected leaves it stopped. A different repository
+   * clears the approved bots, which belong to one repository, and starts a fresh run.
+   * A different pull request in the same repository keeps the bots and starts a fresh
+   * run, because the round count, the time window and the claimed heads describe the
+   * previous pull request.
    */
   async function enablePRAutomation({
     trust,
     binding,
     ...key
   }: t.EnablePRAutomationParams): Promise<t.IPRAutomation> {
+    await ensureIndexes();
     const PRAutomation = mongoose.models.PRAutomation;
     const filter = keyFilter(key);
+    const reset = (fields: Record<string, unknown>) => ({
+      $set: { ...RUN_RESET.$set, ...fields },
+      $unset: RUN_RESET.$unset,
+    });
+    const options = { runValidators: true };
     await PRAutomation.updateOne(
       filter,
       {
@@ -93,30 +120,41 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           trustedBots: [],
           claimedHeads: [],
           trust: trust ?? 'approvedBots',
+          ...binding,
         },
       },
-      { upsert: true, runValidators: true },
+      { upsert: true, ...options },
     );
-    await PRAutomation.updateOne(
-      { ...filter, state: 'stopped' },
-      {
-        $set: { ...RUN_RESET.$set, ...(trust != null && { trust }) },
-        $unset: RUN_RESET.$unset,
-      },
-    );
-    if (binding != null) {
+    const revive = trust != null ? { trust } : {};
+    if (binding == null) {
+      await PRAutomation.updateOne({ ...filter, state: 'stopped' }, reset(revive), options);
+    } else {
+      const { repository } = binding;
+      const otherRepository = { repository: { $ne: repository } };
       await PRAutomation.updateOne(
-        { ...filter, repository: { $ne: binding.repository } },
-        {
-          $set: { ...RUN_RESET.$set, ...binding, trustedBots: [] },
-          $unset: RUN_RESET.$unset,
-        },
-        { runValidators: true },
+        { ...filter, state: 'stopped', ...otherRepository },
+        reset({ ...revive, ...binding, trustedBots: [] }),
+        options,
       );
       await PRAutomation.updateOne(
-        { ...filter, repository: binding.repository, pullNumber: { $ne: binding.pullNumber } },
-        { $set: { ...RUN_RESET.$set, ...binding }, $unset: RUN_RESET.$unset },
-        { runValidators: true },
+        { ...filter, state: 'stopped', repository },
+        reset({ ...revive, ...binding }),
+        options,
+      );
+      await PRAutomation.updateOne(
+        { ...filter, state: { $ne: 'stopped' }, ...otherRepository },
+        reset({ ...binding, trustedBots: [] }),
+        options,
+      );
+      await PRAutomation.updateOne(
+        {
+          ...filter,
+          state: { $ne: 'stopped' },
+          repository,
+          pullNumber: { $ne: binding.pullNumber },
+        },
+        reset({ ...binding }),
+        options,
       );
     }
     const record = await getPRAutomation(key);
@@ -139,12 +177,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * any earlier round already claimed is rejected, so a delayed delivery of a
    * superseded commit cannot spend the budget. The persisted counter is what
    * stops a new turn from resetting the cap. Each claim gets a `runId`, which
-   * the round must present to settle.
+   * the round must present to settle. The delivery names the pull request it is
+   * for, and the claim applies only while the record is still bound to it, so an
+   * event that arrives after a rebind cannot spend the new pull request's budget.
    *
    * A force-push back to an earlier SHA is rejected the same way; the user
    * restarts the automation to work on it.
    */
   async function claimPRAutomationRound({
+    binding,
     maxRounds,
     maxMinutes,
     headSha,
@@ -152,7 +193,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     ...key
   }: t.ClaimPRAutomationRoundParams): Promise<t.ClaimPRAutomationRoundResult> {
     const PRAutomation = mongoose.models.PRAutomation;
-    const filter = keyFilter(key);
+    const filter = { ...keyFilter(key), ...binding };
     const cutoff = new Date(now.getTime() - maxMinutes * 60_000);
     const runId = randomUUID();
 
@@ -185,6 +226,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const current = await getPRAutomation(key);
     if (current == null) {
       return { ok: false, error: { code: 'not_found' } };
+    }
+    if (current.repository !== binding.repository || current.pullNumber !== binding.pullNumber) {
+      return { ok: false, error: { code: 'binding_mismatch' } };
     }
     if (!CLAIMABLE_STATES.includes(current.state)) {
       return { ok: false, error: { code: 'not_active' } };

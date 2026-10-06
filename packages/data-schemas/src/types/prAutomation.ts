@@ -71,6 +71,12 @@ export interface SettlePRAutomationRoundParams extends PRAutomationKey {
 }
 
 export interface ClaimPRAutomationRoundParams extends PRAutomationKey {
+  /**
+   * The pull request the delivery is for. A delivery for a pull request the record is no
+   * longer bound to cannot claim a round, so an event that arrives after a rebind is rejected
+   * instead of spending the new pull request's budget.
+   */
+  binding: PRAutomationBinding;
   maxRounds: number;
   maxMinutes: number;
   /** The head the round will work on; recorded so a stale event can be recognized. */
@@ -81,6 +87,7 @@ export interface ClaimPRAutomationRoundParams extends PRAutomationKey {
 export type PRAutomationClaimErrorCode =
   | 'not_found'
   | 'not_active'
+  | 'binding_mismatch'
   | 'round_cap'
   | 'time_cap'
   | 'stale_head';

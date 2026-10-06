@@ -3733,7 +3733,11 @@ describe('Conversation Operations', () => {
         const conversationId = uuidv4();
         await Conversation.create({ conversationId, user, endpoint: EModelEndpoint.agents });
         const automation = createPRAutomationMethods(mongoose);
-        await automation.enablePRAutomation({ userId: user, conversationId });
+        await automation.enablePRAutomation({
+          userId: user,
+          conversationId,
+          binding: { repository: 'acme/one', pullNumber: 1 },
+        });
         jest.spyOn(Conversation, 'deleteMany').mockRejectedValueOnce(new Error('delete failed'));
         await expect(deleteConvos(user, { conversationId })).rejects.toThrow('delete failed');
         return { conversationId, automation };
@@ -3754,6 +3758,7 @@ describe('Conversation Operations', () => {
         const claimed = await automation.claimPRAutomationRound({
           userId: user,
           conversationId,
+          binding: { repository: 'acme/one', pullNumber: 1 },
           maxRounds: 5,
           maxMinutes: 60,
           headSha: 'a'.repeat(40),

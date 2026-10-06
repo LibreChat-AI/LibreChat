@@ -20,8 +20,16 @@ const pullOne = { repository: 'acme/one', pullNumber: 1 };
 const pullTwo = { repository: 'acme/one', pullNumber: 2 };
 const otherRepository = { repository: 'acme/two', pullNumber: 2 };
 
-const claim = (n: number, extra: { now?: Date } = {}) =>
-  methods.claimPRAutomationRound({ ...key, ...limits, headSha: head(n), ...extra });
+const mismatch = { ok: false, error: { code: 'binding_mismatch' } };
+const enable = (binding = pullOne) => methods.enablePRAutomation({ ...key, binding });
+const claim = (n: number, extra: { now?: Date; binding?: typeof pullOne } = {}) =>
+  methods.claimPRAutomationRound({
+    ...key,
+    ...limits,
+    binding: pullOne,
+    headSha: head(n),
+    ...extra,
+  });
 /** Claims a round that must succeed and returns the record it started. */
 const startRound = async (n: number) => {
   const result = await claim(n);
@@ -67,7 +75,7 @@ describe('getPRAutomation', () => {
 
 describe('enablePRAutomation', () => {
   test('creates an idle record on the narrowest trust level', async () => {
-    const record = await methods.enablePRAutomation(key);
+    const record = await enable();
     expect(record).toMatchObject({
       conversationId: 'convo-1',
       state: 'idle',
@@ -78,24 +86,24 @@ describe('enablePRAutomation', () => {
   });
 
   test('is idempotent and keeps one record per user and conversation', async () => {
-    await methods.enablePRAutomation(key);
-    await methods.enablePRAutomation(key);
+    await enable();
+    await enable();
     expect(await PRAutomation.countDocuments({ user: userId })).toBe(1);
   });
 
   test('does not change an active record that is enabled again', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
-    const again = await methods.enablePRAutomation(key);
+    const again = await enable();
     expect(again).toMatchObject({ state: 'fixing', round: 1 });
   });
 
   test('restarts a stopped record with a fresh round counter and window', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     await methods.stopPRAutomation(key, 'user_stopped');
 
-    const restarted = await methods.enablePRAutomation(key);
+    const restarted = await enable();
     expect(restarted).toMatchObject({ state: 'idle', round: 0 });
     expect(restarted.stopCode).toBeUndefined();
     expect(restarted.startedAt).toBeUndefined();
@@ -103,15 +111,15 @@ describe('enablePRAutomation', () => {
   });
 
   test('lets a restarted record claim a head it claimed before the stop', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     await methods.stopPRAutomation(key, 'user_stopped');
-    await methods.enablePRAutomation(key);
+    await enable();
     expect((await claim(1)).ok).toBe(true);
   });
 
   test('keeps records of different users apart', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await methods.getPRAutomation({ ...key, userId: otherUserId })).toBeNull();
   });
 
@@ -137,7 +145,40 @@ describe('enablePRAutomation', () => {
   });
 });
 
+describe('index guarantees', () => {
+  test('builds the unique index before the first write when automatic indexing is off', async () => {
+    await PRAutomation.collection.dropIndexes();
+    const fresh = createPRAutomationMethods(mongoose);
+    await fresh.enablePRAutomation({ ...key, binding: pullOne });
+    const indexes = await PRAutomation.collection.indexes();
+    expect(
+      indexes.some(
+        (index) => index.unique === true && index.key.user === 1 && index.key.conversationId === 1,
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('binding a pull request', () => {
+  test('keeps a stopped record fenced when the new binding is rejected', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+
+    await expect(enable({ repository: 'acme/one', pullNumber: 0 })).rejects.toThrow();
+
+    expect(await methods.getPRAutomation(key)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'user_stopped',
+      pullNumber: 1,
+    });
+  });
+
+  test('revives a stopped record onto the pull request it is bound to now', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    expect(await enable(pullTwo)).toMatchObject({ state: 'idle', pullNumber: 2, round: 0 });
+  });
+
   test('starts a fresh run when bound to another pull request in the same repository', async () => {
     await methods.enablePRAutomation({ ...key, binding: pullOne });
     await startRound(1);
@@ -154,7 +195,7 @@ describe('binding a pull request', () => {
     await methods.enablePRAutomation({ ...key, binding: pullOne });
     await startRound(1);
     await methods.enablePRAutomation({ ...key, binding: pullTwo });
-    expect((await claim(1)).ok).toBe(true);
+    expect((await claim(1, { binding: pullTwo })).ok).toBe(true);
   });
 
   test('does not carry the old pull request round count into the new one', async () => {
@@ -164,7 +205,7 @@ describe('binding a pull request', () => {
       await toWaiting();
     }
     await methods.enablePRAutomation({ ...key, binding: pullTwo });
-    expect((await claim(9)).ok).toBe(true);
+    expect((await claim(9, { binding: pullTwo })).ok).toBe(true);
   });
 
   test('ignores a completion from the round of the pull request it replaced', async () => {
@@ -185,7 +226,7 @@ describe('binding a pull request', () => {
 
   /** Guard, not a proven regression: the interleaving it protects against is timing dependent. */
   test('never leaves a repository and pull request pair nobody asked for', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const pairs = [pullOne, otherRepository];
     await Promise.all(
       Array.from({ length: 24 }, (_, index) =>
@@ -202,7 +243,7 @@ describe('binding a pull request', () => {
 
 describe('claimPRAutomationRound', () => {
   test('starts a round, counts it and records the head', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await claim(1)).toMatchObject({
       ok: true,
       value: { state: 'fixing', round: 1, lastHeadSha: head(1) },
@@ -210,7 +251,7 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('rejects a second delivery for a head that was already claimed', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     await toWaiting();
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'stale_head' } });
@@ -218,7 +259,7 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('rejects a delayed delivery of an earlier head after a later head was claimed', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     await toWaiting();
     await claim(2);
@@ -228,13 +269,13 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('rejects a claim while a round is already running', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     expect(await claim(2)).toEqual({ ok: false, error: { code: 'not_active' } });
   });
 
   test('stops at the round cap and never goes past it', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     for (let round = 1; round <= limits.maxRounds; round++) {
       expect((await claim(round)).ok).toBe(true);
       await toWaiting();
@@ -244,21 +285,21 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('lets exactly one of several concurrent deliveries claim the same head', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const results = await Promise.all(Array.from({ length: 8 }, () => claim(1)));
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect((await methods.getPRAutomation(key))?.round).toBe(1);
   });
 
   test('never exceeds the cap under concurrent deliveries for different heads', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const results = await Promise.all(Array.from({ length: 8 }, (_, index) => claim(index + 1)));
     expect(results.filter((result) => result.ok)).toHaveLength(1);
     expect((await methods.getPRAutomation(key))?.round).toBeLessThanOrEqual(limits.maxRounds);
   });
 
   test('stops once the wall-clock window has passed', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const start = new Date('2026-01-01T00:00:00Z');
     await claim(1, { now: start });
     await toWaiting();
@@ -272,22 +313,46 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('rejects a claim on a stopped record', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await methods.stopPRAutomation(key, 'user_stopped');
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_active' } });
+  });
+
+  test('rejects a delivery for the pull request the record was rebound away from', async () => {
+    await enable(pullOne);
+    await enable(pullTwo);
+    expect(await claim(1, { binding: pullOne })).toEqual(mismatch);
+    expect((await methods.getPRAutomation(key))?.round).toBe(0);
+  });
+
+  test('rejects a delivery for a repository the record is not bound to', async () => {
+    await enable(pullOne);
+    expect(await claim(1, { binding: otherRepository })).toEqual(mismatch);
+  });
+
+  test('rejects a claim on a record that is bound to no pull request', async () => {
+    await methods.enablePRAutomation(key);
+    expect(await claim(1)).toEqual(mismatch);
+  });
+
+  test('does not open the time window for a delivery it rejected', async () => {
+    await enable(pullOne);
+    await enable(pullTwo);
+    await claim(1, { binding: pullOne });
+    expect((await methods.getPRAutomation(key))?.startedAt).toBeUndefined();
   });
 });
 
 describe('settlePRAutomationRound', () => {
   test('settles the round that owns it, including from needs_user', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const { runId } = await startRound(1);
     expect(await settle(1, runId, 'needs_user')).toMatchObject({ state: 'needs_user', round: 1 });
     expect(await settle(1, runId, 'waiting')).toMatchObject({ state: 'waiting', round: 1 });
   });
 
   test('ignores a completion that belongs to an earlier round', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const { runId } = await startRound(1);
     await settle(1, runId);
     await claim(2);
@@ -297,7 +362,7 @@ describe('settlePRAutomationRound', () => {
   });
 
   test('does not let a stale completion open the way for an overlapping claim', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const { runId } = await startRound(1);
     await settle(1, runId);
     await claim(2);
@@ -306,10 +371,10 @@ describe('settlePRAutomationRound', () => {
   });
 
   test('ignores a completion from a run that was stopped and restarted', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const previous = await startRound(1);
     await methods.stopPRAutomation(key, 'user_stopped');
-    await methods.enablePRAutomation(key);
+    await enable();
     await startRound(1);
 
     expect(await settle(1, previous.runId, 'needs_user')).toBeNull();
@@ -317,10 +382,10 @@ describe('settlePRAutomationRound', () => {
   });
 
   test('ignores a completion from a record that was disabled and enabled again', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const previous = await startRound(1);
     await methods.disablePRAutomation(key);
-    await methods.enablePRAutomation(key);
+    await enable();
     await startRound(1);
 
     expect(await settle(1, previous.runId, 'needs_user')).toBeNull();
@@ -328,13 +393,13 @@ describe('settlePRAutomationRound', () => {
   });
 
   test('does not settle a record that never started a round', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await settle(0, 'no-run')).toBeNull();
     expect((await methods.getPRAutomation(key))?.state).toBe('idle');
   });
 
   test('does not revive a stopped record', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const { runId } = await startRound(1);
     await methods.stopPRAutomation(key, 'user_stopped');
     expect(await settle(1, runId)).toBeNull();
@@ -348,7 +413,7 @@ describe('settlePRAutomationRound', () => {
 
 describe('stopPRAutomation', () => {
   test('records the stop code', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await methods.stopPRAutomation(key, 'round_cap')).toMatchObject({
       state: 'stopped',
       stopCode: 'round_cap',
@@ -356,7 +421,7 @@ describe('stopPRAutomation', () => {
   });
 
   test('stops a running round without waiting for it to settle', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await claim(1);
     expect(await methods.stopPRAutomation(key, 'user_stopped')).toMatchObject({
       state: 'stopped',
@@ -365,14 +430,14 @@ describe('stopPRAutomation', () => {
   });
 
   test('keeps the first stop code when it is stopped again', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await methods.stopPRAutomation(key, 'round_cap');
     expect(await methods.stopPRAutomation(key, 'user_stopped')).toBeNull();
     expect((await methods.getPRAutomation(key))?.stopCode).toBe('round_cap');
   });
 
   test('rejects a code outside the stop code list', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await expect(
       methods.stopPRAutomation(key, 'because' as unknown as PRAutomationStopCode),
     ).rejects.toThrow();
@@ -385,13 +450,13 @@ describe('stopPRAutomation', () => {
 
 describe('setPRAutomationTrust', () => {
   test('changes the trust level', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     const updated = await methods.setPRAutomationTrust(key, 'collaborators');
     expect(updated?.trust).toBe('collaborators');
   });
 
   test('rejects a level outside the enum', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await expect(
       methods.setPRAutomationTrust(key, 'everyone' as unknown as 'anyone'),
     ).rejects.toThrow();
@@ -400,7 +465,7 @@ describe('setPRAutomationTrust', () => {
 
 describe('approved bots', () => {
   test('adds a bot by numeric id', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await addBot(101, 'review-bot[bot]')).toMatchObject({
       ok: true,
       value: { trustedBots: [{ id: 101, login: 'review-bot[bot]' }] },
@@ -408,7 +473,7 @@ describe('approved bots', () => {
   });
 
   test('is idempotent by id even when the login was renamed', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await addBot(101, 'old-name[bot]');
     expect((await addBot(101, 'new-name[bot]')).ok).toBe(true);
     const record = await methods.getPRAutomation(key);
@@ -416,7 +481,7 @@ describe('approved bots', () => {
   });
 
   test('refuses a bot beyond the limit it is given, with a stable code', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     for (let id = 1; id <= maxBots; id++) {
       expect({ id, ok: (await addBot(id)).ok }).toEqual({ id, ok: true });
     }
@@ -424,7 +489,7 @@ describe('approved bots', () => {
   });
 
   test('accepts a bot that is already approved when the list is full', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     for (let id = 1; id <= maxBots; id++) {
       await addBot(id);
     }
@@ -432,7 +497,7 @@ describe('approved bots', () => {
   });
 
   test('admits more bots once a higher limit is passed', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     for (let id = 1; id <= maxBots; id++) {
       await addBot(id);
     }
@@ -440,7 +505,7 @@ describe('approved bots', () => {
   });
 
   test('rejects a limit below one instead of storing without a cap', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await expect(addBot(1, undefined, 0)).rejects.toThrow(RangeError);
   });
 
@@ -449,7 +514,7 @@ describe('approved bots', () => {
   });
 
   test('removes a bot by id and leaves the others', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await addBot(1);
     await addBot(2);
     const record = await methods.removePRAutomationBot(key, 1);
@@ -457,7 +522,7 @@ describe('approved bots', () => {
   });
 
   test('keeps each conversation allowlist separate', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     await methods.enablePRAutomation({ userId, conversationId: 'convo-2' });
     await addBot(101);
     const other = await methods.getPRAutomation({ userId, conversationId: 'convo-2' });
@@ -467,7 +532,7 @@ describe('approved bots', () => {
 
 describe('disablePRAutomation', () => {
   test('removes the record and reports it', async () => {
-    await methods.enablePRAutomation(key);
+    await enable();
     expect(await methods.disablePRAutomation(key)).toEqual({ removed: true });
     expect(await methods.getPRAutomation(key)).toBeNull();
   });
