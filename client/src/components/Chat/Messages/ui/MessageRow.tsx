@@ -172,7 +172,7 @@ export default function MessageRow({
                     'rounded-theme-surface rounded-br-theme-control px-theme-normal w-fit',
                     isSystem || outlined
                       ? 'border-border-medium border py-1.5'
-                      : 'bg-surface-tertiary py-2.5',
+                      : 'bg-surface-user-message py-2.5',
                   )
                 : 'w-full',
             )}

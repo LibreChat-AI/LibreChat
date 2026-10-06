@@ -30,8 +30,13 @@ const {
   createPrivateTextView,
   stripPrivateMessageFields,
   applyForcedRetention,
+  prepareToolCallPreviews,
+  createToolCallPartHandler,
+  rejectToolCallPreviewWrites,
+  withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
+const { getAppConfig } = require('~/server/services/Config');
 const { findAllArtifacts, replaceArtifactContent } = require('~/server/services/Artifacts/update');
 const {
   requireJwtAuth,
@@ -39,6 +44,7 @@ const {
   configMiddleware,
   sendValidationResponse,
   canReadActiveJobConversation,
+  createMessageRequestValidation,
   prepareMessageRequestValidation,
 } = require('~/server/middleware');
 const db = require('~/models');
@@ -60,9 +66,16 @@ const filterFeedbackContent = createContentFilter({
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractFeedbackContent(req.body),
 });
+const toolCallPreviewDeps = { getAppConfig };
+const readToolCallPart = createToolCallPartHandler({
+  getMessages: db.getMessages,
+  validate: (req) => createMessageRequestValidation(req, { activeJobMessageRead: true }),
+  sendValidationResponse: (res, result) => sendValidationResponse(res, result),
+});
 const messageMutationMiddleware = [validateMessageReq, configMiddleware];
 const storedMessageMutationMiddleware = [
   validateMessageReq,
+  rejectToolCallPreviewWrites,
   configMiddleware,
   filterStoredMessageContent,
 ];
@@ -123,6 +136,7 @@ router.get('/', async (req, res) => {
     const sortOrder = sortDirection === 'asc' ? 1 : -1;
 
     let scopedMessageRead;
+    const previewToolCalls = prepareToolCallPreviews(req, toolCallPreviewDeps);
     if (typeof conversationId === 'string') {
       const ownershipRead = db.getConvoOwnership(user, conversationId);
       /** Client-facing reads never expose server-private fields such as `contextMeta`. */
@@ -155,13 +169,19 @@ router.get('/', async (req, res) => {
         throw messageResult.error;
       }
       const messages = messageResult.value;
-      response = { messages: messages?.length ? [messages[0]] : [], nextCursor: null };
+      response = {
+        messages: await previewToolCalls(messages?.length ? [messages[0]] : []),
+        nextCursor: null,
+      };
     } else if (conversationId) {
       const messageResult = await scopedMessageRead;
       if (!messageResult.ok) {
         throw messageResult.error;
       }
-      response = messageResult.value;
+      response = {
+        ...messageResult.value,
+        messages: await previewToolCalls(messageResult.value.messages),
+      };
     } else if (search) {
       const searchResults = await db.searchMessages(
         search,
@@ -393,7 +413,7 @@ router.post('/branch', configMiddleware, async (req, res) => {
       conversationId: sourceMessage.conversationId,
     });
 
-    res.status(201).json(toClientMessage(savedMessage));
+    res.status(201).json(withMessageToolCallPreviews(req, toClientMessage(savedMessage)));
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -498,11 +518,13 @@ router.post('/artifact/:messageId', configMiddleware, async (req, res) => {
       conversationId: message.conversationId,
     });
 
-    res.status(200).json({
-      conversationId: savedMessage.conversationId,
-      content: savedMessage.content,
-      text: savedMessage.text,
-    });
+    res.status(200).json(
+      withMessageToolCallPreviews(req, {
+        conversationId: savedMessage.conversationId,
+        content: savedMessage.content,
+        text: savedMessage.text,
+      }),
+    );
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -516,6 +538,7 @@ router.get('/:conversationId', prepareMessageRequestValidation, async (req, res)
   try {
     const { conversationId } = req.params;
     const validation = req.messageRequestValidation;
+    const previewToolCalls = prepareToolCallPreviews(req, toolCallPreviewDeps);
     // This intentionally starts a user-scoped read before validation resolves;
     // the response remains gated on validation success below.
     const messagesPromise = validation.shouldFetchMessages
@@ -536,7 +559,7 @@ router.get('/:conversationId', prepareMessageRequestValidation, async (req, res)
     }
 
     const messages = messagesResult?.messages ?? [];
-    res.status(200).json(messages);
+    res.status(200).json(await previewToolCalls(messages));
   } catch (error) {
     logger.error('Error fetching messages:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -603,6 +626,8 @@ router.get('/:conversationId/:messageId', validateMessageReq, async (req, res) =
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+router.get('/:conversationId/:messageId/parts/:partIndex', readToolCallPart);
 
 router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req, res) => {
   try {

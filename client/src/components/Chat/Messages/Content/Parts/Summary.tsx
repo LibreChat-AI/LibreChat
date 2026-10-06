@@ -171,7 +171,7 @@ const FloatingSummaryBar = memo(
               className={cn(
                 'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                 'hover:bg-surface-hover hover:text-text-primary',
-                'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+                'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
               )}
             >
               <ChevronUp className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
@@ -190,7 +190,7 @@ const FloatingSummaryBar = memo(
                 className={cn(
                   'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                   'hover:bg-surface-hover hover:text-text-primary',
-                  'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+                  'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
                 )}
               >
                 <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />

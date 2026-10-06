@@ -135,7 +135,7 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {result && (
-        <div className="border-border-light mt-3 border-t pt-2.5">
+        <div className="border-border-inset mt-3 border-t pt-2.5">
           <div
             className={cn(
               'mb-1.5 text-xs font-medium',
@@ -153,7 +153,7 @@ export default function BackgroundTaskCard({
         </div>
       )}
       {error && (
-        <div className="border-border-light mt-3 border-t pt-2.5">
+        <div className="border-border-inset mt-3 border-t pt-2.5">
           <div className="text-status-error mb-1.5 text-xs font-medium">
             {localize('com_ui_error')}
           </div>

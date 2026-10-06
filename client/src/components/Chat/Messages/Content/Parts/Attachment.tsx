@@ -270,7 +270,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         className={cn(
           'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
           'text-text-secondary hover:text-text-primary transition-colors',
-          'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+          'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
         )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -386,7 +386,7 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-light flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -396,7 +396,7 @@ const TextAttachment = memo(
                   onClick={handleDownload}
                   aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
                   title={localize('com_ui_download')}
-                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-focus-subtle flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <Download className="size-4" aria-hidden="true" />
                 </button>
@@ -421,7 +421,7 @@ const TextAttachment = memo(
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-expanded={expanded}
                 aria-controls={preId}
-                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
               >
                 {expanded ? localize('com_ui_collapse') : localize('com_ui_show_all')}
               </button>

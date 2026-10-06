@@ -4,6 +4,7 @@ import { Button } from '@librechat/client';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type { UIEvent } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
+import { useToolContentPending } from '../disclosure';
 import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -102,6 +103,12 @@ function extractText(raw: string, verbatim = false): ExtractedText {
   return { text: trimmed, rawError: '', error: false, isJson: false };
 }
 
+/** Whether the default renderer would draw anything for this output. Callers
+ *  that decide a panel is worth showing use it, so the two cannot disagree. */
+export function hasRenderableOutput(raw?: string | null): boolean {
+  return extractText(raw ?? '').text.length > 0;
+}
+
 export interface OutputSegment {
   text: string;
   className?: string;
@@ -151,11 +158,15 @@ export default function OutputRenderer({
     followRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= 8;
   }, []);
 
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
+    if (contentPending) {
+      return;
+    }
     setIsCopied(true);
     copy(copyText ?? displayText, { format: 'text/plain' });
     setTimeout(() => setIsCopied(false), 3000);
-  }, [copyText, displayText]);
+  }, [contentPending, copyText, displayText]);
 
   if (!displayText) {
     return null;
@@ -199,6 +210,7 @@ export default function OutputRenderer({
         <CopyButton
           isCopied={isCopied}
           onClick={handleCopy}
+          disabled={contentPending}
           iconOnly
           label={localize('com_ui_copy')}
           className={cn('bg-presentation absolute right-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}

@@ -15,7 +15,6 @@ interface Props {
 }
 
 function getSuffix(item: AgentItem): string | null {
-  if (item.kind === 'mcp' && item.toolCount > 0) return `· ${item.toolCount}`;
   if (item.kind === 'action' && item.endpointCount > 0) return `· ${item.endpointCount}`;
   return null;
 }

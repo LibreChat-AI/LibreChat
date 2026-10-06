@@ -124,7 +124,7 @@ describe('SubagentConversation', () => {
     expect(briefing).toHaveClass('justify-end');
     expect(within(briefing).getByRole('heading', { name: /Lia$/ })).toBeInTheDocument();
     expect(within(briefing).getByTestId('parent-face')).toBeInTheDocument();
-    expect(within(briefing).getByTestId('message-body')).toHaveClass('bg-surface-tertiary');
+    expect(within(briefing).getByTestId('message-body')).toHaveClass('bg-surface-user-message');
     expect(screen.queryByText('com_ui_subagent_trigger_parent_dispatch')).not.toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_trigger_external_event')).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { name: /^com_ui_system_event/ })).toHaveLength(1);

@@ -5,6 +5,9 @@ import { X, ArrowDownToLine, RotateCcw } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor, useMediaQuery, useRemScale } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
+/** The lightbox is z-250 and not an OGDialog, so its tooltips would keep the default 150 and sit behind it. */
+const TOOLTIP_Z_INDEX = 300;
+
 const imageSizeCache = new Map<string, string>();
 
 const getQualityStyles = (quality: string): string => {
@@ -282,6 +285,7 @@ export default function DialogImage({
           {/* Close button - top left */}
           <div className="absolute top-4 left-4 z-20">
             <TooltipAnchor
+              zIndex={TOOLTIP_Z_INDEX}
               description={localize('com_ui_close')}
               render={
                 <Button
@@ -303,6 +307,7 @@ export default function DialogImage({
           >
             {zoom > 1 && (
               <TooltipAnchor
+                zIndex={TOOLTIP_Z_INDEX}
                 description={localize('com_ui_reset_zoom')}
                 render={
                   <Button
@@ -317,6 +322,7 @@ export default function DialogImage({
               />
             )}
             <TooltipAnchor
+              zIndex={TOOLTIP_Z_INDEX}
               description={localize('com_ui_download')}
               render={
                 <Button
@@ -331,6 +337,7 @@ export default function DialogImage({
             />
             {showDetails && (
               <TooltipAnchor
+                zIndex={TOOLTIP_Z_INDEX}
                 description={imageDetailsLabel}
                 render={
                   <Button

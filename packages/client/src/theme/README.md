@@ -381,6 +381,23 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   names those and not these. Fields stay clear unless the theme's
   `fieldFillStyle` appearance role is `fill` (the default is `transparent`),
   read from the nearest themed root through the `theme-field-fill:` variant.
+- `bg-surface-tooltip` / `text-tooltip` - The tooltip chip and its label. They follow
+  `surface-primary` and `text-primary` when a theme names those and not these. The padding and
+  text size are the `tooltipPaddingX`, `tooltipPaddingY` and `tooltipTextSize` appearance roles
+  (0.5rem, 0.25rem and 1rem by default).
+- `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
+  follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
+- Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
+  `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
+  `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and
+  `bg-surface-nav-selected` (sidebar, rail and drawer rows), `bg-surface-tab-selected`
+  (the settings tab rail), `bg-surface-menu` and `bg-surface-popover` with `border-border-menu` (menu and popover
+  panels), `bg-surface-composer` (the composer box) and `bg-surface-search` (the sidebar
+  search pill). Each follows the surface it painted before it had a name
+  (`surface-primary-alt`, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
+  `presentation` for menus, `surface-primary` or `surface-secondary` for popovers, `border-light`, `surface-chat`),
+  so a theme that repaints that surface keeps the layer on it, and a theme steps the layers
+  apart by naming them.
 - `border-border-field-focus` - A form field's edge while it holds focus, under
   `fieldFocusStyle: border`. Follows `focus-control` when a theme names only that.
 - Form fields and labels - `h-theme-field` (`fieldHeight`) sizes `Input`, `Dropdown`
@@ -416,6 +433,24 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
+- `theme-destructive-soft:` - A variant for a `destructive` Button's tint: the
+  button paints a 10% tint of the destructive surface under the destructive ink
+  when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
+  solid destructive surface.
+- `border-border-inset-medium` - `border-medium` at the `insetBorderAlpha`
+  appearance role, for the box edges of a form that sits on a stroked page.
+- `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or
+  control inside content (tool rows, attachments, summaries, message
+  navigation). Defaults to `border-heavy`, so a theme that names neither keeps
+  the ring it had.
+- `border-border-chrome` / `border-border-inset` - `border-light` at the
+  `chromeBorderAlpha` and `insetBorderAlpha` appearance roles (both 1 by
+  default, so they draw as `border-light`). Chrome is the outline of an icon
+  button, pill, chip or avatar ring on the shell; inset is a hairline inside a
+  surface that is already stroked. A theme sets 0 to separate them by fill; the
+  1px box stays so layout does not shift. `border-border-chrome-heavy` and `border-border-chrome-medium` are
+  `border-heavy` and `border-medium` at the chrome share, for the selected and hover
+  states of a chrome control.
 - `ring-focus-control` - The keyboard focus ring of the shared primitives
   (`Checkbox`, `Switch`, `Field`, `IconButton` and their siblings). Defaults to
   the primary text ink; a theme that names only `rgb-text-primary` rings its

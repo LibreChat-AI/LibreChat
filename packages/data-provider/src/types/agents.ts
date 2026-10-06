@@ -121,6 +121,21 @@ export namespace Agents {
         generationId?: string;
       };
     };
+    /** The server sent a bounded preview of `output`; the full value loads on demand. */
+    outputTruncated?: true;
+    /** Length of the full `output` in UTF-16 code units, present with `outputTruncated`. */
+    outputLength?: number;
+    /** The server sent a bounded preview of `args`; the full value loads on demand. */
+    argsTruncated?: true;
+    /** Length of the full serialized `args`, present with `argsTruncated`. */
+    argsLength?: number;
+    /** The server left out `subagent_content`; the full value loads on demand. */
+    subagentContentOmitted?: true;
+    /** Number of top-level parts in the omitted `subagent_content`. */
+    subagentContentParts?: number;
+    /** When the stored message last changed, set on previews so a client cache of the full part
+     *  is keyed to the stored version it came from. */
+    previewRevision?: string;
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
     /** Server-stamped provenance; see `PartMetadata.executor`. */

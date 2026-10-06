@@ -5,7 +5,7 @@ describe('composerSurfaceClasses', () => {
     const classes = composerSurfaceClasses();
 
     expect(classes).toContain('border-border-light');
-    expect(classes).toContain('bg-surface-chat');
+    expect(classes).toContain('bg-surface-composer');
     expect(classes).toContain('text-text-primary');
   });
 });

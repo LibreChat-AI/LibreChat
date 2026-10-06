@@ -43,6 +43,8 @@
   --color-ring-primary: rgb(var(--ring-primary));
   --color-focus-outline: rgb(var(--focus-outline));
   --color-focus-control: rgb(var(--focus-control));
+  /* Follows the heavy border it replaced, for a stylesheet that predates it. */
+  --color-focus-subtle: rgb(var(--focus-subtle, var(--border-heavy)));
   --color-header-primary: rgb(var(--header-primary));
   --color-header-hover: rgb(var(--header-hover));
   --color-header-button-hover: rgb(var(--header-button-hover));
@@ -113,6 +115,15 @@
   /* borders */
   --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));
   --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+  /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
+  --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-heavy, at the chrome share: the pressed or selected outline of a control that is chrome. */
+  --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the chrome share: the hover outline of a chrome control. */
+  --color-border-chrome-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the inset share: the box edges of a form that sits on a stroked page. */
+  --color-border-inset-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)));
+  --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
@@ -124,6 +135,26 @@
   /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
   --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
   --color-field-text: rgb(var(--field-text, var(--text-primary)));
+  /* Follow the roles they were painted in before they had their own, for a stylesheet that
+     predates them. */
+  --color-surface-tooltip: rgb(var(--surface-tooltip, var(--surface-primary)));
+  --color-text-tooltip: rgb(var(--text-tooltip, var(--text-primary)));
+  --color-alert-error-fill: rgb(var(--alert-error-fill, var(--status-error-subtle)));
+  --color-alert-error-border: rgb(var(--alert-error-border, var(--status-error-border)));
+  --color-surface-canvas: rgb(var(--surface-canvas));
+  --color-surface-user-message: rgb(var(--surface-user-message));
+  --color-surface-card: rgb(var(--surface-card));
+  --color-surface-card-hover: rgb(var(--surface-card-hover));
+  --color-surface-nav-hover: rgb(var(--surface-nav-hover));
+  --color-surface-nav-selected: rgb(var(--surface-nav-selected));
+  --color-surface-tab-selected: rgb(var(--surface-tab-selected));
+  --color-surface-menu: rgb(var(--surface-menu));
+  --color-surface-popover: rgb(var(--surface-popover));
+  --color-border-menu: rgb(
+    var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1))
+  );
+  --color-surface-composer: rgb(var(--surface-composer));
+  --color-surface-search: rgb(var(--surface-search));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
@@ -237,6 +268,17 @@
 @custom-variant theme-disabled-within {
   @container style(--theme-disabled-style: fill) {
     &:is(:root *):has(:disabled) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `destructiveStyle` is `soft` paints the `destructive` Button as a tint of the
+ * destructive surface under the destructive ink, as Click UI's danger button does. Read, like the
+ * disabled style, from the `--theme-destructive-style` property the nearest themed root carries. */
+@custom-variant theme-destructive-soft {
+  @container style(--theme-destructive-style: soft) {
+    &:is(:root *) {
       @slot;
     }
   }

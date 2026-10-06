@@ -237,6 +237,21 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('GET /:conversationId/pull-request', () => {
+    it('is registered and reaches the pull request handler', async () => {
+      const response = await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ pullRequest: null });
+    });
+
+    it('does not fall through to the conversation read', async () => {
+      await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(getConvo).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /import', () => {
     const { importConversations } = require('~/server/utils/import');
 

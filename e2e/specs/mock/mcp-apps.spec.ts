@@ -381,7 +381,7 @@ async function readEvents(page: Page): Promise<DebugEvent[]> {
 }
 
 async function createShare(page: Page, conversationId: string): Promise<SharePayload> {
-  await page.getByRole('button', { name: 'Export/Share' }).click();
+  await page.getByRole('button', { name: 'Chat options' }).click();
   await page.getByTestId('share-conversation-menu-item').click();
   const dialog = page.getByRole('dialog', { name: 'Share link to chat' });
   await expect(dialog).toBeVisible();

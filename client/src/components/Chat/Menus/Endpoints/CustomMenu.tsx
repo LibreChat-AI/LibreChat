@@ -74,8 +74,8 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
         className={cn(
           parent ? 'animate-popover-left ml-3' : 'animate-popover',
           'z-40 flex max-h-[min(28.125rem,var(--popover-available-height))] w-full outline-hidden!',
-          'border-border-light w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto rounded-xl border',
-          'bg-presentation text-text-primary text-sm shadow-lg',
+          'border-border-menu w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto rounded-xl border',
+          'bg-surface-menu text-text-primary text-sm shadow-lg',
           parent ? 'px-0.5 py-0.5' : 'px-3 py-2',
           'max-w-[calc(100vw-4rem)] sm:max-h-[calc(65vh)] sm:max-w-[25rem]',
           searchable && 'p-0',
@@ -96,7 +96,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
                     )}
                   />
                   {comboboxLabel && (
-                    <label className="text-text-secondary peer-[:not(:placeholder-shown)]:bg-presentation pointer-events-none absolute top-2.5 left-2.5 text-sm transition-all duration-200 peer-[:not(:placeholder-shown)]:-top-1.5 peer-[:not(:placeholder-shown)]:left-1.5 peer-[:not(:placeholder-shown)]:text-xs sm:top-1.5">
+                    <label className="text-text-secondary peer-[:not(:placeholder-shown)]:bg-surface-menu pointer-events-none absolute top-2.5 left-2.5 text-sm transition-all duration-200 peer-[:not(:placeholder-shown)]:-top-1.5 peer-[:not(:placeholder-shown)]:left-1.5 peer-[:not(:placeholder-shown)]:text-xs sm:top-1.5">
                       {comboboxLabel}
                     </label>
                   )}

@@ -160,7 +160,7 @@ function FileTreeNode({
         'flex w-full items-center gap-1.5 rounded-lg text-sm select-none',
         isFileActive
           ? 'bg-surface-active text-text-primary font-medium'
-          : 'text-text-secondary hover:bg-surface-active-alt hover:text-text-primary',
+          : 'text-text-secondary hover:bg-surface-nav-hover hover:text-text-primary',
       )}
       aria-expanded={isFolder ? isOpen : undefined}
     >
@@ -308,7 +308,7 @@ function SkillListItem({
         className={cn(
           'text-text-primary flex w-full items-center gap-1 rounded-lg pr-1 text-sm select-none',
           isActive && !activeFile && 'bg-surface-active',
-          !isActive && 'hover:bg-surface-active-alt',
+          !isActive && 'hover:bg-surface-nav-hover',
         )}
       >
         <button

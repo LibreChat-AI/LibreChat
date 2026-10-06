@@ -1,6 +1,7 @@
 import type {
   TUserFavorite,
   RefillIntervalUnit,
+  BalanceRefillMode,
   StatefulCodeEnvironment,
 } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
@@ -129,12 +130,30 @@ export interface BalanceConfig {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  refillMode?: BalanceRefillMode;
   reservationTtlMs?: number;
 }
 
 export interface CreateUserRequest extends Partial<IUser> {
   email: string;
 }
+
+/** A user's own fields, without Mongoose document members. */
+type UserFields = Omit<IUser, keyof Document>;
+
+/**
+ * A stored user as plain data with a storage-neutral id: what `.lean()` queries and `.toObject()`
+ * return. New contracts take and return this rather than the `IUser` document type.
+ */
+export type UserRecord = UserFields & { _id: { toString(): string } };
+
+/** The fields a new user is created with, as plain data. */
+export type NewUserData = Partial<UserFields> & { email: string };
+
+/** The created user, or `user_exists` when an account already holds its email or provider identity. */
+export type CreateUserIfAbsentResult =
+  | { ok: true; value: UserRecord }
+  | { ok: false; error: { code: 'user_exists' } };
 
 export interface UpdateUserRequest {
   name?: string;

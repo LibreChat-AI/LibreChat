@@ -23,19 +23,20 @@ import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
 import type { ComposerKeyAction } from '~/utils/shortcuts';
 import type { OptionWithIcon } from '~/common';
 import {
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+  useForkConvoMutation,
+  useToolCallPartQuery,
+  useSubagentControlMutation,
+  useSubagentThreadQuery,
+} from '~/data-provider';
+import {
   adaptDurableThreadActivity,
   adaptDurableThreadConversation,
   adaptLivePersistedActivity,
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import {
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-  useForkConvoMutation,
-  useSubagentControlMutation,
-  useSubagentThreadQuery,
-} from '~/data-provider';
 import {
   agentAuthor,
   resolveSubagentAuthor,
@@ -66,6 +67,7 @@ import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
 import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
+import { getSubagentPrompt } from './prompt';
 import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
@@ -808,22 +810,55 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     };
   }, [isMobile]);
 
+  /** A previewed call renders nothing until its stored part arrives: the preview's output is a
+   *  shortened copy and its transcript is absent, so neither may stand in for the activity. */
+  const awaitsStoredPart = selection.contentPreview != null;
+  const storedPart = useToolCallPartQuery(
+    {
+      conversationId: selection.parentConversationId,
+      messageId: selection.parentMessageId,
+      partIndex: selection.partIndex,
+      toolCallId: selection.toolCallId || undefined,
+      stepId: selection.contentPreview?.stepId,
+      agentId: selection.contentPreview?.agentId,
+    },
+    { enabled: awaitsStoredPart },
+    selection.contentPreview?.revision,
+  );
+  const storedToolCall = awaitsStoredPart ? storedPart.data?.tool_call : undefined;
+  const persistedContent = storedToolCall?.subagent_content ?? selection.persistedContent;
+  const prompt =
+    (storedToolCall == null ? undefined : getSubagentPrompt(storedToolCall.args)) ??
+    selection.prompt;
+  let legacyOutput = selection.legacyOutput;
+  if (awaitsStoredPart && legacyOutput != null) {
+    legacyOutput = storedToolCall?.output;
+  }
+
   const liveActivity = useMemo(
     () =>
       adaptLivePersistedActivity({
         title: foregroundTitle,
-        prompt: selection.prompt,
+        prompt,
         progress,
-        persistedContent: selection.persistedContent,
+        persistedContent,
         isDetached: selection.durable != null,
-        legacyOutput: selection.legacyOutput,
+        legacyOutput,
         // A detached parent tool step closes as soon as dispatch succeeds;
         // its terminal status does not describe the still-running child.
         initialProgress: selection.durable == null ? selection.initialProgress : 0,
         isSubmitting: selection.durable == null ? selection.isSubmitting : detachedLiveSubmitting,
         runStepStatus: selection.durable == null ? selection.runStepStatus : undefined,
       }),
-    [detachedLiveSubmitting, foregroundTitle, progress, selection],
+    [
+      detachedLiveSubmitting,
+      foregroundTitle,
+      legacyOutput,
+      persistedContent,
+      progress,
+      prompt,
+      selection,
+    ],
   );
   const activity = useMemo(() => {
     if (selection.durable == null) return liveActivity;
@@ -995,7 +1030,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
             selection.event == null
               ? ('parent_continuation' as const)
               : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
           ...(selectedTaskCreatedAt == null ? {} : { createdAt: selectedTaskCreatedAt }),
         },
         activity,
@@ -1022,7 +1057,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
         },
         activity,
       },
@@ -1034,6 +1069,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     movingWindowTurns,
     olderTurns,
     postRebaseTurns,
+    prompt,
     rebaseTurns,
     retainedTurnsValid,
     threadId,
@@ -1303,7 +1339,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     ],
   );
   let panelState: 'ready' | 'loading' | 'error' = 'ready';
-  if (
+  if (awaitsStoredPart && selection.durable == null && storedToolCall == null) {
+    panelState = storedPart.isError ? 'error' : 'loading';
+  } else if (
     selection.durable != null &&
     liveActivity.items.length === 0 &&
     (isLoading || isReadinessPending)
@@ -1381,11 +1419,27 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         )}
       </div>
     ) : null;
+  const storedPartRetry =
+    awaitsStoredPart && storedToolCall == null && storedPart.isError ? (
+      <div role="alert" className="flex items-center justify-center gap-2 px-4 py-2 text-sm">
+        <span className="text-text-secondary">{localize('com_ui_tool_content_error')}</span>
+        <Button type="button" variant="ghost" size="sm" onClick={() => void storedPart.refetch()}>
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    ) : null;
+  const activityNotice =
+    droppedNotice == null && storedPartRetry == null ? null : (
+      <>
+        {droppedNotice}
+        {storedPartRetry}
+      </>
+    );
   let activityPanel: ReactNode;
   if (hasConversationProjection) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
-        {droppedNotice}
+        {activityNotice}
         {showUnavailableHistoryBoundary && (
           <div
             role="status"
@@ -1445,7 +1499,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   ) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
-        {droppedNotice}
+        {activityNotice}
         <div data-subagent-thread-timeline>
           {timelinePrefix}
           {visibleEventTasks.map(renderEventTask)}
@@ -1461,7 +1515,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         state={panelState}
         showPrompt={false}
         headerInset
-        notice={droppedNotice}
+        notice={activityNotice}
         onCancelControl={
           controlAvailable && !controlPending
             ? (controlId) => submitControl('cancel_message', controlId)

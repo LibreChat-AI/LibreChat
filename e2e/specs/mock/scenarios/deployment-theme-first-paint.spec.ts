@@ -146,7 +146,7 @@ async function expectFirstPaint(page: Page, mode: Mode) {
     expect(frame.theme).toBe('clickhouse');
     expect(frame.surface).toBe(colors['rgb-surface-primary']);
     if (frame.shell !== null) {
-      expect(frame.shell).toBe(rgb(colors['rgb-surface-primary-alt']));
+      expect(frame.shell).toBe(rgb(colors['rgb-surface-canvas']));
     }
   }
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
