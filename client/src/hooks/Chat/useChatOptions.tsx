@@ -173,7 +173,8 @@ export default function useChatOptions({
   const projectItem = useProjectMenuItem({
     conversationId,
     chatProjectId,
-    enabled: isMenuOpen && !readOnly && !isTemporary,
+    /** The header omits this whole group for a conversation that is not saved yet. */
+    enabled: isMenuOpen && exportShare.show && !readOnly && !isTemporary,
     onAssigned: (projectId) => mirrorToOpenChat({ chatProjectId: projectId }),
   });
 

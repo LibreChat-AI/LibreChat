@@ -94,6 +94,16 @@ const Menu: React.FC<MenuProps> = ({
 }) => {
   const menu = Ariakit.useMenuContext();
   const zIndex = usePopoverZIndex();
+  /** An item with an id is keyed by it, so a focused row stays the same element when items are added
+   *  before it. A missing or repeated id falls back to the position, which cannot collide. */
+  const seenIds = new Set<string>();
+  const itemKey = (item: t.MenuItemProps, index: number) => {
+    if (item.id != null && !seenIds.has(item.id)) {
+      seenIds.add(item.id);
+      return `${keyPrefix ?? ''}${item.id}`;
+    }
+    return `${keyPrefix ?? ''}${index}-${item.id ?? ''}`;
+  };
   return (
     <Ariakit.Menu
       id={menuId}
@@ -129,7 +139,7 @@ const Menu: React.FC<MenuProps> = ({
           if (subItems && subItems.length > 0) {
             return (
               <SubMenuItem
-                key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
+                key={itemKey(item, index)}
                 item={item}
                 subItems={subItems}
                 menuId={`${menuId}-${index}`}
@@ -142,7 +152,7 @@ const Menu: React.FC<MenuProps> = ({
 
           return (
             <Ariakit.MenuItem
-              key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
+              key={itemKey(item, index)}
               id={item.id}
               className={cn(
                 'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',

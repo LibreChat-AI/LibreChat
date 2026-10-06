@@ -241,6 +241,51 @@ describe('DropdownPopup', () => {
       expect(screen.getByRole('menuitemcheckbox', { name: 'Pin' })).toBeInTheDocument();
     });
 
+    it('keeps the same element for an item with an id when items are added before it', async () => {
+      const user = userEvent.setup();
+      function Example() {
+        const [open, setOpen] = useState(false);
+        const [count, setCount] = useState(1);
+        const projects = Array.from({ length: count }, (_, i) => ({
+          id: `project-${i}`,
+          label: `Project ${i}`,
+          onClick: jest.fn(),
+        }));
+        return (
+          <DropdownPopup
+            menuId="stable-focus"
+            isOpen={open}
+            setIsOpen={setOpen}
+            unmountOnHide={true}
+            trigger={<Ariakit.MenuButton>Options</Ariakit.MenuButton>}
+            items={[
+              ...projects,
+              {
+                id: 'paging',
+                label: 'Load more',
+                hideOnClick: false,
+                onClick: () => setCount((n) => n + 2),
+              },
+            ]}
+          />
+        );
+      }
+      render(<Example />);
+
+      await user.click(screen.getByRole('button', { name: 'Options' }));
+      await user.keyboard('{ArrowDown}{ArrowDown}');
+      const loadMore = await screen.findByRole('menuitem', { name: 'Load more' });
+      expect(loadMore).toHaveFocus();
+
+      await user.keyboard('{Enter}');
+
+      expect(await screen.findByRole('menuitem', { name: 'Project 2' })).toBeInTheDocument();
+      /** Keyed by position, the appended project took over this element and the user's next Enter
+       *  would have picked it. The element the user activated has to still be the paging control. */
+      expect(screen.getByRole('menuitem', { name: 'Load more' })).toBe(loadMore);
+      expect(loadMore.isConnected).toBe(true);
+    });
+
     it('keeps the menu open when a submenu item opts out of hiding', async () => {
       const onPick = jest.fn();
       const { user, onOpenChange } = await openSubmenu(onPick, false);

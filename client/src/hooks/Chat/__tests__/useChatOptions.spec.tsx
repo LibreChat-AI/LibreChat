@@ -17,9 +17,13 @@ const mockState = {
   projects: undefined as { _id: string; name: string }[] | undefined,
   projectsError: false,
   hasNextPage: false,
+  exportShow: true,
+  fetching: false,
+  fetchingNext: false,
+  assigning: undefined as { projectId: string | null } | undefined,
 };
-const mockFetchNextPage = jest.fn();
-const mockRefetch = jest.fn();
+const mockFetchNextPage = jest.fn(() => Promise.resolve({ isError: false }));
+const mockRefetch = jest.fn(() => Promise.resolve({ isError: false }));
 const mockProjectsConfig: { current?: { enabled?: boolean } } = {};
 const mockClient: { current: QueryClient | null } = { current: null };
 const mockCloseMenu = jest.fn();
@@ -38,7 +42,10 @@ jest.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
   useParams: () => ({ conversationId: mockState.route }),
 }));
-jest.mock('@librechat/client', () => ({ useToastContext: () => ({ showToast: jest.fn() }) }));
+jest.mock('@librechat/client', () => ({
+  Spinner: () => null,
+  useToastContext: () => ({ showToast: jest.fn() }),
+}));
 jest.mock('~/store', () => ({ __esModule: true, default: { conversationByIndex: () => ({}) } }));
 jest.mock('~/common', () => ({ NotificationSeverity: { SUCCESS: 'success', ERROR: 'error' } }));
 jest.mock('~/hooks', () => ({
@@ -56,7 +63,11 @@ jest.mock('~/data-provider', () => ({
   useActiveJobs: () => ({ data: { activeJobIds: mockState.activeJobs } }),
   usePinConversationMutation: () => ({ mutate: mockPin }),
   useArchiveConvoMutation: () => ({ mutate: mockArchive }),
-  useAssignConversationToProjectMutation: () => ({ mutate: mockAssign }),
+  useAssignConversationToProjectMutation: () => ({
+    mutate: mockAssign,
+    isLoading: mockState.assigning != null,
+    variables: mockState.assigning,
+  }),
   useDuplicateConversationMutation: () => ({ mutate: mockDuplicate }),
   useProjectsInfiniteQuery: (_params: unknown, config?: { enabled?: boolean }) => {
     mockProjectsConfig.current = config;
@@ -66,7 +77,8 @@ jest.mock('~/data-provider', () => ({
       hasNextPage: mockState.hasNextPage,
       fetchNextPage: mockFetchNextPage,
       refetch: mockRefetch,
-      isFetchingNextPage: false,
+      isFetching: mockState.fetching,
+      isFetchingNextPage: mockState.fetchingNext,
     };
   },
 }));
@@ -91,7 +103,7 @@ jest.mock('~/components/Chat/Rename', () => ({
 jest.mock('../useExportShare', () => ({
   __esModule: true,
   default: () => ({
-    show: true,
+    show: mockState.exportShow,
     hasSharedLink: false,
     items: [{ label: 'share' }, { label: 'export' }],
     dialogs: null,
@@ -124,6 +136,10 @@ describe('useChatOptions', () => {
     mockState.projects = undefined;
     mockState.projectsError = false;
     mockState.hasNextPage = false;
+    mockState.exportShow = true;
+    mockState.fetching = false;
+    mockState.fetchingNext = false;
+    mockState.assigning = undefined;
     mockProjectsConfig.current = undefined;
   });
 
@@ -196,7 +212,23 @@ describe('useChatOptions', () => {
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
 
     expect(find(subItems, 'Alpha').ariaChecked).toBe(false);
-    expect(find(subItems, 'Beta')).toMatchObject({ ariaChecked: true, disabled: true });
+    expect(find(subItems, 'Beta')).toMatchObject({ ariaChecked: true });
+  });
+
+  it('keeps the checked project in the arrow-key order and does not reassign it', () => {
+    mockState.projects = [
+      { _id: 'project-1', name: 'Alpha' },
+      { _id: 'project-2', name: 'Beta' },
+    ];
+    mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-2' };
+    const { result } = setup(false, true);
+    const beta = find(find(result.current.items, 'com_ui_change_project').subItems ?? [], 'Beta');
+
+    /** Ariakit drops a `disabled` item from keyboard navigation, and this is the row a keyboard
+     *  or screen-reader user has to find. */
+    expect(beta.disabled).not.toBe(true);
+    act(() => beta.onClick?.({} as never));
+    expect(mockAssign).not.toHaveBeenCalled();
   });
 
   it('offers the projects as one exclusive choice', () => {
@@ -268,18 +300,134 @@ describe('useChatOptions', () => {
     );
     expect(labels(subItems)).not.toContain('com_ui_load_more');
     expect(find(subItems, 'com_ui_retry').hideOnClick).toBe(false);
-    act(() => find(subItems, 'com_ui_retry').onClick?.({} as never));
-    expect(mockFetchNextPage).toHaveBeenCalledTimes(1);
   });
 
-  it('offers a retry when the first page fails', () => {
+  it('offers a retry when the first page fails', async () => {
     mockState.projectsError = true;
     const { result } = setup(false, true);
     const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
 
-    act(() => find(subItems, 'com_ui_retry').onClick?.({} as never));
+    await act(async () => {
+      find(subItems, 'com_ui_retry').onClick?.({} as never);
+    });
     expect(mockRefetch).toHaveBeenCalledTimes(1);
     expect(mockFetchNextPage).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed refresh with a refetch when there is no next page to ask for', async () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = false;
+    mockState.projectsError = true;
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    await act(async () => {
+      find(subItems, 'com_ui_retry').onClick?.({} as never);
+    });
+
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
+    expect(mockFetchNextPage).not.toHaveBeenCalled();
+  });
+
+  it('retries the page request that failed, not a refetch of the pages already held', async () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = true;
+    const { result, rerender } = setup(false, true);
+    const rows = () => find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    mockFetchNextPage.mockResolvedValueOnce({ isError: true });
+    await act(async () => {
+      find(rows(), 'com_ui_load_more').onClick?.({} as never);
+    });
+    mockState.projectsError = true;
+    rerender();
+
+    await act(async () => {
+      find(rows(), 'com_ui_retry').onClick?.({} as never);
+    });
+
+    expect(mockFetchNextPage).toHaveBeenCalledTimes(2);
+    expect(mockRefetch).not.toHaveBeenCalled();
+  });
+
+  it('ignores Retry while its request is already running and says so', async () => {
+    mockState.projects = [];
+    mockState.projectsError = true;
+    mockState.fetching = true;
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    await act(async () => {
+      find(subItems, 'com_ui_loading').onClick?.({} as never);
+    });
+
+    expect(mockRefetch).not.toHaveBeenCalled();
+    expect(labels(subItems)).not.toContain('com_ui_retry');
+  });
+
+  it('keeps Load more focusable and inert while the next page loads', async () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = true;
+    mockState.fetchingNext = true;
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    const paging = find(subItems, 'com_ui_loading');
+
+    /** A disabled item is dropped from keyboard navigation, taking the focus off the control the
+     *  user just activated. */
+    expect(paging.disabled).not.toBe(true);
+    await act(async () => {
+      paging.onClick?.({} as never);
+    });
+    expect(mockFetchNextPage).not.toHaveBeenCalled();
+  });
+
+  it('gives every row a stable id so a focused control survives appended pages', () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = true;
+    mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-1' };
+    const { result, rerender } = setup(false, true);
+    const rows = () => find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    const idOf = (label: string) => find(rows(), label).id;
+    const before = { alpha: idOf('Alpha'), more: idOf('com_ui_load_more') };
+
+    mockState.projects = [
+      { _id: 'project-1', name: 'Alpha' },
+      { _id: 'project-2', name: 'Beta' },
+      { _id: 'project-3', name: 'Gamma' },
+    ];
+    rerender();
+
+    expect(before.alpha).toBeDefined();
+    expect(idOf('Alpha')).toBe(before.alpha);
+    expect(idOf('com_ui_load_more')).toBe(before.more);
+    const ids = rows()
+      .filter((row) => row.separate !== true)
+      .map((row) => row.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('disables every destination and shows the pending one while an assignment runs', () => {
+    mockState.projects = [
+      { _id: 'project-1', name: 'Alpha' },
+      { _id: 'project-2', name: 'Beta' },
+    ];
+    mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-2' };
+    mockState.assigning = { projectId: 'project-1' };
+    const { result } = setup(false, true);
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    expect(find(subItems, 'Alpha').disabled).toBe(true);
+    expect(find(subItems, 'Beta').disabled).toBe(true);
+    expect(find(subItems, 'com_ui_remove_from_project').disabled).toBe(true);
+  });
+
+  it('does not fetch projects for a chat whose options group is not shown', () => {
+    mockState.exportShow = false;
+    renderHook(() =>
+      useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, isMenuOpen: true }),
+    );
+
+    expect(mockProjectsConfig.current?.enabled).toBe(false);
   });
 
   it('shows a loading row, then an empty row, then a failed row in the submenu', () => {
