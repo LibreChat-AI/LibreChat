@@ -1370,9 +1370,6 @@
   "client/src/components/Prompts/lists/ListCard.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Prompts/sidebar/FilterPrompts.tsx": {
@@ -1687,7 +1684,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 9
     }
   },
   "client/src/components/SidePanel/Agents/Version/VersionPanel.tsx": {
@@ -1712,7 +1709,7 @@
   },
   "client/src/components/SidePanel/Builder/ActionCallback.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Builder/ActionsAuth.tsx": {
@@ -1798,12 +1795,12 @@
   },
   "client/src/components/SidePanel/Memories/MemoryCreateDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 10
     }
   },
   "client/src/components/SidePanel/Memories/MemoryEditDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 11
     }
   },
   "client/src/components/SidePanel/Memories/MemoryPanel.tsx": {
@@ -1856,7 +1853,7 @@
   },
   "client/src/components/SidePanel/Schedules/ScheduleDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 22
+      "count": 14
     }
   },
   "client/src/components/SidePanel/Schedules/SchedulePanel.tsx": {
