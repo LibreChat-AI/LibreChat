@@ -54,11 +54,23 @@ async function wrapperLook(page: Page) {
   }, WRAPPER_CLASSES);
 }
 
+/** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+const DEFAULT_CASES = [
+  {
+    title:
+      "a disabled input dims the default light theme's wrapper @scenario:input-number-disabled-default-light",
+    mode: 'light',
+  },
+  {
+    title:
+      "a disabled input dims the default dark theme's wrapper @scenario:input-number-disabled-default-dark",
+    mode: 'dark',
+  },
+] as const;
+
 test.describe('InputNumber disabled look', () => {
-  for (const mode of ['light', 'dark'] as const) {
-    test(`a disabled input dims the default ${mode} theme's wrapper @scenario:input-number-disabled-default-${mode}`, async ({
-      page,
-    }) => {
+  for (const { title, mode } of DEFAULT_CASES) {
+    test(title, async ({ page }) => {
       await openChat(page, mode);
 
       const { enabled, disabled } = await wrapperLook(page);
