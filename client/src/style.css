@@ -1329,7 +1329,7 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
   --tw-text-opacity: 1;
   color: rgba(64, 65, 79, var(--tw-text-opacity));
 }
-.dark .dark\:prose-invert {
+.dark .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
   --tw-prose-lead: var(--tw-prose-invert-lead);
@@ -1587,6 +1587,15 @@ html {
 .dark .shadow-stroke:after {
   --tw-shadow: inset 0 0 0 1px hsla(0, 0%, 100%, 0.3);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
+}
+
+/* Auto-height reveals over a grid (rows 0fr to 1fr) share the resize tween with
+ * `Collapse`, `McpOAuthDialog`, `MCPToolItem` and `McpSection`; pair with
+ * `motion-reduce:transition-none`. */
+@utility resize-rows {
+  transition-property: grid-template-rows;
+  transition-duration: var(--resize-dur);
+  transition-timing-function: var(--resize-ease);
 }
 
 .assistant-item {

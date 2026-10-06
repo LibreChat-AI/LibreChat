@@ -228,10 +228,7 @@
   },
   "client/src/components/Chat/Input/Files/Table/DataTable.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
+      "count": 13
     }
   },
   "client/src/components/Chat/Input/HeaderOptions.tsx": {
@@ -360,13 +357,10 @@
   },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 1
+      "count": 2
     },
     "shadcn/no-inline-styles": {
       "count": 2
-    },
-    "shadcn/no-raw-colors": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
@@ -387,11 +381,6 @@
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestionCall.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Container.tsx": {
-    "shadcn/no-raw-colors": {
       "count": 1
     }
   },
@@ -459,14 +448,8 @@
     "shadcn/no-inline-styles": {
       "count": 9
     },
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 6
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 3
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
@@ -485,9 +468,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/EmptyText.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-unknown-classes": {
       "count": 1
     }
@@ -531,9 +511,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Reasoning.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
     "shadcn/no-inline-styles": {
       "count": 4
     },
@@ -551,7 +528,7 @@
   },
   "client/src/components/Chat/Messages/Content/Parts/SteerPart.tsx": {
     "shadcn/no-unknown-classes": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Summary.tsx": {
@@ -1297,9 +1274,6 @@
   "client/src/components/Prompts/display/PromptTextCard.tsx": {
     "shadcn/no-restyle": {
       "count": 2
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Prompts/display/PromptVariables.tsx": {
@@ -1307,17 +1281,9 @@
       "count": 5
     }
   },
-  "client/src/components/Prompts/editor/Markdown.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Prompts/editor/PromptEditor.tsx": {
     "shadcn/no-restyle": {
       "count": 11
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Prompts/editor/VariablesDropdown.tsx": {
@@ -1360,18 +1326,12 @@
     "shadcn/no-restyle": {
       "count": 8
     },
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    },
     "shadcn/require-static-classes": {
       "count": 2
     }
   },
   "client/src/components/Prompts/lists/ListCard.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
       "count": 1
     }
   },
@@ -1574,9 +1534,6 @@
     }
   },
   "client/src/components/SidePanel/Agents/MCPToolItem.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
     "shadcn/no-restyle": {
       "count": 4
     }
@@ -1622,7 +1579,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 1
     },
     "shadcn/no-restyle": {
       "count": 4
@@ -1651,7 +1608,7 @@
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 10
+      "count": 8
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ToolCard.tsx": {
@@ -1687,7 +1644,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 9
     }
   },
   "client/src/components/SidePanel/Agents/Version/VersionPanel.tsx": {
@@ -1712,7 +1669,7 @@
   },
   "client/src/components/SidePanel/Builder/ActionCallback.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Builder/ActionsAuth.tsx": {
@@ -1798,12 +1755,12 @@
   },
   "client/src/components/SidePanel/Memories/MemoryCreateDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 10
     }
   },
   "client/src/components/SidePanel/Memories/MemoryEditDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 11
     }
   },
   "client/src/components/SidePanel/Memories/MemoryPanel.tsx": {
@@ -1856,7 +1813,7 @@
   },
   "client/src/components/SidePanel/Schedules/ScheduleDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 22
+      "count": 14
     }
   },
   "client/src/components/SidePanel/Schedules/SchedulePanel.tsx": {
@@ -1892,9 +1849,6 @@
   "client/src/components/Skills/display/SkillMarkdownRenderer.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Skills/display/SkillState.tsx": {
@@ -1910,9 +1864,6 @@
   "client/src/components/Skills/forms/SkillContentEditor.tsx": {
     "shadcn/no-restyle": {
       "count": 13
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Skills/forms/SkillForm.tsx": {
@@ -1937,7 +1888,7 @@
   },
   "client/src/components/Skills/tree/SkillFileEditor.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 4
+      "count": 3
     },
     "shadcn/no-restyle": {
       "count": 18

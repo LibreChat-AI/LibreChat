@@ -225,7 +225,7 @@ export default function DataTable<TData, TValue>({ columns, data }: DataTablePro
                             key={cell.id}
                             size="compact"
                             className={cn(
-                              'align-start px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
+                              'px-2 text-xs sm:px-4 sm:text-sm [tr[data-disabled=true]_&]:opacity-50',
                               cell.column.id === 'select' ? 'overflow-visible' : 'overflow-x-auto',
                             )}
                             style={style}

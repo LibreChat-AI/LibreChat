@@ -116,7 +116,8 @@ const SteerPart = memo(function SteerPart({
   return (
     <div
       id={steerId ? `steer-${steerId}` : undefined}
-      className="steer-render group relative my-5 flex w-full justify-end"
+      data-steer-render
+      className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
       <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
