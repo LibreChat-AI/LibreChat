@@ -70,7 +70,8 @@ test.describe('layered surfaces', () => {
       expect(await paint(page, '.bg-surface-user-message')).toBe(
         rgb(colors['rgb-surface-user-message']),
       );
-      expect(canvas).not.toBe(await paint(page, sidebar));
+      /** Click UI draws its sidebar on the page background and separates it by the sidebar stroke. */
+      expect(canvas).toBe(await paint(page, sidebar));
       expect(await paint(page, '.bg-surface-user-message')).not.toBe(canvas);
     }
   });
