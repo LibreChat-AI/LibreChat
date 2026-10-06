@@ -6,6 +6,9 @@ export type PullRequestCapabilities = {
   pullRequestsEnabled: boolean;
   /** Present only with the feature on, so a client never sees a version without the flag. */
   pullRequestsBatchVersion?: typeof PULL_REQUEST_BATCH_VERSION;
+  /** The lookups one batch runs at once, so a client that falls back to the single route can
+   *  keep to the same limit while a replica without the batch route is still serving it. */
+  pullRequestsMaxConcurrentLookups?: number;
 };
 
 /**
@@ -20,6 +23,11 @@ export function resolvePullRequestCapabilities(
   const enabled = agents?.pullRequests?.enabled === true;
   return {
     pullRequestsEnabled: enabled,
-    ...(enabled ? { pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION } : {}),
+    ...(enabled
+      ? {
+          pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION,
+          pullRequestsMaxConcurrentLookups: agents?.pullRequests?.maxConcurrentLookups ?? 4,
+        }
+      : {}),
   };
 }

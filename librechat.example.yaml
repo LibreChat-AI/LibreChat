@@ -954,6 +954,7 @@ endpoints:
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
   #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
   #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxCandidatePages: 1 # pages of those read per state, for branch names reused more often (1 to 10)
   #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.

@@ -6,11 +6,18 @@ const configWith = (pullRequests?: Record<string, unknown>) =>
   ({ endpoints: { agents: pullRequests ? { pullRequests } : {} } }) as unknown as AppConfig;
 
 describe('resolvePullRequestCapabilities', () => {
-  it('advertises the flag and the batch version together when the feature is on', () => {
+  it('advertises the flag, the batch version and the lookup limit together when the feature is on', () => {
     expect(resolvePullRequestCapabilities(configWith({ enabled: true }))).toEqual({
       pullRequestsEnabled: true,
       pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION,
+      pullRequestsMaxConcurrentLookups: 4,
     });
+  });
+
+  it('advertises the configured lookup limit', () => {
+    expect(
+      resolvePullRequestCapabilities(configWith({ enabled: true, maxConcurrentLookups: 2 })),
+    ).toMatchObject({ pullRequestsMaxConcurrentLookups: 2 });
   });
 
   it.each([
@@ -24,5 +31,6 @@ describe('resolvePullRequestCapabilities', () => {
     const capabilities = resolvePullRequestCapabilities(appConfig);
     expect(capabilities).toEqual({ pullRequestsEnabled: false });
     expect(capabilities).not.toHaveProperty('pullRequestsBatchVersion');
+    expect(capabilities).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
   });
 });

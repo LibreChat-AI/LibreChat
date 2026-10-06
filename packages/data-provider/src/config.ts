@@ -1900,6 +1900,9 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Pull requests listed per state when matching a branch's history to the commit a chat
            *  last ran at. Raise it for branch names that are reused many times. */
           maxCandidatePullRequests: z.number().int().min(1).max(100).optional().default(10),
+          /** Pages of those candidates read per state, so a branch name reused more often than one
+           *  page holds can still reach an older match. Each page is one request. */
+          maxCandidatePages: z.number().int().min(1).max(10).optional().default(1),
           /** Candidates compared with that commit before the search gives up. Each is one request. */
           maxHeadComparisons: z.number().int().min(0).max(20).optional().default(3),
         })
@@ -3154,6 +3157,9 @@ export type TStartupConfig = {
   pullRequestsEnabled?: boolean;
   /** Present with `pullRequestsEnabled` once this server has the batch route the sidebar uses. */
   pullRequestsBatchVersion?: typeof PULL_REQUEST_BATCH_VERSION;
+  /** `endpoints.agents.pullRequests.maxConcurrentLookups`, so the single-route fallback of an
+   *  upgrade in progress keeps to the limit the operator configured. */
+  pullRequestsMaxConcurrentLookups?: number;
   /** Manual context compaction, gated by the same `summarization.enabled`
    *  switch that governs the automatic detour. */
   compactionEnabled?: boolean;

@@ -486,9 +486,9 @@ describe('matching the recorded head', () => {
     expect(compares.length).toBeLessThanOrEqual(3);
   });
 
-  it.each([null, undefined])('does not compare when no head was recorded (%s)', async (head) => {
+  it('does not compare when the caller never recorded a head', async () => {
     const { source, fetchFn } = sourceFor(routes('diverged'));
-    await expect(findWith(source, head)).resolves.toMatchObject({ number: 7 });
+    await expect(findWith(source, undefined)).resolves.toMatchObject({ number: 7 });
     expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
   });
 
@@ -675,5 +675,262 @@ describe('a secondary rate limit without limiting headers', () => {
     const error = await find(source).catch((caught) => caught);
     expect(JSON.stringify(error)).not.toContain('secondary rate limit');
     expect(String(error.message)).not.toContain('secondary');
+  });
+});
+
+describe('a 429 that carries no wait', () => {
+  const body = (message: string) => () =>
+    new Response(JSON.stringify({ message }), { status: 429 });
+
+  it('is read for the secondary limit message and waits at least a minute', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': body('You have exceeded a secondary rate limit.'),
+    });
+    const error = await find(source).catch((caught) => caught);
+    expect(error.code).toBe('RATE_LIMITED');
+    expect(error.retryAfterMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('keeps the wait GitHub named, whatever the body says', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () =>
+        new Response(JSON.stringify({ message: 'secondary rate limit' }), {
+          status: 429,
+          headers: { 'retry-after': '7' },
+        }),
+    });
+    const error = await find(source).catch((caught) => caught);
+    expect(error.retryAfterMs).toBe(7_000);
+  });
+
+  it('leaves the wait unnamed for an ordinary 429', async () => {
+    const { source } = sourceFor({ '/pulls?state=open': body('Too many requests') });
+    const error = await find(source).catch((caught) => caught);
+    expect(error.code).toBe('RATE_LIMITED');
+    expect(error.retryAfterMs).toBeUndefined();
+  });
+});
+
+describe('check runs of a head that vanished', () => {
+  it('is an upstream error, not a pull request with no checks', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull()),
+      '/check-runs': () => new Response('', { status: 404 }),
+    });
+    await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+  });
+
+  it('is an upstream error when a later page of check runs disappears', async () => {
+    let calls = 0;
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull()),
+      '/check-runs': () =>
+        ++calls === 1
+          ? json({
+              total_count: 150,
+              check_runs: Array.from({ length: 100 }, () => ({
+                status: 'completed',
+                conclusion: 'success',
+              })),
+            })
+          : new Response('', { status: 404 }),
+    });
+    await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+  });
+});
+
+describe('a lane with a branch and no commit yet', () => {
+  it('matches nothing, so an earlier incarnation of the branch name is never shown', async () => {
+    const { source, fetchFn } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([{ number: 9, state: 'closed', head: { sha } }]),
+      '/pulls/9': () => json(pull({ number: 9, state: 'closed', merged: true })),
+      '/check-runs': () => json({ check_runs: [] }),
+    });
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', head: null, token: 't' }),
+    ).resolves.toBeNull();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('still matches by branch when the caller never recorded a head', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json(listed()),
+      '/pulls/7': () => json(pull()),
+      '/check-runs': () => json({ check_runs: [] }),
+    });
+    await expect(find(source)).resolves.toMatchObject({ number: 7 });
+  });
+});
+
+describe('open pull requests before closed ones, from any repository', () => {
+  const recorded = 'c'.repeat(40);
+  it('prefers an open pull request from a fork over a closed one in the base repository', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([{ number: 5, state: 'closed', head: { sha: recorded } }]),
+      '/pulls?per_page': () =>
+        json([{ number: 12, state: 'open', head: { sha: recorded, ref: 'feat/x' } }]),
+      '/pulls/12': () => json(pull({ number: 12, head: { sha: recorded } })),
+      '/pulls/5': () => json(pull({ number: 5, state: 'closed', head: { sha: recorded } })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, token: 't' }),
+    ).resolves.toMatchObject({ number: 12, state: 'open' });
+  });
+
+  it('still takes a closed pull request when no open one matches anywhere', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () => json([]),
+      '/pulls?state=closed': () => json([{ number: 5, state: 'closed', head: { sha: recorded } }]),
+      '/pulls?per_page': () => json([]),
+      '/pulls/5': () =>
+        json(pull({ number: 5, state: 'closed', merged: true, head: { sha: recorded } })),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, token: 't' }),
+    ).resolves.toMatchObject({ number: 5, state: 'merged' });
+  });
+});
+
+describe('the checks of a fork pull request', () => {
+  const recorded = 'c'.repeat(40);
+  const routes = () => ({
+    '/pulls?state=open': () => json([]),
+    '/pulls?state=closed': () => json([]),
+    '/pulls?per_page': () =>
+      json([{ number: 12, state: 'open', head: { sha: recorded, ref: 'feat/x' } }]),
+    '/pulls/12': () =>
+      json(
+        pull({
+          number: 12,
+          head: { sha: recorded, repo: { full_name: 'fork-owner/r' } },
+        }),
+      ),
+    '/check-runs': () =>
+      json({ total_count: 1, check_runs: [{ status: 'completed', conclusion: 'failure' }] }),
+  });
+  const run = (
+    source: ReturnType<typeof createGitHubPullRequestSource>,
+    allowedRepositories?: string[],
+  ) =>
+    source.find({
+      repo: 'o/r',
+      branch: 'feat/x',
+      head: recorded,
+      token: 't',
+      allowedRepositories,
+    });
+  const checkUrls = (fetchFn: jest.Mock) =>
+    fetchFn.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('/check-runs'));
+
+  it('reads them from the fork when an administrator allowed that repository', async () => {
+    const { source, fetchFn } = sourceFor(routes());
+    await expect(run(source, ['o/r', 'fork-owner/*'])).resolves.toMatchObject({
+      checks: 'failing',
+    });
+    expect(checkUrls(fetchFn)[0]).toContain('/repos/fork-owner/r/commits/');
+  });
+
+  it('never sends the token to a fork nobody allowed, and reads the base repository', async () => {
+    const { source, fetchFn } = sourceFor(routes());
+    await run(source, ['o/r']);
+    expect(checkUrls(fetchFn)[0]).toContain('/repos/o/r/commits/');
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('fork-owner'))).toBe(false);
+  });
+
+  it('reads the base repository when the head lives there', async () => {
+    const { source, fetchFn } = sourceFor({
+      ...routes(),
+      '/pulls/12': () =>
+        json(pull({ number: 12, head: { sha: recorded, repo: { full_name: 'O/R' } } })),
+    });
+    await run(source, ['o/r', 'fork-owner/*']);
+    expect(checkUrls(fetchFn)[0]).toContain('/repos/o/r/commits/');
+  });
+});
+
+describe('reading more than one page of candidates', () => {
+  const recorded = 'c'.repeat(40);
+  const item = (number: number, sha_: string) => ({ number, state: 'open', head: { sha: sha_ } });
+  const pageOf = (url: string) => Number(new URL(url).searchParams.get('page') ?? '1');
+
+  function paged(pages: unknown[][]) {
+    const fetchFn = jest.fn(async (input: string) => {
+      const url = String(input);
+      if (url.includes('/pulls?state=open')) return json(pages[pageOf(url) - 1] ?? []);
+      if (url.includes('/pulls?state=closed')) return json([]);
+      if (url.includes('/compare/')) {
+        return json({ status: url.includes(`...${'d'.repeat(40)}`) ? 'ahead' : 'diverged' });
+      }
+      if (url.includes('/pulls/')) {
+        return json(
+          pull({ number: Number(url.split('/pulls/')[1]), head: { sha: 'd'.repeat(40) } }),
+        );
+      }
+      if (url.includes('/check-runs')) return json({ total_count: 0, check_runs: [] });
+      if (url.includes('/commits/')) return json([]);
+      throw new Error(`unexpected ${url}`);
+    });
+    return { fetchFn, source: createGitHubPullRequestSource({ fetchFn }) };
+  }
+  const first = Array.from({ length: 2 }, (_, i) => item(i + 1, 'e'.repeat(40)));
+  const second = [item(30, 'd'.repeat(40))];
+  const limits = { maxCandidatePullRequests: 2, maxHeadComparisons: 5 };
+
+  it('reaches an older matching pull request on a later page within the budget', async () => {
+    const { source } = paged([first, second]);
+    await expect(
+      source.find({
+        repo: 'o/r',
+        branch: 'feat/x',
+        head: recorded,
+        token: 't',
+        limits: { ...limits, maxCandidatePages: 2 },
+      }),
+    ).resolves.toMatchObject({ number: 30 });
+  });
+
+  it('stops at one page by default, as before', async () => {
+    const { source, fetchFn } = paged([first, second]);
+    await expect(
+      source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, token: 't', limits }),
+    ).resolves.toBeNull();
+    expect(
+      fetchFn.mock.calls.filter(([url]) => String(url).includes('/pulls?state=open')),
+    ).toHaveLength(1);
+  });
+
+  it('does not ask for another page after a short one', async () => {
+    const { source, fetchFn } = paged([[item(1, 'e'.repeat(40))], second]);
+    await source.find({
+      repo: 'o/r',
+      branch: 'feat/x',
+      head: recorded,
+      token: 't',
+      limits: { ...limits, maxCandidatePages: 5 },
+    });
+    expect(
+      fetchFn.mock.calls.filter(([url]) => String(url).includes('/pulls?state=open')),
+    ).toHaveLength(1);
+  });
+
+  it('never reads past the configured page budget', async () => {
+    const full = [first, first, first, first, first];
+    const { source, fetchFn } = paged(full);
+    await source.find({
+      repo: 'o/r',
+      branch: 'feat/x',
+      head: recorded,
+      token: 't',
+      limits: { ...limits, maxCandidatePages: 3 },
+    });
+    expect(
+      fetchFn.mock.calls.filter(([url]) => String(url).includes('/pulls?state=open')),
+    ).toHaveLength(3);
   });
 });

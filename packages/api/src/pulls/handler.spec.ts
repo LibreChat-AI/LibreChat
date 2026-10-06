@@ -88,12 +88,14 @@ describe('createConversationPullRequestHandler', () => {
       ttlMs: 30_000,
       cacheMaxEntries: 500,
       cacheMaxCredentials: 256,
+      allowedRepositories: ['o/r'],
       limits: {
         requestTimeoutMs: 10_000,
         lookupTimeoutMs: 30_000,
         maxCheckRunPages: 10,
         maxCandidatePullRequests: 10,
         maxHeadComparisons: 3,
+        maxCandidatePages: 1,
       },
     });
     expect(res.status).toHaveBeenCalledWith(200);
@@ -108,6 +110,7 @@ describe('createConversationPullRequestHandler', () => {
         lookupTimeoutSeconds: 8,
         maxCheckRunPages: 4,
         maxCandidatePullRequests: 25,
+        maxCandidatePages: 4,
         maxHeadComparisons: 6,
         cacheMaxEntries: 77,
         cacheMaxCredentials: 12,
@@ -124,6 +127,7 @@ describe('createConversationPullRequestHandler', () => {
           maxCheckRunPages: 4,
           maxCandidatePullRequests: 25,
           maxHeadComparisons: 6,
+          maxCandidatePages: 4,
         },
       }),
     );
@@ -810,6 +814,60 @@ describe('createConversationPullRequestsHandler', () => {
           conversationId,
           pullRequest: pr,
         })),
+      });
+    });
+
+    it('joins a lane another request already started instead of taking a slot of its own for it', async () => {
+      const started: string[] = [];
+      const releases: Array<() => void> = [];
+      const lookup = jest.fn(
+        (input: { branch: string }) =>
+          new Promise((resolve) => {
+            started.push(input.branch);
+            releases.push(() => resolve({ ok: true, value: pr }));
+          }),
+      );
+      const rows = [
+        lane('a', 'o/r', 'feat/shared'),
+        lane('b', 'o/r', 'feat/shared'),
+        lane('e', 'o/r', 'feat/other'),
+      ];
+      const handler = createConversationPullRequestsHandler({
+        getConvosLaneGit: jest.fn(async (_user: string, wanted: string[]) =>
+          rows.filter((row) => wanted.includes(row.conversationId)),
+        ),
+        getAppConfig: jest
+          .fn()
+          .mockResolvedValue(
+            configWith({ ...enabled, maxConcurrentLookups: 1, batchTimeoutSeconds: 5 }),
+          ),
+        lookup: lookup as never,
+        env: { GH_TOKEN: 'ghp_secret' },
+      });
+      const call = (conversationIds: string[]) => {
+        const out = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+        const done = handler(
+          { user: { id: 'u1' }, body: { conversationIds } } as unknown as ServerRequest,
+          out as unknown as Response,
+        );
+        return { out, done };
+      };
+      const first = call(['a']);
+      await flush();
+      const second = call(['b', 'e']);
+      await flush();
+      expect(started).toEqual(['feat/shared']);
+      releases.shift()?.();
+      await flush();
+      /** The shared lane was answered once for both requests, so the only slot went to the other lane. */
+      expect(started).toEqual(['feat/shared', 'feat/other']);
+      releases.shift()?.();
+      await Promise.all([first.done, second.done]);
+      expect(second.out.json).toHaveBeenCalledWith({
+        results: [
+          { conversationId: 'b', pullRequest: pr },
+          { conversationId: 'e', pullRequest: pr },
+        ],
       });
     });
 

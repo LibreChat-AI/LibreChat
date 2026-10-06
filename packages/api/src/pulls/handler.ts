@@ -14,6 +14,7 @@ import type { GetAppConfigOptions } from '~/app/service';
 import type { PullRequestLookup } from './types';
 import type { ServerRequest } from '~/types';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { isAllowedRepository } from './repository';
 import { getSafeErrorMetadata } from '~/utils';
 
 const MAX_CONVERSATION_ID_LENGTH = 256;
@@ -29,15 +30,6 @@ export function resolveTokenReference(
   const name = reference == null ? undefined : TOKEN_REFERENCE.exec(reference)?.[1];
   if (name == null) return null;
   return env[name]?.trim() || null;
-}
-
-/** `owner/name` or `owner/*`, compared without case as GitHub does. Nothing else matches. */
-export function isAllowedRepository(repo: string, allowed: readonly string[] | undefined): boolean {
-  const [owner, name] = repo.toLowerCase().split('/');
-  return (allowed ?? []).some((entry) => {
-    const [allowedOwner, allowedName] = entry.toLowerCase().split('/');
-    return allowedOwner === owner && (allowedName === '*' || allowedName === name);
-  });
 }
 
 const validConversationId = (value: string | undefined): value is string =>
@@ -91,6 +83,68 @@ function createLookupLimiter() {
   };
 }
 
+type LookupResultOf = Awaited<ReturnType<PullRequestLookup>>;
+type SharedLookup = { promise: Promise<LookupResultOf | typeof TIMED_OUT>; interested: number };
+
+/**
+ * One upstream lookup per distinct input across every batch request of a handler. The first
+ * request that needs a lane starts it and takes its slot; any other request for the same lane,
+ * however concurrent, joins that promise and takes none. Interest is counted, so a lookup still
+ * waiting for a slot starts only while some request still wants its answer, and one request
+ * giving up never cancels what another is waiting for.
+ */
+function createSharedLookups(
+  limiter: ReturnType<typeof createLookupLimiter>,
+  lookup: PullRequestLookup,
+) {
+  const shared = new Map<string, SharedLookup>();
+  return {
+    /** `leave` must be called by a caller that stops waiting before the answer arrives. */
+    join(
+      key: string,
+      scope: string,
+      limit: number,
+      input: Parameters<PullRequestLookup>[0],
+    ): { promise: SharedLookup['promise']; leave: () => void } {
+      let entry = shared.get(key);
+      if (entry == null) {
+        const created: SharedLookup = {
+          interested: 0,
+          promise: Promise.resolve(TIMED_OUT),
+        };
+        created.promise = (async () => {
+          await limiter.acquire(scope, limit);
+          try {
+            if (created.interested === 0) {
+              /** Nobody is waiting any more; a later request must start its own. */
+              if (shared.get(key) === created) shared.delete(key);
+              return TIMED_OUT;
+            }
+            return await lookup(input);
+          } finally {
+            limiter.release(scope, limit);
+          }
+        })().finally(() => {
+          if (shared.get(key) === created) shared.delete(key);
+        });
+        shared.set(key, created);
+        entry = created;
+      }
+      const joined = entry;
+      joined.interested += 1;
+      let left = false;
+      return {
+        promise: joined.promise,
+        leave: () => {
+          if (left) return;
+          left = true;
+          joined.interested -= 1;
+        },
+      };
+    },
+  };
+}
+
 /** A credential's digest, never the token, names the scope a lookup's slot is counted in. */
 const limiterScope = (token: string): string =>
   createHash('sha256').update(token).digest('hex').slice(0, 32);
@@ -129,12 +183,14 @@ function lookupInput(settings: PullRequestSettings, token: string, lane: Eligibl
     ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
     cacheMaxEntries: settings.cacheMaxEntries ?? 500,
     cacheMaxCredentials: settings.cacheMaxCredentials ?? 256,
+    allowedRepositories: settings.allowedRepositories ?? [],
     limits: {
       requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
       lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,
       maxCheckRunPages: settings.maxCheckRunPages ?? 10,
       maxCandidatePullRequests: settings.maxCandidatePullRequests ?? 10,
       maxHeadComparisons: settings.maxHeadComparisons ?? 3,
+      maxCandidatePages: settings.maxCandidatePages ?? 1,
     },
   };
 }
@@ -257,6 +313,7 @@ export function createConversationPullRequestsHandler(deps: {
   env: Readonly<Record<string, string | undefined>>;
 }) {
   const limiter = createLookupLimiter();
+  const sharedLookups = createSharedLookups(limiter, deps.lookup);
   return async (req: ServerRequest, res: Response): Promise<void> => {
     const userId = req.user?.id;
     const ids = parseConversationIds(req.body);
@@ -358,22 +415,26 @@ export function createConversationPullRequestsHandler(deps: {
         | { ok: false; code: string };
       const outcomes = new Map<string, Outcome>();
       await mapWithLimit([...distinct.entries()], limit, async ([key, lane]): Promise<void> => {
-        /** Checked before a slot is taken, so nothing starts once time is up. */
+        /** Checked before anything is joined, so nothing starts once time is up. */
         const remaining = deadline - Date.now();
-        let abandoned = false;
-        /** Holds its slot until the lookup itself ends, whether or not anyone is still waiting. */
-        const run = async () => {
-          await limiter.acquire(scope, limit);
-          try {
-            if (abandoned) return TIMED_OUT;
-            return await deps.lookup(lookupInput(settings, token, lane));
-          } finally {
-            limiter.release(scope, limit);
-          }
-        };
-        const result = remaining <= 0 ? TIMED_OUT : await withDeadline(run(), remaining);
+        if (remaining <= 0) {
+          outcomes.set(key, { ok: false, code: 'UPSTREAM_ERROR' });
+          return;
+        }
+        const input = lookupInput(settings, token, lane);
+        /** The same lane under the same policy is one lookup for every request that wants it. */
+        const shareKey = `${scope}\0${JSON.stringify([
+          input.repo,
+          input.branch,
+          input.head,
+          input.ttlMs,
+          input.limits,
+          input.allowedRepositories,
+        ])}`;
+        const joined = sharedLookups.join(shareKey, scope, limit, input);
+        const result = await withDeadline(joined.promise, remaining);
         if (result === TIMED_OUT) {
-          abandoned = true;
+          joined.leave();
           outcomes.set(key, { ok: false, code: 'UPSTREAM_ERROR' });
           return;
         }

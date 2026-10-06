@@ -3275,6 +3275,55 @@ describe('ToolService - Action Capability Gating', () => {
     });
 
     it.each([
+      ['a moved conversation', 3, 3],
+      ['a conversation never moved', 0, 0],
+      ['a conversation whose admitted read carried no epoch', undefined, undefined],
+    ])(
+      'fences the lane report by the epoch of the admitted decision for %s',
+      async (_label, admitted, expected) => {
+        const capabilities = [
+          AgentCapabilities.tools,
+          AgentCapabilities.execute_code,
+          AgentCapabilities.stateful_code_sessions,
+        ];
+        const req = createMockReq(capabilities);
+        req.config.endpoints[EModelEndpoint.agents].pullRequests = { enabled: true };
+        req.resolvedConversation = {
+          conversationId: 'resolved-convo',
+          codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+          ...(admitted === undefined ? {} : { codeAttachmentEpoch: admitted }),
+        };
+        req.body = {
+          conversationId: 'resolved-convo',
+          codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+        };
+        mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+        req.config.endpoints[EModelEndpoint.agents].statefulCodeSessions = {
+          environments: [attachedEnvironment()],
+        };
+        mockCreateLaneGitRecorder.mockClear();
+
+        await loadToolsForExecution({
+          req,
+          res: {},
+          agent: {
+            id: 'attached-agent',
+            tools: [Tools.execute_code],
+            stateful_code_sessions: true,
+            stateful_code_environment: 'agent-user',
+            code_environment_id: 'personal-machine',
+          },
+          conversationId: 'resolved-convo',
+          toolNames: [AgentConstants.BASH_TOOL],
+          toolRegistry: new Map([[AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }]]),
+          actionsEnabled: false,
+        });
+
+        expect(mockCreateLaneGitRecorder.mock.calls[0][0].admittedEpoch).toBe(expected);
+      },
+    );
+
+    it.each([
       ['unset', undefined],
       ['disabled', { enabled: false }],
     ])('does not enable lane recording when pull requests are %s', async (_label, setting) => {

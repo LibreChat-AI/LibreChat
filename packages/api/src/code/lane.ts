@@ -79,6 +79,7 @@ export async function createLaneGitRecorder({
   conversationId,
   repo,
   workspace,
+  admittedEpoch,
   getConvoLaneContext,
   reserveConvoLaneGitSeq,
   setConvoLaneGit,
@@ -89,6 +90,13 @@ export async function createLaneGitRecorder({
   conversationId: string | undefined;
   repo?: string;
   workspace?: { environmentId: string; workspaceId: string };
+  /**
+   * The attachment epoch read in the same snapshot as the workspace this run was admitted on (the
+   * admitted decision carries both). For a conversation that is its own lane it is the epoch the
+   * fence uses, so an A to B to A move between two separate reads cannot satisfy both. A subagent
+   * thread writes to its root, whose epoch only the route read can supply, so it still reads it.
+   */
+  admittedEpoch?: number;
   getConvoLaneContext?: LaneContextReader;
   reserveConvoLaneGitSeq: LaneSeqReserver;
   setConvoLaneGit: LaneGitWriter;
@@ -103,7 +111,7 @@ export async function createLaneGitRecorder({
     placed = {
       conversationId: root || conversationId,
       required: Boolean(root),
-      epoch: context?.codeAttachmentEpoch ?? 0,
+      epoch: (root ? undefined : admittedEpoch) ?? context?.codeAttachmentEpoch ?? 0,
     };
   } catch (error) {
     logger.warn('[LaneGit] Failed to place a lane recorder', getSafeErrorMetadata(error));

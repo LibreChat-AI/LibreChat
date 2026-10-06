@@ -18,7 +18,15 @@ export class PullRequestBatchError extends Error {
 type Waiter = {
   resolve: (value: TConversationPullRequestResponse) => void;
   reject: (reason: unknown) => void;
+  /** Set when its caller stopped waiting; nothing is sent, or kept running, only for such waiters. */
+  cancelled?: boolean;
 };
+
+/** A request that has been queued or sent and not yet settled. */
+type Dispatch = { waiters: Map<string, Waiter[]>; controller?: AbortController };
+
+const hasLiveWaiter = (list: Waiter[] | undefined): boolean =>
+  list?.some((waiter) => !waiter.cancelled) === true;
 
 type BatcherOptions = {
   /**
@@ -71,8 +79,17 @@ export function createPullRequestBatcher({
   let tail: Promise<void> = Promise.resolve();
   /** Aborts whatever request is on the wire, so disposal does not leave its work running. */
   let active: AbortController | undefined;
+  /** Requests queued or on the wire, so a cancel can tell when one has nobody left waiting. */
+  const dispatches = new Set<Dispatch>();
 
-  const send = (ids: string[], waiters: Map<string, Waiter[]>): Promise<void> => {
+  const send = (dispatch: Dispatch): Promise<void> => {
+    const { waiters } = dispatch;
+    /** Ids nobody waits for any more (their rows unmounted while queued) are never asked for. */
+    const ids = [...waiters.keys()].filter((id) => hasLiveWaiter(waiters.get(id)));
+    if (!disposed && ids.length === 0) {
+      dispatches.delete(dispatch);
+      return Promise.resolve();
+    }
     /** Work that was still waiting its turn when the batcher was disposed never goes out. */
     if (disposed) {
       for (const list of waiters.values()) {
@@ -97,6 +114,7 @@ export function createPullRequestBatcher({
       for (const list of waiters.values()) list.forEach((waiter) => waiter.reject(error));
     };
     const controller = new AbortController();
+    dispatch.controller = controller;
     active = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
     /**
@@ -124,6 +142,7 @@ export function createPullRequestBatcher({
       .catch(fail)
       .finally(() => {
         clearTimeout(timer);
+        dispatches.delete(dispatch);
         if (active === controller) active = undefined;
       });
   };
@@ -138,7 +157,9 @@ export function createPullRequestBatcher({
         waiters.set(id, pending.get(id) ?? []);
         pending.delete(id);
       }
-      tail = tail.then(() => send(chunk, waiters));
+      const dispatch: Dispatch = { waiters };
+      dispatches.add(dispatch);
+      tail = tail.then(() => send(dispatch));
     }
   };
 
@@ -159,19 +180,50 @@ export function createPullRequestBatcher({
       }
       pending.clear();
     },
-    load(conversationId: string): Promise<TConversationPullRequestResponse> {
+    /**
+     * `signal` withdraws this caller: it is rejected at once, its id leaves the queue if it has not
+     * gone out, and a request nobody is waiting for any more is not started, or is aborted if it
+     * is already on the wire, so rows that scrolled away never hold up the ones now visible.
+     */
+    load(conversationId: string, signal?: AbortSignal): Promise<TConversationPullRequestResponse> {
       if (disposed) return Promise.reject(new PullRequestBatchError('DISPOSED'));
+      if (signal?.aborted) return Promise.reject(new PullRequestBatchError('ABORTED'));
       return new Promise((resolve, reject) => {
+        const waiter: Waiter = { resolve, reject };
         const waiters = pending.get(conversationId) ?? [];
-        waiters.push({ resolve, reject });
+        waiters.push(waiter);
         pending.set(conversationId, waiters);
         timer ??= setTimeout(flush, delayMs);
+        signal?.addEventListener(
+          'abort',
+          () => {
+            waiter.cancelled = true;
+            reject(new PullRequestBatchError('ABORTED'));
+            const queued = pending.get(conversationId);
+            if (queued != null) {
+              const rest = queued.filter((candidate) => candidate !== waiter);
+              if (rest.length > 0) pending.set(conversationId, rest);
+              else pending.delete(conversationId);
+              if (pending.size === 0) {
+                clearTimeout(timer);
+                timer = undefined;
+              }
+            }
+            for (const dispatch of dispatches) {
+              const ids = [...dispatch.waiters.values()];
+              if (ids.every((list) => !hasLiveWaiter(list))) dispatch.controller?.abort();
+            }
+          },
+          { once: true },
+        );
       });
     },
   };
 }
 
-const FALLBACK_CONCURRENCY = 4;
+/** An unknown or unusable limit is one call at a time, never more than the operator allowed. */
+const usableConcurrency = (value: number | undefined): number =>
+  value != null && Number.isInteger(value) && value >= 1 ? value : 1;
 
 const statusOf = (error: unknown): number | undefined => {
   if (error == null || typeof error !== 'object') return undefined;
@@ -187,13 +239,17 @@ const codeOf = (error: unknown): string => {
 /**
  * Asks the batch route, and when the server that answered does not have it (a replica that has
  * not been upgraded yet answers 404, whatever the startup config of another replica advertised),
- * asks the single route for each conversation instead, a few at a time. Anything but a 404 is a
+ * asks the single route for each conversation instead, at the limit the server advertised (one at
+ * a time when it did not say), since the single route has no limiter. Anything but a 404 is a
  * real failure and is passed on untouched.
  */
 export function createBatchFetcher({
   fetchMany,
   fetchOne,
+  concurrency,
 }: {
+  /** The limit the server advertised, read when the fallback runs; one call at a time without it. */
+  concurrency?: () => number | undefined;
   fetchMany: (
     conversationIds: string[],
     signal: AbortSignal,
@@ -233,7 +289,10 @@ export function createBatchFetcher({
       }
     };
     await Promise.all(
-      Array.from({ length: Math.min(FALLBACK_CONCURRENCY, conversationIds.length) }, worker),
+      Array.from(
+        { length: Math.min(usableConcurrency(concurrency?.()), conversationIds.length) },
+        worker,
+      ),
     );
     if (signal.aborted) throw new PullRequestBatchError('ABORTED');
     return { results };

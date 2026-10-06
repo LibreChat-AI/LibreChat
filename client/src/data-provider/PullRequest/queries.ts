@@ -61,11 +61,15 @@ export const useConversationPullRequestQuery = (
   );
 };
 
+/** What the server last advertised, for a fallback that has no batch limiter to lean on. */
+let advertisedConcurrency: number | undefined;
+
 const fetchRows = createBatchFetcher({
   fetchMany: (conversationIds, signal) =>
     dataService.getConversationPullRequests(conversationIds, { signal }),
   fetchOne: (conversationId, signal) =>
     dataService.getConversationPullRequest(conversationId, { signal }),
+  concurrency: () => advertisedConcurrency,
 });
 
 type RowBatcher = ReturnType<typeof createPullRequestBatcher>;
@@ -86,6 +90,16 @@ const batcherFor = (userId: string): RowBatcher => {
 };
 
 /**
+ * Ends the row queue with the session. Called wherever the session's client state is cleared, so
+ * signing back in as the same account starts a fresh queue and neither waits behind, nor sends,
+ * anything the previous session left.
+ */
+export const endPullRequestSession = (): void => {
+  rowBatcher?.batcher.dispose();
+  rowBatcher = undefined;
+};
+
+/**
  * The pull request of a sidebar row. It shares its cache entry with the header's query, so the
  * open conversation is never fetched twice, but it never polls: a list of rows would otherwise
  * poll GitHub once per row. It refreshes when the window regains focus and a row's answer is
@@ -97,7 +111,10 @@ export const useRowPullRequestQuery = (conversationId: string) => {
   const userId = useRecoilValue(store.user)?.id ?? '';
   return useQuery<TConversationPullRequestResponse>(
     [QueryKeys.conversationPullRequest, conversationId],
-    () => batcherFor(userId).load(conversationId),
+    ({ signal }) => {
+      advertisedConcurrency = startupConfig?.pullRequestsMaxConcurrentLookups;
+      return batcherFor(userId).load(conversationId, signal);
+    },
     {
       /** The batch route is newer than the flag: ask only a server that says it has it. */
       enabled:

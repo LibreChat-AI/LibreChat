@@ -2376,6 +2376,7 @@ async function loadToolsForExecution({
                   environmentId: codeExecutionContext.codeWorkspace.environmentId,
                   workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
                 },
+                admittedEpoch: req.resolvedConversation?.codeAttachmentEpoch,
                 getConvoLaneContext,
                 reserveConvoLaneGitSeq,
                 setConvoLaneGit,

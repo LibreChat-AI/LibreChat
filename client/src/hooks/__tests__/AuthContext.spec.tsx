@@ -52,6 +52,7 @@ let mockCapturedLogoutOptions: {
   onError: (...args: unknown[]) => void;
 };
 
+const mockEndPullRequestSession = jest.fn();
 const mockRefreshMutate = jest.fn();
 const mockLoginMutate = jest.fn();
 const mockLogoutMutate = jest.fn();
@@ -83,6 +84,7 @@ jest.mock('~/data-provider', () => ({
     error: null,
   })),
   useGetRole: jest.fn(() => ({ data: null })),
+  endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
 
@@ -506,6 +508,28 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     expect(jotaiStore.get(chatFilterTagsAtom)).toEqual([]);
     expect(jotaiStore.get(chatSortAtom)).toEqual({ field: 'title', direction: 'asc' });
     jotaiStore.set(resetChatFilterSessionAtom);
+  });
+
+  it('ends the sidebar pull request queue at the logout session boundary', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockEndPullRequestSession).toHaveBeenCalled();
+  });
+
+  it('does not end the sidebar pull request queue while a session is being established', () => {
+    mockEndPullRequestSession.mockClear();
+    renderProvider();
+
+    act(() => {
+      capturedAuthContext?.completeAuthentication('auth-token', { id: 'user-1' } as never);
+    });
+
+    expect(mockEndPullRequestSession).not.toHaveBeenCalled();
   });
 
   it('does not call window.location.replace when redirect is absent', async () => {

@@ -10041,6 +10041,23 @@ describe('laneGit review hardening', () => {
       await expect(write(conversationId, 2, mac)).resolves.toBe(true);
     });
 
+    it('returns the epoch with the admitted decision, from the same document read', async () => {
+      const conversationId = await seedAttached([mac]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 0 });
+      await move(conversationId, [team]);
+      await expect(
+        methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId),
+      ).resolves.toMatchObject({ codeWorkspaces: [team], codeAttachmentEpoch: 1 });
+      await move(conversationId, [mac]);
+      const admitted = await methods.readAdmittedConvoCodeEnvironmentDecision(
+        'lane-user',
+        conversationId,
+      );
+      expect(admitted).toMatchObject({ codeWorkspaces: [mac], codeAttachmentEpoch: 2 });
+    });
+
     it('is not advanced by admitting a generation', async () => {
       const conversationId = await seedAttached([mac]);
       await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
@@ -10086,6 +10103,101 @@ describe('laneGit review hardening', () => {
         codeAttachmentEpoch: 1,
         subagentThread: { rootConversationId: rootId },
       });
+    });
+
+    it("does not read another user's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'someone-else',
+        title: 'Not yours',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 9,
+      });
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it('does not read an expired root, which the write path treats as gone', async () => {
+      const rootId = await seedAttached([mac]);
+      await move(rootId, [team]);
+      await Conversation.collection.updateOne(
+        { conversationId: rootId },
+        { $set: { expiredAt: new Date(Date.now() - 60_000) } },
+      );
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+
+    it("does not read another tenant's conversation as the root", async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Other tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 7,
+        tenantId: 'tenant-b',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 0 });
+    });
+
+    it('reads a root in the same tenant', async () => {
+      const rootId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: rootId,
+        user: 'lane-user',
+        title: 'Same tenant',
+        endpoint: 'agents',
+        messages: [],
+        codeAttachmentEpoch: 4,
+        tenantId: 'tenant-a',
+      });
+      const threadId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId: threadId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        tenantId: 'tenant-a',
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      const context = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.getConvoLaneContext('lane-user', threadId),
+      );
+      expect(context).toMatchObject({ codeAttachmentEpoch: 4 });
+    });
+
+    it('reads the thread and its root in one database operation', async () => {
+      const rootId = await seedAttached([mac]);
+      const threadId = await seedThread(rootId);
+      const spy = jest.spyOn(Conversation, 'findOne');
+      const aggregate = jest.spyOn(Conversation, 'aggregate');
+      await methods.getConvoLaneContext('lane-user', threadId);
+      expect(spy).not.toHaveBeenCalled();
+      expect(aggregate).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+      aggregate.mockRestore();
     });
 
     it('reads zero when the root is gone, so the write is refused rather than guessed', async () => {
