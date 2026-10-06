@@ -1371,7 +1371,7 @@ const notExpressible: Record<string, NotExpressible> = {
     appearance: ['listMaxHeight'],
     reason:
       "Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so listMaxHeight keeps LibreChat's 24rem",
-    issue: 'ISSUE_PLACEHOLDER',
+    issue: 'https://github.com/berry-13/LibreChat/issues/282',
   },
   'Checkbox corner': {
     decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },
