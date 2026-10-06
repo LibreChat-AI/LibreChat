@@ -1873,6 +1873,7 @@ export const agentsEndpointSchema = baseEndpointSchema
            *  results are evicted and GitHub is asked again. */
           cacheMaxEntries: z.number().int().min(10).max(100_000).optional().default(500),
           /** Credentials whose results are cached at once; past it the one idle longest is dropped.
+           *  Deployment-wide: when principals configure different values, the largest applies.
            *  Raise it when many tenants each configure their own token. */
           cacheMaxCredentials: z.number().int().min(1).max(10_000).optional().default(256),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */

@@ -38,23 +38,34 @@ export function createPullRequestLookup({
   now?: () => number;
   maxEntries?: number;
 }): PullRequestLookup {
-  /** One bounded partition per credential, so a deployment's capacity setting only ever evicts
-   *  entries fetched with its own credential. */
+  /** One bounded partition per credential, so a capacity setting only ever evicts entries
+   *  fetched with its own credential. */
   const partitions = new Map<string, Map<string, Entry>>();
   const inflight = new Map<string, Promise<PullRequestLookupResult>>();
   const cooldowns = new Map<string, number>();
   const rateLimited: PullRequestLookupResult = { ok: false, error: { code: 'RATE_LIMITED' } };
 
-  function partitionOf(scope: string, capacity: number): Map<string, Entry> {
-    let partition = partitions.get(scope);
-    if (partition == null) {
-      partition = new Map();
-      partitions.set(scope, partition);
-    }
-    /** Recency of use orders the partitions, so the one idle longest is the one dropped. */
+  /**
+   * The credential bound is one deployment-wide number. Callers may carry different configured
+   * values (per-principal config), and one asking for a small bound must not evict the credentials
+   * of another, so the largest value asked for so far applies.
+   */
+  let credentialBound = 0;
+
+  /** Recency of use orders the partitions, so the one idle longest is the one dropped. */
+  function touch(scope: string): Map<string, Entry> | undefined {
+    const partition = partitions.get(scope);
+    if (partition == null) return undefined;
     partitions.delete(scope);
     partitions.set(scope, partition);
-    while (partitions.size > capacity) {
+    return partition;
+  }
+
+  function partitionOf(scope: string, credentials: number): Map<string, Entry> {
+    credentialBound = Math.max(credentialBound, credentials);
+    const partition = touch(scope) ?? new Map<string, Entry>();
+    partitions.set(scope, partition);
+    while (partitions.size > credentialBound) {
       const idle = partitions.keys().next();
       if (idle.done) break;
       partitions.delete(idle.value);
@@ -110,7 +121,7 @@ export function createPullRequestLookup({
       limits?.maxHeadComparisons,
     ].join(',');
     const key = `${scope}\0${repo}#${branch}\0${head ?? ''}\0${policy}`;
-    const cached = partitions.get(scope)?.get(key);
+    const cached = touch(scope)?.get(key);
     if (cached != null && cached.expiresAt > now()) return cached.result;
     const pending = inflight.get(key);
     if (pending != null) return pending;

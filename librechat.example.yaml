@@ -941,7 +941,8 @@ endpoints:
   #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
   #     # repositories and branches are active at once, or fresh results are evicted and GitHub is asked again.
   #     cacheMaxEntries: 500
-  #     # Credentials cached at once (1 to 10000); the one idle longest is dropped past it.
+  #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
+  #     # past it. When principals configure different values, the largest applies.
   #     cacheMaxCredentials: 256
   #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)

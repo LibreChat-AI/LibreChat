@@ -363,7 +363,7 @@ describe('cache capacity per credential', () => {
     expect(find).toHaveBeenCalledTimes(before);
   });
 
-  it('drops credentials sooner when the caller configures a smaller bound', async () => {
+  it('drops credentials past the configured bound', async () => {
     const find = jest.fn().mockResolvedValue(value);
     const lookup = createPullRequestLookup({ source: { find } });
     const call = (token: string) => lookup({ ...input, token, cacheMaxCredentials: 2 });
@@ -373,5 +373,32 @@ describe('cache capacity per credential', () => {
     const before = find.mock.calls.length;
     await call('a');
     expect(find).toHaveBeenCalledTimes(before + 1);
+  });
+
+  it('does not let a caller with a small bound evict the credentials of one with a large bound', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    for (const token of ['a', 'b', 'c']) {
+      await lookup({ ...input, token, cacheMaxCredentials: 100 });
+    }
+    await lookup({ ...input, token: 'small', cacheMaxCredentials: 1 });
+    const before = find.mock.calls.length;
+    for (const token of ['a', 'b', 'c']) {
+      await lookup({ ...input, token, cacheMaxCredentials: 100 });
+    }
+    expect(find).toHaveBeenCalledTimes(before);
+  });
+
+  it('counts a cache hit as use, so an active credential is not the one dropped', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    const call = (token: string) => lookup({ ...input, token, cacheMaxCredentials: 2 });
+    await call('active');
+    await call('idle');
+    await call('active');
+    await call('newcomer');
+    const before = find.mock.calls.length;
+    await call('active');
+    expect(find).toHaveBeenCalledTimes(before);
   });
 });

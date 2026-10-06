@@ -321,8 +321,12 @@ export function createGitHubPullRequestSource({
        * only when its head is that commit or builds on it. A commit GitHub no longer knows is no
        * match, and both the candidates listed and the comparisons made are bounded by config.
        */
+      /** Every comparison, the first match and the revalidation of a moved head alike, spends the
+       *  same configured budget. */
       const contains = async (headSha: string): Promise<boolean> => {
         if (recorded == null || headSha === recorded) return true;
+        if (comparisons >= lookup.maxHeadComparisons) return false;
+        comparisons += 1;
         const comparison = await getJson(`${base}/compare/${recorded}...${headSha}`, lookup);
         if (comparison == null) return false;
         if (!isRecord(comparison) || typeof comparison.status !== 'string') {
@@ -330,12 +334,7 @@ export function createGitHubPullRequestSource({
         }
         return CONTAINS_RECORDED_STATUSES.has(comparison.status);
       };
-      const matches = async (candidate: ListItem): Promise<boolean> => {
-        if (recorded == null || candidate.sha === recorded) return true;
-        if (comparisons >= lookup.maxHeadComparisons) return false;
-        comparisons += 1;
-        return contains(candidate.sha);
-      };
+      const matches = (candidate: ListItem): Promise<boolean> => contains(candidate.sha);
       const choose = async (candidates: ListItem[]): Promise<ListItem | null> => {
         for (const candidate of candidates) {
           if (await matches(candidate)) return candidate;

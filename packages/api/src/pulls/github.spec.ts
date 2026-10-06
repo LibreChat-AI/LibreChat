@@ -573,6 +573,24 @@ describe('a head that moves after the candidate was listed', () => {
     ).toBe(true);
   });
 
+  it('spends the comparison budget on the moved head too, and stops when it is spent', async () => {
+    const { source, fetchFn } = sourceFor({
+      ...base,
+      '/compare/': () => json({ status: 'ahead' }),
+      '/pulls/7': () => json(pull({ head: { sha: moved } })),
+    });
+    await expect(
+      source.find({
+        repo: 'o/r',
+        branch: 'feat/x',
+        head: recorded,
+        token: 't',
+        limits: { maxHeadComparisons: 0 },
+      }),
+    ).resolves.toBeNull();
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+
   it('does not compare again when the detail head is the one that matched', async () => {
     const { source, fetchFn } = sourceFor({
       ...base,
