@@ -1,13 +1,16 @@
 import { FileContext } from 'librechat-data-provider';
 import type { AgentInputs, SubagentTaskConfig, SubagentResolveContext } from '@librechat/agents';
-import type { TFile } from 'librechat-data-provider';
+import type { TFile, FiltersConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import type { ProvisionToolContext } from '~/files/provision/callback';
 import type { ServerRequest } from '~/types';
 import { createProvisionFilesCallback } from '~/files/provision/callback';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
+import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
+import { ContentFilterError } from '~/middleware/contentFilter';
 import { createRun } from '~/agents/run';
 
 /**
@@ -98,6 +101,7 @@ async function captureRunConfig(
 async function captureAgentsRunConfig(
   agents: Array<ReturnType<typeof makeAgent>>,
   subagentTasks?: SubagentTaskConfig,
+  appConfig?: AppConfig,
 ): Promise<Record<string, unknown>> {
   await createRun({
     agents: agents as never,
@@ -105,6 +109,7 @@ async function captureAgentsRunConfig(
     streaming: true,
     streamUsage: true,
     subagentTasks,
+    appConfig,
   });
   const createMock = Run.create as jest.Mock;
   expect(createMock).toHaveBeenCalledTimes(1);
@@ -215,6 +220,206 @@ describe('createRun code-tool eager/session wiring', () => {
     expect(childInput.additional_instructions).toContain('/mnt/data/data.csv');
     expect(childInput.additional_instructions).not.toContain('draft-alias.csv');
     expect(childInput.additional_instructions?.match(/\/mnt\/data\/data\.csv/g)).toHaveLength(1);
+  });
+
+  describe('file inventory', () => {
+    const INVENTORY_HEADER = 'Attached files and how you can read them on this turn';
+    const runsCode = { executeCode: true, fileSearch: false };
+    const routingFor = (policy?: 'automatic' | 'classic') =>
+      resolveTurnDeliveryRouting({
+        agent: { provider: 'openAI', endpoint: 'openAI' },
+        config: {
+          fileConfig: {
+            endpoints: { openAI: policy == null ? {} : { llmDeliveryPolicy: policy } },
+          },
+        },
+      });
+    const upload = (overrides: Partial<TFile> = {}): TFile => ({
+      file_id: 'shared',
+      filename: 'data.csv',
+      filepath: '/uploads/data.csv',
+      type: 'text/csv',
+      user: 'user-1',
+      object: 'file',
+      bytes: 10,
+      embedded: false,
+      usage: 0,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+      createdAt: '2026-09-01',
+      ...overrides,
+    });
+    /** Every code path a text advertises, in order. */
+    const advertisedPaths = (text: unknown): string[] =>
+      typeof text === 'string' ? (text.match(/\/mnt\/data\/\S+?(?=\.?(?:\s|$))/g) ?? []) : [];
+    const plannedPaths = (destinations?: Map<string, string>): string[] =>
+      [...(destinations?.values() ?? [])].map((name) => `/mnt/data/${name}`);
+
+    /** A parent and the lazy child it spawns, both holding colliding queued uploads. */
+    function setupRun(policy?: 'automatic' | 'classic', requestFiles: TFile[] = []) {
+      const shared = upload();
+      const fresh = upload({ file_id: 'new', createdAt: '2026-10-01' });
+      const child = {
+        ...makeAgent({
+          id: 'child',
+          deliveryRouting: routingFor(policy),
+          currentRequestAttachments: [shared, fresh, ...requestFiles],
+          fileConsumers: runsCode,
+        }),
+        dynamicToolContextMap: { file_inventory: 'stale /mnt/data/draft-alias.csv' } as Record<
+          string,
+          unknown
+        >,
+        provisionState: {
+          codeEnvFiles: [{ ...shared }, { ...fresh }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set<string>(),
+          agentScopedFileIds: new Set<string>(),
+          codeEnvDestinations: new Map([
+            ['shared', 'draft-alias.csv'],
+            ['new', 'data.csv'],
+          ]),
+        },
+      };
+      const parent = {
+        ...makeAgent({
+          deliveryRouting: routingFor(policy),
+          currentRequestAttachments: [shared, ...requestFiles],
+          fileConsumers: runsCode,
+          subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+          lazySubagentConfigs: [
+            { id: 'child', configId: 'child:1', resolve: jest.fn().mockResolvedValue(child) },
+          ],
+        }),
+        dynamicToolContextMap: {} as Record<string, unknown>,
+        provisionState: {
+          codeEnvFiles: [{ ...shared }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set<string>(),
+          agentScopedFileIds: new Set<string>(),
+          codeEnvDestinations: undefined as Map<string, string> | undefined,
+        },
+      };
+      return { parent, child };
+    }
+
+    async function runWithChild(policy?: 'automatic' | 'classic') {
+      const { parent, child } = setupRun(policy);
+      const config = await captureRunConfig(parent);
+      const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+      const resolveInputs = parentInput.subagentConfigs?.[0]?.resolveAgentInputs;
+      if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+      const childInput = await resolveInputs({
+        signal: new AbortController().signal,
+      } as SubagentResolveContext);
+      return { parent, child, parentInput, childInput };
+    }
+
+    it('re-renders a lazy child’s inventory at the paths its re-plan advertises', async () => {
+      const { parent, child, parentInput, childInput } = await runWithChild('automatic');
+      const childInventory = child.dynamicToolContextMap.file_inventory;
+      const childPlan = plannedPaths(child.provisionState.codeEnvDestinations);
+
+      expect(childPlan).toHaveLength(2);
+      expect(childPlan).toContain('/mnt/data/data.csv');
+      expect(advertisedPaths(childInventory).sort()).toEqual([...childPlan].sort());
+      expect(advertisedPaths(child.dynamicToolContextMap.queued_code_files).sort()).toEqual(
+        [...childPlan].sort(),
+      );
+      expect(childInventory).not.toContain('draft-alias.csv');
+      expect(childInput.additional_instructions).toContain(childInventory);
+
+      const parentInventory = parent.dynamicToolContextMap.file_inventory;
+      expect(advertisedPaths(parentInventory)).toEqual(
+        plannedPaths(parent.provisionState.codeEnvDestinations),
+      );
+      expect(parentInput.additional_instructions).toContain(parentInventory);
+    });
+
+    it('never tells a child that a request file was sent or included with its task', async () => {
+      const brief = upload({
+        file_id: 'brief',
+        filename: 'brief.pdf',
+        type: 'application/pdf',
+        llmDeliveryPath: 'provider',
+      });
+      const { parent, child } = setupRun('automatic', [brief]);
+      const eagerChild = {
+        ...makeAgent({
+          id: 'eager-child',
+          deliveryRouting: routingFor('automatic'),
+          currentRequestAttachments: [brief],
+          fileConsumers: runsCode,
+        }),
+        dynamicToolContextMap: {} as Record<string, unknown>,
+      };
+      Object.assign(parent, { subagentAgentConfigs: [eagerChild] });
+
+      const config = await captureRunConfig(parent);
+      const [parentInput] = (config.graphConfig as { agents: AgentInputs[] }).agents;
+      const resolveInputs = parentInput.subagentConfigs?.find(
+        (subagent) => subagent.resolveAgentInputs != null,
+      )?.resolveAgentInputs;
+      if (!resolveInputs) throw new Error('Missing lazy subagent resolver');
+      const childInput = await resolveInputs({
+        signal: new AbortController().signal,
+      } as SubagentResolveContext);
+
+      const sentOrIncluded = /sent with this message|included in this message/;
+      for (const inventory of [
+        child.dynamicToolContextMap.file_inventory,
+        eagerChild.dynamicToolContextMap.file_inventory,
+      ]) {
+        expect(inventory).toContain('"brief.pdf" (PDF): not sent with your task.');
+        expect(inventory).not.toMatch(sentOrIncluded);
+      }
+      expect(childInput.additional_instructions).not.toMatch(sentOrIncluded);
+      expect(parent.dynamicToolContextMap.file_inventory).toContain(
+        '"brief.pdf" (PDF): sent with this message.',
+      );
+    });
+
+    it.each([undefined, 'classic' as const])(
+      'writes no inventory for either agent under %p routing',
+      async (policy) => {
+        const { parent, child, parentInput, childInput } = await runWithChild(policy);
+
+        expect(parent.dynamicToolContextMap).not.toHaveProperty('file_inventory');
+        expect(child.dynamicToolContextMap).not.toHaveProperty('file_inventory');
+        expect(parentInput.additional_instructions).not.toContain(INVENTORY_HEADER);
+        expect(childInput.additional_instructions).not.toContain(INVENTORY_HEADER);
+        expect(childInput.additional_instructions).toContain('/mnt/data/data.csv');
+      },
+    );
+
+    it('content-checks the inventory with the run’s filters', async () => {
+      const filters: FiltersConfig = {
+        files: {
+          pii: {
+            fields: ['content'],
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      };
+      const file = upload({ filename: 'PRIVATE-PLAN.csv' });
+      const agent = makeAgent({
+        deliveryRouting: routingFor('automatic'),
+        currentRequestAttachments: [file],
+        fileConsumers: runsCode,
+        provisionState: {
+          codeEnvFiles: [{ ...file }],
+          vectorDBFiles: [],
+          aliveFileIds: new Set(),
+          agentScopedFileIds: new Set(),
+        },
+      });
+
+      await expect(
+        captureAgentsRunConfig([agent], undefined, { filters } as AppConfig),
+      ).rejects.toBeInstanceOf(ContentFilterError);
+    });
   });
 
   it('settles a lazy child only after the run has its inputs, so a late cancel is given back', async () => {

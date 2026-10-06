@@ -16,6 +16,7 @@ const getService = () =>
 
 module.exports = {
   loadCodeApiKey: (...args) => getService().loadCodeApiKey(...args),
+  openStoredFile: (...args) => getService().openStoredFile(...args),
   provisionToCodeEnv: (...args) => getService().provisionToCodeEnv(...args),
   provisionToVectorDB: (...args) => getService().provisionToVectorDB(...args),
   checkCodeEnvFileAlive: (...args) => getService().checkCodeEnvFileAlive(...args),

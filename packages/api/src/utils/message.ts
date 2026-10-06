@@ -1,8 +1,8 @@
 import { Constants } from 'librechat-data-provider';
-import type { TFile, TMessage } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 
 /** Minimal shape for request file entries (from `req.body.files`) */
-type RequestFile = { file_id?: string };
+export type RequestFile = { file_id?: string };
 
 type GetMessagesByParentId = (
   filter: { user: string; messageId: string; conversationId?: string },
@@ -11,6 +11,9 @@ type GetMessagesByParentId = (
 
 /** Fields to strip from files before client transmission */
 const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
+
+/** A file as sent to the client: without its extracted text or database ids. */
+export type TransmittedFile<T> = Omit<T, (typeof FILE_STRIP_FIELDS)[number]>;
 
 /** Fields to strip from messages before client transmission.
  * Both are prompt-building inputs: `fileContext` is text extracted from
@@ -35,9 +38,7 @@ const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
  *   }
  * }
  */
-export function sanitizeFileForTransmit<T extends Partial<TFile>>(
-  file: T,
-): Omit<T, (typeof FILE_STRIP_FIELDS)[number]> {
+export function sanitizeFileForTransmit<T extends object>(file: T): TransmittedFile<T> {
   const sanitized = { ...file };
   for (const field of FILE_STRIP_FIELDS) {
     delete sanitized[field as keyof typeof sanitized];
@@ -46,10 +47,10 @@ export function sanitizeFileForTransmit<T extends Partial<TFile>>(
 }
 
 /** Filters attachments to those whose `file_id` appears in `requestFiles`, then sanitizes each. */
-export function buildMessageFiles<T extends Partial<TFile>>(
+export function buildMessageFiles<T extends RequestFile>(
   requestFiles: RequestFile[],
   attachments: T[],
-): Omit<T, (typeof FILE_STRIP_FIELDS)[number]>[] {
+): TransmittedFile<T>[] {
   const requestFileIds = new Set<string>();
   for (const f of requestFiles) {
     if (f.file_id) {
@@ -57,7 +58,7 @@ export function buildMessageFiles<T extends Partial<TFile>>(
     }
   }
 
-  const files: Omit<T, (typeof FILE_STRIP_FIELDS)[number]>[] = [];
+  const files: TransmittedFile<T>[] = [];
   for (const attachment of attachments) {
     if (attachment.file_id != null && requestFileIds.has(attachment.file_id)) {
       files.push(sanitizeFileForTransmit(attachment));

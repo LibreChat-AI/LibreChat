@@ -9,6 +9,7 @@ import {
   FileSources,
   getCodeEnvRefs,
   mergeCodeEnvRef,
+  isOriginalBacked,
   resolveSandboxFilename,
 } from 'librechat-data-provider';
 import type { CodeEnvRef, CodeEnvRefMap, TFile } from 'librechat-data-provider';
@@ -88,8 +89,26 @@ export interface CodeEnvReferenceSetResult {
   codeEnvRefs?: CodeEnvRefMap;
 }
 
+/** What locates a record's retained original in storage. */
+export interface StoredOriginalRef {
+  file_id: string;
+  filename?: string;
+  source?: string | null;
+  filepath?: string;
+  storageKey?: string | null;
+}
+
 export interface ProvisionService {
   loadCodeApiKey: (userId: string) => Promise<string | undefined>;
+  /**
+   * Opens a stream of the record's retained original, or null when its source has no storage
+   * download contract or the record names no stored object. A missing source reads as `local`.
+   */
+  openStoredFile: (
+    file: StoredOriginalRef,
+    req: ServerRequest,
+    signal?: AbortSignal,
+  ) => Promise<Readable | null>;
   provisionToCodeEnv: (params: {
     req: ServerRequest;
     file: TFile;
@@ -155,37 +174,34 @@ export function createProvisionService({
   let axiosInstance;
   const getAxios = () => (axiosInstance ??= createAxiosInstance());
 
-  /* Sources whose `getDownloadStream` takes `(req, filepath)` and returns a readable.
-   * Others diverge: `openai` takes `(file_id, client)` and `execute_code` takes
-   * `(fileIdentifier, identity, req)` returning an Axios response, so calling them
-   * through this contract fails. An allowlist keeps an unfamiliar source skipped
-   * rather than mis-invoked. */
-  const STORAGE_STREAM_SOURCES = new Set([
-    FileSources.local,
-    FileSources.s3,
-    FileSources.cloudfront,
-    FileSources.azure_blob,
-    FileSources.firebase,
-  ]);
-
-  /** Resolves a storage download stream, or null when the source uses a different contract. */
+  /**
+   * Resolves a storage download stream, or null when the source uses a different contract.
+   * Only original-backed sources take `(req, filepath)` and return a readable. Others diverge:
+   * `openai` takes `(file_id, client)` and `execute_code` takes `(fileIdentifier, identity, req)`
+   * returning an Axios response, so calling them through this contract fails. The allowlist
+   * keeps an unfamiliar source skipped rather than mis-invoked.
+   */
   async function getStorageStream(
-    file: TFile,
+    file: StoredOriginalRef,
     req: ServerRequest,
     signal?: AbortSignal,
   ): Promise<Readable | null> {
-    if (file.source == null || !STORAGE_STREAM_SOURCES.has(file.source)) {
+    if (!isOriginalBacked(file)) {
       logger.warn(
         `[provision] Cannot stream "${file.filename}" (${file.file_id}) from source "${file.source}": unsupported download contract`,
       );
       return null;
     }
-    const { getDownloadStream } = getStrategyFunctions(file.source as string);
+    const downloadPath = resolveDownloadPath({ ...file, filepath: file.filepath ?? '' });
+    if (!downloadPath) {
+      return null;
+    }
+    const { getDownloadStream } = getStrategyFunctions(file.source ?? FileSources.local);
     if (!getDownloadStream) {
       return null;
     }
     signal?.throwIfAborted();
-    const stream = await getDownloadStream(req, resolveDownloadPath(file), { signal });
+    const stream = await getDownloadStream(req, downloadPath, { signal });
     if (signal?.aborted) {
       stream.destroy(signal.reason instanceof Error ? signal.reason : undefined);
       signal.throwIfAborted();
@@ -688,6 +704,7 @@ export function createProvisionService({
   }
   return {
     loadCodeApiKey,
+    openStoredFile: getStorageStream,
     provisionToCodeEnv,
     provisionToVectorDB,
     checkCodeEnvFileAlive,

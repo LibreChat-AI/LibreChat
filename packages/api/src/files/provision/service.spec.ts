@@ -79,6 +79,50 @@ describe('createProvisionService', () => {
     });
   });
 
+  describe('openStoredFile', () => {
+    it('opens the stored original through the source strategy', async () => {
+      const stream = Readable.from('a,b');
+      const getDownloadStream = jest.fn().mockResolvedValue(stream);
+      const getStrategyFunctions = jest.fn(() => ({ getDownloadStream }));
+      const { service } = buildService({ getStrategyFunctions });
+
+      await expect(
+        service.openStoredFile(
+          { file_id: 'f1', source: 's3', storageKey: 'uploads/u1/a.csv' },
+          req,
+        ),
+      ).resolves.toBe(stream);
+      expect(getStrategyFunctions).toHaveBeenCalledWith('s3');
+      expect(getDownloadStream).toHaveBeenCalledWith(req, 'uploads/u1/a.csv', {
+        signal: undefined,
+      });
+    });
+
+    it('reads a record without a source from local storage', async () => {
+      const getStrategyFunctions = jest.fn(() => ({
+        getDownloadStream: jest.fn().mockResolvedValue(Readable.from('a,b')),
+      }));
+      const { service } = buildService({ getStrategyFunctions });
+
+      await expect(
+        service.openStoredFile({ file_id: 'f1', filepath: '/uploads/u1/a.csv' }, req),
+      ).resolves.toBeInstanceOf(Readable);
+      expect(getStrategyFunctions).toHaveBeenCalledWith('local');
+    });
+
+    it('opens nothing for a source without a storage download contract or a record without a path', async () => {
+      const { service, getDownloadStream } = buildService();
+
+      await expect(
+        service.openStoredFile({ file_id: 'f1', source: 'text', filepath: '/x/a.csv' }, req),
+      ).resolves.toBeNull();
+      await expect(
+        service.openStoredFile({ file_id: 'f1', source: 'local' }, req),
+      ).resolves.toBeNull();
+      expect(getDownloadStream).not.toHaveBeenCalled();
+    });
+  });
+
   describe('provisionToCodeEnv', () => {
     it('waits out Code API throttling and reopens the upload stream', async () => {
       const rateLimit = new AxiosError('Request failed', 'ERR_BAD_REQUEST');
@@ -180,6 +224,24 @@ describe('createProvisionService', () => {
         service.provisionToCodeEnv({ req, file: makeFile({ source: 'openai' as never }) }),
       ).rejects.toThrow(/does not support download streams/);
       expect(uploadCodeEnvFile).not.toHaveBeenCalled();
+    });
+
+    it('reads a record without a source from local storage, as the rest of the pipeline does', async () => {
+      const getDownloadStream = jest.fn().mockResolvedValue(Readable.from('a,b'));
+      const uploadCodeEnvFile = jest
+        .fn()
+        .mockResolvedValue({ storage_session_id: 's1', file_id: 'remote-1' });
+      const getStrategyFunctions = jest.fn((source: string) =>
+        source === 'execute_code' ? { handleFileUpload: uploadCodeEnvFile } : { getDownloadStream },
+      );
+      const { service } = buildService({ getStrategyFunctions });
+
+      await expect(
+        service.provisionToCodeEnv({ req, file: makeFile({ source: undefined }) }),
+      ).resolves.toMatchObject({ referenceSet: { codeEnvRef: { file_id: 'remote-1' } } });
+
+      expect(getStrategyFunctions).toHaveBeenCalledWith('local');
+      expect(getDownloadStream).toHaveBeenCalledWith(req, '/x/data.csv', { signal: undefined });
     });
 
     it('prefers a durable storage key when opening the backing object', async () => {

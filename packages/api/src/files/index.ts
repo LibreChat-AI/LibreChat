@@ -14,6 +14,7 @@ export * from './ocr';
 export * from './parse';
 export * from './preflight';
 export * from './provision';
+export * from './reading';
 export * from './upload/routing';
 export * from './upload/diagnostics';
 export * from './upload/fallback';

@@ -3655,6 +3655,116 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       });
     });
 
+    /** A resumed turn whose only attachment File Search prepares with `outcome`. */
+    const prepareResumedSearchTurn = (outcome) => {
+      const {
+        resolveTurnDeliveryRouting,
+        buildTurnReadingContext,
+        buildMessageFiles,
+        createProvisionFilesCallback,
+        FileSearchPreparationError,
+      } = jest.requireActual('@librechat/api');
+      const file = {
+        user: USER_ID,
+        file_id: 'search-brief',
+        filename: 'search-brief.pdf',
+        filepath: '/uploads/search-brief.pdf',
+        type: 'application/pdf',
+        bytes: 15 * 1024 * 1024,
+        source: 'local',
+        context: 'message_attachment',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false },
+        text: 'cached text must not reach status',
+      };
+      const preparation = new Map();
+      const provisionState = {
+        codeEnvFiles: [],
+        vectorDBFiles: [file],
+        aliveFileIds: new Set(),
+        agentScopedFileIds: new Set(),
+        searchPreparation: preparation,
+      };
+      const agent = {
+        id: AGENT_ID,
+        provider: 'openAI',
+        endpoint: 'openAI',
+        fileConsumers: { executeCode: false, fileSearch: true },
+        currentRequestAttachments: [file],
+        provisionState,
+      };
+      agent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent,
+        config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+      });
+      agent.deliveryRouting.reading = buildTurnReadingContext({
+        routing: agent.deliveryRouting,
+        provider: 'openAI',
+        fileTokenLimit: 100000,
+        configuredFileSizeLimit: undefined,
+        countTokens: (text) => text.length,
+      });
+      agent.deliveryRouting.reading.setSearchEvidence({
+        queued: [file.file_id],
+        registered: [],
+        preparation,
+      });
+      const refs = buildMessageFiles([{ file_id: file.file_id }], [file]);
+      mockGetMessages.mockResolvedValue([{ files: refs }]);
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+      const context = { agentId: AGENT_ID, provisionState };
+      const provisionFiles = createProvisionFilesCallback({
+        req: { user: { id: USER_ID } },
+        agentToolContexts: new Map([[AGENT_ID, context]]),
+        provisionToVectorDB: async () => ({ embedded: outcome !== 'failure' }),
+        provisionToCodeEnv: jest.fn(),
+        updateFile: jest.fn(),
+        updateCodeEnvRef: jest.fn(),
+        addEmbeddedEntity: jest.fn(),
+      });
+      const client = makeClient({ options: { attachments: [file], agent } });
+      client.resumeCompletion.mockImplementation(async () => {
+        await provisionFiles(['file_search'], AGENT_ID);
+      });
+      mockInitializeClient.mockResolvedValue({ client, userMCPAuthMap: {} });
+      mockSaveMessage.mockImplementation(async (_ctx, message) => message);
+      return { file, refs, FileSearchPreparationError };
+    };
+
+    it('fails the resumed turn with FileSearchPreparationError when search preparation fails', async () => {
+      const { file, FileSearchPreparationError } = prepareResumedSearchTurn('failure');
+
+      const response = await post(approveBody());
+      expect(response.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+        CONVO_ID,
+        new FileSearchPreparationError().message,
+        1000,
+      );
+      expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(
+        file.text,
+      );
+      expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
+    });
+
+    it('finalizes the resumed turn with the restored refs as they are, without file text, once search preparation succeeds', async () => {
+      const { file, refs } = prepareResumedSearchTurn('success');
+
+      const response = await post(approveBody());
+      expect(response.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledTimes(1);
+      const [, finalEvent] = mockGenerationJobManager.publishTerminalClaim.mock.calls[0];
+      expect(finalEvent.requestMessage.files).toEqual(refs);
+      expect(finalEvent.requestMessage.files[0]).not.toHaveProperty('reading');
+      expect(JSON.stringify(finalEvent)).not.toContain(file.text);
+    });
+
     it('persists the response, claims terminal ownership, emits done, finishes, and prunes', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
       await post(approveBody());

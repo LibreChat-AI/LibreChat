@@ -310,6 +310,37 @@ describe('discoverConnectedAgents', () => {
 
   /** A handoff agent's provider config can turn native web search on as well, so
    *  dropping the resolver here would leave it ungated one hop later. */
+  it('forwards the text deriver and its persister to every handoff initializeAgent call', async () => {
+    const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
+    const getAgent = jest.fn(async () => makeAgent('B', []));
+    const deriveText = jest.fn();
+    const persistDerivation = jest.fn();
+
+    await discoverConnectedAgents(
+      {
+        req: makeReq(),
+        res: makeRes(),
+        primaryConfig,
+        allowedProviders: new Set(),
+        modelsConfig: { openai: ['gpt-4o'] },
+        loadTools: jest.fn(),
+        deriveText,
+        persistDerivation,
+      },
+      {
+        getAgent,
+        checkPermission: jest.fn().mockResolvedValue(true),
+        logViolation: jest.fn(),
+        db: {} as never,
+      },
+    );
+
+    expect(mockInitializeAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ deriveText, persistDerivation }),
+      expect.anything(),
+    );
+  });
+
   it('forwards resolveWebSearchGrant to every handoff initializeAgent call', async () => {
     const primaryConfig = makeConfig('A', [{ from: 'A', to: 'B', edgeType: 'handoff' }]);
     const getAgent = jest.fn(async () => makeAgent('B', []));

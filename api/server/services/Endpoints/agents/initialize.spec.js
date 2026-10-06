@@ -483,6 +483,24 @@ describe('initializeClient — processAgent ACL gate', () => {
     expect(resolveUpstreamTokenProvider).not.toHaveBeenCalled();
   });
 
+  it('passes the primary request derivation dependencies to parallel initialization', async () => {
+    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
+
+    await initializeClient({
+      req: makeReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    const { deriveText, persistDerivation } = mockInitializeAgent.mock.calls[0][0];
+    expect(deriveText).toEqual(expect.any(Function));
+    expect(persistDerivation).toEqual(expect.any(Function));
+    expect(processAddedConvo).toHaveBeenCalledWith(
+      expect.objectContaining({ deriveText, persistDerivation }),
+    );
+  });
+
   it('forwards the linked-instructions resolver and records usage by default', async () => {
     mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
 

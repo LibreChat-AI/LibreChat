@@ -1,3 +1,4 @@
+import { hydrateMessageFile } from 'librechat-data-provider';
 import type { TFile, TMessage } from 'librechat-data-provider';
 
 /** Parent key under which parentless (and self-parented) messages are filed. */
@@ -53,7 +54,7 @@ function hydrateFiles(message: TMessage, fileMap?: Record<string, TFile>): TMess
   }
   return {
     ...message,
-    files: message.files.map((file) => fileMap[file.file_id ?? ''] ?? file),
+    files: message.files.map((file) => hydrateMessageFile(file, fileMap)),
   };
 }
 

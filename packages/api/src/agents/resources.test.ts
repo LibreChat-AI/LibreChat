@@ -3016,6 +3016,7 @@ describe('primeResources', () => {
         bytes: 4096,
         embedded: false,
         usage: 0,
+        metadata: { destinationChosen: false },
       } as TFile;
 
       const result = await primeResources({
@@ -3046,6 +3047,7 @@ describe('primeResources', () => {
         bytes: 2048,
         embedded: false,
         usage: 0,
+        metadata: { destinationChosen: false },
       } as TFile;
 
       const result = await primeResources({

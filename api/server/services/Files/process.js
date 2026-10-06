@@ -37,6 +37,13 @@ const {
   getFileExtractionLogDetails,
   getUploadExtractedTextPlan,
   resolveUploadFallbackText,
+  resolveUploadReading,
+  resolveUploadCodePossible,
+  orderToolsForReading,
+  acquireUploadText,
+  getUploadReadingMetadata,
+  logUploadReading,
+  ExtractorUnavailableError,
   UPLOAD_EXTRACTED_TEXT_PLANS,
   MAX_STORED_EXTRACTED_TEXT_BYTES,
   inspectContent,
@@ -794,19 +801,6 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     }
   }
 
-  const llmDeliveryPath = resolveUploadLLMDeliveryPath({
-    toolResource: tool_resource,
-    mimeType: file.mimetype,
-    endpointConfig,
-    fileConfig,
-    endpoint,
-    endpointProvider: getCustomEndpointProvider(appConfig?.endpoints?.custom, endpoint),
-    useResponsesApi: isResponsesApiUpload(metadata.useResponsesApi ?? req.body?.useResponsesApi),
-    sttConfigured: isSpeechProviderConfigured(appConfig?.speech?.stt),
-  });
-
-  /* Destination and acceptability are one decision, made by shared policy rather than
-   * rebuilt here. `agentTools` is undefined when no agent record backs the upload. */
   /* Only a permanent agent upload can land on a context resource, so the capability is
    * looked up only there and the common attachment path pays nothing for it. */
   const contextEnabled =
@@ -819,18 +813,39 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     metadata.agentTools?.some(
       (tool) => tool === EToolResources.execute_code || tool === EToolResources.file_search,
     );
-  const toolRoleGrants = hasRoleGatedConsumer
-    ? await resolveToolRoleGrants({
-        req,
-        getRoleByName: db.getRoleByName,
-        context: 'fileUpload',
-      })
-    : undefined;
+  const loadToolRoleGrants = () =>
+    resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName, context: 'fileUpload' });
+  const toolRoleGrants = hasRoleGatedConsumer ? await loadToolRoleGrants() : undefined;
+  const enabledAgentTools = await filterEnabledConsumers(req, metadata.agentTools, toolRoleGrants);
+
+  const uploadReading = await resolveUploadReading({
+    toolResource: tool_resource,
+    mimeType: file.mimetype,
+    endpointConfig,
+    fileConfig,
+    endpoint,
+    endpointProvider: getCustomEndpointProvider(appConfig?.endpoints?.custom, endpoint),
+    useResponsesApi: isResponsesApiUpload(metadata.useResponsesApi ?? req.body?.useResponsesApi),
+    sttConfigured: isSpeechProviderConfigured(appConfig?.speech?.stt),
+    isMessageAttachment: messageAttachment,
+    filters: appConfig?.filters,
+    resolveCodePossible: () =>
+      resolveUploadCodePossible({
+        agentTools: enabledAgentTools,
+        checkCodeCapability: () => checkCapability(req, AgentCapabilities.execute_code),
+        getRunCodeGrant: async () => (await loadToolRoleGrants())?.runCode,
+      }),
+  });
+  let llmDeliveryPath = uploadReading.path;
+  let textDerivation;
+
+  /* Destination and acceptability are one decision, made by shared policy rather than
+   * rebuilt here. `agentTools` is undefined when no agent record backs the upload. */
   const destination = resolveUploadDestination({
     toolResource: tool_resource,
     deliveryPath: llmDeliveryPath,
     mimeType: file.mimetype,
-    agentTools: await filterEnabledConsumers(req, metadata.agentTools, toolRoleGrants),
+    agentTools: orderToolsForReading(uploadReading, enabledAgentTools),
     hasAgent: agent_id != null,
     isMessageAttachment: messageAttachment,
     /* A message attachment can acquire a file-tool consumer later in the same draft or
@@ -1005,6 +1020,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
           updatingUserId: req?.user?.id,
         });
       }
+      logUploadReading(file_id, uploadReading);
       const result = await db.createFile(fileInfo, true);
       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
     };
@@ -1052,92 +1068,118 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       }
     };
 
-    if (shouldUseConfiguredOCR && !(await checkCapability(req, AgentCapabilities.ocr))) {
-      throw new Error('OCR capability is not enabled for Agents');
-    }
-
-    if (shouldUseOCR) {
-      const ocrResult = await extractInspectableFileText({
-        filters: appConfig?.filters,
-        extract: resolveDocumentText,
-      });
-      if (ocrResult) {
-        const { text } = ocrResult;
-        return await createTextFile({ text });
-      }
-      throw new Error(
-        `Unable to extract text from "${file.originalname}". The document may be image-based and requires an OCR service to process.`,
-      );
-    }
-
-    const shouldUseSTT = fileConfig.checkType(
-      file.mimetype,
-      fileConfig.stt?.supportedMimeTypes || [],
-    );
-
-    if (shouldUseSTT) {
-      const sttService = await STTService.getInstance();
-      const { text } = await processAudioFile({ req, file, sttService });
-      return await createTextFile({ text, isTranscript: true });
-    }
-
-    const shouldUseText = fileConfig.checkType(
-      file.mimetype,
-      fileConfig.text?.supportedMimeTypes || [],
-    );
-
-    if (!shouldUseText) {
-      throw new Error(`File type ${file.mimetype} is not supported for text parsing.`);
-    }
-
-    /**
-     * A document type the admin routed to configured text extraction: prefer RAG `/text`, but fall
-     * back to the built-in document parser (not raw native text) when RAG is unavailable, so a
-     * transient outage doesn't degrade a docx/pdf to unreadable bytes. Only the RAG extraction is
-     * inside the fallback catch: a downstream persistence failure (size guard, DB, agent-resource
-     * mutation) must surface as itself, not trigger a second extraction attempt.
-     */
-    if (shouldUseConfiguredText) {
-      let configuredText;
-      try {
-        configuredText = await parseText({ req, file, file_id, allowNativeFallback: false });
-      } catch (err) {
-        const { errorMetadata } = getExtractionLogDetails(err);
-        logger.warn(
-          `[processAgentFileUpload] Configured RAG text extraction unavailable for ${extractionFileLabel}, using built-in document parser:`,
-          errorMetadata,
+    const ocrCapable =
+      !shouldUseConfiguredOCR || (await checkCapability(req, AgentCapabilities.ocr));
+    const acquireContextText = async () => {
+      if (!ocrCapable) {
+        throw new ExtractorUnavailableError(
+          'OCR capability is not enabled for Agents',
+          'extractor_unavailable',
         );
-        const documentText = await extractInspectableFileText({
+      }
+
+      if (shouldUseOCR) {
+        const ocrResult = await extractInspectableFileText({
           filters: appConfig?.filters,
           extract: resolveDocumentText,
         });
-        if (!documentText) {
-          throw new Error(
-            `Unable to extract text from "${file.originalname}". RAG text extraction was unavailable and the built-in parser produced no result.`,
-          );
+        if (ocrResult) {
+          const { text } = ocrResult;
+          return { text };
         }
-        const { text } = documentText;
-        return await createTextFile({ text });
+        throw new Error(
+          `Unable to extract text from "${file.originalname}". The document may be image-based and requires an OCR service to process.`,
+        );
       }
-      return await createTextFile({ text: configuredText.text });
-    }
 
-    /* The native reader decodes whatever bytes it is given as UTF-8, which is meaningful
-     * only for types that are already text. For anything else, a raster image on a
-     * deployment without OCR being the case in point, it would store mojibake as the
-     * file's text, so a real extractor is required and its absence surfaces as an error
-     * rather than as nonsense content. */
-    const { text } = await extractInspectableFileText({
+      const shouldUseSTT = fileConfig.checkType(
+        file.mimetype,
+        fileConfig.stt?.supportedMimeTypes || [],
+      );
+
+      if (shouldUseSTT) {
+        const sttService = await STTService.getInstance();
+        const { text } = await processAudioFile({ req, file, sttService });
+        return { text, isTranscript: true };
+      }
+
+      const shouldUseText = fileConfig.checkType(
+        file.mimetype,
+        fileConfig.text?.supportedMimeTypes || [],
+      );
+
+      if (!shouldUseText) {
+        throw new ExtractorUnavailableError(
+          `File type ${file.mimetype} is not supported for text parsing.`,
+          'no_extractor',
+        );
+      }
+
+      /**
+       * A document type the admin routed to configured text extraction: prefer RAG `/text`, but fall
+       * back to the built-in document parser (not raw native text) when RAG is unavailable, so a
+       * transient outage doesn't degrade a docx/pdf to unreadable bytes. Only the RAG extraction is
+       * inside the fallback catch: a downstream persistence failure (size guard, DB, agent-resource
+       * mutation) must surface as itself, not trigger a second extraction attempt.
+       */
+      if (shouldUseConfiguredText) {
+        let configuredText;
+        try {
+          configuredText = await parseText({ req, file, file_id, allowNativeFallback: false });
+        } catch (err) {
+          const { errorMetadata } = getExtractionLogDetails(err);
+          logger.warn(
+            `[processAgentFileUpload] Configured RAG text extraction unavailable for ${extractionFileLabel}, using built-in document parser:`,
+            errorMetadata,
+          );
+          const documentText = await extractInspectableFileText({
+            filters: appConfig?.filters,
+            extract: resolveDocumentText,
+          });
+          if (!documentText) {
+            throw new Error(
+              `Unable to extract text from "${file.originalname}". RAG text extraction was unavailable and the built-in parser produced no result.`,
+            );
+          }
+          const { text } = documentText;
+          return { text };
+        }
+        return { text: configuredText.text };
+      }
+
+      /* The native reader decodes whatever bytes it is given as UTF-8, which is meaningful
+       * only for types that are already text. For anything else, a raster image on a
+       * deployment without OCR being the case in point, it would store mojibake as the
+       * file's text, so a real extractor is required and its absence surfaces as an error
+       * rather than as nonsense content. */
+      const { text } = await extractInspectableFileText({
+        filters: appConfig?.filters,
+        extract: () =>
+          parseText({
+            req,
+            file,
+            file_id,
+            allowNativeFallback: isNativelyReadableText(file.mimetype),
+          }),
+      });
+      return { text };
+    };
+
+    /* Only the acquisition is wrapped: inspection, the content policy, storage and the
+     * record in `createTextFile` fail the upload as before. A returned marker keeps the
+     * original as plain storage below. */
+    const acquired = await acquireUploadText({
+      reading: uploadReading,
+      acquire: acquireContextText,
+      fileId: file_id,
       filters: appConfig?.filters,
-      extract: () =>
-        parseText({
-          req,
-          file,
-          file_id,
-          allowNativeFallback: isNativelyReadableText(file.mimetype),
-        }),
     });
-    return await createTextFile({ text });
+    if (acquired.textDerivation == null) {
+      return await createTextFile(acquired);
+    }
+    textDerivation = acquired.textDerivation;
+    llmDeliveryPath = acquired.path;
+    effectiveToolResource = undefined;
   }
 
   /* Extracted before storage, which may move the temporary upload the extractors read. */
@@ -1149,6 +1191,8 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     isMessageAttachment: messageAttachment,
     endpointConfig,
     filters: appConfig?.filters,
+    reading: uploadReading,
+    textDerivation,
   });
 
   // Dual storage pattern for RAG files: Storage + Vector DB
@@ -1339,6 +1383,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
          * it later. Conversion changes `type`, so without this the second answer is drawn
          * from a format the administrator never configured a route for. */
         ...(storedType !== file.mimetype ? { routingMimeType: file.mimetype } : {}),
+        ...getUploadReadingMetadata(uploadReading, textDerivation),
       },
       type: storedType,
       embedded,
@@ -1352,6 +1397,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     ...retentionExpiry,
   };
 
+  logUploadReading(file_id, uploadReading, textDerivation);
   const result = await db.createFile(fileInfo, true);
 
   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);

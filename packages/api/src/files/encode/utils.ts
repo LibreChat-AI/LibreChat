@@ -6,6 +6,7 @@ import {
   isExplicitMimeConfig,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
+import type { TFileConfig } from 'librechat-data-provider';
 import type { ServerRequest, StrategyFunctions, ProcessedFile } from '~/types';
 import type { StoredFileRef } from '~/storage/path';
 import { resolveDownloadPath } from '~/storage/path';
@@ -48,6 +49,34 @@ function isStorageNotFoundError(error: unknown): boolean {
   );
 }
 
+export interface FileSizeLimitParams {
+  provider: Providers;
+  endpoint?: string;
+}
+
+/**
+ * Resolves the configured file size limit for a provider or endpoint from a fileConfig.
+ * Any fileConfig, even an empty one, yields the merged endpoint limit, inherited default included.
+ * @param fileConfig - The app's fileConfig, if any
+ * @param params - Object containing provider and optional endpoint
+ * @param params.provider - The provider to get the limit for
+ * @param params.endpoint - Optional endpoint name for lookup
+ * @returns The configured file size limit in bytes, or undefined without a fileConfig
+ */
+export const resolveConfiguredFileSizeLimit = (
+  fileConfig: TFileConfig | undefined,
+  { provider, endpoint }: FileSizeLimitParams,
+): number | undefined => {
+  if (!fileConfig) {
+    return undefined;
+  }
+  const endpointConfig = getEndpointFileConfig({
+    fileConfig: mergeFileConfig(fileConfig),
+    endpoint: endpoint ?? provider,
+  });
+  return endpointConfig?.fileSizeLimit;
+};
+
 /**
  * Extracts the configured file size limit for a specific provider from fileConfig
  * @param req - The server request object containing config
@@ -58,22 +87,8 @@ function isStorageNotFoundError(error: unknown): boolean {
  */
 export const getConfiguredFileSizeLimit = (
   req: ServerRequest,
-  params: {
-    provider: Providers;
-    endpoint?: string;
-  },
-): number | undefined => {
-  if (!req.config?.fileConfig) {
-    return undefined;
-  }
-  const { provider, endpoint } = params;
-  const fileConfig = mergeFileConfig(req.config.fileConfig);
-  const endpointConfig = getEndpointFileConfig({
-    fileConfig,
-    endpoint: endpoint ?? provider,
-  });
-  return endpointConfig?.fileSizeLimit;
-};
+  params: FileSizeLimitParams,
+): number | undefined => resolveConfiguredFileSizeLimit(req.config?.fileConfig, params);
 
 /**
  * Whether the admin explicitly allowed `mimeType` for this endpoint via

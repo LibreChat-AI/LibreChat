@@ -10,10 +10,15 @@ const {
   extractFileContext,
   getReferencedQuotes,
   applyTurnDelivery,
+  prepareTurnFiles,
+  getTurnTextOptions,
   encodeAndFormatAudios,
   encodeAndFormatVideos,
   getTransactionsConfig,
   encodeAndFormatDocuments,
+  encodeNativeDocuments,
+  recordNativeRejections,
+  prepareMessageAttachments,
   getLangfuseTraceMessageFields,
   isContentFilterError,
   assertModelBoundProviderContent,
@@ -859,7 +864,7 @@ class BaseClient {
     if (this.options.resendFiles !== false && this.authorizedHistoricalFiles == null) {
       const historicalFileState = collectModelBoundHistoricalFileIdState(modelBoundStoredMessages);
       this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
-      const files = this.resolveTurnAttachments(
+      const files = await this.prepareTurnAttachments(
         await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
       );
       this.authorizedHistoricalFiles = new Map(
@@ -1739,22 +1744,34 @@ class BaseClient {
   }
 
   async addDocuments(message, attachments) {
-    const documentResult = await encodeAndFormatDocuments(
-      this.options.req,
+    const documentResult = await encodeNativeDocuments(
       attachments,
-      {
-        provider: this.options.agent?.provider ?? this.options.endpoint,
-        endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
-        useResponsesApi: this.usesResponsesApi(),
-        model: this.modelOptions?.model ?? this.model,
-      },
-      getStrategyFunctions,
+      this.options.agent,
+      (files, onValidationFailure) =>
+        encodeAndFormatDocuments(
+          this.options.req,
+          files,
+          {
+            provider: this.options.agent?.provider ?? this.options.endpoint,
+            endpoint: this.options.agent?.endpoint ?? this.options.endpoint,
+            useResponsesApi: this.usesResponsesApi(),
+            model: this.modelOptions?.model ?? this.model,
+            onValidationFailure,
+          },
+          getStrategyFunctions,
+        ),
     );
+    recordNativeRejections(this.getConversationAgents(), documentResult.rejected);
     message.documents =
       documentResult.documents && documentResult.documents.length
         ? documentResult.documents
         : undefined;
     return documentResult.files;
+  }
+
+  /** The agents whose messages carry this conversation's encoded attachments. */
+  getConversationAgents() {
+    return [this.options.agent];
   }
 
   async addVideos(message, attachments) {
@@ -1800,6 +1817,7 @@ class BaseClient {
       attachments: textAttachments,
       req: this.options?.req,
       tokenCountFn: (text) => countTokens(text),
+      ...getTurnTextOptions(this.options.agent?.deliveryRouting),
     });
 
     if (fileContext) {
@@ -1822,6 +1840,26 @@ class BaseClient {
     return applyTurnDelivery(files, {
       routing: this.options.agent?.deliveryRouting,
       consumers: fileConsumers,
+    });
+  }
+
+  /** {@link resolveTurnAttachments}, deriving text the turn's reading needs first. */
+  prepareTurnAttachments(files, fileConsumers = this.options.agent?.fileConsumers) {
+    return prepareTurnFiles({
+      routing: this.options.agent?.deliveryRouting,
+      files,
+      consumers: fileConsumers,
+      signal: this.options.abortController?.signal,
+    });
+  }
+
+  processMessageAttachments(message, files, fileConsumers, contextFiles) {
+    return prepareMessageAttachments({
+      client: this,
+      message,
+      files,
+      consumers: fileConsumers,
+      contextFiles,
     });
   }
 
@@ -1949,7 +1987,7 @@ class BaseClient {
     const historicalFileState = collectModelBoundHistoricalFileIdState(_messages);
     this.modelBoundHistoricalFileIdsOverflowed ||= historicalFileState.overflowed;
     const authorizedFilesById = new Map();
-    const files = this.resolveTurnAttachments(
+    const files = await this.prepareTurnAttachments(
       await getOwnerHistoricalFiles(historicalFileState.fileIds, this.options.req?.user),
     );
     const nonSteerReplayFileIds = collectModelBoundHistoricalFileIdState(
@@ -2066,16 +2104,10 @@ class BaseClient {
         return message;
       }
 
-      const [, processedFiles] = await Promise.all([
-        this.addFileContextToMessage(message, contextFiles),
-        this.processAttachments(message, contextFiles),
-      ]);
+      const processedFiles = await this.processMessageAttachments(message, contextFiles);
 
-      const processedFileIds = new Set(
-        (processedFiles ?? []).map((file) => file?.file_id).filter(Boolean),
-      );
-      this.message_file_map[message.messageId] = contextFiles.filter(
-        (file) => processedFileIds.has(file?.file_id) && isModelBoundAttachmentFile(file),
+      this.message_file_map[message.messageId] = (processedFiles ?? []).filter(
+        isModelBoundAttachmentFile,
       );
       return message;
     };

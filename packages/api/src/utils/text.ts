@@ -32,6 +32,8 @@ const TRUNCATION_SAFETY_BUFFER = 0.98;
  * @param text - The text content to process
  * @param tokenLimit - The maximum number of tokens allowed
  * @param tokenCountFn - Function to count tokens (can be sync or async)
+ * @param knownTokenCount - The text's token count when the caller already measured it; used as
+ *   the original count instead of counting the text again
  * @returns Promise resolving to object with processed text, token count, and truncation status
  *
  * @remarks
@@ -44,13 +46,15 @@ export async function processTextWithTokenLimit({
   tokenLimit,
   tokenCountFn,
   preserve = 'start',
+  knownTokenCount,
 }: {
   text: string;
   tokenLimit: number;
   tokenCountFn: TokenCountFn;
   preserve?: 'start' | 'end';
+  knownTokenCount?: number;
 }): Promise<{ text: string; tokenCount: number; wasTruncated: boolean }> {
-  const originalTokenCount = await tokenCountFn(text);
+  const originalTokenCount = knownTokenCount ?? (await tokenCountFn(text));
 
   if (originalTokenCount <= tokenLimit) {
     return {

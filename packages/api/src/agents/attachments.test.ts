@@ -1,5 +1,10 @@
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, FileContext, FileSources } from 'librechat-data-provider';
+import {
+  FileContext,
+  FileSources,
+  EModelEndpoint,
+  allocateDirectContent,
+} from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 
@@ -22,6 +27,8 @@ import {
   buildAgentContextAttachmentsByAgentId,
   isModelBoundAttachmentFile,
   isToolOwnedAttachment,
+  measureAttachment,
+  resolveAgentAttachmentLimits,
 } from './attachments';
 import { applyTurnDelivery, resolveTurnDeliveryRouting } from './files/delivery';
 
@@ -689,6 +696,54 @@ describe('agent attachment helpers', () => {
     ).rejects.toBeInstanceOf(AgentAttachmentPolicyError);
   });
 
+  it('holds a shared provider copy to each automatic receiver size limit', async () => {
+    /* The primary's automatic decision sent this PDF natively within its own 10 MB limit; the
+     * receiver reads the same encoded message, so its smaller limit must still refuse it. */
+    const shared = {
+      ...makeTextFile('shared-pdf', 'shared.pdf', ''),
+      source: FileSources.local,
+      type: 'application/pdf',
+      bytes: 3 * 1024 * 1024,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    } as IMongoFile;
+    const textCopy = {
+      ...shared,
+      file_id: 'shared-text',
+      llmDeliveryPath: 'text',
+      text: 'extracted',
+    } as IMongoFile;
+    const fileConfig: NonNullable<ServerRequest['config']>['fileConfig'] = {
+      endpoints: {
+        openAI: { fileSizeLimit: 10, llmDeliveryPolicy: 'automatic' },
+        Moonshot: { fileSizeLimit: 1, llmDeliveryPolicy: 'automatic' },
+      },
+    };
+    const req = { body: { fileTokenLimit: 1000 }, config: { fileConfig } } as ServerRequest;
+    const searches = { executeCode: false, fileSearch: true };
+    const shareWith = (sharedAttachments: IMongoFile[], consumers = searches) =>
+      buildAgentScopedContext({
+        agentIds: ['primary', 'secondary'],
+        attachmentsByAgentId: new Map(),
+        sharedAttachments,
+        endpointsByAgentId: new Map([
+          ['primary', { endpoint: 'openAI' }],
+          ['secondary', { endpoint: 'Moonshot' }],
+        ]),
+        req,
+        consumers,
+      });
+
+    await expect(shareWith([shared])).rejects.toBeInstanceOf(AgentAttachmentPolicyError);
+    await expect(shareWith([textCopy])).resolves.toBeInstanceOf(Map);
+    /* Without a file tool the automatic policy reads nothing, so the size limit is admission
+     * for the text copy as well, as classic routing applies it. */
+    await expect(
+      shareWith([textCopy], { executeCode: false, fileSearch: false }),
+    ).rejects.toBeInstanceOf(AgentAttachmentPolicyError);
+  });
+
   it('does not apply the primary file count limit across disjoint private scopes', async () => {
     const req = {
       body: { fileTokenLimit: 1000 },
@@ -888,5 +943,170 @@ describe('files that belong to a tool', () => {
         countRepeatedExtractedText: true,
       }),
     ).not.toThrow();
+  });
+});
+
+describe('resolveAgentAttachmentLimits', () => {
+  const MB = 1024 * 1024;
+
+  it('resolves the count, aggregate byte and extracted-text limits of an endpoint', () => {
+    expect(
+      resolveAgentAttachmentLimits({
+        fileConfig: {
+          fileContextCharLimit: 40,
+          endpoints: { agents: { fileLimit: 3, totalSizeLimit: 2 } },
+        },
+      }),
+    ).toEqual({ count: 3, bytes: 2 * MB, textChars: 40 });
+  });
+
+  it('reads the request config when no file config is passed, and prefers a passed one', () => {
+    const req = { config: { fileConfig: { endpoints: { agents: { fileLimit: 4 } } } } };
+    expect(resolveAgentAttachmentLimits({ req }).count).toBe(4);
+    expect(
+      resolveAgentAttachmentLimits({
+        req,
+        fileConfig: { endpoints: { agents: { fileLimit: 2 } } },
+      }).count,
+    ).toBe(2);
+  });
+
+  it('leaves the count unlimited when the count is not enforced', () => {
+    expect(
+      resolveAgentAttachmentLimits({
+        fileConfig: { endpoints: { agents: { fileLimit: 3 } } },
+        enforceAttachmentCount: false,
+      }).count,
+    ).toBeUndefined();
+  });
+
+  it('uses the global context size instead of an endpoint aggregate when asked to', () => {
+    const fileConfig = {
+      fileContextSizeLimit: 5,
+      endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } },
+    };
+    expect(
+      resolveAgentAttachmentLimits({ fileConfig, endpoint: EModelEndpoint.openAI }).bytes,
+    ).toBe(MB);
+    expect(
+      resolveAgentAttachmentLimits({
+        fileConfig,
+        endpoint: EModelEndpoint.openAI,
+        useGlobalContextSizeLimit: true,
+      }).bytes,
+    ).toBe(5 * MB);
+  });
+
+  it.each<{ name: string; params: Parameters<typeof resolveAgentAttachmentLimits>[0] }>([
+    {
+      name: 'a provider-backed agent on the agents fallback',
+      params: {
+        fileConfig: { fileContextCharLimit: 7, endpoints: { agents: { fileLimit: 1 } } },
+        endpoint: EModelEndpoint.openAI,
+      },
+    },
+    {
+      name: 'a named custom endpoint on the generic custom config',
+      params: {
+        fileConfig: { endpoints: { custom: { fileLimit: 2, totalSizeLimit: 1 } } },
+        endpoint: 'Moonshot',
+      },
+    },
+    {
+      name: 'an explicit backing-endpoint aggregate',
+      params: {
+        fileConfig: { endpoints: { openAI: { totalSizeLimit: 3, fileLimit: 2 } } },
+        endpoint: EModelEndpoint.openAI,
+      },
+    },
+  ])('is the limit the assertion enforces for $name', ({ params }) => {
+    const limits = resolveAgentAttachmentLimits(params);
+    const over = (limit: number | undefined): number => (limit ?? 0) + 1;
+    const files = Array.from({ length: over(limits.count) }, (_, index) => ({
+      file_id: `file-${index}`,
+    }));
+
+    expect(() => assertAgentAttachmentLimits({ ...params, attachments: files })).toThrow(
+      expect.objectContaining({ limitType: 'count', limit: limits.count }),
+    );
+    expect(() =>
+      assertAgentAttachmentLimits({
+        ...params,
+        attachments: [{ file_id: 'large', bytes: over(limits.bytes) }],
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'bytes', limit: limits.bytes }));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        ...params,
+        attachments: [{ file_id: 'long', text: 'x'.repeat(over(limits.textChars)) }],
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'extracted_text', limit: limits.textChars }));
+  });
+});
+
+describe('measureAttachment', () => {
+  it('measures bytes, extracted text and whether the file counts', () => {
+    expect(measureAttachment({ file_id: 'doc', bytes: 12, text: 'hello' })).toEqual({
+      fileId: 'doc',
+      counts: true,
+      bytes: 12,
+      textChars: 5,
+    });
+  });
+
+  it('does not count a replayed historical file toward the attachment count', () => {
+    const historicalFileIds = new Set(['history']);
+    expect(measureAttachment({ file_id: 'history' }, { historicalFileIds }).counts).toBe(false);
+    expect(measureAttachment({ file_id: 'current' }, { historicalFileIds }).counts).toBe(true);
+    expect(measureAttachment({}, { historicalFileIds })).toEqual({
+      fileId: '',
+      counts: true,
+      bytes: 0,
+      textChars: 0,
+    });
+  });
+
+  it.each([null, undefined, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'measures unusable byte count %p as zero',
+    (bytes) => {
+      expect(measureAttachment({ file_id: 'odd', bytes }).bytes).toBe(0);
+    },
+  );
+
+  it('matches the totals the attachment stats report', () => {
+    const files = [
+      { file_id: 'history', bytes: 10, text: 'context' },
+      { file_id: 'current', bytes: 5, text: 'new' },
+      { bytes: -3, text: 'unidentified' },
+    ];
+    const historicalFileIds = new Set(['history']);
+    const entries = files.map((file) => measureAttachment(file, { historicalFileIds }));
+
+    expect(collectAgentAttachmentStats(files, { historicalFileIds })).toMatchObject({
+      attachmentCount: entries.filter((entry) => entry.counts).length,
+      totalKnownBytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+      extractedTextChars: entries.reduce((sum, entry) => sum + entry.textChars, 0),
+    });
+  });
+
+  it('lets a first-fit allocation and the assertion agree on what fits', () => {
+    const fileConfig = { fileContextCharLimit: 10, endpoints: { agents: { fileLimit: 3 } } };
+    const files = [
+      { file_id: 'a', bytes: 1, text: 'abcd' },
+      { file_id: 'b', bytes: 1, text: 'efghijk' },
+      { file_id: 'c', bytes: 1, text: 'lmn' },
+    ];
+    const overflow = allocateDirectContent(
+      [],
+      files.map((file) => measureAttachment(file)),
+      resolveAgentAttachmentLimits({ fileConfig }),
+    );
+    const admitted = files.filter((file) => !overflow.has(file.file_id));
+
+    expect(overflow).toEqual(new Set(['b']));
+    expect(() => assertAgentAttachmentLimits({ attachments: admitted, fileConfig })).not.toThrow();
+    expect(() => assertAgentAttachmentLimits({ attachments: files, fileConfig })).toThrow(
+      expect.objectContaining({ limitType: 'extracted_text' }),
+    );
   });
 });

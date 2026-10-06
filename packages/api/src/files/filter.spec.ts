@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { Providers } from '@librechat/agents';
-import { EModelEndpoint, FileSources } from 'librechat-data-provider';
+import { EModelEndpoint, FileContext, FileSources } from 'librechat-data-provider';
+import type { TFileConfig, TurnDeliveryFile, TurnFileConsumers } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
@@ -1443,5 +1444,154 @@ describe('filterFilesByEndpointConfig', () => {
        */
       expect(result).toEqual([file1, file2, file3]);
     });
+  });
+});
+
+describe('filterFilesByEndpointRuntimeConfig under the automatic reading policy', () => {
+  const MB = 1024 * 1024;
+
+  type ReadingRecord = TurnDeliveryFile & {
+    file_id: string;
+    filename: string;
+    type: string;
+    bytes: number;
+  };
+  type EndpointConfigInput = NonNullable<TFileConfig['endpoints']>[string];
+
+  const record = (overrides: Partial<ReadingRecord> = {}): ReadingRecord => ({
+    file_id: 'eligible',
+    filename: 'report.pdf',
+    type: 'application/pdf',
+    bytes: 3 * MB,
+    source: FileSources.local,
+    context: FileContext.message_attachment,
+    llmDeliveryPath: 'provider',
+    metadata: { destinationChosen: false },
+    ...overrides,
+  });
+
+  const automatic = (endpoint: EndpointConfigInput = {}): TFileConfig => ({
+    endpoints: {
+      [EModelEndpoint.openAI]: { fileSizeLimit: 1, llmDeliveryPolicy: 'automatic', ...endpoint },
+    },
+  });
+
+  const runsCode: TurnFileConsumers = { executeCode: true, fileSearch: false };
+  const searches: TurnFileConsumers = { executeCode: false, fileSearch: true };
+  const noReader: TurnFileConsumers = { executeCode: false, fileSearch: false };
+
+  /** A file tool is loaded unless a test says otherwise: only then does the policy read at all. */
+  const filter = (
+    fileConfig: TFileConfig,
+    files: ReadingRecord[],
+    consumers: TurnFileConsumers | null | undefined = runsCode,
+  ): ReadingRecord[] =>
+    filterFilesByEndpointRuntimeConfig({ config: {}, fileConfig } as AppConfig, {
+      files,
+      endpoint: EModelEndpoint.openAI,
+      consumers,
+    });
+
+  it('keeps an oversized eligible record, since its reading judges that size as capacity', () => {
+    const eligible = record();
+    expect(filter(automatic(), [eligible])).toEqual([eligible]);
+    expect(filter(automatic(), [eligible], searches)).toEqual([eligible]);
+  });
+
+  it.each<[string, { consumers?: TurnFileConsumers | null }]>([
+    ['no file tool is loaded', { consumers: noReader }],
+    ['the consumers are null', { consumers: null }],
+    ['the caller names no consumers', {}],
+  ])('drops the oversized eligible record as classic routing does when %s', (_case, consumers) => {
+    const classic = (files: ReadingRecord[]) =>
+      filterFilesByEndpointRuntimeConfig({ config: {}, fileConfig: automatic() } as AppConfig, {
+        files,
+        endpoint: EModelEndpoint.openAI,
+        ...consumers,
+      });
+    const withinLimit = record({ bytes: MB / 2 });
+    expect(classic([record()])).toEqual([]);
+    expect(classic([withinLimit])).toEqual([withinLimit]);
+  });
+
+  it('keeps an eligible record whatever route it stored', () => {
+    const text = record({ file_id: 'text', llmDeliveryPath: 'text', text: 'extracted' });
+    const none = record({ file_id: 'none', llmDeliveryPath: 'none' });
+    expect(filter(automatic(), [text, none])).toEqual([text, none]);
+  });
+
+  it('applies a policy the endpoint inherits from the top-level file config', () => {
+    const eligible = record();
+    const fileConfig: TFileConfig = {
+      llmDeliveryPolicy: 'automatic',
+      endpoints: { [EModelEndpoint.openAI]: { fileSizeLimit: 1 } },
+    };
+    expect(filter(fileConfig, [eligible])).toEqual([eligible]);
+  });
+
+  it.each<[string, { fileConfig?: TFileConfig; file?: Partial<ReadingRecord> }]>([
+    ['an image', { file: { type: 'image/png', filename: 'photo.png' } }],
+    ['a persistent agent file', { file: { context: FileContext.agents } }],
+    ['an explicit destination', { file: { metadata: { destinationChosen: true } } }],
+    ['an unmarked record', { file: { metadata: {} } }],
+    ['a legacy record', { file: { llmDeliveryPath: undefined } }],
+    ['a text-only record', { file: { source: FileSources.text, text: 'pasted' } }],
+    [
+      'a record on a classic endpoint',
+      { fileConfig: { endpoints: { [EModelEndpoint.openAI]: { fileSizeLimit: 1 } } } },
+    ],
+    [
+      'a record on an endpoint set to classic',
+      { fileConfig: automatic({ llmDeliveryPolicy: 'classic' }) },
+    ],
+    ['a record behind the legacy chooser', { fileConfig: automatic({ legacyFileUploadUX: true }) }],
+    [
+      'a type an endpoint route names',
+      {
+        fileConfig: automatic({
+          defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'provider' } },
+        }),
+      },
+    ],
+    [
+      'a type a global route names',
+      { fileConfig: { ...automatic(), defaultLLMDeliveryPath: { fallback: 'text' } } },
+    ],
+  ])('still drops %s over the size limit', (_label, { fileConfig = automatic(), file = {} }) => {
+    const withinLimit = record({ ...file, bytes: MB / 2 });
+    expect(filter(fileConfig, [record(file)])).toEqual([]);
+    expect(filter(fileConfig, [withinLimit])).toEqual([withinLimit]);
+  });
+
+  it('keeps the MIME allowlist, the disabled switch and the total size limit binding', () => {
+    expect(filter(automatic({ supportedMimeTypes: ['^text/plain$'] }), [record()])).toEqual([]);
+    expect(filter(automatic({ disabled: true }), [record()])).toEqual([]);
+    expect(filter(automatic({ totalSizeLimit: 2 }), [record()])).toEqual([]);
+  });
+
+  it('holds provider copies to the size limit when asked to bind them', () => {
+    const provider = record();
+    const text = record({ file_id: 'text', llmDeliveryPath: 'text', text: 'extracted' });
+    const bound = filterFilesByEndpointRuntimeConfig(
+      { config: {}, fileConfig: automatic() } as AppConfig,
+      {
+        files: [provider, text],
+        endpoint: EModelEndpoint.openAI,
+        bindProviderCopies: true,
+        consumers: runsCode,
+      },
+    );
+    expect(bound).toEqual([text]);
+  });
+
+  it('exempts only the eligible records in a mixed set', () => {
+    const eligible = record();
+    const explicit = record({ file_id: 'explicit', metadata: { destinationChosen: true } });
+    const small = record({
+      file_id: 'small',
+      bytes: MB / 2,
+      metadata: { destinationChosen: true },
+    });
+    expect(filter(automatic(), [eligible, explicit, small])).toEqual([eligible, small]);
   });
 });

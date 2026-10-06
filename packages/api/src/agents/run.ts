@@ -64,6 +64,7 @@ import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { SubagentCodeHostArgSpecs } from '~/code/targets';
+import type { ReadingAgent } from '~/files/reading/inventory';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { ReviewedToolApprovals } from './hitl/modes';
 import type { SubagentUsageEvent } from '~/agents/usage';
@@ -125,7 +126,7 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
-import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { prepareAgentFileContext } from '~/files/reading/inventory';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -435,82 +436,83 @@ export function shouldReplayReasoningContent(
   return isDeepSeekReasoningProvider(agent.provider, agent.model_parameters?.model ?? agent.model);
 }
 
-type RunAgent = Omit<Agent, 'tools'> & {
-  provisionState?: ProvisionState;
-  fileConsumers?: TurnFileConsumers;
-  azureOptions?: t.AzureOptions;
-  tools?: GenericTool[];
-  maxContextTokens?: number;
-  /** Pre-ratio context budget from initializeAgent. */
-  baseContextTokens?: number;
-  useLegacyContent?: boolean;
-  imageDetail?: ImageDetail;
-  toolContextMap?: Record<string, unknown>;
-  dynamicToolContextMap?: Record<string, unknown>;
-  toolRegistry?: LCToolRegistry;
-  /** Serializable tool definitions for event-driven execution */
-  toolDefinitions?: LCTool[];
-  /** Precomputed flag indicating if any tools have defer_loading enabled */
-  hasDeferredTools?: boolean;
-  /** Both-direction identity aliases for MCP tools whose key spelling changed */
-  mcpToolAliases?: MCPToolAlias[];
-  /** Names of tools injected with the `run_in_background` param (excluded from eager execution). */
-  backgroundToolNames?: string[];
-  /** Names of tools with the host-injected `intent` param (stripped from self-spawn inputs). */
-  intentToolNames?: string[];
-  /** Marker-verified tool names whose intent labels are safe compaction guidance. */
-  semanticIntentToolNames?: string[];
-  /**
-   * Per-agent codeenv gate set by `initializeAgent`: admin-level
-   * `execute_code` capability AND the agent actually requested
-   * `execute_code` in its tools. Used here to enable
-   * `RunConfig.toolOutputReferences` only on runs where the bash tool
-   * is actually registered.
-   */
-  codeEnvAvailable?: boolean;
-  /**
-   * Per-agent stateful-session gate set by `initializeAgent`: the admin
-   * `stateful_code_sessions` capability AND the agent's builder opt-in AND
-   * `codeEnvAvailable`. Carried into per-agent tool loading and prewarming.
-   */
-  statefulCodeSessions?: boolean;
-  /** Per-agent stateful workspace sharing scope. */
-  statefulCodeEnvironment?: Agent['stateful_code_environment'];
-  /** Trusted partition for transient code session ids and file references. */
-  codeSessionKey?: string;
-  /** Trusted Code API route selected during initialization. */
-  codeExecutionContext?: CodeExecutionContext;
-  /** Whether this initialized agent can route skills/ writes to persistent skill storage. */
-  skillAuthoringAvailable?: boolean;
-  /** Optional per-agent summarization overrides */
-  summarization?: SummarizationConfig;
-  /** Response field to read model reasoning from for custom OpenAI-compatible endpoints. */
-  reasoningKey?: ReasoningResponseKey;
-  /** Whether to reconstruct `reasoning_content` from persisted history across turns. */
-  includeReasoningHistory?: boolean;
-  /**
-   * Maximum characters allowed in a single tool result before truncation.
-   * Overrides the default computed from maxContextTokens.
-   */
-  maxToolResultChars?: number;
-  /** Initialized subagent configs (loaded by initialize.js from agent.subagents.agent_ids). */
-  subagentAgentConfigs?: RunAgent[];
-  /**
-   * Inert, VIEW-checked descriptors for explicit children that are initialized
-   * only after the SDK selects them. These resolvers are request-scoped: they
-   * may use the active request's authorization and tool-loading context.
-   */
-  lazySubagentConfigs?: LazySubagentAgent[];
-  /** All-or-nothing saved-agent teams resolved by initialize.js. */
-  subagentGraphConfigs?: Array<{
-    definition: AgentSubagentGraph;
-    memberConfigs: RunAgent[];
-  }>;
-  /** Member-scoped always-apply skills resolved during agent initialization. */
-  alwaysApplySkillPrimes?: ResolvedAlwaysApplySkill[];
-  /** Source subagent spawning configuration (enabled / allowSelf / agent_ids). */
-  subagents?: AgentSubagentsConfig;
-};
+type RunAgent = Omit<Agent, 'tools'> &
+  Pick<ReadingAgent, 'deliveryRouting' | 'currentRequestAttachments' | 'primedSearchFileIds'> & {
+    provisionState?: ProvisionState;
+    fileConsumers?: TurnFileConsumers;
+    azureOptions?: t.AzureOptions;
+    tools?: GenericTool[];
+    maxContextTokens?: number;
+    /** Pre-ratio context budget from initializeAgent. */
+    baseContextTokens?: number;
+    useLegacyContent?: boolean;
+    imageDetail?: ImageDetail;
+    toolContextMap?: Record<string, unknown>;
+    dynamicToolContextMap?: Record<string, unknown>;
+    toolRegistry?: LCToolRegistry;
+    /** Serializable tool definitions for event-driven execution */
+    toolDefinitions?: LCTool[];
+    /** Precomputed flag indicating if any tools have defer_loading enabled */
+    hasDeferredTools?: boolean;
+    /** Both-direction identity aliases for MCP tools whose key spelling changed */
+    mcpToolAliases?: MCPToolAlias[];
+    /** Names of tools injected with the `run_in_background` param (excluded from eager execution). */
+    backgroundToolNames?: string[];
+    /** Names of tools with the host-injected `intent` param (stripped from self-spawn inputs). */
+    intentToolNames?: string[];
+    /** Marker-verified tool names whose intent labels are safe compaction guidance. */
+    semanticIntentToolNames?: string[];
+    /**
+     * Per-agent codeenv gate set by `initializeAgent`: admin-level
+     * `execute_code` capability AND the agent actually requested
+     * `execute_code` in its tools. Used here to enable
+     * `RunConfig.toolOutputReferences` only on runs where the bash tool
+     * is actually registered.
+     */
+    codeEnvAvailable?: boolean;
+    /**
+     * Per-agent stateful-session gate set by `initializeAgent`: the admin
+     * `stateful_code_sessions` capability AND the agent's builder opt-in AND
+     * `codeEnvAvailable`. Carried into per-agent tool loading and prewarming.
+     */
+    statefulCodeSessions?: boolean;
+    /** Per-agent stateful workspace sharing scope. */
+    statefulCodeEnvironment?: Agent['stateful_code_environment'];
+    /** Trusted partition for transient code session ids and file references. */
+    codeSessionKey?: string;
+    /** Trusted Code API route selected during initialization. */
+    codeExecutionContext?: CodeExecutionContext;
+    /** Whether this initialized agent can route skills/ writes to persistent skill storage. */
+    skillAuthoringAvailable?: boolean;
+    /** Optional per-agent summarization overrides */
+    summarization?: SummarizationConfig;
+    /** Response field to read model reasoning from for custom OpenAI-compatible endpoints. */
+    reasoningKey?: ReasoningResponseKey;
+    /** Whether to reconstruct `reasoning_content` from persisted history across turns. */
+    includeReasoningHistory?: boolean;
+    /**
+     * Maximum characters allowed in a single tool result before truncation.
+     * Overrides the default computed from maxContextTokens.
+     */
+    maxToolResultChars?: number;
+    /** Initialized subagent configs (loaded by initialize.js from agent.subagents.agent_ids). */
+    subagentAgentConfigs?: RunAgent[];
+    /**
+     * Inert, VIEW-checked descriptors for explicit children that are initialized
+     * only after the SDK selects them. These resolvers are request-scoped: they
+     * may use the active request's authorization and tool-loading context.
+     */
+    lazySubagentConfigs?: LazySubagentAgent[];
+    /** All-or-nothing saved-agent teams resolved by initialize.js. */
+    subagentGraphConfigs?: Array<{
+      definition: AgentSubagentGraph;
+      memberConfigs: RunAgent[];
+    }>;
+    /** Member-scoped always-apply skills resolved during agent initialization. */
+    alwaysApplySkillPrimes?: ResolvedAlwaysApplySkill[];
+    /** Source subagent spawning configuration (enabled / allowSelf / agent_ids). */
+    subagents?: AgentSubagentsConfig;
+  };
 
 type LazySubagentAgent = Pick<
   RunAgent,
@@ -2390,8 +2392,13 @@ export async function createRun({
     visitedCodeFileAgents.add(agent.id);
     enqueueSubagentChildren(agent, pendingCodeFileAgents, visitedCodeFileAgents, false, false);
   }
+  /** Only the run's own agents receive the request; a subagent child receives its task. */
+  const requestAgents = new Set<RunAgent>(agents);
   for (const agent of codeFileAgents.values()) {
-    prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id);
+    prepareAgentFileContext(agent, codeFileAgents.values(), user?.id, false, {
+      filters: appConfig?.filters,
+      receivesRequest: requestAgents.has(agent),
+    });
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
@@ -2399,7 +2406,10 @@ export async function createRun({
     if (!preparedCodeFileAgents.has(agent)) {
       if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
-      prepareQueuedCodeFileContext(agent, codeFileAgents.values(), user?.id, true);
+      prepareAgentFileContext(agent, codeFileAgents.values(), user?.id, true, {
+        filters: appConfig?.filters,
+        receivesRequest: requestAgents.has(agent),
+      });
       preparedCodeFileAgents.add(agent);
     }
     const isSubagent = opts.isSubagent === true;

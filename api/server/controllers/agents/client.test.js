@@ -10,6 +10,18 @@ const mockHasDurableAgentInterruptCheckpoint = jest.fn().mockResolvedValue(true)
 const mockBuildAgentScopedContext = jest.fn((...args) =>
   jest.requireActual('@librechat/api').buildAgentScopedContext(...args),
 );
+const mockPrepareScopedTurnCandidates = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').prepareScopedTurnCandidates(...args),
+);
+const mockResolveScopedTurnAttachments = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').resolveScopedTurnAttachments(...args),
+);
+const mockAllocateTurnAttachmentsWithHistory = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').allocateTurnAttachmentsWithHistory(...args),
+);
+const mockAllocateTurnAttachmentsWithRetainedContext = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').allocateTurnAttachmentsWithRetainedContext(...args),
+);
 const mockFormatAgentMessages = jest.fn(() => ({
   messages: [],
   indexTokenCountMap: {},
@@ -276,6 +288,11 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
+  prepareScopedTurnCandidates: (...args) => mockPrepareScopedTurnCandidates(...args),
+  resolveScopedTurnAttachments: (...args) => mockResolveScopedTurnAttachments(...args),
+  allocateTurnAttachmentsWithHistory: (...args) => mockAllocateTurnAttachmentsWithHistory(...args),
+  allocateTurnAttachmentsWithRetainedContext: (...args) =>
+    mockAllocateTurnAttachmentsWithRetainedContext(...args),
   checkAccess: jest.fn(),
   createRun: (...args) => mockCreateRun(...args),
   countFormattedMessageTokens: jest.fn(() => 42),
@@ -5565,6 +5582,7 @@ describe('AgentClient - titleConvo', () => {
         null,
         {},
       );
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(client.contextHandlers.createContext).toHaveBeenCalledTimes(1);
       expect(client.useMemory).toHaveBeenCalledTimes(1);
@@ -5623,7 +5641,7 @@ describe('AgentClient - titleConvo', () => {
       expect(client.processAttachments).not.toHaveBeenCalled();
 
       requestAttachments.resolve([requestFile]);
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(mockBuildAgentScopedContext).toHaveBeenCalledTimes(1);
       const scopedContextArgs = mockBuildAgentScopedContext.mock.calls[0][0];
@@ -6604,6 +6622,59 @@ describe('AgentClient - titleConvo', () => {
       expect(() => client.admitSteerAttachments([current], 'later-steer')).not.toThrow();
     });
 
+    it('rolls back prepared native fallback copies after steer extraction fails with File Search loaded but unreachable', async () => {
+      const { buildTurnReadingContext } = jest.requireActual('@librechat/api');
+      mockReq.config.fileConfig = { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } };
+      /** Automatic reading needs a loaded file tool; text is the fallback once File Search
+       *  cannot reach the file. */
+      mockAgent.fileConsumers = { executeCode: false, fileSearch: true };
+      mockAgent.deliveryRouting = jest.requireActual('@librechat/api').resolveTurnDeliveryRouting({
+        agent: mockAgent,
+        config: mockReq.config,
+      });
+      const context = buildTurnReadingContext({
+        routing: mockAgent.deliveryRouting,
+        provider: EModelEndpoint.openAI,
+        fileTokenLimit: 1000,
+        configuredFileSizeLimit: undefined,
+        countTokens: (text) => text.length,
+      });
+      context.setSearchEvidence({ queued: [], registered: [], preparation: new Map() });
+      mockAgent.deliveryRouting.reading = context;
+      const file = {
+        ...makeUploadedFile('steered-pdf', 'steered.pdf', 'application/pdf'),
+        context: 'message_attachment',
+        llmDeliveryPath: 'provider',
+        text: 'Complete PDF fallback.',
+        metadata: { destinationChosen: false },
+      };
+      client.turnSharedAttachmentFiles = [];
+      client.turnHistoricalAttachmentIds = new Set();
+      client.turnAttachmentEndpointsByAgentId = new Map([
+        [mockAgent.id, { endpoint: mockAgent.endpoint }],
+      ]);
+      client.attachmentMemoryContext = { attachments: [] };
+      client.admitSteerAttachments([file], 'failed-native-steer');
+      context.recordRejections([{ file_id: file.file_id, reason: 'capacity' }]);
+      client.addFileContextToMessage = jest.fn().mockRejectedValue(new Error('extraction failed'));
+
+      await expect(client.processMessageAttachments({}, [file])).rejects.toThrow(
+        'extraction failed',
+      );
+      expect(client.turnSharedAttachmentFiles[0]).toMatchObject({ llmDeliveryPath: 'text' });
+      expect(client.admittedSteerAttachments.get('failed-native-steer')[0]).toBe(
+        client.turnSharedAttachmentFiles[0],
+      );
+      client.rollbackSteerAttachmentAdmission('failed-native-steer');
+
+      expect(client.turnSharedAttachmentFiles).toEqual([]);
+      expect(client.attachmentMemoryContext.attachments).toEqual([]);
+      expect(client.admittedSteerAttachments.has('failed-native-steer')).toBe(false);
+      expect(() =>
+        client.admitSteerAttachments([makeTextFile('later', 'later.txt', 'later')], 'later'),
+      ).not.toThrow();
+    });
+
     it('keeps committed resubmissions counted when a later duplicate steer fails', () => {
       mockReq.config.fileConfig = { endpoints: { openAI: { fileLimit: 1 } } };
       const historical = makeTextFile('history', 'history.txt', 'history');
@@ -6682,6 +6753,185 @@ describe('AgentClient - titleConvo', () => {
       });
       expect(client.addFileContextToMessage).not.toHaveBeenCalled();
       expect(client.processAttachments).not.toHaveBeenCalled();
+    });
+
+    describe('history allocation under the automatic policy', () => {
+      const historicalPdf = {
+        ...makeUploadedFile('history-1', 'one.pdf', 'application/pdf'),
+        bytes: 600_000,
+        context: 'message_attachment',
+        llmDeliveryPath: 'provider',
+        metadata: { destinationChosen: false },
+      };
+      const currentPdf = {
+        ...makeUploadedFile('current-1', 'two.pdf', 'application/pdf'),
+        bytes: 600_000,
+        context: 'message_attachment',
+        llmDeliveryPath: 'provider',
+        metadata: { destinationChosen: false },
+      };
+      const historyMessages = [
+        { messageId: 'msg-1', isCreatedByUser: true, files: [{ file_id: historicalPdf.file_id }] },
+      ];
+
+      const readAutomatically = (endpointConfig, deriveText) => {
+        const { resolveTurnDeliveryRouting, buildTurnReadingContext } =
+          jest.requireActual('@librechat/api');
+        client.options.resendFiles = true;
+        mockReq.config.fileConfig = { endpoints: { openAI: endpointConfig } };
+        mockAgent.fileConsumers = { executeCode: false, fileSearch: true };
+        mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+          agent: mockAgent,
+          config: mockReq.config,
+        });
+        mockAgent.deliveryRouting.reading = buildTurnReadingContext({
+          routing: mockAgent.deliveryRouting,
+          provider: EModelEndpoint.openAI,
+          model: 'gpt-4',
+          fileTokenLimit: 1000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+          deriveText,
+        });
+        client.options.attachments = [currentPdf];
+        require('~/models').getFiles.mockResolvedValue([historicalPdf]);
+        client.addFileContextToMessage = jest.fn();
+        client.processAttachments = jest.fn();
+        return mockAgent.deliveryRouting.reading;
+      };
+
+      it('allocates history beside the current attachments and adopts the copies it hands back', async () => {
+        readAutomatically({ fileLimit: 10, totalSizeLimit: 1, llmDeliveryPolicy: 'automatic' });
+
+        await expect(client.addPreviousAttachments(historyMessages)).resolves.toEqual(
+          expect.any(Array),
+        );
+
+        expect(mockAllocateTurnAttachmentsWithHistory).toHaveBeenCalledTimes(1);
+        expect(mockAllocateTurnAttachmentsWithHistory).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agent: mockAgent,
+            historical: [expect.objectContaining({ file_id: historicalPdf.file_id })],
+            current: [currentPdf],
+            onAllocated: expect.any(Function),
+          }),
+        );
+        const [rerouted] = client.options.attachments;
+        expect(rerouted).not.toBe(currentPdf);
+        expect(rerouted).toEqual(
+          expect.objectContaining({ file_id: currentPdf.file_id, llmDeliveryPath: 'none' }),
+        );
+        expect(client.processAttachments).toHaveBeenCalledWith(
+          expect.anything(),
+          [historicalPdf],
+          undefined,
+        );
+      });
+
+      it('reserves repeated historical steer copies before native fallback is extracted with File Search loaded but unreachable', async () => {
+        const reading = readAutomatically(
+          { fileLimit: 10, llmDeliveryPolicy: 'automatic' },
+          async () => ({
+            status: 'derived',
+            text: 'complete',
+            textDerivation: { outcome: 'complete', extractor: 'document_parser' },
+          }),
+        );
+        mockReq.config.fileConfig.fileContextCharLimit = 10;
+        /** Automatic reading needs a loaded file tool; the text fallback follows once File
+         *  Search cannot reach the replayed file. */
+        reading.setSearchEvidence({ queued: [], registered: [], preparation: new Map() });
+        const file = {
+          ...historicalPdf,
+          metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred' } },
+        };
+        client.options.attachments = [];
+        require('~/models').getFiles.mockResolvedValue([file]);
+        client.processAttachments = jest.fn(async (_message, files) => {
+          expect(client.turnSharedAttachmentFiles).toHaveLength(3);
+          reading.recordRejections([{ file_id: file.file_id, reason: 'capacity' }]);
+          return files;
+        });
+
+        await client.addPreviousAttachments([
+          {
+            messageId: 'repeated-history',
+            isCreatedByUser: true,
+            files: [{ file_id: file.file_id }],
+            content: [
+              { type: ContentTypes.STEER, files: [{ file_id: file.file_id }] },
+              { type: ContentTypes.STEER, files: [{ file_id: file.file_id }] },
+            ],
+          },
+        ]);
+
+        expect(client.message_file_map['repeated-history']).toEqual([]);
+        expect(client.addFileContextToMessage).toHaveBeenCalledWith(
+          expect.anything(),
+          [expect.objectContaining({ file_id: file.file_id, llmDeliveryPath: 'none' })],
+          undefined,
+        );
+      });
+
+      describe('without file replay', () => {
+        const retainedHistory = {
+          messageId: 'historical-context',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Earlier context.',
+          isCreatedByUser: true,
+          fileContext: 'r'.repeat(500),
+        };
+        const latestMessage = {
+          messageId: 'msg-1',
+          parentMessageId: 'historical-context',
+          sender: 'User',
+          text: 'Continue.',
+          isCreatedByUser: true,
+        };
+        const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        const notes = {
+          ...makeUploadedFile('notes', 'notes.docx', DOCX_TYPE),
+          context: 'message_attachment',
+          llmDeliveryPath: 'text',
+          text: 'n'.repeat(600),
+          metadata: { destinationChosen: false },
+        };
+
+        it('allocates the current file against the retained text and adopts the copy it hands back', async () => {
+          readAutomatically({ llmDeliveryPolicy: 'automatic' });
+          client.options.resendFiles = false;
+          mockReq.config.fileConfig.fileContextCharLimit = 1000;
+          client.options.attachments = [notes];
+          client.processAttachments = jest.fn(async (_message, attachments) => attachments);
+
+          await expect(
+            client.buildMessages([retainedHistory, latestMessage], 'msg-1', {}),
+          ).resolves.toEqual(expect.objectContaining({ prompt: expect.any(Array) }));
+
+          expect(mockAllocateTurnAttachmentsWithRetainedContext).toHaveBeenCalledTimes(1);
+          expect(mockAllocateTurnAttachmentsWithRetainedContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+              agent: mockAgent,
+              resendFiles: false,
+              retained: [expect.objectContaining({ text: retainedHistory.fileContext })],
+              current: [notes],
+              onAllocated: expect.any(Function),
+            }),
+          );
+          expect(client.options.attachments).toEqual([
+            expect.objectContaining({ file_id: 'notes', llmDeliveryPath: 'none' }),
+          ]);
+        });
+      });
+    });
+
+    it('lists the primary and handoff agents as the conversation agents', () => {
+      const handoff = { id: 'handoff' };
+      client.agentConfigs = new Map([['handoff', handoff]]);
+
+      expect(client.getConversationAgents()).toEqual([client.options.agent, handoff]);
+      client.agentConfigs = undefined;
     });
 
     it('rejects combined historical and scoped bytes before history is encoded', async () => {
@@ -6872,6 +7122,32 @@ describe('AgentClient - titleConvo', () => {
       expect(client.options.attachments).toEqual([toolOnly, admitted]);
       expect(client.message_file_map['msg-1']).toEqual([toolOnly, admitted]);
     });
+
+    it.each([{ disabled: true }, { supportedMimeTypes: ['^image/png$'] }])(
+      'excludes rejected legacy text from current context (%j)',
+      async (endpointConfig) => {
+        mockReq.config.fileConfig = { endpoints: { openAI: endpointConfig } };
+        const rejected = {
+          ...makeUploadedFile('rejected-legacy', 'rejected.txt', 'text/plain'),
+          text: 'Rejected text must stay out of the prompt.',
+        };
+        client.options.attachments = [rejected];
+        client.addFileContextToMessage = jest.fn();
+        client.processAttachments = jest.fn(async (_message, files) => files);
+
+        await client.buildMessages(
+          [{ messageId: 'msg-1', sender: 'User', text: 'Continue.', isCreatedByUser: true }],
+          'msg-1',
+          {},
+        );
+
+        expect(client.addFileContextToMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ messageId: 'msg-1' }),
+          [],
+        );
+        expect(client.processAttachments).toHaveBeenCalledWith(expect.anything(), []);
+      },
+    );
 
     it('defers current attachment persistence until model admission', () => {
       client.modelBoundCurrentFiles = [makeTextFile('pending', 'pending.txt', 'context')];
@@ -7371,6 +7647,87 @@ describe('AgentClient - titleConvo', () => {
         expect(file.llmDeliveryPath).toBe('none');
       },
     );
+
+    it('derives text a handoff receiver needs before resolving its scoped attachments', async () => {
+      const { resolveTurnDeliveryRouting, buildTurnReadingContext } =
+        jest.requireActual('@librechat/api');
+      const workbook = {
+        ...makeUploadedFile(
+          'deferred-xlsx',
+          'quarterly.xlsx',
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ),
+        context: 'message_attachment',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred', at: 1 } },
+      };
+      const derivedMarker = { outcome: 'complete', extractor: 'document_parser', at: 2 };
+      const deriveText = jest.fn(async () => ({
+        status: 'derived',
+        text: 'Q1 total 1200',
+        textDerivation: derivedMarker,
+      }));
+      client.options.req.config.fileConfig = {
+        endpoints: { default: { llmDeliveryPolicy: 'automatic' } },
+      };
+      mockAgent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: mockAgent,
+        config: client.options.req.config,
+      });
+      mockAgent.fileConsumers = { executeCode: true, fileSearch: false };
+      const handoffAgent = {
+        id: 'handoff-agent',
+        endpoint: EModelEndpoint.openAI,
+        provider: EModelEndpoint.openAI,
+        instructions: 'Handoff instructions',
+        model_parameters: { model: 'gpt-4' },
+        tools: [],
+        fileConsumers: { executeCode: false, fileSearch: false },
+      };
+      handoffAgent.deliveryRouting = resolveTurnDeliveryRouting({
+        agent: handoffAgent,
+        config: client.options.req.config,
+      });
+      handoffAgent.deliveryRouting.reading = buildTurnReadingContext({
+        routing: handoffAgent.deliveryRouting,
+        provider: EModelEndpoint.openAI,
+        fileTokenLimit: 100000,
+        configuredFileSizeLimit: undefined,
+        countTokens: (text) => text.length,
+        deriveText,
+      });
+      client.agentConfigs = new Map([['handoff-agent', handoffAgent]]);
+      client.options.resendFiles = true;
+      client.options.attachments = [];
+      client.authorizedHistoricalFiles = new Map([[workbook.file_id, workbook]]);
+      client.message_file_map = {};
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            sender: 'User',
+            text: 'Total it',
+            isCreatedByUser: true,
+            files: [{ file_id: workbook.file_id }],
+          },
+        ],
+        'msg-1',
+        {},
+      );
+
+      expect(mockPrepareScopedTurnCandidates).toHaveBeenCalledTimes(1);
+      expect(mockResolveScopedTurnAttachments).toHaveBeenCalledTimes(1);
+      expect(mockPrepareScopedTurnCandidates.mock.invocationCallOrder[0]).toBeLessThan(
+        mockResolveScopedTurnAttachments.mock.invocationCallOrder[0],
+      );
+      const [{ candidates }] = mockResolveScopedTurnAttachments.mock.calls[0];
+      expect(candidates.get(workbook.file_id)).toEqual(
+        expect.objectContaining({ text: 'Q1 total 1200' }),
+      );
+      expect(handoffAgent.additional_instructions).toContain('Q1 total 1200');
+      expect(mockAgent.additional_instructions ?? '').not.toContain('Q1 total 1200');
+    });
 
     it('places request context inline and applies each agent context doc only once', async () => {
       const requestFile = makeTextFile('request-file', 'request.txt', 'Shared request context');

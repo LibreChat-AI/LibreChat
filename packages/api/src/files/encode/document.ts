@@ -9,18 +9,26 @@ import {
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type {
-  DocumentBlock,
+  ValidationFailureReason,
   AnthropicDocumentBlock,
+  NativeValidationMode,
+  DocumentRejection,
   StrategyFunctions,
   DocumentResult,
+  ProcessedFile,
+  DocumentBlock,
   ServerRequest,
 } from '~/types';
+import {
+  validatePdf,
+  validateBedrockDocument,
+  getNativeDocumentSizeLimit,
+} from '~/files/validation';
 import {
   getFileStream,
   getConfiguredFileSizeLimit,
   isAttachmentObjectNotFoundError,
 } from './utils';
-import { validatePdf, validateBedrockDocument } from '~/files/validation';
 import { runGuardedEncode } from './memoryGuard';
 
 /** Anthropic only accepts PDFs as base64 documents; textual types must use a text source */
@@ -51,7 +59,7 @@ function getAnthropicDocumentSource(
  * Whether the model behind this provider is Claude, which accepts only PDFs as base64
  * documents. OpenAI-compatible gateways report an OpenAI-like provider for Claude models.
  */
-function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
+export function usesAnthropicDocumentCapabilities(provider: Providers, model?: string): boolean {
   return (
     provider === Providers.ANTHROPIC ||
     (isOpenAILikeProvider(provider) && (model?.toLowerCase().includes('claude') ?? false))
@@ -133,8 +141,29 @@ function formatDocumentBlock(
   return null;
 }
 
+interface ProviderDocumentFiles {
+  processable: IMongoFile[];
+  unsupported: IMongoFile[];
+}
+
+function partitionDocumentFiles(
+  files: IMongoFile[],
+  isSupported: (mimeType?: string) => boolean,
+): ProviderDocumentFiles {
+  const processable: IMongoFile[] = [];
+  const unsupported: IMongoFile[] = [];
+  for (const file of files) {
+    if (isSupported(file.type)) {
+      processable.push(file);
+    } else {
+      unsupported.push(file);
+    }
+  }
+  return { processable, unsupported };
+}
+
 /**
- * Filters out files the provider's document path cannot send to the model.
+ * Separates out files the provider's document path cannot send to the model.
  * Claude rejects non-PDF binary documents with a 400 that recurs on every retry,
  * including when it is reached through an OpenAI-compatible gateway. Unsupported
  * types are skipped instead of bricking the conversation.
@@ -143,32 +172,33 @@ function filterProviderDocumentFiles(
   provider: Providers,
   files: IMongoFile[],
   model?: string,
-): IMongoFile[] {
+): ProviderDocumentFiles {
   if (provider === Providers.BEDROCK) {
-    return files.filter((file) => isBedrockDocumentType(file.type));
+    return partitionDocumentFiles(files, isBedrockDocumentType);
   }
 
   if (!usesAnthropicDocumentCapabilities(provider, model)) {
-    return files;
+    return { processable: files, unsupported: [] };
   }
 
-  const processable: IMongoFile[] = [];
-  const skipped: string[] = [];
-  for (const file of files) {
-    if (isAnthropicDocumentType(file.type)) {
-      processable.push(file);
-    } else {
-      skipped.push(`"${file.filename}" (${file.type})`);
-    }
-  }
-
-  if (skipped.length) {
+  const partition = partitionDocumentFiles(files, isAnthropicDocumentType);
+  if (partition.unsupported.length) {
+    const skipped = partition.unsupported.map((file) => `"${file.filename}" (${file.type})`);
     console.warn(
       `Skipping attachment(s) unsupported by Claude document input: ${skipped.join(', ')}`,
     );
   }
 
-  return processable;
+  return partition;
+}
+
+/** Records files left out in skip mode; a no-op in throw mode, where `rejected` is absent. */
+function recordRejections(
+  result: DocumentResult,
+  files: IMongoFile[],
+  reason: DocumentRejection['reason'],
+): void {
+  result.rejected?.push(...files.map((file) => ({ file_id: file.file_id, reason })));
 }
 
 function getBase64DecodedByteCount(content: string): number {
@@ -194,29 +224,73 @@ function getBase64DecodedByteCount(content: string): number {
  *   all others are skipped.
  * - **PDF**: Validated via `validatePdf` before encoding.
  * - **Generic types**: Encoded with a provider-specific size check.
+ *
+ * A validation failure throws by default. With `onValidationFailure: 'skip'` every file
+ * that yields no block is listed in `rejected` with its reason instead: a failed
+ * validation, a type the provider cannot take, or bytes that could not be read. A missing
+ * storage object still throws.
  */
 export async function encodeAndFormatDocuments(
   req: ServerRequest,
   files: IMongoFile[],
-  params: { provider: Providers; endpoint?: string; useResponsesApi?: boolean; model?: string },
+  params: {
+    provider: Providers;
+    endpoint?: string;
+    useResponsesApi?: boolean;
+    model?: string;
+    onValidationFailure?: NativeValidationMode;
+  },
   getStrategyFunctions: (source: string) => StrategyFunctions,
 ): Promise<DocumentResult> {
-  const { provider, endpoint, useResponsesApi, model } = params;
+  const { provider, endpoint, useResponsesApi, model, onValidationFailure = 'throw' } = params;
+  const skipInvalid = onValidationFailure === 'skip';
+  const result: DocumentResult = skipInvalid
+    ? { documents: [], files: [], rejected: [] }
+    : { documents: [], files: [] };
   if (!files?.length) {
-    return { documents: [], files: [] };
+    return result;
   }
 
   const encodingMethods: Record<string, StrategyFunctions> = {};
-  const result: DocumentResult = { documents: [], files: [] };
+
+  const rejectInvalid = (
+    file: IMongoFile,
+    reason: ValidationFailureReason,
+    message: string,
+  ): void => {
+    if (!skipInvalid) {
+      throw new Error(message);
+    }
+    recordRejections(result, [file], reason);
+  };
+
+  const addBlock = (
+    file: IMongoFile,
+    block: DocumentBlock | null,
+    metadata: ProcessedFile['metadata'],
+  ): void => {
+    if (!block) {
+      recordRejections(result, [file], 'unsupported');
+      return;
+    }
+    result.documents.push(block);
+    result.files.push(metadata);
+  };
 
   const isBedrock = provider === Providers.BEDROCK;
   const isDocSupported = isDocumentSupportedProvider(provider);
 
   if (!isDocSupported && !isBedrock) {
+    recordRejections(result, files, 'unsupported');
     return result;
   }
 
-  const processableFiles = filterProviderDocumentFiles(provider, files, model);
+  const { processable: processableFiles, unsupported } = filterProviderDocumentFiles(
+    provider,
+    files,
+    model,
+  );
+  recordRejections(result, unsupported, 'unsupported');
 
   if (!processableFiles.length) {
     return result;
@@ -232,22 +306,29 @@ export async function encodeAndFormatDocuments(
     ),
   );
 
-  for (const settledResult of results) {
+  for (let i = 0; i < results.length; i++) {
+    const settledResult = results[i];
+    const sourceFile = processableFiles[i];
     if (settledResult.status === 'rejected') {
       if (isAttachmentObjectNotFoundError(settledResult.reason)) {
         throw settledResult.reason;
       }
       console.error('Document processing failed:', settledResult.reason);
+      recordRejections(result, [sourceFile], 'integrity');
       continue;
     }
 
     const processed = settledResult.value;
-    if (!processed) continue;
+    if (!processed) {
+      recordRejections(result, [sourceFile], 'integrity');
+      continue;
+    }
 
     const { file, content, metadata } = processed;
 
     if (!content || !file) {
-      if (metadata) result.files.push(metadata);
+      if (metadata && !skipInvalid) result.files.push(metadata);
+      recordRejections(result, [sourceFile], 'integrity');
       continue;
     }
 
@@ -266,7 +347,12 @@ export async function encodeAndFormatDocuments(
       );
 
       if (!validation.isValid) {
-        throw new Error(`Document validation failed: ${validation.error}`);
+        rejectInvalid(
+          file,
+          validation.reason ?? 'integrity',
+          `Document validation failed: ${validation.error}`,
+        );
+        continue;
       }
 
       const sanitizedName = (file.filename || 'document')
@@ -295,41 +381,41 @@ export async function encodeAndFormatDocuments(
       );
 
       if (!validation.isValid) {
-        throw new Error(`PDF validation failed: ${validation.error}`);
+        rejectInvalid(
+          file,
+          validation.reason ?? 'integrity',
+          `PDF validation failed: ${validation.error}`,
+        );
+        continue;
       }
 
-      const block = formatDocumentBlock(
-        provider,
-        mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
-        model,
+      addBlock(
+        file,
+        formatDocumentBlock(provider, mimeType, content, file.filename, useResponsesApi, model),
+        metadata,
       );
-      if (block) {
-        result.documents.push(block);
-        result.files.push(metadata);
-      }
     } else if (isDocSupported && !isBedrock) {
       const decodedByteCount = getBase64DecodedByteCount(content);
-      if (configuredFileSizeLimit && decodedByteCount > configuredFileSizeLimit) {
-        throw new Error(
-          `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
-        );
-      }
-
-      const block = formatDocumentBlock(
+      const sizeLimit = getNativeDocumentSizeLimit({
         provider,
         mimeType,
-        content,
-        file.filename,
-        useResponsesApi,
         model,
-      );
-      if (block) {
-        result.documents.push(block);
-        result.files.push(metadata);
+        configuredFileSizeLimit,
+      });
+      if (sizeLimit !== undefined && decodedByteCount > sizeLimit) {
+        rejectInvalid(
+          file,
+          'capacity',
+          `File size (~${(decodedByteCount / 1024 / 1024).toFixed(1)}MB) exceeds the configured limit for ${provider}`,
+        );
+        continue;
       }
+
+      addBlock(
+        file,
+        formatDocumentBlock(provider, mimeType, content, file.filename, useResponsesApi, model),
+        metadata,
+      );
     }
   }
 

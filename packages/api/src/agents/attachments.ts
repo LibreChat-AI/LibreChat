@@ -6,13 +6,18 @@ import {
   mergeFileConfig,
   getEndpointFileConfig,
 } from 'librechat-data-provider';
+import type {
+  DirectContentEntry,
+  DirectContentLimits,
+  TurnFileConsumers,
+} from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { TokenCountFn } from '~/utils/text';
 import type { ServerRequest } from '~/types';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
+import { extractFileContext } from '~/files/context';
 import { countTokens } from '~/utils/tokenizer';
-import { extractFileContext } from '~/files';
 
 type FileWithId = {
   file_id?: string | null;
@@ -236,6 +241,32 @@ export function isAgentAttachmentLimitError(
   return error instanceof AgentAttachmentLimitError || error instanceof AgentAttachmentPolicyError;
 }
 
+const toNonNegativeFinite = (value: number | null | undefined): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+/**
+ * One file's direct-content footprint as the attachment limits measure it. A replayed historical
+ * file spends the context budgets but not the current submission's count allowance.
+ */
+export function measureAttachment(
+  file: Pick<AttachmentTelemetryFile, 'file_id' | 'bytes' | 'text'>,
+  { historicalFileIds }: { historicalFileIds?: ReadonlySet<string> } = {},
+): DirectContentEntry {
+  return {
+    fileId: file.file_id ?? '',
+    counts: !file.file_id || !historicalFileIds?.has(file.file_id),
+    bytes: toNonNegativeFinite(file.bytes) ?? 0,
+    textChars: typeof file.text === 'string' ? file.text.length : 0,
+  };
+}
+
+/** A file's direct content as admission charges it on the current request: none unless model-bound. */
+export function measureModelBoundAttachment(file: AttachmentTelemetryFile): DirectContentEntry {
+  return isModelBoundAttachmentFile(file)
+    ? measureAttachment(file)
+    : { fileId: file.file_id ?? '', counts: false, bytes: 0, textChars: 0 };
+}
+
 export function collectAgentAttachmentStats(
   attachments?: Iterable<AttachmentTelemetryFile | null | undefined> | null,
   options: {
@@ -256,14 +287,13 @@ export function collectAgentAttachmentStats(
     if (!file) {
       continue;
     }
-    const extractedTextChars = typeof file.text === 'string' ? file.text.length : 0;
+    const { counts, bytes, textChars } = measureAttachment(file, options);
     if (file.file_id && seenFileIds.has(file.file_id)) {
       if (options.countRepeatedExtractedText === true) {
-        stats.extractedTextChars += extractedTextChars;
+        stats.extractedTextChars += textChars;
       }
       if (options.countRepeatedBytes === true) {
-        stats.totalKnownBytes +=
-          Number.isFinite(file.bytes) && Number(file.bytes) >= 0 ? Number(file.bytes) : 0;
+        stats.totalKnownBytes += bytes;
       }
       continue;
     }
@@ -271,21 +301,17 @@ export function collectAgentAttachmentStats(
       seenFileIds.add(file.file_id);
     }
 
-    const bytes = Number.isFinite(file.bytes) && Number(file.bytes) >= 0 ? Number(file.bytes) : 0;
-    const pageCount =
-      Number.isFinite(file.metadata?.pageCount) && Number(file.metadata?.pageCount) >= 0
-        ? Number(file.metadata?.pageCount)
-        : undefined;
-    if (!file.file_id || !options.historicalFileIds?.has(file.file_id)) {
+    const pageCount = toNonNegativeFinite(file.metadata?.pageCount);
+    if (counts) {
       stats.attachmentCount += 1;
     }
     stats.totalKnownBytes += bytes;
-    stats.extractedTextChars += extractedTextChars;
+    stats.extractedTextChars += textChars;
     stats.files.push({
       ...(file.file_id && { fileId: file.file_id }),
       ...(file.type && { mimeType: file.type }),
       ...(bytes > 0 && { bytes }),
-      ...(extractedTextChars > 0 && { extractedTextChars }),
+      ...(textChars > 0 && { extractedTextChars: textChars }),
       ...(pageCount != null && { pageCount }),
     });
   }
@@ -293,35 +319,26 @@ export function collectAgentAttachmentStats(
   return stats;
 }
 
-export function assertAgentAttachmentLimits({
-  attachments,
-  req,
+/**
+ * The direct-content limits a turn's attachments are held to on an endpoint: the count, aggregate
+ * byte and extracted-text limits {@link assertAgentAttachmentLimits} enforces, so an allocation
+ * against them and the assertion cannot disagree.
+ */
+export function resolveAgentAttachmentLimits({
   fileConfig: providedFileConfig,
+  req,
   endpoint = EModelEndpoint.agents,
   endpointType,
-  countRepeatedExtractedText = false,
-  countRepeatedBytes = countRepeatedExtractedText,
   enforceAttachmentCount = true,
-  historicalFileIds,
   useGlobalContextSizeLimit = false,
 }: {
-  attachments?: Iterable<AttachmentTelemetryFile | null | undefined> | null;
+  fileConfig?: DynamicFileConfig;
   req?: AgentAttachmentLimitRequest;
-  fileConfig?: Parameters<typeof mergeFileConfig>[0];
   endpoint?: string | null;
   endpointType?: string | null;
-  countRepeatedExtractedText?: boolean;
-  countRepeatedBytes?: boolean;
   enforceAttachmentCount?: boolean;
-  /** Replayed files consume context budgets, not the current submission's count allowance. */
-  historicalFileIds?: ReadonlySet<string>;
   useGlobalContextSizeLimit?: boolean;
-}): AgentAttachmentStats {
-  const stats = collectAgentAttachmentStats(attachments, {
-    countRepeatedExtractedText,
-    countRepeatedBytes,
-    historicalFileIds,
-  });
+}): DirectContentLimits {
   const dynamicFileConfig = providedFileConfig ?? req?.config?.fileConfig;
   const fileConfig = mergeFileConfig(dynamicFileConfig);
   const endpointConfig = getEndpointFileConfig({ fileConfig, endpoint, endpointType });
@@ -339,18 +356,57 @@ export function assertAgentAttachmentLimits({
       ? undefined
       : getExplicitEndpointAggregateLimit(dynamicFileConfig, endpoint, endpointType)) ??
     fileConfig.fileContextSizeLimit;
-  const configuredContextCharLimit = dynamicFileConfig?.fileContextCharLimit;
-  const limits: Array<[AgentAttachmentLimit, number, number | undefined]> = [
-    ['count', stats.attachmentCount, enforceAttachmentCount ? configuredFileLimit : undefined],
-    ['bytes', stats.totalKnownBytes, configuredContextSizeLimit],
-    [
-      'extracted_text',
-      stats.extractedTextChars,
-      configuredContextCharLimit ?? fileConfig.fileContextCharLimit,
-    ],
+  return {
+    count: enforceAttachmentCount ? configuredFileLimit : undefined,
+    bytes: configuredContextSizeLimit,
+    textChars: dynamicFileConfig?.fileContextCharLimit ?? fileConfig.fileContextCharLimit,
+  };
+}
+
+export function assertAgentAttachmentLimits({
+  attachments,
+  req,
+  fileConfig,
+  endpoint,
+  endpointType,
+  countRepeatedExtractedText = false,
+  countRepeatedBytes = countRepeatedExtractedText,
+  enforceAttachmentCount,
+  historicalFileIds,
+  useGlobalContextSizeLimit,
+}: {
+  attachments?: Iterable<AttachmentTelemetryFile | null | undefined> | null;
+  req?: AgentAttachmentLimitRequest;
+  fileConfig?: DynamicFileConfig;
+  endpoint?: string | null;
+  endpointType?: string | null;
+  countRepeatedExtractedText?: boolean;
+  countRepeatedBytes?: boolean;
+  enforceAttachmentCount?: boolean;
+  /** Replayed files consume context budgets, not the current submission's count allowance. */
+  historicalFileIds?: ReadonlySet<string>;
+  useGlobalContextSizeLimit?: boolean;
+}): AgentAttachmentStats {
+  const stats = collectAgentAttachmentStats(attachments, {
+    countRepeatedExtractedText,
+    countRepeatedBytes,
+    historicalFileIds,
+  });
+  const limits = resolveAgentAttachmentLimits({
+    fileConfig,
+    req,
+    endpoint,
+    endpointType,
+    enforceAttachmentCount,
+    useGlobalContextSizeLimit,
+  });
+  const checks: Array<[AgentAttachmentLimit, number, number | undefined]> = [
+    ['count', stats.attachmentCount, limits.count],
+    ['bytes', stats.totalKnownBytes, limits.bytes],
+    ['extracted_text', stats.extractedTextChars, limits.textChars],
   ];
 
-  for (const [limitType, observed, limit] of limits) {
+  for (const [limitType, observed, limit] of checks) {
     if (limit != null && limit > 0 && observed > limit) {
       throw new AgentAttachmentLimitError(limitType, observed, limit);
     }
@@ -367,6 +423,7 @@ export function assertAgentAttachmentTopology({
   endpointType,
   endpointsByAgentId,
   historicalFileIds,
+  consumers,
 }: {
   sharedAttachments?: IMongoFile[];
   scopedAttachmentsByAgentId?: Map<string, IMongoFile[]>;
@@ -375,24 +432,23 @@ export function assertAgentAttachmentTopology({
   endpointType?: string | null;
   endpointsByAgentId?: AgentAttachmentEndpointsByAgentId;
   historicalFileIds?: ReadonlySet<string>;
+  /** The requesting agent's loaded file tools, which decide whether an oversized record stays. */
+  consumers?: TurnFileConsumers | null;
 }): void {
   const agentIds = new Set([
     ...scopedAttachmentsByAgentId.keys(),
-    ...(endpointsByAgentId instanceof Map
-      ? endpointsByAgentId.keys()
-      : Object.keys(endpointsByAgentId ?? {})),
+    ...listAgentIds(endpointsByAgentId),
   ]);
   for (const agentId of agentIds) {
-    const agentEndpoint =
-      endpointsByAgentId instanceof Map
-        ? endpointsByAgentId.get(agentId)
-        : endpointsByAgentId?.[agentId];
+    const agentEndpoint = getAgentEntry(endpointsByAgentId, agentId);
     const compatibleSharedAttachments = filterFilesByEndpointRuntimeConfig(req?.config, {
       files: sharedAttachments,
       endpoint: agentEndpoint?.endpoint ?? endpoint ?? EModelEndpoint.agents,
       endpointType: agentEndpoint?.endpointType ?? endpointType,
       skipTotalSizeLimit: true,
       preserveTextSources: true,
+      bindProviderCopies: true,
+      consumers,
     });
     if (compatibleSharedAttachments.length !== sharedAttachments.length) {
       throw new AgentAttachmentPolicyError();
@@ -523,6 +579,23 @@ export type AgentContextAttachmentsByAgentId<TFile extends FileWithId = IMongoFi
 export type AgentAttachmentEndpointsByAgentId =
   | Map<string, { endpoint?: string | null; endpointType?: string | null }>
   | Record<string, { endpoint?: string | null; endpointType?: string | null }>;
+
+/** A collection keyed by agent id, which callers supply as a Map or a plain record. */
+export type AgentKeyed<T> = Map<string, T> | Record<string, T | undefined> | null | undefined;
+
+export function getAgentEntry<T>(entries: AgentKeyed<T>, agentId: string): T | undefined {
+  return entries instanceof Map ? entries.get(agentId) : entries?.[agentId];
+}
+
+export function listAgentIds<T>(entries: AgentKeyed<T>): string[] {
+  return entries instanceof Map ? [...entries.keys()] : Object.keys(entries ?? {});
+}
+
+/** The entries of an agent-keyed collection, without the gaps a record may carry. */
+export function listAgentEntries<T>(entries: AgentKeyed<T>): T[] {
+  const values = entries instanceof Map ? [...entries.values()] : Object.values(entries ?? {});
+  return values.filter((value): value is T => value != null);
+}
 
 export function collectFileIds<TFile extends FileWithId>(
   files?: Array<TFile | null | undefined> | null,
@@ -659,10 +732,7 @@ export function getAgentContextAttachments<TFile extends FileWithId>({
     return [];
   }
 
-  const attachments: TFile[] =
-    attachmentsByAgentId instanceof Map
-      ? (attachmentsByAgentId.get(agentId) ?? [])
-      : (attachmentsByAgentId[agentId] ?? []);
+  const attachments: TFile[] = getAgentEntry(attachmentsByAgentId, agentId) ?? [];
 
   if (!excludeFileIds || excludeFileIds.size === 0) {
     return attachments;
@@ -679,6 +749,7 @@ export function buildAgentScopedAttachmentMap({
   endpoint,
   endpointType,
   endpointsByAgentId,
+  consumers,
 }: {
   agentIds: string[];
   attachmentsByAgentId: AgentContextAttachmentsByAgentId<IMongoFile>;
@@ -687,12 +758,11 @@ export function buildAgentScopedAttachmentMap({
   endpoint?: string | null;
   endpointType?: string | null;
   endpointsByAgentId?: AgentAttachmentEndpointsByAgentId;
+  /** The requesting agent's loaded file tools, which decide whether an oversized record stays. */
+  consumers?: TurnFileConsumers | null;
 }): Map<string, IMongoFile[]> {
   const entries = Array.from(new Set(agentIds.filter(Boolean))).map((agentId) => {
-    const agentEndpoint =
-      endpointsByAgentId instanceof Map
-        ? endpointsByAgentId.get(agentId)
-        : endpointsByAgentId?.[agentId];
+    const agentEndpoint = getAgentEntry(endpointsByAgentId, agentId);
     const attachments = getAgentContextAttachments({
       agentId,
       attachmentsByAgentId,
@@ -706,6 +776,7 @@ export function buildAgentScopedAttachmentMap({
         endpointType: agentEndpoint?.endpointType ?? endpointType,
         skipTotalSizeLimit: true,
         preserveTextSources: true,
+        consumers,
       }),
     ] as const;
   });
@@ -723,6 +794,7 @@ export async function buildAgentScopedContext({
   endpoint,
   endpointType,
   endpointsByAgentId,
+  consumers,
 }: {
   agentIds: string[];
   attachmentsByAgentId: AgentContextAttachmentsByAgentId<IMongoFile>;
@@ -734,6 +806,7 @@ export async function buildAgentScopedContext({
   endpoint?: string | null;
   endpointType?: string | null;
   endpointsByAgentId?: AgentAttachmentEndpointsByAgentId;
+  consumers?: TurnFileConsumers | null;
 }): Promise<Map<string, string>> {
   const attachmentEntries = [
     ...buildAgentScopedAttachmentMap({
@@ -744,6 +817,7 @@ export async function buildAgentScopedContext({
       endpoint,
       endpointType,
       endpointsByAgentId,
+      consumers,
     }),
   ];
   assertAgentAttachmentTopology({
@@ -754,6 +828,7 @@ export async function buildAgentScopedContext({
     endpoint,
     endpointType,
     endpointsByAgentId,
+    consumers,
   });
   const entries = await Promise.all(
     attachmentEntries.map(async ([agentId, attachments]) => {

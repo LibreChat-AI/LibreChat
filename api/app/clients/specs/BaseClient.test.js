@@ -1,3 +1,6 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
 const BaseClientClass = require('../BaseClient');
 const {
@@ -8,6 +11,8 @@ const {
   getPrivateTextInspectionTokens,
   assertModelBoundContent,
   resolveTurnDeliveryRouting,
+  buildTurnReadingContext,
+  buildMessageFiles,
   buildSteerMedia,
   Tokenizer,
 } = require('@librechat/api');
@@ -3059,6 +3064,34 @@ describe('BaseClient', () => {
       expect(userSave[0].files).toHaveLength(1);
       expect(userSave[0].files[0].file_id).toBe('file-abc');
     });
+
+    test('saves the user row with the files buildMessageFiles derives from the request and attachments', async () => {
+      const brief = {
+        user: 'user-1',
+        file_id: 'brief',
+        filename: 'brief.pdf',
+        filepath: '/uploads/brief.pdf',
+        type: 'application/pdf',
+        bytes: 2048,
+        source: 'local',
+        text: 'extracted text',
+        _id: 'mongo-brief',
+      };
+      const requestFiles = [{ file_id: 'brief' }, { file_id: 'scan' }];
+      TestClient.options.req = { body: { files: requestFiles } };
+      TestClient.options.attachments = [brief];
+      TestClient.saveMessageToDatabase = jest.fn().mockResolvedValue({ message: {} });
+
+      await TestClient.sendMessage('Hello');
+
+      const userSave = TestClient.saveMessageToDatabase.mock.calls.find(
+        ([msg]) => msg.isCreatedByUser,
+      );
+      const expected = buildMessageFiles(requestFiles, [brief]);
+      expect(expected).toHaveLength(1);
+      expect(userSave[0].files).toEqual(expected);
+      expect(TestClient.options.attachments).toEqual([brief]);
+    });
   });
 
   describe('addPreviousAttachments authorization', () => {
@@ -3481,6 +3514,70 @@ describe('BaseClient', () => {
       expect(JSON.stringify(secondMessage)).not.toContain('second-forged');
     });
 
+    describe('text a deferred file needs on a later turn', () => {
+      const deferredWorkbook = {
+        file_id: 'deferred-xlsx',
+        filename: 'quarterly.xlsx',
+        filepath: '/uploads/quarterly.xlsx',
+        source: 'local',
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        bytes: 2048,
+        user: 'user-1',
+        context: 'message_attachment',
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: false, textDerivation: { outcome: 'deferred', at: 1 } },
+      };
+      const derivedMarker = { outcome: 'complete', extractor: 'document_parser', at: 2 };
+
+      test('prepares the replayed file once and hands the prepared copy to the limit check and file context', async () => {
+        const deriveText = jest.fn(async () => ({
+          status: 'derived',
+          text: 'Q1,1200',
+          textDerivation: derivedMarker,
+        }));
+        getFiles.mockResolvedValueOnce([deferredWorkbook]);
+        TestClient.options.req.config = {
+          fileConfig: {
+            endpoints: { [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'automatic' } },
+          },
+        };
+        TestClient.options.agent = {
+          provider: EModelEndpoint.openAI,
+          fileConsumers: { executeCode: false, fileSearch: false },
+        };
+        const routing = resolveTurnDeliveryRouting({
+          agent: TestClient.options.agent,
+          config: TestClient.options.req.config,
+        });
+        routing.reading = buildTurnReadingContext({
+          routing,
+          provider: EModelEndpoint.openAI,
+          fileTokenLimit: 100000,
+          configuredFileSizeLimit: undefined,
+          countTokens: (text) => text.length,
+          deriveText,
+        });
+        TestClient.options.agent.deliveryRouting = routing;
+        TestClient.assertHistoricalAttachmentLimits = jest.fn(async (files) => files);
+        const prepareTurnAttachments = jest.spyOn(TestClient, 'prepareTurnAttachments');
+
+        const [message] = await TestClient.addPreviousAttachments([
+          { messageId: 'msg-xlsx', text: 'Totals?', files: [{ file_id: 'deferred-xlsx' }] },
+        ]);
+
+        const prepared = {
+          ...deferredWorkbook,
+          text: 'Q1,1200',
+          llmDeliveryPath: 'text',
+          metadata: { ...deferredWorkbook.metadata, textDerivation: derivedMarker },
+        };
+        expect(prepareTurnAttachments).toHaveBeenCalledTimes(1);
+        expect(TestClient.assertHistoricalAttachmentLimits).toHaveBeenCalledWith([prepared]);
+        expect(message.fileContext).toBe('Q1,1200');
+        expect(deferredWorkbook.text).toBeUndefined();
+      });
+    });
+
     test('extracts historical file context while encoding provider attachments', async () => {
       getFiles.mockResolvedValueOnce([ownerFile]);
       const fileContext = deferred();
@@ -3503,8 +3600,7 @@ describe('BaseClient', () => {
         return messages;
       });
 
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(TestClient.addFileContextToMessage).toHaveBeenCalledTimes(1);
       expect(TestClient.processAttachments).toHaveBeenCalledTimes(1);
@@ -4532,6 +4628,133 @@ describe('BaseClient', () => {
       expect(message.documents).toEqual([{ type: 'file' }]);
       expect(TestClient.addDocuments).toHaveBeenCalledWith(message, [file]);
     });
+  });
+});
+
+describe('BaseClient attachment text under a reading context', () => {
+  const longNote = {
+    file_id: 'long-note',
+    filename: 'notes.txt',
+    source: 'text',
+    type: 'text/plain',
+    text: 'quarterly revenue grew '.repeat(200),
+  };
+
+  beforeEach(() => {
+    jest.spyOn(Tokenizer, 'initEncoding').mockResolvedValue(undefined);
+    jest.spyOn(Tokenizer, 'getTokenCount').mockImplementation((text) => text.length);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  /** The truncation notice is emitted only when the turn reading context's text options
+   *  reach `extractFileContext`; the notice wording itself belongs to packages/api. */
+  test('extracts file context with the text options of the turn reading context', async () => {
+    const client = initializeFakeClient(apiKey, { modelOptions: { model: 'gpt-4o-mini' } }, []);
+    const config = {
+      fileConfig: { endpoints: { [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'automatic' } } },
+    };
+    client.options.req = { body: { fileTokenLimit: 20 }, config };
+    client.options.agent = {
+      provider: EModelEndpoint.openAI,
+      fileConsumers: { executeCode: false, fileSearch: false },
+    };
+    const routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
+    routing.reading = buildTurnReadingContext({
+      routing,
+      provider: EModelEndpoint.openAI,
+      fileTokenLimit: 20,
+      configuredFileSizeLimit: undefined,
+      countTokens: (text) => text.length,
+    });
+    client.options.agent.deliveryRouting = routing;
+    const message = {};
+
+    await client.addFileContextToMessage(message, [longNote], client.options.agent.fileConsumers);
+
+    expect(message.fileContext).toContain('# "notes.txt"');
+    expect(message.fileContext).toContain(
+      '[Truncated: only the beginning of "notes.txt" fits; the rest is omitted.]',
+    );
+  });
+});
+
+describe('BaseClient native documents under a reading context', () => {
+  const brokenPdf = {
+    user: 'user1',
+    file_id: 'broken-pdf',
+    filename: 'brief.pdf',
+    filepath: '/uploads/brief.pdf',
+    type: 'application/pdf',
+    bytes: 18,
+    source: 'local',
+    context: 'message_attachment',
+    llmDeliveryPath: 'provider',
+    metadata: { destinationChosen: false },
+  };
+  const rejection = [{ file_id: 'broken-pdf', reason: 'integrity' }];
+  let uploads;
+
+  beforeAll(() => {
+    uploads = fs.mkdtempSync(path.join(os.tmpdir(), 'baseclient-documents-'));
+    fs.writeFileSync(path.join(uploads, 'brief.pdf'), 'not a pdf document');
+  });
+
+  afterAll(() => {
+    fs.rmSync(uploads, { recursive: true, force: true });
+  });
+
+  const routeBrokenPdf = () => {
+    const client = initializeFakeClient(apiKey, { modelOptions: { model: 'claude-sonnet-4' } }, []);
+    const config = {
+      paths: { uploads },
+      fileConfig: { endpoints: { [EModelEndpoint.anthropic]: { llmDeliveryPolicy: 'automatic' } } },
+    };
+    client.options.req = { config, user: { id: 'user1' } };
+    client.options.agent = {
+      provider: EModelEndpoint.anthropic,
+      endpoint: EModelEndpoint.anthropic,
+      fileConsumers: { executeCode: false, fileSearch: true },
+      currentRequestAttachments: [brokenPdf],
+    };
+    const routing = resolveTurnDeliveryRouting({ agent: client.options.agent, config });
+    routing.reading = buildTurnReadingContext({
+      routing,
+      provider: EModelEndpoint.anthropic,
+      fileTokenLimit: 100000,
+      configuredFileSizeLimit: undefined,
+      countTokens: (text) => text.length,
+    });
+    client.options.agent.deliveryRouting = routing;
+    return { client, routing };
+  };
+
+  test('leaves a rejected document out of the forwarded files and records it on the reading context', async () => {
+    const { client, routing } = routeBrokenPdf();
+    const recordRejections = jest.spyOn(routing.reading, 'recordRejections');
+    const message = {};
+
+    const files = await client.addDocuments(message, [brokenPdf]);
+
+    expect(files).toEqual([]);
+    expect(message.documents).toBeUndefined();
+    expect(recordRejections).toHaveBeenCalledWith(rejection);
+  });
+
+  test('records the rejection on every agent the conversation agents list', async () => {
+    const { client } = routeBrokenPdf();
+    const { routing: handoffRouting } = routeBrokenPdf();
+    const recordRejections = jest.spyOn(handoffRouting.reading, 'recordRejections');
+    client.getConversationAgents = () => [
+      client.options.agent,
+      { deliveryRouting: handoffRouting },
+    ];
+
+    await client.addDocuments({}, [brokenPdf]);
+
+    expect(recordRejections).toHaveBeenCalledWith(rejection);
   });
 });
 

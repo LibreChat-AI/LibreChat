@@ -40,6 +40,8 @@ import type {
 import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import type { TextContentFragment } from '~/protection/types';
 import type { CheckAccessParams } from '~/middleware/access';
+import type { TurnDeliveryInputs } from '../files/delivery';
+import type { TurnReadingAgent } from '~/files/reading';
 import {
   assertModelBoundContent,
   collectModelBoundHistoricalFileIdState,
@@ -217,9 +219,25 @@ export interface AssertResumeRuntimeContentAllowedInput
     | 'isTemporary'
     | 'checkpointNamespace'
   > {
-  readonly agents: NonNullable<ModelBoundContentInput['agents']>;
+  /** The run's reachable agents, the primary agent first. */
+  readonly agents: readonly (ResumeAgentContentInput | null | undefined)[];
   readonly files: NonNullable<ModelBoundContentInput['files']>;
+  /**
+   * The resuming agent's routing and readers, so checkpoint files are charged by its decisions.
+   * Defaults to the primary agent's `deliveryRouting` and `fileConsumers`.
+   */
+  readonly delivery?: TurnDeliveryInputs;
 }
+
+/** An initialized agent as the resume check reads it: its content plus how it receives files. */
+type ResumeAgentContentInput = AgentContentInput &
+  Pick<TurnReadingAgent, 'deliveryRouting' | 'fileConsumers'>;
+
+const resolveResumeDelivery = ({
+  delivery,
+  agents,
+}: Pick<AssertResumeRuntimeContentAllowedInput, 'delivery' | 'agents'>): TurnDeliveryInputs =>
+  delivery ?? { routing: agents[0]?.deliveryRouting, consumers: agents[0]?.fileConsumers };
 
 export type ResumeRuntimeContentProtectionDependencies = Pick<
   ResumeContentProtectionDependencies,
@@ -1148,7 +1166,10 @@ export async function assertResumeRuntimeContentAllowed(
     );
     throw new AttachmentObjectNotFoundError(unresolvedFileId ?? 'unknown');
   }
-  return { resolvedFiles, checkpointFiles: applyCheckpointDelivery(checkpointFiles) };
+  return {
+    resolvedFiles,
+    checkpointFiles: applyCheckpointDelivery(checkpointFiles, resolveResumeDelivery(input)),
+  };
 }
 
 export function getUserFacingResumeError(

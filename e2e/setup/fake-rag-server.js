@@ -15,6 +15,9 @@
  *
  * Every embed is recorded and surfaced at `GET /__debug/embedded` so specs can
  * assert a file's bytes actually reached the RAG env, independent of the DB write.
+ * Embeds and queries share one sequence (`seq`, never reset): an embed takes its
+ * number once its upload is fully received and a query when it arrives, so a spec
+ * can show a file was indexed before it was searched.
  */
 
 const http = require('http');
@@ -23,12 +26,16 @@ const busboy = require('busboy');
 const PORT = parseInt(process.env.E2E_RAG_API_PORT || '8791', 10);
 const HOST = '127.0.0.1';
 
-/** @type {Array<{ file_id: string; filename: string; entity_id: string; bytes: number; auth: string }>} */
+/** @type {Array<{ seq: number; file_id: string; filename: string; entity_id: string; bytes: number; auth: string }>} */
 const embedded = [];
-/** @type {Array<{ file_id: string; query: string }>} */
+/** @type {Array<{ seq: number; file_id: string; query: string }>} */
 const queries = [];
+let sequence = 0;
 /** @type {string[]} */
 const deleted = [];
+/** Per-file failures let retry tests leave every other upload unaffected. */
+const embeddingFailures = new Set();
+const failedEmbeds = [];
 
 function sendJson(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -80,7 +87,13 @@ function readJson(req) {
 
 async function handleEmbed(req, res) {
   const { fields, files } = await parseMultipart(req);
+  if (embeddingFailures.has(fields.file_id)) {
+    failedEmbeds.push({ seq: ++sequence, file_id: fields.file_id });
+    sendJson(res, 503, { status: false, message: 'E2E embedding unavailable' });
+    return;
+  }
   embedded.push({
+    seq: ++sequence,
     file_id: fields.file_id || '',
     filename: files[0]?.filename || '',
     entity_id: fields.entity_id || '',
@@ -91,8 +104,9 @@ async function handleEmbed(req, res) {
 }
 
 async function handleQuery(req, res) {
+  const seq = ++sequence;
   const body = await readJson(req);
-  queries.push({ file_id: body.file_id || '', query: body.query || '' });
+  queries.push({ seq, file_id: body.file_id || '', query: body.query || '' });
   sendJson(res, 200, []);
 }
 
@@ -116,7 +130,7 @@ const server = http.createServer((req, res) => {
     }
 
     if (pathname === '/__debug/embedded' && req.method === 'GET') {
-      sendJson(res, 200, { embedded, queries, deleted });
+      sendJson(res, 200, { embedded, queries, deleted, failedEmbeds });
       return;
     }
 
@@ -124,6 +138,23 @@ const server = http.createServer((req, res) => {
       embedded.length = 0;
       queries.length = 0;
       deleted.length = 0;
+      failedEmbeds.length = 0;
+      embeddingFailures.clear();
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (pathname === '/__debug/embedding-failure' && req.method === 'POST') {
+      const body = await readJson(req);
+      if (typeof body.file_id !== 'string' || typeof body.enabled !== 'boolean') {
+        sendJson(res, 400, { message: 'file_id and enabled are required' });
+        return;
+      }
+      if (body.enabled) {
+        embeddingFailures.add(body.file_id);
+      } else {
+        embeddingFailures.delete(body.file_id);
+      }
       sendJson(res, 200, { ok: true });
       return;
     }

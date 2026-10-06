@@ -7,6 +7,7 @@ import type { CodeEnvRefUpdate, ProvisionService } from './service';
 import type { ProvisionToolContext } from '../code/queued';
 import type { ServerRequest } from '~/types';
 import { createCodeApiRateLimitBudget, isCodeApiRateLimitError } from '~/utils';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { planCodeFileUploads } from '../code/queued';
 import { isCodeFileToolName } from '~/agents/tools';
 
@@ -37,6 +38,22 @@ async function persistWithRetry(
 }
 
 export type { ProvisionToolContext } from '../code/queued';
+
+const FILE_SEARCH_PREPARATION_CODE = 'file_search_preparation_failed';
+
+/** A safe boundary error: indexing failed before any search query could run. */
+export class FileSearchPreparationError extends Error {
+  readonly code: typeof FILE_SEARCH_PREPARATION_CODE = FILE_SEARCH_PREPARATION_CODE;
+
+  constructor() {
+    // Existing stream boundaries transmit error text; the client extracts this safe code to localize it.
+    super(
+      'File Search could not prepare the attached files. Try sending the message again.\n' +
+        JSON.stringify({ code: FILE_SEARCH_PREPARATION_CODE }),
+    );
+    this.name = 'FileSearchPreparationError';
+  }
+}
 
 export interface ProvisionCallbackDeps {
   req: ServerRequest;
@@ -352,9 +369,16 @@ export function createProvisionFilesCallback({
 
     if (needsSearch && provisionState.vectorDBFiles.length > 0) {
       const queuedVectorFiles = provisionState.vectorDBFiles;
+      provisionState.searchPreparation ??= new Map();
+      const searchPreparation = provisionState.searchPreparation;
+      for (const file of queuedVectorFiles) {
+        if (!searchPreparation.has(file.file_id)) {
+          searchPreparation.set(file.file_id, 'queued');
+        }
+      }
       const results = await Promise.allSettled(
         queuedVectorFiles.map(async (file) => {
-          const result = await shareProvisioning(shareKey('search', file), async () => {
+          await shareProvisioning(shareKey('search', file), async () => {
             const provisioned = await provisionToVectorDB({
               req,
               file,
@@ -362,9 +386,14 @@ export function createProvisionFilesCallback({
               signal,
             });
             signal?.throwIfAborted();
+            /* A declined embedding must reject the shared work too, so a later tool
+             * call retries it rather than replaying a cached embedded:false result. */
+            if (!provisioned.embedded) {
+              throw new FileSearchPreparationError();
+            }
             /* The vectors are already stored, so a failed flag write costs a re-embed next
              * turn rather than this turn's results. Logged, not fatal. */
-            if (provisioned.embedded && provisioned.fileUpdate) {
+            if (provisioned.fileUpdate) {
               const update = provisioned.fileUpdate;
               /* Vectors live under the entity that provisioned them, so the namespace is
                * recorded alongside the flag. Agents sharing a record, as a duplicate does
@@ -379,39 +408,34 @@ export function createProvisionFilesCallback({
                 (error) =>
                   logger.error(
                     `[provisionFiles] Failed to persist embedding state for file ${update.file_id}`,
-                    error,
+                    getSafeErrorMetadata(error),
                   ),
               );
             }
             return provisioned;
           });
-          if (result.embedded) {
-            file.embedded = true;
-            const namespace = namespaceForFile(file);
-            if (namespace != null) {
-              const recorded = new Set(file.metadata?.embeddedEntities ?? []);
-              recorded.add(namespace);
-              file.metadata = { ...file.metadata, embeddedEntities: [...recorded] };
-            }
-            addProvisionedFile(
-              file,
-              EToolResources.file_search,
-              entityIdForFile(file) !== undefined,
-            );
-            return;
+          file.embedded = true;
+          const namespace = namespaceForFile(file);
+          if (namespace != null) {
+            const recorded = new Set(file.metadata?.embeddedEntities ?? []);
+            recorded.add(namespace);
+            file.metadata = { ...file.metadata, embeddedEntities: [...recorded] };
           }
-          /* Resolving with embedded false is a normal outcome of the service, returned
-           * when the vector store declines the file, and it means the same thing as a
-           * throw: the vectors are not there. Treated as a failure so the file stays
-           * queued and search does not proceed without it. */
-          throw new Error(`Vector store did not embed "${file.filename}" (${file.file_id})`);
+          addProvisionedFile(file, EToolResources.file_search, entityIdForFile(file) !== undefined);
+          searchPreparation.set(file.file_id, 'ready');
         }),
       );
-      signal?.throwIfAborted();
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
-          logger.error('[provisionFiles] Vector DB provisioning failed', result.reason);
-          failedVectorFiles.push(queuedVectorFiles[index]);
+          const file = queuedVectorFiles[index];
+          if (!signal?.aborted) {
+            logger.error(
+              `[provisionFiles] Vector DB provisioning failed for file ${file.file_id}`,
+              getSafeErrorMetadata(result.reason),
+            );
+          }
+          searchPreparation.set(file.file_id, 'failed');
+          failedVectorFiles.push(file);
         }
       });
       /* Preserved for a later retry, and fatal for this turn like a code failure. An
@@ -419,6 +443,7 @@ export function createProvisionFilesCallback({
        * narrows results, but a search that silently omits the file the user asked about
        * is a wrong answer, not a smaller one. */
       provisionState.vectorDBFiles = failedVectorFiles;
+      signal?.throwIfAborted();
     }
 
     /* Provisioning failed outright, so the sandbox or vector store does not have the
@@ -436,9 +461,7 @@ export function createProvisionFilesCallback({
       );
     }
     if (failedVectorFiles.length > 0) {
-      throw new Error(
-        `Failed to provision ${failedVectorFiles.length} file(s) for search; aborting tool execution rather than searching without them`,
-      );
+      throw new FileSearchPreparationError();
     }
 
     if (needsCode) {

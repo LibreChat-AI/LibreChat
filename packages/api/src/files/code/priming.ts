@@ -208,7 +208,8 @@ export type CodeFileLocation = 'sandbox' | 'programmatic';
 
 type CodeContextFile = Pick<TFile, 'file_id' | 'filename' | 'context' | 'status' | 'previewError'>;
 
-const CODE_FILE_CONTEXT_ROOTS: Record<CodeFileLocation, string> = {
+/** The directory primed code files mount under on each execution route. */
+export const CODE_FILE_CONTEXT_ROOTS: Readonly<Record<CodeFileLocation, string>> = {
   sandbox: '/mnt/data',
   programmatic: '$LIBRECHAT_CODE_DATA_DIR',
 };
