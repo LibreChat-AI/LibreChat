@@ -64,4 +64,16 @@ describe('SecretInput', () => {
     );
     expect(field).not.toHaveClass('h-10');
   });
+
+  /** The sign-in form's field carries its edge, label and controls with it, so a form names the
+   *  variant rather than restating them. */
+  it('draws the floating variant with its label and show control', () => {
+    render(<SecretInput id="pw" variant="floating" label="Password" />);
+    const field = document.getElementById('pw');
+
+    expect(field).toHaveClass('peer', 'rounded-2xl', 'pr-11');
+    expect(field).toHaveAttribute('placeholder', ' ');
+    expect(screen.getByText('Password')).toHaveClass('peer-placeholder-shown:top-1/2');
+    expect(screen.getByRole('button', { name: 'Show secret' })).toHaveClass('size-9', 'rounded-xl');
+  });
 });

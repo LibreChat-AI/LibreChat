@@ -74,7 +74,7 @@ function FileHovercardContent({
         <Button
           variant="link"
           onClick={onClick}
-          className="text-text-primary h-auto min-w-0 justify-start truncate p-0 text-sm font-medium hover:underline"
+          className="h-auto min-w-0 justify-start truncate p-0 font-medium"
         >
           {fileName}
         </Button>

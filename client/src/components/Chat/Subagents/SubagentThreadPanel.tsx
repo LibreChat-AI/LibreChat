@@ -1670,7 +1670,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="text-text-secondary hover:text-text-primary size-9 rounded-full"
+                          className="text-text-secondary size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>

@@ -81,7 +81,7 @@ export default function SkillFileEditor({ skillId, nodeId, fileName }: SkillFile
           <span className="text-text-primary truncate text-sm font-medium">{fileName}</span>
           <Circle
             className={cn(
-              'size-2 shrink-0 transition-[opacity,color] duration-200',
+              'size-2 shrink-0 transition duration-200',
               isDirty ? 'text-status-warning fill-current opacity-100' : 'opacity-0',
             )}
             aria-hidden="true"

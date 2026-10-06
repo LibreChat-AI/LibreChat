@@ -87,7 +87,7 @@ const TwoFactorScreen: React.FC = React.memo(() => {
   return (
     <div className="mt-4">
       <form onSubmit={handleSubmit(onSubmit)}>
-        <Label className="text-text-primary flex justify-center text-center text-sm break-keep">
+        <Label className="flex justify-center text-center text-sm break-keep">
           {localize('com_auth_two_factor')}
         </Label>
         {!useBackup && (
@@ -142,7 +142,8 @@ const TwoFactorScreen: React.FC = React.memo(() => {
             variant="submit"
             data-testid="login-button"
             disabled={isLoading}
-            className="w-full rounded-2xl px-4 py-3 text-sm font-medium disabled:opacity-80"
+            shape="soft"
+            className="w-full disabled:opacity-80"
           >
             {isLoading ? localize('com_auth_email_verifying_ellipsis') : localize('com_ui_verify')}
           </Button>
@@ -151,18 +152,20 @@ const TwoFactorScreen: React.FC = React.memo(() => {
           {!useBackup ? (
             <Button
               type="button"
-              variant="link"
+              variant="link-accent"
               onClick={toggleBackupOn}
-              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
+              size="snug"
+              className="inline-flex"
             >
               {localize('com_ui_use_backup_code')}
             </Button>
           ) : (
             <Button
               type="button"
-              variant="link"
+              variant="link-accent"
               onClick={toggleBackupOff}
-              className="text-accent-primary hover:text-accent-primary-hover inline-flex p-1 text-sm font-medium transition-colors"
+              size="snug"
+              className="inline-flex"
             >
               {localize('com_ui_use_2fa_code')}
             </Button>

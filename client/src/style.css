@@ -1329,7 +1329,7 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
   --tw-text-opacity: 1;
   color: rgba(64, 65, 79, var(--tw-text-opacity));
 }
-.dark .dark\:prose-invert {
+.dark .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
   --tw-prose-lead: var(--tw-prose-invert-lead);
@@ -1560,9 +1560,11 @@ html {
   }
 }
 
+.avatar-stroke,
 .shadow-stroke {
   position: relative;
 }
+.avatar-stroke:after,
 .shadow-stroke:after {
   --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
@@ -1574,7 +1576,9 @@ html {
   right: 0;
   top: 0;
 }
+.dark .avatar-stroke:after,
 .dark .shadow-stroke:after,
+.avatar-stroke:after,
 .shadow-stroke:after {
   box-shadow:
     0 0 transparent,
@@ -1584,9 +1588,19 @@ html {
     var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent),
     var(--tw-shadow);
 }
+.dark .avatar-stroke:after,
 .dark .shadow-stroke:after {
   --tw-shadow: inset 0 0 0 1px hsla(0, 0%, 100%, 0.3);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
+}
+
+/* Auto-height reveals over a grid (rows 0fr to 1fr) share the resize tween with
+ * `Collapse`, `McpOAuthDialog`, `MCPToolItem` and `McpSection`; pair with
+ * `motion-reduce:transition-none`. */
+@utility resize-rows {
+  transition-property: grid-template-rows;
+  transition-duration: var(--resize-dur);
+  transition-timing-function: var(--resize-ease);
 }
 
 .assistant-item {
@@ -1724,19 +1738,6 @@ html {
   [data-lc-fade] {
     animation: none;
   }
-}
-
-.webkit-dark-styles,
-.webkit-dark-styles:focus {
-  background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
-}
-
-.dark .webkit-dark-styles,
-.dark .webkit-dark-styles:focus {
-  -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
-  background-clip: content-box;
-  -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
 /* Ordered Listing */

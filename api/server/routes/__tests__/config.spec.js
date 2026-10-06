@@ -180,6 +180,7 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('sharePointPickerSharePointScope');
       expect(response.body).not.toHaveProperty('conversationImportMaxFileSize');
       expect(response.body).not.toHaveProperty('insightsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsEnabled');
       expect(response.body).not.toHaveProperty('mcpApps');
     });
 
@@ -667,6 +668,28 @@ describe('GET /api/config', () => {
       process.env.ENABLE_INSIGHTS = 'true';
       response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(true);
+    });
+
+    it.each([
+      ['unset', undefined, false],
+      ['disabled', { enabled: false }, false],
+      ['enabled', { enabled: true }, true],
+    ])(
+      'should advertise pull requests only when they are enabled (%s)',
+      async (_label, pullRequests, expected) => {
+        mockGetAppConfig.mockResolvedValue({
+          ...baseAppConfig,
+          endpoints: { agents: pullRequests ? { pullRequests } : {} },
+        });
+        const response = await request(createApp(mockUser)).get('/api/config');
+        expect(response.body.pullRequestsEnabled).toBe(expected);
+      },
+    );
+
+    it('should not advertise pull requests for a config with no endpoints', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.body.pullRequestsEnabled).toBe(false);
     });
 
     it('should advertise Langfuse fanout only when the toggle and collector URL are configured', async () => {

@@ -10,6 +10,8 @@ type ButtonVariantOptions =
       variant?:
         | 'default'
         | 'link'
+        | 'link-accent'
+        | 'hyperlink'
         | 'submit'
         | 'outline'
         | 'outline-toggle'
@@ -41,12 +43,14 @@ type ButtonVariantOptions =
         | 'xs'
         | 'sm'
         | 'lg'
+        | 'snug'
+        | 'bare'
         | 'theme'
         | 'row'
         | 'tile'
         | null
         | undefined;
-      shape?: 'default' | 'theme' | 'round' | null | undefined;
+      shape?: 'default' | 'soft' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
 
@@ -100,6 +104,11 @@ const buttonVariantRecipe = cva(
         'row-action-reveal':
           'shrink-0 rounded-md text-text-secondary transition-opacity hover:bg-surface-hover-alt hover:text-text-primary data-[open]:bg-surface-active data-[open]:text-text-primary data-[open]:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-visible:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100',
         link: 'text-text-primary underline-offset-4 hover:underline',
+        /** A link-weight action in the accent color, such as the alternate way to confirm a sign-in. */
+        'link-accent':
+          'text-accent-primary underline-offset-4 hover:text-accent-primary-hover hover:underline',
+        /** An action set inside a sentence in the hyperlink color, sized by its own text. */
+        hyperlink: 'text-link underline-offset-4 hover:underline',
         submit: 'bg-surface-submit text-text-on-status hover:bg-surface-submit-hover',
         /**
          * The toggle that heads a collapsible sidebar section, such as Chats,
@@ -187,6 +196,10 @@ const buttonVariantRecipe = cva(
         xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
+        /** Default height with a snug pad, for a text action that sits close to its neighbors. */
+        snug: 'h-theme-button p-1',
+        /** Sized by its own text with no pad, for an action set inside a sentence. */
+        bare: 'h-auto p-0',
         icon: 'size-theme-button',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
@@ -204,6 +217,8 @@ const buttonVariantRecipe = cva(
       },
       shape: {
         default: 'rounded-lg',
+        /** The generous corner of a sign-in form's controls. */
+        soft: 'rounded-2xl',
         theme: 'rounded-theme-control',
         round: 'rounded-theme-control-round',
         unset: '',

@@ -396,7 +396,7 @@ export default function SharedLinkButton({
           <OGDialogContent className="w-11/12 max-w-md" showCloseButton={false}>
             <OGDialogHeader>
               <OGDialogTitle>{localize('com_ui_update_shared_link_confirm_title')}</OGDialogTitle>
-              <OGDialogDescription className="text-text-secondary">
+              <OGDialogDescription>
                 {localize('com_ui_update_shared_link_confirm_description')}
               </OGDialogDescription>
             </OGDialogHeader>

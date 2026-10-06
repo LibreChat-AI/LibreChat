@@ -113,7 +113,7 @@ function ProjectConversationDialog({
         <OGDialogTitle>{localize('com_ui_change_project')}</OGDialogTitle>
       </OGDialogHeader>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="change-project-select" className="text-text-primary text-sm font-medium">
+        <Label htmlFor="change-project-select" className="text-sm font-medium">
           {localize('com_ui_select_project')}
         </Label>
         <ControlCombobox
@@ -138,7 +138,7 @@ function ProjectConversationDialog({
           <Button
             type="button"
             variant="link"
-            className="h-auto justify-start px-0 text-sm"
+            className="h-auto justify-start px-0"
             onClick={() => fetchNextPage()}
             disabled={isFetchingNextPage}
           >

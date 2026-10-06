@@ -4,7 +4,15 @@ import { loginPage } from 'librechat-data-provider';
 import { Turnstile } from '@marsidev/react-turnstile';
 import { useNavigate, useOutletContext, useLocation } from 'react-router-dom';
 import { useRegisterUserMutation } from 'librechat-data-provider/react-query';
-import { ThemeContext, SecretInput, Spinner, Button, Input, isDark } from '@librechat/client';
+import {
+  ThemeContext,
+  SecretInput,
+  Spinner,
+  Button,
+  Input,
+  isDark,
+  floatingLabel,
+} from '@librechat/client';
 import type { TRegisterUser, TError } from 'librechat-data-provider';
 import type { TLoginLayoutContext } from '~/common';
 import { useLocalize, TranslationKeys } from '~/hooks';
@@ -37,13 +45,6 @@ const Registration: React.FC = () => {
 
   // only require captcha if we have a siteKey
   const requireCaptcha = Boolean(startupConfig?.turnstile?.siteKey);
-  const authInputClassName =
-    'webkit-dark-styles peer h-auto w-full rounded-2xl border px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-accent-primary focus-visible:border-accent-primary';
-  const authSecretInputClassName = `${authInputClassName} pr-12`;
-  const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
-  const authSecretButtonClassName =
-    'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
 
   const registerUser = useRegisterUserMutation({
     onMutate: () => {
@@ -90,13 +91,10 @@ const Registration: React.FC = () => {
               aria-label={fieldLabel}
               {...field}
               aria-invalid={!!errors[id]}
-              className={authSecretInputClassName}
+              variant="floating"
               placeholder=" "
               data-testid={id}
               label={fieldLabel}
-              labelClassName={authLabelClassName}
-              controlsClassName="right-2"
-              buttonClassName={authSecretButtonClassName}
             />
           ) : (
             <>
@@ -108,11 +106,11 @@ const Registration: React.FC = () => {
                 aria-label={fieldLabel}
                 {...field}
                 aria-invalid={!!errors[id]}
-                className={authInputClassName}
+                variant="floating"
                 placeholder=" "
                 data-testid={id}
               />
-              <label htmlFor={id} className={authLabelClassName}>
+              <label htmlFor={id} className={floatingLabel}>
                 {fieldLabel}
               </label>
             </>
@@ -235,7 +233,8 @@ const Registration: React.FC = () => {
                 type="submit"
                 aria-label="Submit registration"
                 variant="submit"
-                className="h-12 w-full rounded-2xl"
+                shape="soft"
+                className="h-12 w-full"
               >
                 {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
               </Button>

@@ -113,7 +113,7 @@ const RevokeKeysButton = ({
         <OGDialogTrigger asChild>
           <Button
             variant="destructive"
-            className="flex items-center justify-center rounded-lg transition-colors duration-200"
+            className="flex items-center justify-center duration-200"
             onClick={() => setOpen(true)}
             disabled={disabled}
           >
@@ -137,7 +137,7 @@ const RevokeKeysButton = ({
               variant="destructive"
               onClick={onClick}
               disabled={isLoading}
-              className="bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover transition-all duration-200"
+              className="transition-all duration-200"
             >
               {isLoading ? <Spinner /> : localize('com_ui_revoke')}
             </Button>
