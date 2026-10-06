@@ -3711,6 +3711,46 @@ describe('Conversation Operations', () => {
   });
 
   describe('deleteConvos', () => {
+    it('removes the PR automation record of a deleted conversation and keeps the others', async () => {
+      const conversationId = uuidv4();
+      const keptConversationId = uuidv4();
+      const PRAutomation = mongoose.models.PRAutomation;
+      for (const id of [conversationId, keptConversationId]) {
+        await Conversation.create({ conversationId: id, user: 'user123', endpoint: 'agents' });
+        await PRAutomation.create({ user: 'user123', conversationId: id });
+      }
+
+      await deleteConvos('user123', { conversationId });
+
+      expect(await PRAutomation.countDocuments({ conversationId })).toBe(0);
+      expect(await PRAutomation.countDocuments({ conversationId: keptConversationId })).toBe(1);
+    });
+
+    it('removes the PR automation record of a root that a previous attempt already deleted', async () => {
+      const rootId = uuidv4();
+      const childId = uuidv4();
+      const PRAutomation = mongoose.models.PRAutomation;
+      await Conversation.create({
+        conversationId: childId,
+        user: 'user123',
+        endpoint: EModelEndpoint.agents,
+        subagentThread: {
+          rootConversationId: rootId,
+          parentConversationId: rootId,
+          parentMessageId: 'message-1',
+          parentToolCallId: 'call-1',
+          subagentType: 'agent-child',
+          subagentKind: 'agent',
+          depth: 1,
+        },
+      });
+      await PRAutomation.create({ user: 'user123', conversationId: rootId });
+
+      await deleteConvos('user123', { conversationId: rootId }, { allowEmpty: true });
+
+      expect(await PRAutomation.countDocuments({ conversationId: rootId })).toBe(0);
+    });
+
     it('retires queued-turn work before each conversation deletion wave', async () => {
       const conversationId = uuidv4();
       await Conversation.create({

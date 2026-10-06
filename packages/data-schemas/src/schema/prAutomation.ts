@@ -1,9 +1,9 @@
 import { Schema } from 'mongoose';
 import { PR_AUTOMATION_STATES } from 'librechat-data-provider';
+import { MAX_PR_AUTOMATION_BOTS } from 'librechat-data-provider';
 import { PR_AUTOMATION_STOP_CODES } from 'librechat-data-provider';
 import { PR_AUTOMATION_TRUST_LEVELS } from 'librechat-data-provider';
 import type { IPRAutomationDocument } from '~/types/prAutomation';
-import { MAX_PR_AUTOMATION_BOTS } from '~/types/prAutomation';
 
 const trustedBotSchema = new Schema(
   {
@@ -16,8 +16,7 @@ const trustedBotSchema = new Schema(
 const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
   {
     user: {
-      type: Schema.Types.ObjectId,
-      ref: 'User',
+      type: String,
       required: true,
       index: true,
     },
@@ -56,6 +55,7 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
     round: { type: Number, default: 0, min: 0, required: true },
     startedAt: { type: Date },
     lastHeadSha: { type: String, maxlength: 64 },
+    claimedHeads: { type: [{ type: String, maxlength: 64 }], default: [] },
   },
   { timestamps: true },
 );

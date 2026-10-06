@@ -1,11 +1,13 @@
-import type { PRAutomationState } from 'librechat-data-provider';
-import type { PRAutomationStopCode } from 'librechat-data-provider';
+import { PR_AUTOMATION_STOP_CODES, MAX_PR_AUTOMATION_BOTS } from 'librechat-data-provider';
 import type { PRAutomationTrustLevel } from 'librechat-data-provider';
+import type { PRAutomationStopCode } from 'librechat-data-provider';
+import type { PRAutomationState } from 'librechat-data-provider';
 import type * as t from '~/types/prAutomation';
-import { MAX_PR_AUTOMATION_BOTS } from '~/types/prAutomation';
 
 const PROJECTION = '-_id -__v';
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
+const SETTLEABLE_STATES: PRAutomationState[] = ['fixing', 'needs_user'];
+const SETTLED_STATES: PRAutomationState[] = ['waiting', 'needs_user'];
 
 export function createPRAutomationMethods(mongoose: typeof import('mongoose')): {
   getPRAutomation: (key: t.PRAutomationKey) => Promise<t.IPRAutomation | null>;
@@ -14,9 +16,12 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   claimPRAutomationRound: (
     params: t.ClaimPRAutomationRoundParams,
   ) => Promise<t.ClaimPRAutomationRoundResult>;
-  setPRAutomationState: (
+  settlePRAutomationRound: (
+    params: t.SettlePRAutomationRoundParams,
+  ) => Promise<t.IPRAutomation | null>;
+  stopPRAutomation: (
     key: t.PRAutomationKey,
-    next: { state: PRAutomationState; stopCode?: PRAutomationStopCode },
+    stopCode: PRAutomationStopCode,
   ) => Promise<t.IPRAutomation | null>;
   setPRAutomationTrust: (
     key: t.PRAutomationKey,
@@ -25,6 +30,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   addPRAutomationBot: (
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
+    maxBots: number,
   ) => Promise<t.PRAutomationBotResult>;
   removePRAutomationBot: (key: t.PRAutomationKey, botId: number) => Promise<t.IPRAutomation | null>;
 } {
@@ -42,8 +48,12 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   /**
    * Idempotent. An existing active record is returned unchanged. A stopped
    * record is the user explicitly turning the automation back on, so it starts
-   * a fresh run: the round counter and the time window reset, which they could
-   * not do from a webhook-triggered turn.
+   * a fresh run: the round counter, the time window and the claimed heads reset,
+   * which they could not do from a webhook-triggered turn.
+   *
+   * The approved bots belong to one repository. Binding the conversation to a
+   * different repository, or to one for the first time, clears them, so a bot
+   * approved for repository A is never trusted in repository B.
    */
   async function enablePRAutomation({
     trust,
@@ -61,6 +71,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           state: 'idle',
           round: 0,
           trustedBots: [],
+          claimedHeads: [],
           trust: trust ?? 'approvedBots',
         },
       },
@@ -69,17 +80,18 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     await PRAutomation.updateOne(
       { ...filter, state: 'stopped' },
       {
-        $set: { state: 'idle', round: 0, ...(trust != null && { trust }) },
+        $set: { state: 'idle', round: 0, claimedHeads: [], ...(trust != null && { trust }) },
         $unset: { stopCode: '', startedAt: '', lastHeadSha: '' },
       },
     );
-    if (repository != null || pullNumber != null) {
-      await PRAutomation.updateOne(filter, {
-        $set: {
-          ...(repository != null && { repository }),
-          ...(pullNumber != null && { pullNumber }),
-        },
-      });
+    if (repository != null) {
+      await PRAutomation.updateOne(
+        { ...filter, repository: { $ne: repository } },
+        { $set: { repository, trustedBots: [] } },
+      );
+    }
+    if (pullNumber != null) {
+      await PRAutomation.updateOne(filter, { $set: { pullNumber } });
     }
     const record = await getPRAutomation(key);
     if (record == null) {
@@ -97,10 +109,13 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   /**
    * Starts one fix round, atomically. The round count, the time window, the
    * state and the head are all conditions of a single `findOneAndUpdate`, so two
-   * deliveries racing for the same record cannot both pass the cap, and a
-   * duplicate delivery for a head that was already claimed is rejected instead
-   * of starting a second round. The persisted counter is what stops a new turn
-   * from resetting the cap.
+   * deliveries racing for the same record cannot both pass the cap. A head that
+   * any earlier round already claimed is rejected, so a delayed delivery of a
+   * superseded commit cannot spend the budget. The persisted counter is what
+   * stops a new turn from resetting the cap.
+   *
+   * A force-push back to an earlier SHA is rejected the same way; the user
+   * restarts the automation to work on it.
    */
   async function claimPRAutomationRound({
     maxRounds,
@@ -125,11 +140,12 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
         state: { $in: CLAIMABLE_STATES },
         round: { $lt: maxRounds },
         startedAt: { $gte: cutoff },
-        lastHeadSha: { $ne: headSha },
+        claimedHeads: { $ne: headSha },
       },
       {
         $inc: { round: 1 },
         $set: { state: 'fixing', lastHeadSha: headSha },
+        $push: { claimedHeads: headSha },
         $unset: { stopCode: '' },
       },
       { new: true, select: PROJECTION },
@@ -154,19 +170,50 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return { ok: false, error: { code: 'stale_head' } };
   }
 
-  /** A stopped record only leaves that state through `enablePRAutomation`. */
-  async function setPRAutomationState(
-    key: t.PRAutomationKey,
-    next: { state: PRAutomationState; stopCode?: PRAutomationStopCode },
-  ): Promise<t.IPRAutomation | null> {
+  /**
+   * Reports where the round that owns the record ended up. The transition only
+   * applies while that round is still the current one, so a completion that is
+   * retried after a later round was claimed cannot move the newer round to
+   * `waiting` and open the way for an overlapping claim. Returns `null` when
+   * nothing changed: no record, a stopped record, or a round that is not the
+   * current one.
+   */
+  async function settlePRAutomationRound({
+    round,
+    state,
+    ...key
+  }: t.SettlePRAutomationRoundParams): Promise<t.IPRAutomation | null> {
+    if (!SETTLED_STATES.includes(state)) {
+      throw new RangeError(
+        'A round settles as waiting or needs_user; use stopPRAutomation to stop',
+      );
+    }
     const PRAutomation = mongoose.models.PRAutomation;
-    const stopCode = next.state === 'stopped' ? next.stopCode : undefined;
+    return PRAutomation.findOneAndUpdate(
+      { ...keyFilter(key), state: { $in: SETTLEABLE_STATES }, round },
+      { $set: { state } },
+      { new: true, select: PROJECTION },
+    ).lean<t.IPRAutomation>();
+  }
+
+  /**
+   * Stops the automation whatever round is running, so a user stop is never
+   * lost to a race. A stop code is required: the client maps it to the reason
+   * it shows. The first stop wins, and a stopped record leaves that state only
+   * through `enablePRAutomation`.
+   */
+  async function stopPRAutomation(
+    key: t.PRAutomationKey,
+    stopCode: PRAutomationStopCode,
+  ): Promise<t.IPRAutomation | null> {
+    if (!PR_AUTOMATION_STOP_CODES.includes(stopCode)) {
+      throw new RangeError('A stopped PR automation needs a known stop code');
+    }
+    const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
       { ...keyFilter(key), state: { $ne: 'stopped' } },
-      stopCode != null
-        ? { $set: { state: next.state, stopCode } }
-        : { $set: { state: next.state }, $unset: { stopCode: '' } },
-      { new: true, select: PROJECTION, runValidators: true },
+      { $set: { state: 'stopped', stopCode } },
+      { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();
   }
 
@@ -182,17 +229,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     ).lean<t.IPRAutomation>();
   }
 
-  /** Idempotent by numeric id, and capped. A login is stored for display only. */
+  /**
+   * Idempotent by numeric id. The limit is the configured `maxBots`, resolved by
+   * the caller, and cannot exceed the schema ceiling. A login is stored for
+   * display only.
+   */
   async function addPRAutomationBot(
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
+    maxBots: number,
   ): Promise<t.PRAutomationBotResult> {
+    if (!Number.isInteger(maxBots) || maxBots < 1 || maxBots > MAX_PR_AUTOMATION_BOTS) {
+      throw new RangeError(`maxBots must be an integer from 1 to ${MAX_PR_AUTOMATION_BOTS}`);
+    }
     const PRAutomation = mongoose.models.PRAutomation;
     const updated = await PRAutomation.findOneAndUpdate(
       {
         ...keyFilter(key),
         'trustedBots.id': { $ne: bot.id },
-        [`trustedBots.${MAX_PR_AUTOMATION_BOTS - 1}`]: { $exists: false },
+        [`trustedBots.${maxBots - 1}`]: { $exists: false },
       },
       { $push: { trustedBots: bot } },
       { new: true, select: PROJECTION, runValidators: true },
@@ -228,7 +283,8 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     enablePRAutomation,
     disablePRAutomation,
     claimPRAutomationRound,
-    setPRAutomationState,
+    settlePRAutomationRound,
+    stopPRAutomation,
     setPRAutomationTrust,
     addPRAutomationBot,
     removePRAutomationBot,

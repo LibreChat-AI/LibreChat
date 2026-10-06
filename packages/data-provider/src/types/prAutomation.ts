@@ -15,6 +15,10 @@ export const PR_AUTOMATION_STOP_CODES = [
   'disabled_by_admin',
 ] as const;
 
+/** Largest per-repository bot allowlist a deployment can configure. */
+export const MAX_PR_AUTOMATION_BOTS = 100;
+export const DEFAULT_PR_AUTOMATION_BOTS = 20;
+
 /** Ordered from narrowest to widest: who may be acted on. */
 export const PR_AUTOMATION_TRUST_LEVELS = ['approvedBots', 'collaborators', 'anyone'] as const;
 

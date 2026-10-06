@@ -8,6 +8,7 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createPRAutomationModel } from '~/models/prAutomation';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -51,6 +52,7 @@ beforeAll(async () => {
   /** Initialize methods */
   methods = createUserMethods(mongoose);
   createToolApprovalGrantModel(mongoose);
+  createPRAutomationModel(mongoose);
 });
 
 afterAll(async () => {
@@ -2117,6 +2119,22 @@ describe('User Methods - Database Tests', () => {
       const users = await methods.findUsers({});
       expect(users).toHaveLength(5);
     });
+  });
+});
+
+describe('PR automation cleanup on account deletion', () => {
+  it('removes the deleted user records and leaves other users alone', async () => {
+    const user = await User.create({ email: 'delete-pr@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    await PRAutomation.create({ user: id, conversationId: 'chat-b' });
+    await PRAutomation.create({ user: 'another-user', conversationId: 'chat-a' });
+
+    await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+
+    expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+    expect(await PRAutomation.countDocuments({ user: 'another-user' })).toBe(1);
   });
 });
 

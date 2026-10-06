@@ -1,9 +1,7 @@
-import type { PRAutomationState } from 'librechat-data-provider';
-import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationTrustLevel } from 'librechat-data-provider';
-import type { Document, Types } from 'mongoose';
-
-export const MAX_PR_AUTOMATION_BOTS = 20;
+import type { PRAutomationStopCode } from 'librechat-data-provider';
+import type { PRAutomationState } from 'librechat-data-provider';
+import type { Document } from 'mongoose';
 
 /** A bot the user approved for one repository, matched by its numeric account id. */
 export interface IPRAutomationBot {
@@ -13,7 +11,7 @@ export interface IPRAutomationBot {
 }
 
 export interface IPRAutomation {
-  user: Types.ObjectId;
+  user: string;
   tenantId?: string;
   conversationId: string;
   /** `owner/name` of the repository the pull request belongs to. */
@@ -28,7 +26,14 @@ export interface IPRAutomation {
   round: number;
   /** First automated round, the start of the wall-clock window. */
   startedAt?: Date;
+  /** The head the latest round works on. */
   lastHeadSha?: string;
+  /**
+   * Every head a round has been claimed for since the last restart. A delayed
+   * delivery of an earlier head is rejected against this list. It holds at most
+   * one entry per round, so the round cap bounds it.
+   */
+  claimedHeads: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -36,7 +41,7 @@ export interface IPRAutomation {
 export interface IPRAutomationDocument extends IPRAutomation, Document {}
 
 export interface PRAutomationKey {
-  userId: string | Types.ObjectId;
+  userId: string;
   conversationId: string;
 }
 
@@ -44,6 +49,12 @@ export interface EnablePRAutomationParams extends PRAutomationKey {
   trust?: PRAutomationTrustLevel;
   repository?: string;
   pullNumber?: number;
+}
+
+export interface SettlePRAutomationRoundParams extends PRAutomationKey {
+  /** The round that is reporting. A completion for any other round is ignored. */
+  round: number;
+  state: 'waiting' | 'needs_user';
 }
 
 export interface ClaimPRAutomationRoundParams extends PRAutomationKey {

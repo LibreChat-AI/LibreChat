@@ -1,6 +1,6 @@
-import { configSchema } from './config';
-import { clampPRAutomationTrust } from './types/prAutomation';
 import type { PRAutomationTrustLevel } from './types/prAutomation';
+import { clampPRAutomationTrust } from './types/prAutomation';
+import { configSchema } from './config';
 
 describe('clampPRAutomationTrust', () => {
   it('defaults to the narrowest level when the user chose nothing', () => {
@@ -43,6 +43,7 @@ describe('agent PR automation config', () => {
       enabled: false,
       maxRounds: 5,
       maxMinutes: 120,
+      maxBots: 20,
       maxTrust: 'approvedBots',
     });
   });
@@ -63,6 +64,14 @@ describe('agent PR automation config', () => {
 
   it.each([4, 1441, 1.5])('rejects a %s minute window', (maxMinutes) => {
     expect(parse({ maxMinutes }).success).toBe(false);
+  });
+
+  it.each([0, 101, 1.5])('rejects %s approved bots per repository', (maxBots) => {
+    expect(parse({ maxBots }).success).toBe(false);
+  });
+
+  it('accepts the largest approved bot limit', () => {
+    expect(parse({ maxBots: 100 }).success).toBe(true);
   });
 
   it.each(['everyone', 'bots', ''])('rejects %s as a trust ceiling', (maxTrust) => {
