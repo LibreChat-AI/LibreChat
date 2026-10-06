@@ -275,6 +275,7 @@ html {
   --theme-icon-size-md: 1.25rem;
   --theme-icon-size-lg: 1.5rem;
   --theme-control-font-weight: 500;
+  --theme-button-padding-x: 1rem;
   --theme-button-height: 2.5rem;
   --theme-button-height-sm: 2.25rem;
   --theme-button-height-xs: 1.75rem;

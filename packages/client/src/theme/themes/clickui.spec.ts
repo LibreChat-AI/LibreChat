@@ -759,6 +759,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   elevationDrag: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
+  buttonPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
   controlFontWeight: 'click.button.basic.typography.label.default',
   dialogStroke: 'click.dialog.stroke.default',
@@ -1592,7 +1593,11 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
     'theme-button-sm': 'buttonHeightSm',
   },
   py: { 'theme-table-cell': 'tableCellSpaceY', 'theme-field-y': 'fieldPaddingY' },
-  px: { 'theme-control-x': 'controlPaddingX', 'theme-dialog-x': 'dialogPaddingX' },
+  px: {
+    'theme-button-x': 'buttonPaddingX',
+    'theme-control-x': 'controlPaddingX',
+    'theme-dialog-x': 'dialogPaddingX',
+  },
   gap: { 'theme-control-gap': 'controlGap' },
 };
 

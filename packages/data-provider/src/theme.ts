@@ -420,6 +420,8 @@ const appearanceValidators = {
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
+  /** The Button's default size inline padding. */
+  buttonPaddingX: isLength,
   controlGap: isLength,
   /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
    *  2rem). */

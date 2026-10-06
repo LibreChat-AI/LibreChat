@@ -463,6 +463,7 @@ describe('clickhouse theme definition', () => {
     expect(appearance).toMatchObject({
       controlHeight: '2rem',
       controlPaddingX: '1rem',
+      buttonPaddingX: '1rem',
       controlGap: '0.5rem',
       controlFontWeight: '400',
       buttonHeight: '2rem',

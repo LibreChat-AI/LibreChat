@@ -222,7 +222,7 @@ const buttonVariantRecipe = cva(
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
-        default: 'h-theme-button px-4 py-2',
+        default: 'h-theme-button px-theme-button-x py-2',
         /** Default-height actions with less horizontal padding, such as Copy link. */
         dense: 'h-theme-button px-3 py-2',
         /** Compact text controls that share a toolbar row with a compact dropdown. */

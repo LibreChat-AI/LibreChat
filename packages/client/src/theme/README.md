@@ -426,7 +426,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
   theme names only that.
 - OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in
-  `border-light`, none by default), `px-theme-dialog-x` (`dialogPaddingX`),
+  `border-light`, none by default), `px-theme-button-x` (`buttonPaddingX`, the Button's default
+  size), `px-theme-dialog-x` (`dialogPaddingX`),
   `space-y-theme-dialog-header` (`dialogHeaderGap`), and for the title
   `text-(length:--theme-dialog-title-size)` and
   `leading-(--theme-dialog-title-leading)` (`dialogTitleSize`, `dialogTitleLeading`),

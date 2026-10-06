@@ -616,6 +616,8 @@ export interface IThemeAppearance {
   /** A theme-sized control's inline padding and icon-to-label gap; they follow `spaceNormal` and
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
+  /** The Button's default size inline padding. */
+  buttonPaddingX: string;
   controlGap: string;
   /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
    *  close button draws (1 to 2rem). */

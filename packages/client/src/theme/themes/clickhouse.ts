@@ -469,6 +469,7 @@ const clickHouseShape = {
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
   controlPaddingX: '1rem', // button.basic.space.x
+  buttonPaddingX: '1rem', // button.basic.space.x
   controlGap: '0.5rem', // button.basic.space.gap
   controlFontWeight: '400', // button.basic.typography.label.default
   /** Click UI's button is sized by its content: 0.2813rem of space.y on both sides of a

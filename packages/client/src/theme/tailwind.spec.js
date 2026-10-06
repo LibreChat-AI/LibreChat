@@ -116,6 +116,7 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-field', '--theme-field-height', defaultAppearance.fieldHeight],
       ['py-theme-field-y', '--theme-field-padding-y', defaultAppearance.fieldPaddingY],
       ['font-theme-control', '--theme-control-font-weight', defaultAppearance.controlFontWeight],
+      ['px-theme-button-x', '--theme-button-padding-x', defaultAppearance.buttonPaddingX],
       ['px-theme-dialog-x', '--theme-dialog-padding-x', defaultAppearance.dialogPaddingX],
       [
         'font-theme-dialog-title-weight',
