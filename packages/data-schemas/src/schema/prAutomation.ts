@@ -56,6 +56,7 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
     startedAt: { type: Date },
     lastHeadSha: { type: String, maxlength: 64 },
     claimedHeads: { type: [{ type: String, maxlength: 64 }], default: [] },
+    runId: { type: String, maxlength: 64 },
   },
   { timestamps: true },
 );

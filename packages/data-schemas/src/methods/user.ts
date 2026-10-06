@@ -16,6 +16,7 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { createPRAutomationMethods } from './prAutomation';
 import { evictAuthUserDocs } from '~/utils/eviction';
 import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
@@ -216,6 +217,8 @@ export function createUserMethods(
     }
     return normalized;
   }
+
+  const prAutomation = createPRAutomationMethods(mongoose);
 
   /**
    * Search for a single user based on partial data and return matching user document as plain object.
@@ -602,8 +605,15 @@ export function createUserMethods(
     try {
       const User = mongoose.models.User;
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
-      await mongoose.models.PRAutomation?.deleteMany({ user: userId });
+      /** Fenced first so a webhook cannot claim a record for an account that is going away;
+       * removed only after the account delete committed. */
+      await prAutomation.stopPRAutomations(userId, 'account_deleting');
       const result = await User.deleteOne({ _id: userId });
+      try {
+        await prAutomation.deletePRAutomations(userId);
+      } catch {
+        logger.warn('[deleteUserById] PR automation cleanup failed; the records stay stopped.');
+      }
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }

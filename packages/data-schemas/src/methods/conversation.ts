@@ -52,6 +52,7 @@ import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { createPRAutomationMethods } from './prAutomation';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
@@ -669,6 +670,7 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
+  const prAutomation = createPRAutomationMethods(mongoose);
 
   /**
    * Stamps a real assistant reply with a strictly increasing server value.
@@ -4122,13 +4124,16 @@ export function createConversationMethods(
         );
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
-        /** Removed before the conversation, so a failure here leaves both for a retry and a
-         * webhook can never claim a record whose controlling conversation is gone. */
-        await mongoose.models.PRAutomation?.deleteMany({
-          user,
-          conversationId: { $in: waveIds },
-        });
+        /** Fenced before the delete so a webhook cannot claim a record whose conversation is
+         * going away. The record itself is removed only once the delete has committed, so a
+         * failed delete keeps the stored state and a retry finds it. */
+        await prAutomation.stopPRAutomations(user, 'conversation_deleting', waveIds);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        try {
+          await prAutomation.deletePRAutomations(user, waveIds);
+        } catch {
+          logger.warn('[deleteConvos] PR automation cleanup failed; the record stays stopped.');
+        }
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -4162,10 +4167,11 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
-        await mongoose.models.PRAutomation?.deleteMany({
-          user,
-          conversationId: { $in: recoveryConversationIds },
-        });
+        try {
+          await prAutomation.deletePRAutomations(user, recoveryConversationIds);
+        } catch {
+          logger.warn('[deleteConvos] PR automation cleanup failed; the record stays stopped.');
+        }
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({

@@ -16,11 +16,22 @@ const key = { userId, conversationId: 'convo-1' };
 const limits = { maxRounds: 3, maxMinutes: 60 };
 const maxBots = 3;
 const head = (n: number) => String(n).repeat(40).slice(0, 40);
+const pullOne = { repository: 'acme/one', pullNumber: 1 };
+const pullTwo = { repository: 'acme/one', pullNumber: 2 };
+const otherRepository = { repository: 'acme/two', pullNumber: 2 };
 
 const claim = (n: number, extra: { now?: Date } = {}) =>
   methods.claimPRAutomationRound({ ...key, ...limits, headSha: head(n), ...extra });
-const settle = (round: number, state: 'waiting' | 'needs_user' = 'waiting') =>
-  methods.settlePRAutomationRound({ ...key, round, state });
+/** Claims a round that must succeed and returns the record it started. */
+const startRound = async (n: number) => {
+  const result = await claim(n);
+  if (!result.ok) {
+    throw new Error(`claim ${n} failed: ${result.error.code}`);
+  }
+  return result.value;
+};
+const settle = (round: number, runId: string, state: 'waiting' | 'needs_user' = 'waiting') =>
+  methods.settlePRAutomationRound({ ...key, round, runId, state });
 /** Test setup that does not depend on the settle method under test. */
 const toWaiting = () =>
   PRAutomation.updateOne(
@@ -105,32 +116,87 @@ describe('enablePRAutomation', () => {
   });
 
   test('clears approved bots when the conversation is bound to a different repository', async () => {
-    await methods.enablePRAutomation({ ...key, repository: 'acme/one', pullNumber: 1 });
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
     await addBot(101);
-    const rebound = await methods.enablePRAutomation({
-      ...key,
-      repository: 'acme/two',
-      pullNumber: 2,
-    });
-    expect(rebound).toMatchObject({ repository: 'acme/two', pullNumber: 2, trustedBots: [] });
+    const rebound = await methods.enablePRAutomation({ ...key, binding: otherRepository });
+    expect(rebound).toMatchObject({ ...otherRepository, trustedBots: [] });
   });
 
   test('does not carry a bot approved before any repository was bound', async () => {
     await methods.enablePRAutomation(key);
     await addBot(101);
-    const bound = await methods.enablePRAutomation({ ...key, repository: 'acme/one' });
+    const bound = await methods.enablePRAutomation({ ...key, binding: pullOne });
     expect(bound.trustedBots).toEqual([]);
   });
 
   test('keeps approved bots when the same repository is bound to another pull request', async () => {
-    await methods.enablePRAutomation({ ...key, repository: 'acme/one', pullNumber: 1 });
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
     await addBot(101);
-    const rebound = await methods.enablePRAutomation({
-      ...key,
-      repository: 'acme/one',
-      pullNumber: 2,
-    });
+    const rebound = await methods.enablePRAutomation({ ...key, binding: pullTwo });
     expect(rebound).toMatchObject({ pullNumber: 2, trustedBots: [{ id: 101 }] });
+  });
+});
+
+describe('binding a pull request', () => {
+  test('starts a fresh run when bound to another pull request in the same repository', async () => {
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await startRound(1);
+    await toWaiting();
+    await startRound(2);
+
+    const rebound = await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    expect(rebound).toMatchObject({ pullNumber: 2, state: 'idle', round: 0, claimedHeads: [] });
+    expect(rebound.startedAt).toBeUndefined();
+    expect(rebound.lastHeadSha).toBeUndefined();
+  });
+
+  test('lets the new pull request claim a head the old one claimed', async () => {
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await startRound(1);
+    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    expect((await claim(1)).ok).toBe(true);
+  });
+
+  test('does not carry the old pull request round count into the new one', async () => {
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    for (let round = 1; round <= limits.maxRounds; round++) {
+      await startRound(round);
+      await toWaiting();
+    }
+    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    expect((await claim(9)).ok).toBe(true);
+  });
+
+  test('ignores a completion from the round of the pull request it replaced', async () => {
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    const running = await startRound(1);
+    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+
+    expect(await settle(1, running.runId)).toBeNull();
+    expect((await methods.getPRAutomation(key))?.state).toBe('idle');
+  });
+
+  test('leaves a run alone when it is bound to the pair it already has', async () => {
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await startRound(1);
+    const again = await methods.enablePRAutomation({ ...key, binding: pullOne });
+    expect(again).toMatchObject({ state: 'fixing', round: 1 });
+  });
+
+  /** Guard, not a proven regression: the interleaving it protects against is timing dependent. */
+  test('never leaves a repository and pull request pair nobody asked for', async () => {
+    await methods.enablePRAutomation(key);
+    const pairs = [pullOne, otherRepository];
+    await Promise.all(
+      Array.from({ length: 24 }, (_, index) =>
+        methods.enablePRAutomation({ ...key, binding: pairs[index % 2] }),
+      ),
+    );
+    const record = await methods.getPRAutomation(key);
+    expect(pairs).toContainEqual({
+      repository: record?.repository,
+      pullNumber: record?.pullNumber,
+    });
   });
 });
 
@@ -215,46 +281,68 @@ describe('claimPRAutomationRound', () => {
 describe('settlePRAutomationRound', () => {
   test('settles the round that owns it, including from needs_user', async () => {
     await methods.enablePRAutomation(key);
-    await claim(1);
-    expect(await settle(1, 'needs_user')).toMatchObject({ state: 'needs_user', round: 1 });
-    expect(await settle(1, 'waiting')).toMatchObject({ state: 'waiting', round: 1 });
+    const { runId } = await startRound(1);
+    expect(await settle(1, runId, 'needs_user')).toMatchObject({ state: 'needs_user', round: 1 });
+    expect(await settle(1, runId, 'waiting')).toMatchObject({ state: 'waiting', round: 1 });
   });
 
   test('ignores a completion that belongs to an earlier round', async () => {
     await methods.enablePRAutomation(key);
-    await claim(1);
-    await settle(1);
+    const { runId } = await startRound(1);
+    await settle(1, runId);
     await claim(2);
 
-    expect(await settle(1, 'needs_user')).toBeNull();
+    expect(await settle(1, runId, 'needs_user')).toBeNull();
     expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'fixing', round: 2 });
   });
 
   test('does not let a stale completion open the way for an overlapping claim', async () => {
     await methods.enablePRAutomation(key);
-    await claim(1);
-    await settle(1);
+    const { runId } = await startRound(1);
+    await settle(1, runId);
     await claim(2);
-    await settle(1);
+    await settle(1, runId);
     expect(await claim(3)).toEqual({ ok: false, error: { code: 'not_active' } });
+  });
+
+  test('ignores a completion from a run that was stopped and restarted', async () => {
+    await methods.enablePRAutomation(key);
+    const previous = await startRound(1);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    await methods.enablePRAutomation(key);
+    await startRound(1);
+
+    expect(await settle(1, previous.runId, 'needs_user')).toBeNull();
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'fixing', round: 1 });
+  });
+
+  test('ignores a completion from a record that was disabled and enabled again', async () => {
+    await methods.enablePRAutomation(key);
+    const previous = await startRound(1);
+    await methods.disablePRAutomation(key);
+    await methods.enablePRAutomation(key);
+    await startRound(1);
+
+    expect(await settle(1, previous.runId, 'needs_user')).toBeNull();
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'fixing', round: 1 });
   });
 
   test('does not settle a record that never started a round', async () => {
     await methods.enablePRAutomation(key);
-    expect(await settle(0)).toBeNull();
+    expect(await settle(0, 'no-run')).toBeNull();
     expect((await methods.getPRAutomation(key))?.state).toBe('idle');
   });
 
   test('does not revive a stopped record', async () => {
     await methods.enablePRAutomation(key);
-    await claim(1);
+    const { runId } = await startRound(1);
     await methods.stopPRAutomation(key, 'user_stopped');
-    expect(await settle(1)).toBeNull();
+    expect(await settle(1, runId)).toBeNull();
     expect((await methods.getPRAutomation(key))?.state).toBe('stopped');
   });
 
   test('returns null for a conversation with no record', async () => {
-    expect(await settle(1)).toBeNull();
+    expect(await settle(1, 'missing-run')).toBeNull();
   });
 });
 

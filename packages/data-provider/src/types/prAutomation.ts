@@ -13,6 +13,8 @@ export const PR_AUTOMATION_STOP_CODES = [
   'approval_expired',
   'pull_request_closed',
   'disabled_by_admin',
+  'conversation_deleting',
+  'account_deleting',
 ] as const;
 
 /** Largest per-repository bot allowlist a deployment can configure. */

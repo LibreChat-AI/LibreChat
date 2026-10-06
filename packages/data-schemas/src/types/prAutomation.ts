@@ -29,6 +29,12 @@ export interface IPRAutomation {
   /** The head the latest round works on. */
   lastHeadSha?: string;
   /**
+   * Identifies the round that is running. Only that round may settle the record, so a
+   * completion from a run that was stopped, restarted or rebound to another pull request
+   * cannot move the run that replaced it.
+   */
+  runId?: string;
+  /**
    * Every head a round has been claimed for since the last restart. A delayed
    * delivery of an earlier head is rejected against this list. It holds at most
    * one entry per round, so the round cap bounds it.
@@ -45,15 +51,22 @@ export interface PRAutomationKey {
   conversationId: string;
 }
 
+/** The pull request a conversation works on. The pair is always written together. */
+export interface PRAutomationBinding {
+  repository: string;
+  pullNumber: number;
+}
+
 export interface EnablePRAutomationParams extends PRAutomationKey {
   trust?: PRAutomationTrustLevel;
-  repository?: string;
-  pullNumber?: number;
+  binding?: PRAutomationBinding;
 }
 
 export interface SettlePRAutomationRoundParams extends PRAutomationKey {
   /** The round that is reporting. A completion for any other round is ignored. */
   round: number;
+  /** The `runId` the claim returned. A completion for any other run is ignored. */
+  runId: string;
   state: 'waiting' | 'needs_user';
 }
 
@@ -73,7 +86,7 @@ export type PRAutomationClaimErrorCode =
   | 'stale_head';
 
 export type ClaimPRAutomationRoundResult =
-  | { ok: true; value: IPRAutomation }
+  | { ok: true; value: IPRAutomation & { runId: string } }
   | { ok: false; error: { code: PRAutomationClaimErrorCode } };
 
 export type PRAutomationBotResult =

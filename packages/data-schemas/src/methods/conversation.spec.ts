@@ -19,6 +19,7 @@ import type {
 } from '../types';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createPRAutomationMethods } from './prAutomation';
 import { createChatProjectMethods } from './chatProject';
 import { createModels } from '../models';
 
@@ -3724,6 +3725,41 @@ describe('Conversation Operations', () => {
 
       expect(await PRAutomation.countDocuments({ conversationId })).toBe(0);
       expect(await PRAutomation.countDocuments({ conversationId: keptConversationId })).toBe(1);
+    });
+
+    describe('when the conversation delete fails', () => {
+      const user = 'user123';
+      const setup = async () => {
+        const conversationId = uuidv4();
+        await Conversation.create({ conversationId, user, endpoint: EModelEndpoint.agents });
+        const automation = createPRAutomationMethods(mongoose);
+        await automation.enablePRAutomation({ userId: user, conversationId });
+        jest.spyOn(Conversation, 'deleteMany').mockRejectedValueOnce(new Error('delete failed'));
+        await expect(deleteConvos(user, { conversationId })).rejects.toThrow('delete failed');
+        return { conversationId, automation };
+      };
+
+      it('keeps the PR automation record', async () => {
+        const { conversationId, automation } = await setup();
+        expect(await automation.getPRAutomation({ userId: user, conversationId })).not.toBeNull();
+        expect(await Conversation.exists({ conversationId })).not.toBeNull();
+      });
+
+      it('stops the record so a webhook cannot claim it meanwhile', async () => {
+        const { conversationId, automation } = await setup();
+        expect(await automation.getPRAutomation({ userId: user, conversationId })).toMatchObject({
+          state: 'stopped',
+          stopCode: 'conversation_deleting',
+        });
+        const claimed = await automation.claimPRAutomationRound({
+          userId: user,
+          conversationId,
+          maxRounds: 5,
+          maxMinutes: 60,
+          headSha: 'a'.repeat(40),
+        });
+        expect(claimed).toEqual({ ok: false, error: { code: 'not_active' } });
+      });
     });
 
     it('removes the PR automation record of a root that a previous attempt already deleted', async () => {

@@ -2123,6 +2123,32 @@ describe('User Methods - Database Tests', () => {
 });
 
 describe('PR automation cleanup on account deletion', () => {
+  it('keeps the records, stopped, when the account delete fails', async () => {
+    const user = await User.create({ email: 'delete-pr-fail@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const deletion = jest.spyOn(User, 'deleteOne').mockRejectedValueOnce(new Error('db down'));
+
+    await expect(methods.deleteUserById(id)).rejects.toThrow('db down');
+    deletion.mockRestore();
+
+    expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
+      state: 'stopped',
+      stopCode: 'account_deleting',
+    });
+  });
+
+  it('removes the records of an account that no longer exists', async () => {
+    const id = new mongoose.Types.ObjectId().toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+
+    await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 0 });
+
+    expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+  });
+
   it('removes the deleted user records and leaves other users alone', async () => {
     const user = await User.create({ email: 'delete-pr@example.com', provider: 'local' });
     const id = user._id.toString();
