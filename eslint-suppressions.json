@@ -1287,7 +1287,7 @@
   },
   "client/src/components/Prompts/sidebar/GroupSidePanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 7
     }
   },
   "client/src/components/Prompts/utils/SkeletonForm.tsx": {
@@ -1596,11 +1596,6 @@
       "count": 2
     }
   },
-  "client/src/components/SidePanel/Bookmarks/BookmarkTable.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/SidePanel/Builder/Action.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -1657,11 +1652,6 @@
       "count": 1
     }
   },
-  "client/src/components/SidePanel/MCPBuilder/MCPBuilderPanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
   "client/src/components/SidePanel/MCPBuilder/MCPServerCard.tsx": {
     "shadcn/no-restyle": {
       "count": 3
@@ -1704,7 +1694,7 @@
   },
   "client/src/components/SidePanel/Memories/MemoryPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Parameters/DynamicCombobox.tsx": {
@@ -1753,11 +1743,6 @@
   "client/src/components/SidePanel/Schedules/ScheduleDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 14
-    }
-  },
-  "client/src/components/SidePanel/Schedules/SchedulePanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Skills/buttons/ShareSkill.tsx": {
@@ -1818,11 +1803,6 @@
   "client/src/components/Skills/lists/SkillListItem.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "client/src/components/Skills/sidebar/SkillsSidePanel.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/Skills/tree/SkillFileEditor.tsx": {

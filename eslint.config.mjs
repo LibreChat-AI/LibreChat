@@ -227,6 +227,12 @@ export default [
             // A skeleton stands in for the caller's content, so it takes that content's
             // silhouette and footprint.
             { pattern: '^Skeleton$', allow: ['layout', 'icon-*', 'shape', 'spacing'] },
+            // A dialog or panel container lays out whatever the caller puts in it, so the padding
+            // and gaps between those parts are the caller's. Color and shape stay the theme's.
+            {
+              pattern: '^(DialogContent|DialogHeader|DialogFooter|PanelContent)$',
+              allow: ['layout', 'icon-*', 'spacing'],
+            },
           ],
         },
       ],
