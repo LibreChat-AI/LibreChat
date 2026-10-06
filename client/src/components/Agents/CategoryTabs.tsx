@@ -143,8 +143,8 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
               'focus-visible:ring-text-primary inline-flex h-8 cursor-pointer items-center justify-center rounded-full border px-2.5 text-xs font-medium whitespace-nowrap select-none focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
               isSmallScreen ? 'min-w-fit shrink-0' : '',
               activeTab === category.value
-                ? 'border-border-heavy bg-surface-active-alt text-text-primary'
-                : 'border-border-light bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
+                ? 'border-border-chrome-heavy bg-surface-active-alt text-text-primary'
+                : 'border-border-chrome bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
             )}
             role="tab"
             aria-selected={activeTab === category.value}

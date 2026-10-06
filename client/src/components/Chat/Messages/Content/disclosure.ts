@@ -62,6 +62,12 @@ export function useToolDisclosure() {
  *  wins over the groups inside it. */
 export const SoleToolContext = createContext<boolean | undefined>(undefined);
 
+/** Set by a tool group for its own rows: true when the group holds exactly one
+ *  tool call, whatever the phase around it holds. `SoleToolContext` lets the
+ *  phase decide whether a card opens by default; this one decides whether the
+ *  card's own row is redundant under the group header it sits beneath. */
+export const LoneGroupContext = createContext<boolean>(false);
+
 /** Whether a tool card opens by default: the user's "auto-expand tools"
  *  preference, or being the only call inside its group. */
 export function useToolAutoExpand() {

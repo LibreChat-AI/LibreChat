@@ -1,5 +1,5 @@
 import { CREDITS_PER_USD, getRefillEligibilityDate } from 'librechat-data-provider';
-import type { BalanceDisplay, TBalanceResponse } from 'librechat-data-provider';
+import type { BalanceDisplay, BalanceRefillMode, TBalanceResponse } from 'librechat-data-provider';
 import type { CurrencyConfig } from './tokens';
 import { formatCost } from './tokens';
 
@@ -23,6 +23,7 @@ export interface BalanceSummary {
   tone: BalanceTone;
   /** Credits the next auto-refill adds; null without auto-refill. */
   refillAmount: number | null;
+  refillMode: BalanceRefillMode;
   /** When the next auto-refill becomes eligible; null without auto-refill. */
   nextRefill: Date | null;
 }
@@ -86,6 +87,7 @@ export function summarizeBalance(
     usedPercent,
     tone,
     refillAmount,
+    refillMode: balance.refillMode ?? 'add',
     nextRefill: balance.autoRefillEnabled ? getNextRefill(balance) : null,
   };
 }

@@ -326,7 +326,7 @@ export default function WebSearch({
                       )}
                     </div>
                     {answerBox && (answerBox.title || answerText) && (
-                      <div className="border-border-light border-t pt-2">
+                      <div className="border-border-inset border-t pt-2">
                         {answerBox.title && (
                           <div className="text-text-primary text-sm font-medium">
                             {answerBox.title}

@@ -112,7 +112,7 @@ test('owner sees original after reload while provider, sharing, and canonical re
     expect(shared.text).toContain('EMAIL_1_');
 
     const openExport = async () => {
-      await page.getByRole('button', { name: 'Export/Share' }).click();
+      await page.getByRole('button', { name: 'Chat options' }).click();
       await page.getByRole('menuitem', { name: 'Export' }).click();
       return page.getByRole('dialog', { name: 'Export conversation' });
     };
@@ -283,7 +283,7 @@ test('an unchanged unprotected transcript still downloads a PNG screenshot', asy
       'data-conversation-id',
       conversationId!,
     );
-    await page.getByRole('button', { name: 'Export/Share' }).click();
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await page.getByRole('menuitem', { name: 'Export' }).click();
     const dialog = page.getByRole('dialog', { name: 'Export conversation' });
     await dialog.getByTestId('dropdown-menu').click();

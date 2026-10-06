@@ -118,7 +118,7 @@ export default function AgentConfig({
             onClick={() => setActivePanel(Panel.model)}
             title={model || undefined}
             className={cn(
-              'border-border-light bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
+              'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
               model != null && model ? 'px-1' : 'px-3',
             )}
           >

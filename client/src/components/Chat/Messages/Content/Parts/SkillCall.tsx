@@ -8,6 +8,7 @@ import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import Stdout from './Stdout';
 import { cn } from '~/utils';
@@ -38,41 +39,48 @@ export default function SkillCall({
   const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
   const intent = useToolCallIntent(args);
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!parsedSkillName,
-    onExpand,
-    runStepStatus,
-  });
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!parsedSkillName,
+      /** The row is the only place that names the skill that ran. */
+      keepRow: true,
+      onExpand,
+      runStepStatus,
+    });
+
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (intent ?? localize('com_ui_skill_finished', { 0: skillName }));
 
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={intent ?? localize('com_ui_skill_running', { 0: skillName })}
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize('com_ui_skill_finished', { 0: skillName }))
-          }
-          durationMs={runStepDurationMs}
-          icon={
-            <ScrollText
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!parsedSkillName || hasOutput}
-          isExpanded={showCode}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={intent ?? localize('com_ui_skill_running', { 0: skillName })}
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            icon={
+              <ScrollText
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!parsedSkillName || hasOutput}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasOutput && (

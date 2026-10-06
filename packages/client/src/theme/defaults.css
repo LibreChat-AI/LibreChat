@@ -156,8 +156,25 @@ html {
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
+  --focus-subtle: var(--border-heavy);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --surface-tooltip: var(--surface-primary);
+  --text-tooltip: var(--text-primary);
+  --alert-error-fill: var(--status-error-subtle);
+  --alert-error-border: var(--status-error-border);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-primary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -219,6 +236,9 @@ html {
   --theme-large-surface-radius: 1.5rem;
   --theme-menu-radius: 0.7rem;
   --theme-tooltip-radius: 0.275rem;
+  --theme-tooltip-padding-x: 0.5rem;
+  --theme-tooltip-padding-y: 0.25rem;
+  --theme-tooltip-text-size: 1rem;
   --theme-tab-radius: 0.185rem;
   --theme-tab-min-width: 100px;
   --theme-list-min-width: 8rem;
@@ -310,6 +330,9 @@ html {
   --theme-tooltip-shadow: 0 2px 4px 0 rgb(0 0 0 / 0.25);
   --theme-motion-fast: 150ms;
   --theme-motion-normal: 200ms;
+  --theme-border-chrome-alpha: 1;
+  --theme-border-inset-alpha: 1;
+  --theme-destructive-style: fill;
   --switch-unchecked: 148 148 148;
   --switch-thumb: 255 255 255;
   /* Follows the secondary text it was before it had a role, in every mode. */
@@ -405,6 +428,22 @@ html {
   --border-field-focus: var(--focus-control);
   --field-fill: var(--surface-primary);
   --field-text: var(--text-primary);
+  --surface-tooltip: var(--surface-primary);
+  --text-tooltip: var(--text-primary);
+  --alert-error-fill: var(--status-error-subtle);
+  --alert-error-border: var(--status-error-border);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-secondary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);
@@ -476,11 +515,36 @@ html {
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in
    utils/applyTheme.ts) keeps its avatar backdrop on its own surfaces, following the mode, as the
-   document root's alias above does. An explicit avatar-placeholder set inline still wins. */
+   document root's alias above does. The layering roles alias their source the same way, so a
+   scoped palette that repaints the source moves them. An explicit role set inline still wins. */
 [data-theme-scope] {
   --avatar-placeholder: var(--surface-secondary);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-primary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
 }
 .dark [data-theme-scope],
 [data-theme-scope].dark {
   --avatar-placeholder: var(--surface-tertiary);
+  --surface-canvas: var(--surface-primary-alt);
+  --surface-user-message: var(--surface-tertiary);
+  --surface-card: var(--surface-secondary);
+  --surface-card-hover: var(--surface-tertiary);
+  --surface-nav-hover: var(--surface-active-alt);
+  --surface-nav-selected: var(--surface-active-alt);
+  --surface-tab-selected: var(--surface-tertiary);
+  --surface-menu: var(--presentation);
+  --surface-popover: var(--surface-secondary);
+  --border-menu: var(--border-light);
+  --surface-composer: var(--surface-chat);
+  --surface-search: var(--surface-secondary);
 }

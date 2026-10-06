@@ -1233,6 +1233,12 @@ export function cancelBackgroundTasks(
   return request.post(endpoints.backgroundTasksCancel(conversationId), body);
 }
 
+export function getConversationPullRequest(
+  conversationId: string,
+): Promise<t.TConversationPullRequestResponse> {
+  return request.get(endpoints.conversationPullRequest(conversationId));
+}
+
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
   return request.get(endpoints.getPrompt(id));
 }

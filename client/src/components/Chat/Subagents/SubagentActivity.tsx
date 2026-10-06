@@ -277,7 +277,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
       aria-labelledby={headingId}
       className="border-border-light bg-surface-secondary text-text-primary mb-3 shrink-0 overflow-hidden rounded-lg border"
     >
-      <div className="border-border-light flex min-h-[2.75rem] items-center justify-between gap-3 border-b px-3 py-2">
+      <div className="border-border-inset flex min-h-[2.75rem] items-center justify-between gap-3 border-b px-3 py-2">
         <h3 id={headingId} className="text-text-primary text-sm font-medium">
           {localize('com_ui_prompt')}
         </h3>

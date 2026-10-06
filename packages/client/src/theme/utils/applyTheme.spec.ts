@@ -21,6 +21,8 @@ const semanticProperties = [
   '--chart-widget-surface',
   '--chart-widget-stroke',
   '--switch-thumb',
+  '--surface-tooltip',
+  '--alert-error-fill',
   '--avatar-placeholder',
   '--avatar-text',
   '--table-header-text',
@@ -519,6 +521,23 @@ describe('applyTheme', () => {
     applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-switch-thumb': '1 2 3' }, root);
 
     expect(root.style.getPropertyValue('--switch-thumb')).toBe('1 2 3');
+  });
+
+  it('keeps the tooltip and the error alert of a legacy theme on the roles it repainted', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-status-error-subtle': '4 5 6' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--alert-error-fill')).toBe('4 5 6');
+  });
+
+  it('leaves an explicit tooltip surface alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-surface-tooltip': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('1 2 3');
   });
 
   it('keeps table column names of a legacy theme on its secondary text', () => {

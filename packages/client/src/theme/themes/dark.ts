@@ -84,8 +84,25 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-destructive': '239 68 68', // #ef4444 (red-500)
   'rgb-border-control': '33 33 33', // #212121 (gray-800), the stock field edge
   'rgb-border-field-focus': '236 236 236', // #ececec (gray-100, matching focus-control)
+  'rgb-focus-subtle': '89 89 89', // #595959 (gray-500, matching border-heavy)
   'rgb-field-fill': '13 13 13', // #0d0d0d (gray-900, matching surface-primary)
   'rgb-field-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  'rgb-surface-tooltip': '13 13 13', // matching surface-primary
+  'rgb-text-tooltip': '236 236 236', // matching text-primary
+  'rgb-alert-error-fill': '69 10 10', // matching status-error-subtle
+  'rgb-alert-error-border': '153 27 27', // matching status-error-border
+  'rgb-surface-canvas': '23 23 23', // matching surface-primary-alt
+  'rgb-surface-user-message': '47 47 47', // matching surface-tertiary
+  'rgb-surface-card': '33 33 33', // matching surface-secondary
+  'rgb-surface-card-hover': '47 47 47', // matching surface-tertiary
+  'rgb-surface-nav-hover': '47 47 47', // matching surface-active-alt
+  'rgb-surface-nav-selected': '47 47 47', // matching surface-active-alt
+  'rgb-surface-tab-selected': '47 47 47', // matching surface-tertiary
+  'rgb-surface-menu': '33 33 33', // matching presentation
+  'rgb-surface-popover': '33 33 33', // matching surface-secondary
+  'rgb-border-menu': '33 33 33', // matching border-light
+  'rgb-surface-composer': '47 47 47', // matching surface-chat
+  'rgb-surface-search': '33 33 33', // matching surface-secondary
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)

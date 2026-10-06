@@ -10,6 +10,41 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
+  it('paints a destructive button solid and tints it only when the theme asks', () => {
+    const destructive = cn(buttonVariants({ variant: 'destructive' }));
+
+    expect(destructive).toContain('bg-surface-destructive');
+    expect(destructive).toContain('text-text-on-status');
+    expect(destructive).toContain('theme-destructive-soft:bg-surface-destructive/10');
+    expect(destructive).toContain('theme-destructive-soft:text-text-destructive');
+    // The ink stays at 4.5:1 over the light-theme tint only below a 20% hover and pressed share.
+    expect(destructive).toContain('theme-destructive-soft:hover:bg-surface-destructive/14');
+    expect(destructive).toContain('theme-destructive-soft:hover:active:bg-surface-destructive/17');
+  });
+
+  it('outlines a toggle in the control border', () => {
+    expect(cn(buttonVariants({ variant: 'outline-toggle' }))).toContain('border-border-control');
+  });
+
+  it('outlines an icon button in the chrome border and a text button in the light one', () => {
+    const icon = cn(buttonVariants({ variant: 'outline', size: 'icon-theme' }));
+    const text = cn(buttonVariants({ variant: 'outline', size: 'dense' }));
+
+    expect(icon).toContain('border-border-chrome');
+    expect(icon).not.toContain('border-border-light');
+    expect(text).toContain('border-border-light');
+    expect(text).not.toContain('border-border-chrome');
+  });
+
+  it('outlines a subtle icon button in the chrome border as well', () => {
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'icon' }))).toContain(
+      'border-border-chrome',
+    );
+    expect(cn(buttonVariants({ variant: 'subtle', size: 'dense' }))).toContain(
+      'border-border-light',
+    );
+  });
+
   it('owns dense action padding without changing the default-height recipe', () => {
     render(
       <Button variant="outline" size="dense">
@@ -121,7 +156,7 @@ describe('Button', () => {
      *  text through itself while every neighbour sits on `bg-presentation`. */
     expect(screen.getByRole('button', { name: 'Toggle' })).toHaveClass(
       'bg-presentation',
-      'border-border-light',
+      'border-border-chrome',
       'rounded-xl',
       'duration-0',
       'hover:bg-surface-active-alt',

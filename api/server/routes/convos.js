@@ -19,6 +19,9 @@ const {
   createBackgroundTaskIndexHandler,
   createBackgroundTaskCancelHandler,
   createBackgroundTaskPolicyMiddleware,
+  createConversationPullRequestHandler,
+  createGitHubPullRequestSource,
+  createPullRequestLookup,
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
   createGeneratedTitleHandler,
@@ -167,6 +170,12 @@ const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
 const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
   registry: backgroundTaskRegistry,
 });
+const conversationPullRequestHandler = createConversationPullRequestHandler({
+  getConvoLaneGit: db.getConvoLaneGit,
+  getAppConfig,
+  lookup: createPullRequestLookup({ source: createGitHubPullRequestSource({ fetchFn: fetch }) }),
+  env: process.env,
+});
 router.use(requireJwtAuth);
 
 const isValidProjectFilter = (projectId) =>
@@ -239,6 +248,7 @@ router.post(
   subagentControlHandler,
 );
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
+router.get('/:conversationId/pull-request', conversationPullRequestHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(
   '/:conversationId/background-tasks/cancel',

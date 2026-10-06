@@ -1,7 +1,7 @@
 import { memo, Suspense, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Constants } from 'librechat-data-provider';
 import { Alert, DelayedRender } from '@librechat/client';
+import { Constants, parseThinkingContent } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -22,14 +22,6 @@ import store from '~/store';
 const ERROR_CONNECTION_TEXT = 'Error connecting to server, try refreshing the page.';
 const DELAYED_ERROR_TIMEOUT = 5500;
 const UNFINISHED_DELAY = 250;
-
-const parseThinkingContent = (text: string) => {
-  const thinkingMatch = text.match(/:::thinking([\s\S]*?):::/);
-  return {
-    thinkingContent: thinkingMatch ? thinkingMatch[1].trim() : '',
-    regularContent: thinkingMatch ? text.replace(/:::thinking[\s\S]*?:::/, '').trim() : text,
-  };
-};
 
 const LoadingFallback = () => (
   <div className="mb-[0.625rem]">

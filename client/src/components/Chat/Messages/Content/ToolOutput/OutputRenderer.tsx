@@ -103,6 +103,12 @@ function extractText(raw: string, verbatim = false): ExtractedText {
   return { text: trimmed, rawError: '', error: false, isJson: false };
 }
 
+/** Whether the default renderer would draw anything for this output. Callers
+ *  that decide a panel is worth showing use it, so the two cannot disagree. */
+export function hasRenderableOutput(raw?: string | null): boolean {
+  return extractText(raw ?? '').text.length > 0;
+}
+
 export interface OutputSegment {
   text: string;
   className?: string;

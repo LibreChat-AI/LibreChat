@@ -3,15 +3,7 @@ import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import ExportAndShareMenu from '../ExportAndShareMenu';
 
-let mockShareId: string | null = null;
-
-jest.mock('recoil', () => ({
-  useRecoilValue: () => ({ conversationId: 'conversation-1' }),
-}));
-
-jest.mock('librechat-data-provider/react-query', () => ({
-  useGetSharedLinkQuery: () => ({ data: { shareId: mockShareId } }),
-}));
+const mockOptions = { show: true, hasSharedLink: false };
 
 jest.mock('@ariakit/react', () => ({
   MenuButton: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
@@ -26,31 +18,22 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useHasAccess: () => true,
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/components/Nav/ExportConversation/ExportModal', () => ({
+jest.mock('~/hooks/Chat/useChatOptions', () => ({
   __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Conversations/ConvoOptions', () => ({
-  ShareButton: () => null,
-}));
-
-jest.mock('~/store', () => ({
-  __esModule: true,
-  default: { conversationByIndex: () => ({}) },
+  default: () => ({ ...mockOptions, items: [], dialogs: null }),
 }));
 
 describe('ExportAndShareMenu link status', () => {
   beforeEach(() => {
-    mockShareId = null;
+    mockOptions.show = true;
+    mockOptions.hasSharedLink = false;
   });
 
   it('shows a blue circular indicator when the conversation has a link', () => {
-    mockShareId = 'share-1';
+    mockOptions.hasSharedLink = true;
 
     render(<ExportAndShareMenu isSharedButtonEnabled={true} />);
 
@@ -63,14 +46,22 @@ describe('ExportAndShareMenu link status', () => {
     );
     expect(screen.getByRole('button')).toHaveAttribute(
       'aria-label',
-      'com_ui_export_share_link_active',
+      'com_ui_chat_options_link_active',
     );
   });
 
-  it('uses the default share control when the conversation has no link', () => {
+  it('uses the default options label when the conversation has no link', () => {
     render(<ExportAndShareMenu isSharedButtonEnabled={true} />);
 
     expect(screen.queryByTestId('header-shared-link-indicator')).not.toBeInTheDocument();
-    expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'com_endpoint_export_share');
+    expect(screen.getByRole('button')).toHaveAttribute('aria-label', 'com_ui_chat_options');
+  });
+
+  it('renders nothing for a conversation that has not been saved', () => {
+    mockOptions.show = false;
+
+    const { container } = render(<ExportAndShareMenu isSharedButtonEnabled={true} />);
+
+    expect(container).toBeEmptyDOMElement();
   });
 });
