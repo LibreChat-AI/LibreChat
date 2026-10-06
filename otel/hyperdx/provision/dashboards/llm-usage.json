@@ -1,0 +1,125 @@
+{
+  "name": "LLM usage",
+  "tags": ["usage"],
+  "filters": [
+    { "id": "user", "name": "User", "type": "QUERY_EXPRESSION", "expression": "UserId", "source": "Usage timeline" },
+    { "id": "model", "name": "Model", "type": "QUERY_EXPRESSION", "expression": "Model", "source": "Usage timeline" },
+    { "id": "origin", "name": "Event source", "type": "QUERY_EXPRESSION", "expression": "ServiceName", "source": "Usage timeline" }
+  ],
+  "tiles": [
+    {
+      "id": "calls", "x": 0, "y": 0, "w": 6, "h": 3,
+      "config": {
+        "name": "Model calls", "source": "Usage timeline", "displayType": "number",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "tokens", "x": 6, "y": 0, "w": 6, "h": 3,
+      "config": {
+        "name": "Tokens", "source": "Usage timeline", "displayType": "number",
+        "select": [{ "aggFn": "sum", "valueExpression": "TotalTokens", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "cost", "x": 12, "y": 0, "w": 6, "h": 3,
+      "config": {
+        "name": "Cost (USD)", "source": "Usage timeline", "displayType": "number",
+        "select": [{ "aggFn": "sum", "valueExpression": "Cost", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "users", "x": 18, "y": 0, "w": 6, "h": 3,
+      "config": {
+        "name": "Active users", "source": "Usage timeline", "displayType": "number",
+        "select": [{ "aggFn": "count_distinct", "valueExpression": "UserId", "aggCondition": "" }],
+        "where": "UserId != ''", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "calls-by-model", "x": 0, "y": 3, "w": 12, "h": 8,
+      "config": {
+        "name": "Model calls by model", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql", "groupBy": "Model", "granularity": "auto"
+      }
+    },
+    {
+      "id": "tokens-over-time", "x": 12, "y": 3, "w": 12, "h": 8,
+      "config": {
+        "name": "Tokens in and out", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [
+          { "aggFn": "sum", "valueExpression": "InputTokens", "aggCondition": "", "alias": "Input" },
+          { "aggFn": "sum", "valueExpression": "OutputTokens", "aggCondition": "", "alias": "Output" }
+        ],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql", "granularity": "auto"
+      }
+    },
+    {
+      "id": "cost-by-model", "x": 0, "y": 11, "w": 12, "h": 8,
+      "config": {
+        "name": "Cost by model (USD)", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "sum", "valueExpression": "Cost", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql", "groupBy": "Model", "granularity": "auto"
+      }
+    },
+    {
+      "id": "latency", "x": 12, "y": 11, "w": 12, "h": 8,
+      "config": {
+        "name": "Response time by model (p95, ms)", "source": "Usage timeline", "displayType": "line",
+        "select": [{ "aggFn": "quantile", "level": 0.95, "valueExpression": "DurationMs", "aggCondition": "" }],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql", "groupBy": "Model", "granularity": "auto"
+      }
+    },
+    {
+      "id": "feedback", "x": 0, "y": 19, "w": 12, "h": 8,
+      "config": {
+        "name": "Feedback", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "ServiceName = 'feedback'", "whereLanguage": "sql", "groupBy": "Event", "granularity": "auto"
+      }
+    },
+    {
+      "id": "errors", "x": 12, "y": 19, "w": 12, "h": 8,
+      "config": {
+        "name": "Failed model calls", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "ServiceName = 'llm' AND SeverityText = 'error'", "whereLanguage": "sql", "groupBy": "Model", "granularity": "auto"
+      }
+    },
+    {
+      "id": "top-users", "x": 0, "y": 27, "w": 12, "h": 9,
+      "config": {
+        "name": "Usage by user", "source": "Usage timeline", "displayType": "table",
+        "select": [
+          { "aggFn": "count", "valueExpression": "", "aggCondition": "", "alias": "Model calls" },
+          { "aggFn": "sum", "valueExpression": "TotalTokens", "aggCondition": "", "alias": "Tokens" },
+          { "aggFn": "sum", "valueExpression": "Cost", "aggCondition": "", "alias": "Cost (USD)" }
+        ],
+        "where": "ServiceName = 'llm'", "whereLanguage": "sql", "groupBy": "UserId"
+      }
+    },
+    {
+      "id": "ui-actions", "x": 12, "y": 27, "w": 12, "h": 9,
+      "config": {
+        "name": "UI actions", "source": "Usage timeline", "displayType": "table",
+        "select": [
+          { "aggFn": "count", "valueExpression": "", "aggCondition": "", "alias": "Events" },
+          { "aggFn": "count_distinct", "valueExpression": "UserId", "aggCondition": "", "alias": "Users" }
+        ],
+        "where": "ServiceName = 'ui'", "whereLanguage": "sql", "groupBy": "Event"
+      }
+    },
+    {
+      "id": "timeline", "x": 0, "y": 36, "w": 24, "h": 14,
+      "config": {
+        "name": "Event timeline", "source": "Usage timeline", "displayType": "search",
+        "select": "Timestamp, ServiceName, UserId, ConversationId, Body, Model, TotalTokens, Cost, DurationMs, Rating",
+        "where": "", "whereLanguage": "lucene"
+      }
+    }
+  ]
+}

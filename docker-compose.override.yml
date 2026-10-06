@@ -385,6 +385,34 @@ services:
     networks:
       - infra-network
 
+  # One-shot: adds the usage timeline source (the analytics.timeline view), its
+  # saved search and the dashboards in otel/hyperdx/provision to every HyperDX
+  # team. With no account registered yet it changes nothing, so after
+  # registering run `docker compose run --rm hyperdx-provision`. Mirrors the
+  # hyperdx-provision task in infra/terraform/hyperdx.tf.
+  hyperdx-provision:
+    image: docker.hyperdx.io/hyperdx/hyperdx:2
+    entrypoint: ["node", "/provision/provision.js"]
+    working_dir: /app/packages/api
+    environment:
+      MONGO_URI: mongodb://hyperdx-mongo:27017/hyperdx
+      HYPERDX_PROVISION_DIR: /provision
+    volumes:
+      - type: bind
+        source: ./otel/hyperdx/provision
+        target: /provision
+        read_only: true
+    depends_on:
+      hyperdx:
+        condition: service_started
+      clickhouse-analytics-init:
+        condition: service_completed_successfully
+    restart: "no"
+    profiles:
+      - observability
+    networks:
+      - infra-network
+
   # Receives the browser telemetry the api forwards from /api/rum. It runs
   # standalone (no OpAMP), so the shared token is what guards its OTLP port.
   otel-collector:
