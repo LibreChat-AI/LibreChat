@@ -48,6 +48,24 @@ type EligibleLane = { branch: string; head: string | null; repo: string };
 
 /** Lookups in flight at once for one batch, unless configured. */
 const DEFAULT_BATCH_CONCURRENCY = 4;
+/** Longest one batch request may stay open, unless configured. */
+const DEFAULT_BATCH_TIMEOUT_SECONDS = 20;
+
+const TIMED_OUT = Symbol('timed-out');
+
+/** Settles with `TIMED_OUT` once `ms` has passed, and never leaves its timer running. */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  if (ms <= 0) return TIMED_OUT;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  try {
+    return await Promise.race([work, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** A lane the server's token may be used for: it names a branch and an allowed repository. */
 function eligibleLane(
@@ -239,13 +257,30 @@ export function createConversationPullRequestsHandler(deps: {
         return;
       }
 
+      /**
+       * One deadline for the whole request, not per lookup: each lookup may run for its own
+       * configured limit, and a stalled upstream would otherwise hold a full batch open for many
+       * times that. Past the deadline nothing new starts and the entries still waiting answer
+       * with an upstream error; a lookup already running finishes in the background under its own
+       * limit and fills the cache for the next request.
+       */
+      const deadline =
+        Date.now() + (settings.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
       const looked = await mapWithLimit(
         ids,
         settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY,
         async (conversationId): Promise<TConversationPullRequestsEntry> => {
           const lane = eligible.get(conversationId);
           if (lane == null) return { conversationId, pullRequest: null };
-          const result = await deps.lookup(lookupInput(settings, token, lane));
+          /** Checked before the lookup is created, so nothing starts once time is up. */
+          const remaining = deadline - Date.now();
+          const result =
+            remaining <= 0
+              ? TIMED_OUT
+              : await withDeadline(deps.lookup(lookupInput(settings, token, lane)), remaining);
+          if (result === TIMED_OUT) {
+            return { conversationId, error: { code: 'UPSTREAM_ERROR' } };
+          }
           return result.ok
             ? { conversationId, pullRequest: result.value }
             : { conversationId, error: { code: result.error.code } };

@@ -55,9 +55,9 @@ jest.mock('~/components/Chat/PullRequest/RowMark', () => ({
   default: (props: Record<string, unknown>) => {
     mockMarkProps.push(props);
     return (
-      <span data-testid="convo-pull-request">
+      <button type="button" data-testid="convo-pull-request">
         <span id={String(props.labelId)} data-testid="mark-description" />
-      </span>
+      </button>
     );
   },
 }));

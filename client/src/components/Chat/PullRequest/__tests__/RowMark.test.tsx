@@ -1,5 +1,6 @@
 import React from 'react';
 import '@testing-library/jest-dom';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TConversationPullRequest } from 'librechat-data-provider';
@@ -57,10 +58,11 @@ const movePointerOver = (element: HTMLElement) => {
 
 const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMark>> = {}) => {
   const rowClick = jest.fn();
+  const rowKey = jest.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <div data-testid="row" onClick={rowClick}>
+      <div data-testid="row" onClick={rowClick} onKeyDown={rowKey}>
         <PullRequestRowMark
           conversationId="convo-1"
           labelId="pr-label"
@@ -70,7 +72,7 @@ const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMar
       </div>
     </QueryClientProvider>,
   );
-  return { ...view, rowClick, client };
+  return { ...view, rowClick, rowKey, client };
 };
 
 describe('PullRequestRowMark', () => {
@@ -82,19 +84,36 @@ describe('PullRequestRowMark', () => {
   it.each([
     ['while loading', () => new Promise(() => undefined)],
     ['without a pull request', () => Promise.resolve(answer('convo-1', null))],
-    ['when the lookup fails', () => Promise.reject(new Error('503'))],
+  ])('renders nothing %s, so the row is unchanged', async (_label, respond) => {
+    mockGetMany.mockImplementation(respond);
+    const { container } = renderMark();
+    await waitFor(() => expect(mockGetMany).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(container.querySelector('[data-testid="convo-pull-request"]')).toBeNull();
+    expect(container.querySelector('[data-testid="convo-pull-request-failed"]')).toBeNull();
+  });
+
+  it.each([
+    ['the request fails', () => Promise.reject(new Error('503'))],
     [
-      'when that conversation failed on the server',
+      'that conversation failed on the server',
       () =>
         Promise.resolve({
           results: [{ conversationId: 'convo-1', error: { code: 'RATE_LIMITED' } }],
         }),
     ],
-  ])('renders nothing %s, so the row is unchanged', async (_label, respond) => {
-    mockGetMany.mockImplementation(respond);
-    const { container } = renderMark();
-    await waitFor(() => expect(mockGetMany).toHaveBeenCalled());
-    expect(container.querySelector('[data-testid="convo-pull-request"]')).toBeNull();
+  ])('says the lookup failed, with a retry, when %s', async (_label, respond) => {
+    mockGetMany.mockImplementationOnce(respond);
+    renderMark();
+    const failed = await screen.findByTestId('convo-pull-request-failed');
+    expect(failed).toHaveAccessibleName('com_ui_pr_load_failed');
+    expect(screen.queryByTestId('convo-pull-request')).toBeNull();
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    fireEvent.focus(failed);
+    const retry = await screen.findByRole('button', { name: 'com_ui_retry' });
+    fireEvent.click(retry);
+    expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
+    expect(mockGetMany).toHaveBeenCalledTimes(2);
   });
 
   it('does not ask when the deployment does not advertise the feature', async () => {
@@ -163,6 +182,38 @@ describe('PullRequestRowMark', () => {
     expect(text).toHaveTextContent('com_ui_pr_checks_passing');
   });
 
+  it('is a button with an accessible name that says what the colors say', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark();
+    const mark = await screen.findByTestId('convo-pull-request');
+    expect(mark.tagName).toBe('BUTTON');
+    expect(mark).toHaveAccessibleName(expect.stringContaining(pr.title));
+    expect(mark).toHaveAccessibleName(expect.stringContaining('com_ui_pr_checks_passing'));
+    expect(mark).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens the card for keyboard focus, so its GitHub link is reachable', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark();
+    const mark = await screen.findByTestId('convo-pull-request');
+    await userEvent.tab();
+    expect(mark).toHaveFocus();
+    expect(await screen.findByTestId('pull-request-card')).toBeInTheDocument();
+    expect(mark).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('opens the card on click without opening the row, and keeps Enter and Space off the row', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    const { rowClick, rowKey } = renderMark();
+    const mark = await screen.findByTestId('convo-pull-request');
+    fireEvent.click(mark);
+    expect(await screen.findByTestId('pull-request-card')).toBeInTheDocument();
+    fireEvent.keyDown(mark, { key: 'Enter' });
+    fireEvent.keyDown(mark, { key: ' ' });
+    expect(rowClick).not.toHaveBeenCalled();
+    expect(rowKey).not.toHaveBeenCalled();
+  });
+
   it('opens the card to the side on hover, and closes it when the pointer leaves', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark();
@@ -185,6 +236,36 @@ describe('PullRequestRowMark', () => {
     fireEvent.click(card);
     fireEvent.click(screen.getByTestId('pull-request-github-link'));
     expect(rowClick).not.toHaveBeenCalled();
+  });
+
+  it('refreshes every row in one request when the window regains focus, once its answer is stale', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGetMany.mockResolvedValue(answer('convo-1', pr));
+      renderMark();
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockGetMany).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(61_000);
+      window.dispatchEvent(new Event('focus'));
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockGetMany).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not refresh on focus while its answer is still fresh', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGetMany.mockResolvedValue(answer('convo-1', pr));
+      renderMark();
+      await jest.advanceTimersByTimeAsync(100);
+      window.dispatchEvent(new Event('focus'));
+      await jest.advanceTimersByTimeAsync(100);
+      expect(mockGetMany).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('never polls, so a list of rows does not poll GitHub once per row', async () => {

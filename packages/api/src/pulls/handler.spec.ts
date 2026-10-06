@@ -473,6 +473,57 @@ describe('createConversationPullRequestsHandler', () => {
     expect(JSON.stringify((res.json as jest.Mock).mock.calls)).not.toContain('secret');
   });
 
+  describe('overall deadline', () => {
+    const never = () => new Promise(() => undefined);
+
+    it('answers within the deadline when a lookup stalls, keeping what finished', async () => {
+      const lookup = jest
+        .fn()
+        .mockResolvedValueOnce({ ok: true, value: pr })
+        .mockImplementationOnce(never);
+      const { run, res } = batch({ lookup, settings: { ...enabled, batchTimeoutSeconds: 0.08 } });
+      const started = Date.now();
+      await run();
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        results: [
+          { conversationId: 'a', pullRequest: pr },
+          { conversationId: 'b', error: { code: 'UPSTREAM_ERROR' } },
+        ],
+      });
+    });
+
+    it('starts nothing new once the deadline has passed', async () => {
+      const lookup = jest.fn().mockImplementation(never);
+      const ids = ['a', 'b', 'c'];
+      const { run, res } = batch({
+        lookup,
+        lanes: ids.map((id) => lane(id)),
+        settings: { ...enabled, maxConcurrentLookups: 1, batchTimeoutSeconds: 0.08 },
+      });
+      await run({ conversationIds: ids });
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(res.json).toHaveBeenCalledWith({
+        results: ids.map((conversationId) => ({
+          conversationId,
+          error: { code: 'UPSTREAM_ERROR' },
+        })),
+      });
+    });
+
+    it('does not change the answer of a batch that finishes in time', async () => {
+      const { run, res } = batch({ settings: { ...enabled, batchTimeoutSeconds: 5 } });
+      await run();
+      expect(res.json).toHaveBeenCalledWith({
+        results: [
+          { conversationId: 'a', pullRequest: pr },
+          { conversationId: 'b', pullRequest: null },
+        ].map((entry, index) => (index === 1 ? { ...entry, pullRequest: pr } : entry)),
+      });
+    });
+  });
+
   it('uses the same lookup input as the single route', async () => {
     const single = setup({ laneGit: { branch: 'feat/a', head: null, repo: 'o/r' } });
     await single.run();

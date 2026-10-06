@@ -7,6 +7,7 @@
   "com_ui_pr_checks_running": "Running",
   "com_ui_pr_deletions": "{{0}} lines removed",
   "com_ui_pr_label": "PR #{{0}}",
+  "com_ui_pr_load_failed": "Couldn't load the pull request",
   "com_ui_pr_open_in_github": "Open in GitHub",
   "com_ui_pr_refresh_failed": "Couldn't refresh the pull request",
   "com_ui_pr_state": "State: {{0}}",

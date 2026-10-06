@@ -62,7 +62,9 @@ const rowBatcher = createPullRequestBatcher({
 /**
  * The pull request of a sidebar row. It shares its cache entry with the header's query, so the
  * open conversation is never fetched twice, but it never polls: a list of rows would otherwise
- * poll GitHub once per row. A row's answer is as fresh as the last time the list was opened.
+ * poll GitHub once per row. It refreshes when the window regains focus and a row's answer is
+ * older than a minute; every mounted row asks in the same moment, so the batcher turns that
+ * into one request for the whole list rather than one per row.
  */
 export const useRowPullRequestQuery = (conversationId: string) => {
   const { data: startupConfig } = useGetStartupConfig();
@@ -73,7 +75,7 @@ export const useRowPullRequestQuery = (conversationId: string) => {
       enabled: startupConfig?.pullRequestsEnabled === true && isSavedConversation(conversationId),
       staleTime: SETTLED_REFRESH_MS,
       retry: false,
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true,
     },
   );
 };

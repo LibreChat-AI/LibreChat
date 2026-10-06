@@ -5,7 +5,7 @@ import PullRequestCard from './Card';
 import { cn } from '~/utils';
 
 /** Slides in from the anchor's side, left to right, and fades; reduced motion only fades. */
-const panelClass = cn(
+export const panelClass = cn(
   'border-border-light bg-surface-secondary text-text-primary z-[200] w-80 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg focus:outline-none',
   'origin-left -translate-x-3 opacity-0 transition duration-200 ease-out',
   'data-[enter]:translate-x-0 data-[enter]:opacity-100',

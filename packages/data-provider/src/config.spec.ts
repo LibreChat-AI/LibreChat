@@ -1136,6 +1136,7 @@ describe('agent pull request config', () => {
       cacheMaxEntries: 500,
       cacheMaxCredentials: 256,
       maxConcurrentLookups: 4,
+      batchTimeoutSeconds: 20,
     });
   });
 
@@ -1198,6 +1199,9 @@ describe('agent pull request config', () => {
     ['maxConcurrentLookups', 0],
     ['maxConcurrentLookups', 17],
     ['maxConcurrentLookups', 1.5],
+    ['batchTimeoutSeconds', 0],
+    ['batchTimeoutSeconds', 121],
+    ['batchTimeoutSeconds', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1212,6 +1216,7 @@ describe('agent pull request config', () => {
         maxHeadComparisons: 20,
         cacheMaxEntries: 100_000,
         maxConcurrentLookups: 16,
+        batchTimeoutSeconds: 120,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);
