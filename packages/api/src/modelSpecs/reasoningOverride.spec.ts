@@ -682,6 +682,33 @@ describe('applyRequestReasoningOverride: capability loading', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  it('does not load capabilities for an Auto override, which sends no effort', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.unset },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('accepts Auto while the catalog is unavailable', async () => {
+    const load = jest.fn(async () => {
+      throw new Error('upstream down');
+    });
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.unset },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+  });
+
   it('does not load capabilities when the target is not OpenRouter', async () => {
     const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 

@@ -1298,3 +1298,30 @@ describe('catalogs whose model list is scoped to the requesting user', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('model ids that name Object.prototype members', () => {
+  const protoCatalog = {
+    data: [
+      { id: 'constructor', reasoning: { supported_efforts: ['low'] } },
+      { id: '__proto__', reasoning: { supported_efforts: ['high'] } },
+      { id: 'a/b', reasoning: { supported_efforts: ['low'] } },
+    ],
+  };
+
+  it('records them as ordinary models without touching the prototype', async () => {
+    const { deps } = makeDeps(async () => protoCatalog);
+
+    const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(Object.prototype.hasOwnProperty.call(map.OpenRouter, 'constructor')).toBe(true);
+    expect(Object.getPrototypeOf(map.OpenRouter)).not.toEqual({ efforts: ['high'] });
+    expect(({} as Record<string, unknown>).efforts).toBeUndefined();
+  });
+
+  it('does not throw when a stored effort sits on such an unlisted model', async () => {
+    const { deps } = makeDeps();
+    const stored = { model: 'toString', reasoning_effort: 'max' };
+
+    await expect(withSupportedEffort(stored, endpoint(), deps)).resolves.toBe(stored);
+  });
+});

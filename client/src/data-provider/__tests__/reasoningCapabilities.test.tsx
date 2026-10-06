@@ -32,7 +32,7 @@ const setup = () => {
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     </RecoilRoot>
   );
-  return renderHook(() => useReasoningCapabilitiesQuery('OpenRouter'), { wrapper });
+  return { ...renderHook(() => useReasoningCapabilitiesQuery('OpenRouter'), { wrapper }), wrapper };
 };
 
 const refocus = async () => {
@@ -99,6 +99,27 @@ describe('useReasoningCapabilitiesQuery expiry and retry', () => {
     await act(async () => {
       focusManager.setFocused(true);
     });
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('schedules revalidation from the remaining lifetime when a consumer remounts', async () => {
+    mockGet.mockResolvedValue({ ...capabilities, expiresInMs: 3_600_000 });
+    const first = setup();
+    await waitFor(() => expect(first.result.current.data).toBeDefined());
+
+    /* An unobserved query is dropped after five minutes, so the remount has to come sooner. */
+    await advance(1_800_000);
+    first.unmount();
+    await advance(120_000);
+    const second = renderHook(() => useReasoningCapabilitiesQuery('OpenRouter'), {
+      wrapper: first.wrapper,
+    });
+    await waitFor(() => expect(second.result.current.data).toBeDefined());
+    expect(mockGet).toHaveBeenCalledTimes(1);
+
+    /* 32 minutes into a 60 minute entry: it must refresh in about 28 minutes, not 60. */
+    await advance(29 * 60_000);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
   });

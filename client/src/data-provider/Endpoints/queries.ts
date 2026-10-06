@@ -81,11 +81,17 @@ export const useReasoningCapabilitiesQuery = (
       refetchOnWindowFocus: reasoningCapabilitiesExpired,
       refetchOnReconnect: reasoningCapabilitiesExpired,
       refetchOnMount: reasoningCapabilitiesExpired,
+      /** The interval restarts whenever a consumer mounts, so it counts down what is left of the
+       *  entry's lifetime, not the lifetime it had when it was read. */
       refetchInterval: (data, query) => {
         if (query.state.status === 'error') {
           return Time.THIRTY_SECONDS;
         }
-        return data == null ? false : Math.max(data.expiresInMs, MIN_REVALIDATE_MS);
+        if (data == null) {
+          return false;
+        }
+        const remaining = data.expiresInMs - (Date.now() - query.state.dataUpdatedAt);
+        return Math.max(remaining, MIN_REVALIDATE_MS);
       },
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,

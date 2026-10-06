@@ -1642,8 +1642,12 @@ export function getModelReasoning(
   endpoint: string,
   model: string,
 ): TModelReasoning | undefined | null {
-  const models = capabilities?.[endpoint];
-  const listed = models?.[model] ?? models?.[model.split(':')[0]];
+  /** Model ids and endpoint names are unrestricted strings, so only own properties count: an id
+   *  such as `constructor` must not resolve to a member of `Object.prototype`. */
+  const own = <T>(record: Record<string, T> | undefined, key: string): T | undefined =>
+    record != null && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+  const models = own(capabilities, endpoint);
+  const listed = own(models, model) ?? own(models, model.split(':')[0]);
   if (listed == null) {
     return undefined;
   }

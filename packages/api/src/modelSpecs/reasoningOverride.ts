@@ -180,7 +180,7 @@ export async function resolveReasoningOverride({
 }
 
 /**
- * The provider's per-model efforts, loaded only when the override is an effort on an
+ * The provider's per-model efforts, loaded only when the override is a non-Auto effort on an
  * OpenRouter endpoint: any other target is validated without the catalog, so an
  * unavailable OpenRouter never delays an unrelated request.
  */
@@ -190,7 +190,12 @@ async function loadCapabilitiesFor(
   input: Omit<RequestReasoningOverrideInput, 'reasoningOverride' | 'loadReasoningCapabilities'>,
   load?: (endpoint: string) => Promise<ReasoningCapabilityResult>,
 ): Promise<TReasoningCapabilityMap | undefined> {
-  if (load == null || override.key !== 'reasoning_effort') {
+  /** Auto sends no effort, so no catalog entry can change whether it is accepted. */
+  if (
+    load == null ||
+    override.key !== 'reasoning_effort' ||
+    override.value === ReasoningEffort.unset
+  ) {
     return undefined;
   }
   const loadedAgent = await endpointOption.agent;

@@ -646,6 +646,25 @@ describe('getModelReasoning', () => {
     expect(lookup('meta/plain:free')).toBeNull();
   });
 
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'])(
+    'keeps a model id that names an Object.prototype member unknown: %s',
+    (model) => {
+      expect(lookup(model)).toBeUndefined();
+      expect(lookup(`${model}:free`)).toBeUndefined();
+    },
+  );
+
+  it('keeps an endpoint named after an Object.prototype member unknown', () => {
+    expect(getModelReasoning(capabilities, 'constructor', 'openai/gpt-6.1-sol')).toBeUndefined();
+    expect(getModelReasoning(capabilities, '__proto__', 'openai/gpt-6.1-sol')).toBeUndefined();
+  });
+
+  it('still finds a listed model that happens to be named like a prototype member', () => {
+    const named = { OpenRouter: { constructor: { efforts: ['low'] } } };
+
+    expect(getModelReasoning(named, 'OpenRouter', 'constructor')).toEqual({ efforts: ['low'] });
+  });
+
   it('keeps a model the provider does not list unknown, such as an alias', () => {
     expect(lookup('meta/unlisted')).toBeUndefined();
     expect(lookup('~openai/gpt-latest')).toBeUndefined();
