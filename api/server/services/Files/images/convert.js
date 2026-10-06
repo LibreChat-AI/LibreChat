@@ -38,11 +38,13 @@ async function convertImage(req, file, resolution = 'high', basename = '') {
       buffer: resizedBuffer,
       width,
       height,
+      type,
     } = await resizeImageBuffer(inputBuffer, resolution);
 
-    // Check if the file is already in target format; if it isn't, convert it:
+    // Check if the file is already in target format; if it isn't, convert it. The name is only a
+    // claim about the contents, so the bytes have to agree with it before conversion is skipped.
     const targetExtension = `.${appConfig.imageOutputType}`;
-    if (extension === targetExtension) {
+    if (extension === targetExtension && type === `image/${appConfig.imageOutputType}`) {
       outputBuffer = resizedBuffer;
     } else {
       outputBuffer = await sharp(resizedBuffer).toFormat(appConfig.imageOutputType).toBuffer();
