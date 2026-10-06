@@ -16,6 +16,10 @@ export default function useThrottledValue<T>(value: T, intervalMs: number): T {
   useEffect(() => {
     const elapsed = Date.now() - paintedAtRef.current;
     if (elapsed >= intervalMs) {
+      if (timerRef.current != null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
       paintedAtRef.current = Date.now();
       setThrottled(value);
       return;

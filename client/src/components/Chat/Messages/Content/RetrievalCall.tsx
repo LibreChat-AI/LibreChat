@@ -1,19 +1,18 @@
-import { useMemo, useState, useEffect, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
+import { useMemo, useState, useCallback } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
-import { toolPanelSpacingClassName } from './disclosure';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolCallIntent } from './Parts/intent';
+import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
-import store from '~/store';
 
 interface FileSource {
   fileId: string;
@@ -295,18 +294,18 @@ function FileHeader({
 
   return (
     <div className="flex items-center gap-2 px-3 py-2">
-      <IconComponent className="size-3.5 shrink-0 text-text-secondary" aria-hidden="true" />
+      <IconComponent className="text-text-secondary size-3.5 shrink-0" aria-hidden="true" />
       {onOpenPreview ? (
         <button
           type="button"
           onClick={onOpenPreview}
-          className="min-w-0 truncate text-left text-xs font-medium text-text-primary underline decoration-border-medium underline-offset-2 transition-colors hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy focus-visible:ring-offset-1"
+          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-focus-subtle min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
           aria-label={`${localize('com_ui_preview')}: ${fileName}`}
         >
           {fileName}
         </button>
       ) : (
-        <span className="min-w-0 truncate text-xs font-medium text-text-primary">{fileName}</span>
+        <span className="text-text-primary min-w-0 truncate text-xs font-medium">{fileName}</span>
       )}
       {relevance > 0 && (
         <TooltipAnchor
@@ -315,7 +314,7 @@ function FileHeader({
           className="flex cursor-help items-center"
         >
           <span
-            className="shrink-0 cursor-help rounded bg-surface-tertiary px-1.5 py-0.5 text-[11px] tabular-nums leading-none text-text-secondary"
+            className="bg-surface-tertiary text-text-secondary shrink-0 cursor-help rounded px-1.5 py-0.5 text-[11px] leading-none tabular-nums"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
@@ -324,7 +323,7 @@ function FileHeader({
       )}
       <span className="flex-1" />
       {sortedPages && sortedPages.length > 0 && (
-        <span className="shrink-0 text-[11px] text-text-secondary">
+        <span className="text-text-secondary shrink-0 text-[11px]">
           {localize('com_file_pages', { pages: sortedPages.join(', ') })}
         </span>
       )}
@@ -365,6 +364,7 @@ export default function RetrievalCall({
    *  describe_intent); persists as the settled label. The sr-only live
    *  region below deliberately keeps its stable generic value. */
   const intent = useToolCallIntent(args);
+  const preparationText = useToolPreparation();
 
   /**
    * One resolution, read by the label, the live region and the icon alike.
@@ -380,7 +380,6 @@ export default function RetrievalCall({
     hasError: typeof output === 'string' && isError(output),
   });
   const hasOutput = !!output && !isError(output);
-  const autoExpand = useRecoilValue(store.autoExpandTools);
 
   const fileSources = useMemo(() => extractFileSources(attachments), [attachments]);
   const parsedResults = useMemo(
@@ -402,7 +401,8 @@ export default function RetrievalCall({
 
   const hasResults = displayResults.length > 0;
   const hasExpandableContent = phase !== 'failed' && hasResults;
-  const [showOutput, setShowOutput] = useState(() => autoExpand && hasExpandableContent);
+  const [expanded, setExpanded] = useToolExpansion(hasExpandableContent);
+  const showOutput = hasExpandableContent && expanded;
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -438,32 +438,19 @@ export default function RetrievalCall({
     };
   }, [displayResults, previewIndex]);
 
-  useEffect(() => {
-    if (!hasExpandableContent) {
-      setShowOutput(false);
-      return;
-    }
-    if (autoExpand) {
-      setShowOutput(true);
-    }
-  }, [autoExpand, hasExpandableContent]);
-
   const handleToggleOutput = useCallback(() => {
-    setShowOutput((prev) => {
-      const next = !prev;
-      if (next) {
-        onExpand?.();
-      }
-      return next;
-    });
-  }, [onExpand]);
+    setExpanded(!showOutput);
+    if (!showOutput) {
+      onExpand?.();
+    }
+  }, [onExpand, setExpanded, showOutput]);
 
   return (
     <div>
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {(() => {
           if (phase === 'running') {
-            return localize('com_ui_searching_files');
+            return preparationText ?? localize('com_ui_searching_files');
           }
           if (phase === 'cancelled') {
             return localize('com_ui_cancelled');
@@ -504,7 +491,7 @@ export default function RetrievalCall({
                   <div
                     key={`${item.fileId ?? item.fileName}-${i}`}
                     className={cn(
-                      'overflow-hidden rounded-lg border border-border-light bg-surface-secondary',
+                      'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
                     )}
                   >
                     <FileHeader
@@ -516,7 +503,7 @@ export default function RetrievalCall({
                       onOpenPreview={item.fileId ? () => openPreview(i) : undefined}
                     />
                     {item.content && (
-                      <div className="border-t border-border-light px-3 py-3">
+                      <div className="border-border-inset border-t px-3 py-3">
                         <OutputRenderer text={item.content} />
                       </div>
                     )}

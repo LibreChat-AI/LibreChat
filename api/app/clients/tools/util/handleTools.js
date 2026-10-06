@@ -2,10 +2,13 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Calculator, createSearchTool, createCodeExecutionTool } = require('@librechat/agents');
 const {
   checkAccess,
+  createGitHubCompareTool,
+  getProxyDispatcher,
   toolkitParent,
   toolRolePermissions,
   checkToolRolePermission,
   createSafeUser,
+  loadMCPTools,
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
   mcpToolPattern,
@@ -25,7 +28,10 @@ const {
   resolveWebSearchSSRFAgents,
   buildWebSearchDynamicContext,
   codeExecutionAuthHeaders,
+  getCodeFileLocation,
   resolveCodeExecutionContext,
+  resolveCodeExecutionWorkspaceSelections,
+  resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
   AuthType,
@@ -35,6 +41,7 @@ const {
   EToolResources,
   PermissionTypes,
   AgentCapabilities,
+  resolveMCPAppsPolicy,
 } = require('librechat-data-provider');
 const {
   availableTools,
@@ -221,6 +228,13 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    github_compare: () =>
+      createGitHubCompareTool({
+        config: options.req?.config?.githubCompare,
+        toolRegistry: options.toolRegistry,
+        fetch,
+        getDispatcher: getProxyDispatcher,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
@@ -381,6 +395,15 @@ const loadTools = async ({
             statefulSessions,
             environment: agent?.stateful_code_environment,
             environmentId: agent?.code_environment_id,
+            environmentIds: agent?.code_environment_ids,
+            allowEnvironmentSelection:
+              options.req?.config?.endpoints?.agents?.statefulCodeSessions
+                ?.allowEnvironmentSelection,
+            workspaceSelections: resolveCodeExecutionWorkspaceSelections({
+              conversation: options.req?.resolvedConversation,
+              request: options.req?.body,
+            }),
+            inheritedEnvironments: options.req?.codeWorkspaceInheritance,
             environments:
               options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
             userId: user,
@@ -395,6 +418,7 @@ const loadTools = async ({
           executionProfile: codeExecutionContext.executionProfile,
           executionRouteKey: codeExecutionContext.executionRouteKey,
           bridgeWorkerId: codeExecutionContext.bridgeWorkerId,
+          codeFileLocation: getCodeFileLocation(codeExecutionContext),
         });
         if (toolContext) {
           dynamicToolContextMap[tool] = toolContext;
@@ -621,11 +645,19 @@ const loadTools = async ({
   }
 
   const loadedTools = (await Promise.all(toolPromises)).flatMap((plugin) => plugin || []);
-  const mcpToolPromises = [];
-  /** MCP server tools are initialized sequentially by server */
-  let index = -1;
-  const failedMCPServers = new Set();
   const safeUser = createSafeUser(options.req?.user);
+  const admittedAppConfig = options.req?.config;
+  const admittedMCPAppsPolicy = resolveMCPAppsPolicy(
+    admittedAppConfig?.mcpSettings?.apps,
+    admittedAppConfig?.mcpAppSandbox,
+    admittedAppConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+    admittedAppConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+    admittedAppConfig?.mcpAppSandbox?.url,
+    admittedAppConfig?.mcpAppSandbox?.maxActiveViews,
+    admittedAppConfig?.mcpAppSandbox?.maxActionPreviewChars,
+    admittedAppConfig?.mcpAppSandbox?.operationLimits,
+  );
+  const capabilityProfile = resolveMCPClientCapabilityProfile(admittedMCPAppsPolicy);
   const requestScopedConnections =
     options.requestScopedConnections ?? getMCPRequestContext(options.req, options.res);
   /**
@@ -653,83 +685,36 @@ const loadTools = async ({
       }),
   });
 
-  for (const [serverName, toolConfigs] of Object.entries(requestedMCPTools)) {
-    index++;
-    /** @type {LCAvailableTools} */
-    let availableTools = options.mcpAvailableTools?.[serverName];
-    for (const config of toolConfigs) {
-      try {
-        if (failedMCPServers.has(serverName)) {
-          continue;
-        }
-        const mcpParams = {
-          mcpPermissionContext,
-          index,
-          signal,
-          user: safeUser,
-          userMCPAuthMap,
-          configServers,
-          requestBody: options.requestBody ?? options.req?.body,
-          requestScopedConnections,
-          res: options.res,
-          upstreamTokenProvider,
-          upstreamTokenProviderResolver,
-          oboIdentityContext,
-          streamId: options.req?._resumableStreamId || null,
-          jobCreatedAt: options.jobCreatedAt,
-          model: agent?.model ?? model,
-          serverName: config.serverName,
-          provider: agent?.provider ?? endpoint,
-          config: config.config,
-        };
-
-        if (config.type === 'all' && toolConfigs.length === 1) {
-          /** Handle async loading for single 'all' tool config */
-          mcpToolPromises.push(
-            createMCPTools(mcpParams).catch((error) => {
-              logger.error(`Error loading ${serverName} tools:`, error);
-              return null;
-            }),
-          );
-          continue;
-        }
-        if (!availableTools) {
-          try {
-            availableTools = await getMCPServerTools(safeUser.id, serverName, config.config);
-          } catch (error) {
-            logger.error(`Error fetching available tools for MCP server ${serverName}:`, error);
-          }
-        }
-
-        /** Handle synchronous loading */
-        const mcpTool =
-          config.type === 'all'
-            ? await createMCPTools(mcpParams)
-            : await createMCPTool({
-                ...mcpParams,
-                availableTools,
-                toolKey: config.toolKey,
-                onAvailableTools: (tools) => {
-                  availableTools = tools;
-                },
-              });
-
-        if (Array.isArray(mcpTool)) {
-          loadedTools.push(...mcpTool);
-        } else if (mcpTool) {
-          loadedTools.push(mcpTool);
-        } else {
-          failedMCPServers.add(serverName);
-          logger.warn(
-            `MCP tool creation failed for "${config.toolKey}", server may be unavailable or unauthenticated.`,
-          );
-        }
-      } catch (error) {
-        logger.error(`Error loading MCP tool for server ${serverName}:`, error);
-      }
-    }
-  }
-  loadedTools.push(...(await Promise.all(mcpToolPromises)).flatMap((plugin) => plugin || []));
+  loadedTools.push(
+    ...(await loadMCPTools({
+      userId: user,
+      requestedTools: requestedMCPTools,
+      availableTools: options.mcpAvailableTools,
+      createTools: createMCPTools,
+      createTool: createMCPTool,
+      getAvailableTools: (userId, serverName, config) =>
+        getMCPServerTools(userId, serverName, config, capabilityProfile),
+      context: {
+        agentId: agent?.id,
+        mcpPermissionContext,
+        signal,
+        user: safeUser,
+        userMCPAuthMap,
+        mcpApps: admittedMCPAppsPolicy,
+        configServers,
+        requestBody: options.requestBody ?? options.req?.body,
+        requestScopedConnections,
+        res: options.res,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
+        oboIdentityContext,
+        streamId: options.req?._resumableStreamId || null,
+        jobCreatedAt: options.jobCreatedAt,
+        model: agent?.model ?? model,
+        provider: agent?.provider ?? endpoint,
+      },
+    })),
+  );
   return { loadedTools, toolContextMap, dynamicToolContextMap, primedCodeFiles };
 };
 

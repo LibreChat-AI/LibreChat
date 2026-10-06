@@ -4,6 +4,8 @@ export {
   type CreateGenerationJobOptions,
   type GenerationJobManagerOptions,
   type TerminalJobClaim,
+  type GenerationSettledEvent,
+  type GenerationSettledListener,
   GENERATION_RECOVERY_FAILED_ERROR,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
 } from './GenerationJobManager';
@@ -22,6 +24,7 @@ export type {
   IJobStore,
   IJobStoreV2,
   DetachedAgentEventActionStoreMode,
+  ScheduleProviderOwner,
 } from './interfaces/IJobStore';
 // Canonical "is this approval live?" predicate — one definition shared by the
 // stores, the approval lifecycle, and the status route / message middleware.
@@ -56,9 +59,13 @@ export type { JobStoreV2RequiredMethod } from './jobStoreCapabilities';
 export {
   buildRecoveredSteerPayload,
   canonicalRecoveryFileIds,
+  getSteerRecoveryFailure,
   RecoveredSteerPayloadMismatchError,
 } from './SteerRecovery';
 export type { RecoveredSteerPayload } from './SteerRecovery';
+
+export { logGenerationStartFailure } from './admission';
+export type { GenerationStartFailureContext } from './admission';
 
 export { createStreamServices } from './createStreamServices';
 export type { StreamServicesConfig, StreamServices } from './createStreamServices';
@@ -83,3 +90,7 @@ export { RedisJobStore } from './implementations/RedisJobStore';
 export { RedisEventTransport } from './implementations/RedisEventTransport';
 
 export { waitForGenerationPersistence } from './persistence';
+export { waitForGenerationSettled } from './settled';
+export type { GenerationSettledSource, GenerationSettledWaitOptions } from './settled';
+
+export type { GenerationSettlementState } from './interfaces/IJobStore';

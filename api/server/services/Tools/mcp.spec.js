@@ -1,5 +1,6 @@
 const { Constants } = require('librechat-data-provider');
 const { logger } = require('@librechat/data-schemas');
+const { STANDARD_MCP_CAPABILITY_PROFILE } = require('@librechat/api');
 
 const mockGetConnection = jest.fn();
 const mockDiscoverServerTools = jest.fn();
@@ -57,6 +58,10 @@ jest.mock('~/server/services/GraphTokenService', () => ({
 }));
 jest.mock('~/cache', () => ({
   getLogStores: jest.fn(() => ({})),
+}));
+jest.mock('~/cache/getLogStores', () => jest.fn(() => ({})));
+jest.mock('~/server/services/Schedules', () => ({
+  recordMCPToolAuthFailure: jest.fn(async () => true),
 }));
 
 const { reinitMCPServer, loadMCPServerCatalogs } = require('./mcp');
@@ -266,6 +271,7 @@ describe('reinitMCPServer — customUserVars gating (issue #10969)', () => {
       tools: [],
       serverConfig: { type: 'streamable-http', url: 'https://thingy.example.com/mcp' },
       publicationGeneration: 'generation-current',
+      capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
     });
   });
 
@@ -533,6 +539,322 @@ describe('reinitMCPServer — recovery of a server that failed inspection', () =
       failureReason: 'unreachable',
       tools: null,
     });
+  });
+});
+
+describe('scheduled MCP connection initialization', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it.each(['consent_revoked', 'rbac_denied', 'credential_rejected'])(
+    'retains the bound scheduled identity and %s during catalog initialization',
+    async (reason) => {
+      const {
+        attachScheduledMCPBearer,
+        createMCPRequestContext,
+        ScheduledMCPBearerError,
+      } = require('@librechat/api');
+      const identity = {
+        scheduleId: 'scheduled',
+        ownerId: 'owner',
+        tenantId: 'tenant',
+        agentId: 'root',
+        invocationMode: 'delegated',
+      };
+      const context = createMCPRequestContext();
+      attachScheduledMCPBearer(context, identity);
+      const failure = new ScheduledMCPBearerError(reason, 'Files', 'child');
+      const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      mockGetConnection.mockRejectedValueOnce(failure);
+      await expect(
+        reinitMCPServer({
+          user: { id: 'owner', tenantId: 'tenant' },
+          serverName: 'Files',
+          serverConfig: {
+            type: 'streamable-http',
+            url: 'https://mcp.example.com',
+            source: 'yaml',
+            headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+          },
+          requestScopedConnections: context,
+          requestBody: { agent_id: 'untrusted-child' },
+          streamId: 'scheduled-conversation',
+          jobCreatedAt: 42,
+        }),
+      ).rejects.toBe(failure);
+      expect(receipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identity,
+          error: failure,
+          streamId: 'scheduled-conversation',
+          jobCreatedAt: 42,
+        }),
+      );
+    },
+  );
+
+  it.each(['consent_revoked', 'rbac_denied'])(
+    'records the real post-connect catalog %s before initialization can return success',
+    async (reason) => {
+      const {
+        createOAuthMCPServer,
+      } = require('../../../../packages/api/src/mcp/__tests__/helpers/oauthTestServer');
+      const { MongoMemoryServer } = require('mongodb-memory-server');
+      const { createModels, createMethods } = require('@librechat/data-schemas');
+      const database = new (require('mongoose').Mongoose)();
+      const mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+      await database.connect(mongo.getUri(), { autoIndex: false });
+      createModels(database);
+      const methods = createMethods(database);
+      const principal = new database.Types.ObjectId();
+      const owner = principal.toString();
+      const scheduledFor = new Date('2026-10-04T00:00:00.000Z');
+      const schedule = await methods.createSchedule({
+        id: 'scheduled',
+        user: principal,
+        tenantId: 'tenant',
+        agent_id: 'root',
+        name: 'Read',
+        prompt: 'Read',
+        enabled: true,
+        cadence: { frequency: 'daily', hour: 8, minute: 0 },
+        timezone: 'UTC',
+        target: 'new',
+      });
+      await methods.reserveStartedRun({
+        scheduleId: schedule.id,
+        user: principal,
+        tenantId: 'tenant',
+        scheduledFor,
+        conversationId: 'catalog-run',
+        capacitySlot: 0,
+      });
+      const {
+        attachScheduledMCPBearer,
+        cleanupMCPRequestContext,
+        createMCPRequestContext,
+        MCPConnection,
+        MCPManager,
+        MCPServersRegistry,
+        ScheduledMCPBearerError,
+        GenerationJobManager,
+        InMemoryJobStore,
+        InMemoryEventTransport,
+        createSchedulesService,
+      } = require('@librechat/api');
+      const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
+      GenerationJobManager.configure({
+        jobStore: store,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: true,
+      });
+      GenerationJobManager.initialize();
+      const job = await GenerationJobManager.createJob('catalog-run', owner, 'catalog-run', {
+        initialMetadata: {
+          scheduleId: schedule.id,
+          scheduledFor: scheduledFor.toISOString(),
+          agent_id: 'root',
+        },
+      });
+      // Match the authenticated tenant on the generation, as the host does.
+      await store.updateJob(job.streamId, { tenantId: 'tenant' }, job.createdAt);
+      const service = createSchedulesService({
+        methods: {
+          ...methods,
+          getRoleByName: async () => null,
+          getFiles: async () => [],
+          extendFilesTTL: async () => 0,
+        },
+        preflightMCP: async () => [],
+        getAppConfig: async () => undefined,
+        findUserById: async () => null,
+        findBalance: async () => null,
+        upsertBalance: async () => null,
+        initializeNullBalance: async () => null,
+        resolveAgentFireAccess: async () => 'ok',
+        getChatProject: async () => null,
+        isUserDeleting: async () => false,
+        enqueueAgentTrigger: async () => undefined,
+        getTriggerDelivery: async () => null,
+      });
+      const server = await createOAuthMCPServer();
+      server.issuedTokens.add('catalog-token');
+      server.tokenIssueTimes.set('catalog-token', Date.now());
+      const identity = {
+        scheduleId: 'scheduled',
+        ownerId: owner,
+        tenantId: 'tenant',
+        agentId: 'root',
+        invocationMode: 'delegated',
+      };
+      const context = createMCPRequestContext();
+      const failure = new ScheduledMCPBearerError(reason, 'Files', 'child');
+      let denied = false;
+      attachScheduledMCPBearer(context, identity, {
+        bind: (captured) => ({
+          identity: captured,
+          reject: () => {},
+          resolve: async (input) => {
+            if (denied) throw failure;
+            return { ...input.config, headers: { Authorization: 'Bearer catalog-token' } };
+          },
+        }),
+      });
+      const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      receipt.mockImplementationOnce((input) => service.recordMCPToolAuthFailure(input));
+      const manager = new MCPManager();
+      const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+        isAppServerConfig: async () => false,
+        resolveAllowlists: async () => ({
+          allowedDomains: ['127.0.0.1'],
+          allowedAddresses: [`127.0.0.1:${server.port}`],
+          useSSRFProtection: false,
+        }),
+      });
+      let connection;
+      mockGetConnection.mockImplementationOnce(async (options) => {
+        connection = await manager.getConnection(options);
+        denied = true;
+        return connection;
+      });
+      try {
+        await expect(
+          reinitMCPServer({
+            user: { id: owner, tenantId: 'tenant' },
+            serverName: 'Files',
+            serverConfig: {
+              type: 'streamable-http',
+              url: server.url,
+              requiresOAuth: false,
+              source: 'yaml',
+              headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+            },
+            requestScopedConnections: context,
+            requestBody: { agent_id: 'untrusted' },
+            streamId: 'catalog-run',
+            jobCreatedAt: job.createdAt,
+          }),
+        ).rejects.toBe(failure);
+        expect(connection).toBeDefined();
+        expect(denied).toBe(true);
+        expect(mockGetConnection).toHaveBeenCalledTimes(1);
+        expect(receipt).toHaveBeenCalledTimes(1);
+        expect(receipt).toHaveBeenCalledWith(
+          expect.objectContaining({
+            identity,
+            error: failure,
+            streamId: 'catalog-run',
+            jobCreatedAt: job.createdAt,
+          }),
+        );
+        expect(await methods.getScheduleRunAbortState(schedule.id, scheduledFor)).toMatchObject({
+          status: 'started',
+          mcp: failure.outcomes,
+        });
+        await store.updateJob(
+          job.streamId,
+          { status: 'complete', completedAt: Date.now() },
+          job.createdAt,
+        );
+        await expect(
+          service.recordScheduleOutcome({
+            scheduleId: schedule.id,
+            scheduledFor,
+            streamId: job.streamId,
+            jobCreatedAt: job.createdAt,
+            conversationId: job.streamId,
+            status: 'success',
+          }),
+        ).resolves.toBe(true);
+        expect(await methods.getScheduleRunAbortState(schedule.id, scheduledFor)).toMatchObject({
+          status: 'error',
+          mcp: failure.outcomes,
+        });
+        expect(await methods.getScheduleById(schedule.id)).toMatchObject({
+          enabled: false,
+          disabledReason: failure.code,
+          lastRun: { status: 'error', mcp: failure.outcomes },
+        });
+        expect(mockUpdateMCPServerTools).not.toHaveBeenCalled();
+        expect(mockDiscoverServerTools).not.toHaveBeenCalled();
+      } finally {
+        await connection?.dispose();
+        await cleanupMCPRequestContext(context);
+        await manager.disconnectUserConnections(owner);
+        registry.mockRestore();
+        MCPConnection.clearCooldown('Files');
+        await server.close();
+        await GenerationJobManager.destroy();
+        await database.disconnect();
+        await mongo.stop();
+      }
+    },
+  );
+
+  it('records a typed missing OBO provider before any tool instance exists', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('missing_upstream_provider', 'Provider missing');
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    mockGetConnection.mockRejectedValueOnce(failure);
+
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: {
+          type: 'streamable-http',
+          url: 'https://mcp.example.com',
+          source: 'yaml',
+          obo: { scopes: 'api://graph/.default' },
+        },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+    expect(receipt).toHaveBeenCalledTimes(1);
+    expect(receipt).toHaveBeenCalledWith({
+      error: failure,
+      streamId: 'scheduled-conversation',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Graph',
+      identity: undefined,
+    });
+  });
+
+  it('preserves the connection error when the receipt store fails', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('missing_upstream_provider', 'Provider missing');
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    receipt.mockRejectedValueOnce(new Error('Mongo unavailable'));
+    mockGetConnection.mockRejectedValueOnce(failure);
+
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com', source: 'yaml' },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+  });
+
+  it('does not construct the schedule facade for unrelated typed OBO failures', async () => {
+    const { OboTokenResolutionError } = require('@librechat/api');
+    const failure = new OboTokenResolutionError('session_refresh_failed', 'Retry later', true);
+    const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+    mockGetConnection.mockRejectedValueOnce(failure);
+    await expect(
+      reinitMCPServer({
+        user: { id: 'owner' },
+        serverName: 'Graph',
+        serverConfig: { type: 'streamable-http', url: 'https://mcp.example.com', source: 'yaml' },
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+      }),
+    ).rejects.toBe(failure);
+    expect(receipt).not.toHaveBeenCalled();
   });
 });
 

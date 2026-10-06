@@ -10,6 +10,7 @@
 
 import { logger } from '@librechat/data-schemas';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ScheduledMCPBearerError } from '~/mcp/errors';
 import { MCPConnection } from '~/mcp/connection';
 import { mcpConfig } from '~/mcp/mcpConfig';
 
@@ -379,15 +380,18 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(reserve).not.toHaveBeenCalled();
   });
 
-  it('hands the caller signal to the SDK so an in-flight page is cancellable', async () => {
+  it('detaches a completed SDK page request from its caller signal', async () => {
     const listTools = jest.fn().mockResolvedValue({ tools: [makeTool('a')] });
     const conn = createConnectionWithListTools(listTools);
-    const signal = AbortSignal.timeout(5000);
+    const controller = new AbortController();
 
-    await conn.fetchToolsSnapshot(Date.now() + 5000, signal);
+    await conn.fetchToolsSnapshot(Date.now() + 5000, controller.signal);
 
     const options = listTools.mock.calls[0][1]!;
-    expect(options.signal).toBe(signal);
+    expect(options.signal === controller.signal).toBe(false);
+    expect(options.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(options.signal?.aborted).toBe(false);
   });
 
   it('makes no request and no reservation when the signal is already aborted', async () => {
@@ -496,6 +500,36 @@ describe('MCPConnection.fetchTools pagination', () => {
     expect(tools.map((t) => t.name)).toEqual(['a', 'b']);
     expect(listTools).toHaveBeenCalledTimes(2);
     expectListToolsCall(listTools, 2, { cursor: '' });
+  });
+
+  it.each(['consent_revoked', 'rbac_denied'] as const)(
+    'propagates %s from a later page instead of returning a partial required catalog',
+    async (reason) => {
+      const denial = new ScheduledMCPBearerError(reason, 'Files', 'child');
+      const listTools = jest
+        .fn()
+        .mockResolvedValueOnce({ tools: [makeTool('first')], nextCursor: 'next' })
+        .mockRejectedValueOnce(denial);
+      const conn = createConnectionWithListTools(listTools);
+      await expect(conn.fetchOrderedToolsSnapshot()).rejects.toBe(denial);
+      expect(listTools).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('retains a notification authority denial for an owner without retry or tool publication', async () => {
+    const denial = new ScheduledMCPBearerError('consent_revoked', 'Files');
+    const listTools = jest.fn().mockRejectedValue(denial);
+    const conn = createConnectionWithListTools(listTools);
+    Reflect.set(conn, 'connectionState', 'connected');
+    jest.spyOn(conn.client, 'getServerCapabilities').mockReturnValue({ tools: {} });
+    const publish = jest.fn();
+    conn.on('toolsChanged', publish);
+    await expect(conn.refreshToolList()).rejects.toBe(denial);
+    await expect(conn.refreshToolList()).rejects.toBe(denial);
+    expect(listTools).toHaveBeenCalledTimes(1);
+    expect(publish).not.toHaveBeenCalled();
+    expect(Reflect.get(conn, 'toolListRefreshRetryTimer')).toBeNull();
+    await conn.disconnect();
   });
 
   it('returns the pages already fetched when a later page fails, without throwing', async () => {

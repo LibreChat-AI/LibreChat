@@ -47,6 +47,7 @@ beforeAll(() => {
   });
 });
 
+let mockHeicModuleError: Error | undefined;
 const mockShowToast = jest.fn();
 const mockSetFilesLoading = jest.fn();
 const mockMutate = jest.fn();
@@ -94,12 +95,14 @@ jest.mock('@librechat/client', () => ({
 jest.mock('recoil', () => ({
   ...jest.requireActual('recoil'),
   useSetRecoilState: jest.fn(() => jest.fn()),
-  useRecoilValue: jest.fn(() => mockIsTemporary),
+}));
+
+jest.mock('~/Providers/ChatSettingsContext', () => ({
+  useChatSettings: () => ({ isTemporary: mockIsTemporary }),
 }));
 
 jest.mock('~/store', () => ({
   __esModule: true,
-  default: { isTemporary: { key: 'isTemporary' } },
   ephemeralAgentByConvoId: jest.fn(() => ({ key: 'mock' })),
 }));
 
@@ -135,9 +138,12 @@ jest.mock('../useDelayedUploadToast', () => ({
   })),
 }));
 
-jest.mock('~/utils/heicConverter', () => ({
-  processFileForUpload: mockProcessFileForUpload,
-}));
+jest.mock('~/utils/heicConverter', () => {
+  if (mockHeicModuleError) {
+    throw mockHeicModuleError;
+  }
+  return { processFileForUpload: mockProcessFileForUpload };
+});
 
 jest.mock('../useClientResize', () => ({
   __esModule: true,
@@ -186,6 +192,11 @@ const mockValidateFileLimit = jest.requireMock('~/utils').validateFileLimit;
 const mockValidateFileDuplicates = jest.requireMock('~/utils').validateFileDuplicates;
 
 describe('useFileHandling', () => {
+  afterEach(() => {
+    mockHeicModuleError = undefined;
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockValidateFiles.mockImplementation(() => true);
@@ -210,6 +221,23 @@ describe('useFileHandling', () => {
   });
 
   const loadHook = async () => (await import('../useFileHandling')).default;
+
+  it('requests recovery for the caught HEIC helper import failure without starting an upload', async () => {
+    mockHeicModuleError = new TypeError(
+      'Failed to fetch dynamically imported module: /assets/heicConverter-old.js',
+    );
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const useFileHandling = await loadHook();
+    const { result } = renderHook(() => useFileHandling());
+    await act(async () => {
+      await result.current.handleFiles([new File(['heic'], 'photo.heic', { type: 'image/heic' })]);
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(mockMutate).not.toHaveBeenCalled();
+    expect(mockDeleteFileById).toHaveBeenCalledTimes(1);
+  });
 
   it('removes rejected provider audio and localizes the upload error before retry', async () => {
     const consoleLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -1144,6 +1172,69 @@ describe('useFileHandling', () => {
         mockFileConfig.endpoints.agents?.fileSizeLimit,
       );
     });
+
+    it.each([true, false])(
+      'sends server-effective Responses %s rather than guessing from the Azure model',
+      async (effective) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol',
+            model_parameters: {},
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol': { default: effective, on: effective, off: false },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(effective ? 'true' : null);
+      },
+    );
+
+    it.each([false, true])(
+      'uploads a snapshot with server policy and provider web search=%s',
+      async (webSearch) => {
+        mockConversation = { conversationId: 'convo-1', endpoint: 'agents', agent_id: 'agent_a1' };
+        mockAgentsMap = {
+          agent_a1: {
+            provider: EModelEndpoint.azureOpenAI,
+            model: 'gpt-6-sol-2026-09-22',
+            model_parameters: { web_search: webSearch },
+          },
+        };
+        mockEndpointsConfig = {
+          [EModelEndpoint.azureOpenAI]: {
+            order: 0,
+            responsesApiRouting: {
+              'gpt-6-sol-*': {
+                default: false,
+                on: true,
+                off: false,
+                withWebSearch: { default: true, on: true, off: true },
+              },
+            },
+          },
+        };
+        const useFileHandling = await loadHook();
+        const { result } = renderHook(() => useFileHandling());
+        await act(async () => {
+          await result.current.handleFiles([new File(['hi'], 'a.txt', { type: 'text/plain' })]);
+        });
+        const formData: FormData = mockMutate.mock.calls[0][0];
+        expect(formData.get('useResponsesApi')).toBe(webSearch ? 'true' : null);
+      },
+    );
 
     it('sends the Responses flag a saved agent holds on its own record', async () => {
       /* A saved Azure agent keeps the setting in model_parameters, and without it the

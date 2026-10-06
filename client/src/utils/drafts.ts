@@ -1,4 +1,3 @@
-import debounce from 'lodash/debounce';
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import { isPasteSubmitted } from './files';
 
@@ -288,13 +287,14 @@ const removeLocalStorageItem = (key: string): void => {
   }
 };
 
-export const clearDraft = debounce((id?: string | null) => {
+/** Navigation must clear before another visit can save replacement text under the same key. */
+export const clearDraft = (id?: string | null) => {
   const key = id ?? '';
   if (!mayClearComposerDrafts(key)) {
     return;
   }
   removeLocalStorageItem(`${LocalStorageKeys.TEXT_DRAFT}${key}`);
-}, 2500);
+};
 
 /** Synchronously removes both text and file drafts for a conversation (or NEW_CONVO fallback).
  * A record another live tab owns is left alone, attachment or not: every key here is reachable
@@ -1214,18 +1214,8 @@ export const removePendingTextAttachmentDraft = ({
   });
 };
 
-export const setDraft = ({
-  id,
-  value,
-  persistExact = false,
-}: {
-  id: string;
-  value?: string;
-  persistExact?: boolean;
-}) => {
-  const shouldPersist = persistExact
-    ? value != null && value.length > 0
-    : value && value.length > 1;
+export const setDraft = ({ id, value }: { id: string; value?: string }) => {
+  const shouldPersist = value != null && value.length > 0;
   if (shouldPersist) {
     /** A refused key belongs to another open tab holding it against attachments it still has.
      * This tab could not restore what it wrote there anyway, so the write would only destroy that

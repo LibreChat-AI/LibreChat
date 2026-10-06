@@ -7,6 +7,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type { AgentForm } from '~/common';
 import CodeSettings from '../Code/Settings';
 const mockWorkspaceStatusQueries = jest.fn();
+const mockMachineChoicesEnabled = jest.fn();
+const mockMachineChoiceLimit = jest.fn();
 jest.mock('~/data-provider', () => ({
   useCodeEnvironmentStatusQueries: () => mockWorkspaceStatusQueries(),
 }));
@@ -18,13 +20,20 @@ jest.mock('~/hooks', () => ({
     agentsConfig: {
       capabilities: ['stateful_code_sessions'],
       statefulCodeSessions: {
-        environments: [{ id: 'byom', name: 'My machine', type: 'attached', default: true }],
+        allowEnvironmentSelection: mockMachineChoicesEnabled(),
+        maxEnvironmentChoices: mockMachineChoiceLimit(),
+        environments: [
+          { id: 'byom', name: 'My machine', type: 'attached', default: true },
+          { id: 'runtime', name: 'Runtime machine', type: 'attached' },
+        ],
       },
     },
   }),
 }));
 
 beforeEach(() => {
+  mockMachineChoicesEnabled.mockReturnValue(false);
+  mockMachineChoiceLimit.mockReturnValue(32);
   mockWorkspaceStatusQueries.mockReturnValue([
     {
       data: {
@@ -41,9 +50,11 @@ beforeEach(() => {
 function IdentityForm({
   savedIdentity,
   savedWorkspace,
+  savedMachines,
 }: {
   savedIdentity?: AgentForm['git_identity'];
   savedWorkspace?: string;
+  savedMachines?: string[];
 }) {
   const [dialogOpen, setDialogOpen] = useState(true);
   const methods = useForm<AgentForm>({
@@ -53,6 +64,7 @@ function IdentityForm({
       stateful_code_sessions: true,
       git_identity: savedIdentity,
       code_workspace_id: savedWorkspace,
+      code_environment_ids: savedMachines,
     },
   });
   return (
@@ -71,10 +83,51 @@ function IdentityForm({
       <output data-testid="identity">{JSON.stringify(methods.watch('git_identity'))}</output>
       <output data-testid="workspace-default">{methods.watch('code_workspace_id')}</output>
       <output data-testid="machine-default">{methods.watch('code_environment_id')}</output>
+      <output data-testid="machine-allowlist">
+        {JSON.stringify(methods.watch('code_environment_ids'))}
+      </output>
       <output data-testid="repository-mode">{methods.watch('repositoryInstructions')}</output>
     </FormProvider>
   );
 }
+
+test('defines an explicit machine allowlist without changing the default, and permits clearing it', () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  render(<IdentityForm />);
+  const alternative = screen.getByRole('checkbox', { name: 'Runtime machine' });
+  expect(alternative).not.toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /My machine/ })).toBeChecked();
+  expect(screen.getByRole('checkbox', { name: /My machine/ })).toBeDisabled();
+  fireEvent.click(alternative);
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('["runtime"]');
+  expect(screen.getByTestId('machine-default')).toBeEmptyDOMElement();
+  fireEvent.click(alternative);
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('[]');
+});
+
+test('honors the server machine-choice limit without disabling the selected choice', () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  mockMachineChoiceLimit.mockReturnValue(1);
+  const { unmount } = render(<IdentityForm savedMachines={['missing']} />);
+  expect(screen.getByRole('checkbox', { name: 'Runtime machine' })).toBeDisabled();
+  unmount();
+  render(<IdentityForm savedMachines={['runtime']} />);
+  expect(screen.getByRole('checkbox', { name: 'Runtime machine' })).not.toBeDisabled();
+});
+
+test('lets an owner remove a machine that is no longer accessible', async () => {
+  mockMachineChoicesEnabled.mockReturnValue(true);
+  render(<IdentityForm savedMachines={['missing']} />);
+  fireEvent.click(
+    screen.getByRole('checkbox', { name: 'com_ui_code_environment_unavailable_choice' }),
+  );
+  expect(screen.getByTestId('machine-allowlist')).toHaveTextContent('[]');
+});
+
+test('does not offer machine choices when the deployment has not enabled them', () => {
+  render(<IdentityForm />);
+  expect(screen.queryByRole('checkbox', { name: 'Runtime machine' })).not.toBeInTheDocument();
+});
 
 test('repository instruction mode defaults to prefer and retains an explicit off choice', async () => {
   HTMLElement.prototype.scrollIntoView = jest.fn();
@@ -199,6 +252,10 @@ test.each(['Disable code', 'Use managed', 'Disable sessions', 'Toggle Dialog'])(
 
 test.each([
   { name: 'Coding Agent', email: 'agent@example.com' },
+  {
+    name: 'Lia',
+    email: '328778573+lia-by-librechat[bot]@users.noreply.github.com',
+  },
   { name: '', email: '' },
 ])('retains a valid identity or explicit clear through panel navigation: %j', async (identity) => {
   render(<IdentityForm />);
@@ -208,6 +265,7 @@ test.each([
   fireEvent.change(screen.getByLabelText('com_ui_agent_git_email'), {
     target: { value: identity.email },
   });
+  expect(screen.getByLabelText('com_ui_agent_git_email')).toHaveAttribute('type', 'text');
   fireEvent.click(screen.getByText('Toggle Dialog'));
   expect(screen.getByTestId('identity')).toHaveTextContent(JSON.stringify(identity));
   fireEvent.click(screen.getByText('Toggle Dialog'));

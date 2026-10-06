@@ -3,6 +3,9 @@ import { ScrollText } from 'lucide-react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import { useLocalize } from '~/hooks';
 
+/** The usage popover sits at z-200, above the tooltip default (150). */
+const TOOLTIP_Z_INDEX = 250;
+
 interface CompactActionProps {
   compact: () => void;
   canCompact: boolean;
@@ -20,9 +23,10 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
   const description = localize('com_ui_context_compact_info');
 
   return (
-    <>
+    <div>
       <TooltipAnchor
         side="bottom"
+        zIndex={TOOLTIP_Z_INDEX}
         description={description}
         render={
           <Button
@@ -50,7 +54,7 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
       <span id={descriptionId} className="sr-only">
         {description}
       </span>
-    </>
+    </div>
   );
 }
 

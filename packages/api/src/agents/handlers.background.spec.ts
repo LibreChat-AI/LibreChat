@@ -388,6 +388,44 @@ describe('createToolExecuteHandler — background tool calls', () => {
     expect(JSON.parse(dispatch.content).message).not.toContain('host will resume you');
   });
 
+  it('expedites the delivery when only the parent-message projection was persisted', async () => {
+    const tool = makeSearchTool({ calls: 0 });
+    const expedite = jest.fn();
+    const retire = jest.fn(async () => true);
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: {
+        preregister: jest.fn(async () => ({
+          renew: jest.fn(async () => true),
+          persistResult: jest.fn(async () => false),
+          retire,
+          expedite,
+        })),
+        persist: jest.fn(async () => true),
+        claim: jest.fn(async () => ({ status: 'acquired' as const, results: [] })),
+      },
+    });
+
+    await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call-projection-only',
+          name: tool.name,
+          args: { q: 'projection', run_in_background: true },
+          stepId: 'step-projection-only',
+        },
+      ],
+      agentId: 'agent_parent_1',
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'exec_convo', run_id: 'response-1' },
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(expedite).toHaveBeenCalledTimes(1);
+    expect(retire).not.toHaveBeenCalled();
+  });
+
   it('retires a preregistered delivery when terminal persistence fails', async () => {
     const tool = makeSearchTool({ calls: 0 });
     const retire = jest.fn(async () => true);
@@ -417,6 +455,59 @@ describe('createToolExecuteHandler — background tool calls', () => {
     await flushMicrotasks();
 
     expect(retire).toHaveBeenCalledWith('background tool result was not persisted', undefined);
+  });
+
+  it('copies committed manual reconciliation into the final background projection retry', async () => {
+    let finishPersistence: (persisted: boolean) => void = () => undefined;
+    let resolveProjection: (() => { resultClaim?: { receiptReconciled?: true } }) | undefined;
+    const tool = makeSearchTool({ calls: 0 });
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [tool] }),
+      backgroundToolCompletion: {
+        preregister: async () => ({
+          renew: async () => true,
+          retire: async () => true,
+          persistResult: async () => true,
+        }),
+        claim: async () => ({ status: 'not_ready' }),
+        persist: (params) => {
+          resolveProjection = params.resolveBackgroundTask;
+          return new Promise<boolean>((resolve) => {
+            finishPersistence = resolve;
+          });
+        },
+      },
+    });
+    const [dispatch] = await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'manual-marker-dispatch',
+          stepId: 'manual-marker-step',
+          name: tool.name,
+          args: { q: 'marker', run_in_background: true },
+        },
+      ],
+      agentId: 'agent_parent_1',
+      configurable: buildConfig([tool.name]),
+      metadata: { thread_id: 'manual-marker-convo', run_id: 'manual-marker-parent' },
+    });
+    await flushMicrotasks();
+    const taskId = JSON.parse(dispatch.content).background_task_id as string;
+    try {
+      expect(resolveProjection?.().resultClaim).toBeUndefined();
+      expect(
+        backgroundTaskRegistry.claimResult('exec_user', 'manual-marker-convo', taskId, {
+          kind: 'manual',
+          claimId: 'manual-marker-poll',
+          receiptReconciled: true,
+          generationId: 'manual-marker-generation',
+        }),
+      ).toBe('acquired');
+      expect(resolveProjection?.().resultClaim).toMatchObject({ receiptReconciled: true });
+    } finally {
+      finishPersistence(true);
+      await flushMicrotasks();
+    }
   });
 
   it('falls back to the settled local result when a poll retired delivery before persistence failed', async () => {
@@ -2581,6 +2672,59 @@ describe('createToolExecuteHandler — backgrounded code execution', () => {
     expect(emitted).toEqual([]);
     expect(toolEndCalls).toHaveLength(0);
     expect(poll[0].artifact).toBeUndefined();
+  });
+
+  it('releases stored files to same-turn polls while the row patch waits for the dispatch turn', async () => {
+    const state: CodeToolState = { calls: 0 };
+    const emitted: unknown[] = [];
+    const handler = createToolExecuteHandler({
+      loadTools: async () => ({ loadedTools: [makeCodeTool(state)] }),
+      /** Files are stored; the row patch then waits for the long dispatch turn. */
+      persistBackgroundCodeResult: (params) => {
+        params.onFilesPersisted?.([{ file_id: 'f1', toolCallId: params.toolCallId }]);
+        return new Promise(() => undefined);
+      },
+      emitAttachment: (attachment) => {
+        emitted.push(attachment);
+      },
+    });
+    const configurable = buildConfig(['execute_code']);
+
+    const dispatch = await runBatch(handler, {
+      toolCalls: [codeCall({ id: 'call_code_long_turn' })],
+      agentId: 'a',
+      configurable,
+      metadata: { thread_id: 'exec_convo_code_long_turn', run_id: 'msg-long-turn' },
+    });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    const poll = (await runBatch(handler, {
+      toolCalls: [
+        {
+          id: 'call_poll_long_turn',
+          name: CHECK_BACKGROUND_TASK_NAME,
+          args: { background_task_id: JSON.parse(dispatch[0].content).background_task_id },
+        },
+      ],
+      agentId: 'a',
+      configurable,
+      metadata: { thread_id: 'exec_convo_code_long_turn', run_id: 'msg-long-turn' },
+    })) as Array<{ content: string; artifact?: unknown }>;
+
+    const polled = JSON.parse(poll[0].content);
+    expect(polled.status).toBe('completed');
+    expect(polled.note).toContain('attached to the tool call');
+    expect(emitted[0]).toEqual({ file_id: 'f1', toolCallId: 'call_code_long_turn' });
+    expect(poll[0].artifact).toEqual(CODE_ARTIFACT);
+    /** Still protected from retention eviction while the row patch waits. */
+    expect(
+      backgroundTaskRegistry.get(
+        'exec_user',
+        'exec_convo_code_long_turn',
+        JSON.parse(dispatch[0].content).background_task_id,
+      )?.completionPersistencePending,
+    ).toBe(true);
   });
 
   it('falls back to poll-turn delivery when the harvest fails (files not lost)', async () => {

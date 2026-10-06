@@ -1,6 +1,6 @@
 import React from 'react';
 import type { ReactNode } from 'react';
-import { useLocalize } from '~/hooks';
+import { useLocalize, useScrollFade } from '~/hooks';
 import { cn } from '~/utils';
 
 /**
@@ -25,6 +25,20 @@ const PanelContent = React.forwardRef<
   }
 >(({ isLoading, isEmpty, skeleton, empty, children, className }, ref) => {
   const localize = useLocalize();
+  const { attach, hasMore } = useScrollFade<HTMLDivElement>();
+
+  /** The caller's ref and the fade's both need the same node. */
+  const setNode = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      attach(node);
+      if (typeof ref === 'function') {
+        ref(node);
+      } else if (ref) {
+        ref.current = node;
+      }
+    },
+    [attach, ref],
+  );
 
   const renderContent = () => {
     if (isLoading) {
@@ -45,12 +59,23 @@ const PanelContent = React.forwardRef<
   };
 
   return (
-    <div
-      ref={ref}
-      aria-busy={isLoading}
-      className={cn('min-h-0 flex-1 overflow-y-auto', className)}
-    >
-      {renderContent()}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={setNode}
+        aria-busy={isLoading}
+        className={cn('min-h-0 flex-1 overflow-y-auto', className)}
+      >
+        {renderContent()}
+      </div>
+      {/* The last row fades rather than being cut off, so a list that continues
+          below the fold says so without a scrollbar having to appear. */}
+      <div
+        aria-hidden="true"
+        className={cn(
+          'from-surface-primary-alt pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
+          hasMore ? 'opacity-100' : 'opacity-0',
+        )}
+      />
     </div>
   );
 });

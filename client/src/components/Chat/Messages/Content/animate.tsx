@@ -64,15 +64,26 @@ const SPACELESS_REGEX =
   /[\u0E00-\u0EFF\u0F00-\u0FFF\u1000-\u109F\u1780-\u17FF\u2E80-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/;
 
 let wordSegmenter: Intl.Segmenter | null | undefined;
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+function createSegmenter(granularity: 'word' | 'grapheme'): Intl.Segmenter | null {
+  return typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter(undefined, { granularity })
+    : null;
+}
 
 function getWordSegmenter(): Intl.Segmenter | null {
   if (wordSegmenter === undefined) {
-    wordSegmenter =
-      typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
-        ? new Intl.Segmenter(undefined, { granularity: 'word' })
-        : null;
+    wordSegmenter = createSegmenter('word');
   }
   return wordSegmenter;
+}
+
+function getGraphemeSegmenter(): Intl.Segmenter | null {
+  if (graphemeSegmenter === undefined) {
+    graphemeSegmenter = createSegmenter('grapheme');
+  }
+  return graphemeSegmenter;
 }
 
 function pushSegmentedParts(parts: string[], token: string): void {
@@ -307,30 +318,110 @@ export function createFadePlugin(hydrated = false): FadePlugin {
 }
 
 const DELAY_VAR = '--lc-delay';
+const WHITESPACE_REGEX = /\s/;
+const PREFIX_PROBE_LENGTH = 32;
+/**
+ * Longest trailing run kept unsettled. Bounds per-token work when the last
+ * word never reaches whitespace (CJK, Thai, unspaced Hangul, URLs). Only
+ * settled, non-animated text is cut, and it renders as plain text on both
+ * sides of the cut, so a cut inside a part is invisible.
+ */
+const MAX_UNSETTLED_LENGTH = 64;
+/**
+ * Moves a cut offset in `tail` back to a grapheme-cluster boundary, so emoji
+ * modifier, flag, ZWJ and combining sequences stay whole. `tail` starts at the
+ * committed settled boundary, which is itself a cluster boundary, and is
+ * bounded by the cap, so segmenting it stays proportional to the unsettled text.
+ * Without a grapheme segmenter there is no safe cut, so the cap is not applied.
+ */
+function glyphBoundary(tail: string, index: number): number {
+  const segmenter = getGraphemeSegmenter();
+  if (index <= 0 || segmenter == null) {
+    return 0;
+  }
+  let boundary = 0;
+  for (const segment of segmenter.segment(tail)) {
+    if (segment.index > index) {
+      break;
+    }
+    boundary = segment.index;
+  }
+  return boundary;
+}
+
+/** Offset of the last whitespace-delimited word, which appended text can still extend. */
+function lastWordStart(value: string): number {
+  let index = value.length;
+  while (index > 0 && WHITESPACE_REGEX.test(value[index - 1])) {
+    index -= 1;
+  }
+  while (index > 0 && !WHITESPACE_REGEX.test(value[index - 1])) {
+    index -= 1;
+  }
+  return index;
+}
+
+/**
+ * Whether `text` still extends the settled `prefix`. Probes only the prefix's
+ * head and the region at its boundary so the per-token check stays constant
+ * rather than rescanning the whole accumulated prefix; an append-only stream
+ * always passes, and a rewrite that shifts or replaces text fails a probe. The
+ * settled region is always rendered from the current text, so a rewrite that
+ * slips past the probes can only affect fade timing, never the characters shown.
+ */
+function extendsPrefix(text: string, prefix: string): boolean {
+  if (text.length < prefix.length) {
+    return false;
+  }
+  const probe = Math.min(PREFIX_PROBE_LENGTH, prefix.length);
+  const boundary = prefix.length - probe;
+  return (
+    text.startsWith(prefix.slice(0, probe)) && text.startsWith(prefix.slice(boundary), boundary)
+  );
+}
 
 /**
  * Plain-text counterpart of the rehype plugin for non-markdown streamed text
  * (reasoning). Renders words in fade spans keyed by character offset; only
  * render this while the text is actively streaming and render the raw string
- * once settled.
+ * once settled. Classification is append-only: the leading run of parts that
+ * finished fading collapses into a single committed text node and is never
+ * re-split, so each streamed token costs work proportional to the unsettled
+ * tail rather than the accumulated text. The settled boundary never passes a
+ * word that is still fading, and stops before the last word (which appended
+ * text can still extend) unless that word outgrows MAX_UNSETTLED_LENGTH.
  */
 export const AnimatedText = memo(function AnimatedText({ text }: { text: string }) {
   const stateRef = useRef<FadeState | null>(null);
+  const settledRef = useRef('');
   if (stateRef.current == null) {
     stateRef.current = createFadeState();
   }
   const state = stateRef.current;
+  const settledLength = extendsPrefix(text, settledRef.current) ? settledRef.current.length : 0;
+  const settled = text.slice(0, settledLength);
+  const tail = text.slice(settledLength);
   const suppress = state.firstRun && text.length > FADE_HYDRATION_THRESHOLD;
   const run = beginRun(state, suppress);
-  const segments = classifyValue(run, text);
+  run.count = settledLength;
+  const segments = classifyValue(run, tail);
   stageRun(run);
+
+  const limit = Math.max(
+    settledLength + lastWordStart(tail),
+    settledLength + glyphBoundary(tail, tail.length - MAX_UNSETTLED_LENGTH),
+  );
+  const firstAnimated = segments.find((segment) => segment.animated);
+  const nextSettledLength = Math.min(limit, firstAnimated?.start ?? limit);
 
   useLayoutEffect(() => {
     commitRun(state);
+    settledRef.current = text.slice(0, nextSettledLength);
   });
 
   return (
     <>
+      {settled}
       {segments.map((segment) => {
         if (!segment.animated) {
           return <Fragment key={segment.start}>{segment.value}</Fragment>;

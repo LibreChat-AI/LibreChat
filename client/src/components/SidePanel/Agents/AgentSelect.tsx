@@ -2,16 +2,25 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { EarthIcon } from 'lucide-react';
 import { ControlCombobox } from '@librechat/client';
 import { useFormContext, Controller } from 'react-hook-form';
-import { AgentCapabilities, defaultAgentFormValues } from 'librechat-data-provider';
+import {
+  AgentCapabilities,
+  normalizeAgentSelectorLimit,
+  defaultAgentFormValues,
+} from 'librechat-data-provider';
 import type { Agent, AgentCreateParams, StatefulCodeEnvironment } from 'librechat-data-provider';
 import type { UseMutationResult, QueryObserverResult } from '@tanstack/react-query';
 import type { TAgentCapabilities, AgentForm } from '~/common';
 import { cn, createProviderOption, processAgentOption, getDefaultAgentFormValues } from '~/utils';
+import { useListAgentsQuery, useGetStartupConfig } from '~/data-provider';
 import { useLocalize, useAgentDefaultPermissionLevel } from '~/hooks';
 import { mergeDirtyToolsWithServerActions } from './agentTools';
-import { useListAgentsQuery } from '~/data-provider';
 
 const keys = new Set(Object.keys(defaultAgentFormValues));
+
+/** Dropdown cap: 480px tall; the unsearched list cap comes from
+ * `interface.agentSelectorLimit` (default 10), and the search field covers
+ * agents past the cut. */
+const SELECTOR_MAX_HEIGHT = 480;
 
 function AgentSelect({
   agentQuery,
@@ -19,12 +28,18 @@ function AgentSelect({
   setCurrentAgentId,
   createMutation,
   defaultStatefulCodeEnvironment,
+  instructionsPromptReady = true,
 }: {
   selectedAgentId: string | null;
   agentQuery: QueryObserverResult<Agent>;
   setCurrentAgentId: React.Dispatch<React.SetStateAction<string | undefined>>;
   createMutation: UseMutationResult<Agent, Error, AgentCreateParams>;
   defaultStatefulCodeEnvironment: StatefulCodeEnvironment;
+  /** Whether `agentQuery.data` is the expanded agent (the only source of
+   * `instructionsPrompt`) rather than the basic projection, which never carries it.
+   * `false` keeps the form's existing instructions-source/-prompt values instead of
+   * reading a linked agent as unlinked while the expanded query is still loading. */
+  instructionsPromptReady?: boolean;
 }) {
   const localize = useLocalize();
   const lastSelectedAgent = useRef<string | null>(null);
@@ -40,6 +55,8 @@ function AgentSelect({
   const dirtyFieldsRef = useRef(dirtyFields);
   dirtyFieldsRef.current = dirtyFields;
   const permissionLevel = useAgentDefaultPermissionLevel();
+  const { data: startupConfig } = useGetStartupConfig();
+  const selectorLimit = normalizeAgentSelectorLimit(startupConfig?.interface?.agentSelectorLimit);
 
   const { data: agents = null } = useListAgentsQuery(
     { requiredPermission: permissionLevel },
@@ -87,6 +104,19 @@ function AgentSelect({
         agentTools.push(tool);
       });
 
+      /** The basic projection never carries `instructionsPrompt`, so deriving from it
+       * here would read a linked agent as unlinked until the expanded query resolves.
+       * Keep whatever the form already has until then. */
+      let resolvedInstructionsPrompt: AgentForm['instructionsPrompt'];
+      let resolvedInstructionsSource: AgentForm['instructionsSource'];
+      if (instructionsPromptReady) {
+        resolvedInstructionsPrompt = fullAgent.instructionsPrompt ?? null;
+        resolvedInstructionsSource = resolvedInstructionsPrompt != null ? 'prompt' : 'inline';
+      } else {
+        resolvedInstructionsPrompt = getValues('instructionsPrompt');
+        resolvedInstructionsSource = getValues('instructionsSource');
+      }
+
       const formValues: Partial<AgentForm & TAgentCapabilities> = {
         ...capabilities,
         agent: update,
@@ -96,14 +126,19 @@ function AgentSelect({
         category: fullAgent.category || 'general',
         // Make sure support_contact is properly loaded
         support_contact: fullAgent.support_contact,
+        conversation_starters: fullAgent.conversation_starters ?? [],
+        conversation_starter_draft: '',
         avatar_file: null,
         avatar_preview: fullAgent.avatar?.filepath ?? '',
         avatar_action: null,
         stateful_code_environment: fullAgent.stateful_code_environment ?? 'user',
         code_environment_id: fullAgent.code_environment_id,
+        code_environment_ids: fullAgent.code_environment_ids ?? [],
         repositoryInstructions: fullAgent.repositoryInstructions,
         code_workspace_id: fullAgent.code_workspace_id,
         git_identity: fullAgent.git_identity,
+        instructionsSource: resolvedInstructionsSource,
+        instructionsPrompt: resolvedInstructionsPrompt,
       };
 
       Object.entries(fullAgent).forEach(([name, value]) => {
@@ -198,7 +233,7 @@ function AgentSelect({
         setValue('tools', mergedDirtyTools, { shouldDirty: true });
       }
     },
-    [getValues, reset, setValue],
+    [getValues, reset, setValue, instructionsPromptReady],
   );
 
   const onSelect = useCallback(
@@ -274,6 +309,8 @@ function AgentSelect({
           selectPlaceholder={field?.value?.value ?? createAgent}
           iconSide="right"
           searchPlaceholder={localize('com_agents_search_name')}
+          popoverMaxHeight={SELECTOR_MAX_HEIGHT}
+          unsearchedLimit={selectorLimit}
           SelectIcon={field?.value?.icon}
           setValue={onSelect}
           items={
@@ -307,7 +344,8 @@ const MemoizedAgentSelect = memo(
     prevProps.agentQuery.data === nextProps.agentQuery.data &&
     prevProps.agentQuery.isSuccess === nextProps.agentQuery.isSuccess &&
     prevProps.createMutation.data?.id === nextProps.createMutation.data?.id &&
-    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading,
+    prevProps.createMutation.isLoading === nextProps.createMutation.isLoading &&
+    prevProps.instructionsPromptReady === nextProps.instructionsPromptReady,
 );
 MemoizedAgentSelect.displayName = 'AgentSelect';
 

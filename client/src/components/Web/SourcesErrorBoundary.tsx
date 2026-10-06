@@ -1,5 +1,6 @@
 import React, { Component, ReactNode } from 'react';
 import { Button } from '@librechat/client';
+import { reportBoundaryError } from '~/lib/rum/logs';
 import { useLocalize } from '~/hooks';
 
 interface Props {
@@ -17,12 +18,12 @@ function DefaultFallback() {
   const localize = useLocalize();
   return (
     <div
-      className="flex flex-col items-center justify-center rounded-lg border border-border-medium bg-surface-secondary p-4 text-center"
+      className="border-border-medium bg-surface-secondary flex flex-col items-center justify-center rounded-lg border p-4 text-center"
       role="alert"
       aria-live="polite"
     >
       {/* eslint-disable-next-line i18next/no-literal-string */}
-      <div className="mb-2 text-sm text-text-secondary">Sources temporarily unavailable</div>
+      <div className="text-text-secondary mb-2 text-sm">Sources temporarily unavailable</div>
       <Button
         variant="outline"
         size="sm"
@@ -44,6 +45,7 @@ class SourcesErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('Sources error:', error);
+    reportBoundaryError('sources', error);
     this.props.onError?.(error, errorInfo);
   }
 

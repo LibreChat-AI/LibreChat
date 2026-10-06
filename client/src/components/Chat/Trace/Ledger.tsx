@@ -93,7 +93,7 @@ function RecordBar({
 function GroupBar({ span, domain }: { span: TraceSpan; domain: Domain }) {
   return (
     <span
-      className="absolute top-1/2 h-1 min-w-[2px] -translate-y-1/2 rounded-full bg-border-heavy"
+      className="bg-border-heavy absolute top-1/2 h-1 min-w-[2px] -translate-y-1/2 rounded-full"
       style={barStyle(span, domain)}
     />
   );
@@ -174,7 +174,7 @@ function Ledger({
       : '';
   const costCell = (cost?: number) =>
     showCost && (
-      <span className="hidden truncate text-right text-xs font-normal tabular-nums text-text-secondary md:block">
+      <span className="text-text-secondary hidden truncate text-right text-xs font-normal tabular-nums md:block">
         {cost != null ? formatCost(cost, currency) : ''}
       </span>
     );
@@ -288,7 +288,7 @@ function Ledger({
     <ChevronRight
       aria-hidden="true"
       className={cn(
-        'size-3.5 shrink-0 text-text-secondary transition-transform motion-reduce:transition-none',
+        'text-text-secondary size-3.5 shrink-0 transition-transform motion-reduce:transition-none',
         expanded && 'rotate-90',
       )}
     />
@@ -369,9 +369,9 @@ function Ledger({
         onClick={() => activate(row)}
         className={cn(
           grid,
-          'absolute inset-x-0 cursor-pointer items-center gap-2 px-2 text-xs text-text-primary hover:bg-surface-hover',
+          'text-text-primary hover:bg-surface-hover absolute inset-x-0 cursor-pointer items-center gap-2 px-2 text-xs',
           row.type === 'turn'
-            ? 'border-t border-border-light bg-surface-primary-alt font-semibold'
+            ? 'border-border-light bg-surface-primary-alt border-t font-semibold'
             : 'font-medium',
           active && ACTIVE_RING,
         )}
@@ -393,7 +393,7 @@ function Ledger({
                 }}
                 onKeyDown={(event) => event.stopPropagation()}
                 className={cn(
-                  'flex max-w-[45%] shrink-0 items-center gap-1 rounded-full border border-border-light py-0.5 pl-0.5 pr-2 font-medium hover:bg-surface-hover',
+                  'border-border-light hover:bg-surface-hover flex max-w-[45%] shrink-0 items-center gap-1 rounded-full border py-0.5 pr-2 pl-0.5 font-medium',
                   selectedId === recordId && 'bg-surface-active-alt',
                 )}
               >
@@ -402,14 +402,14 @@ function Ledger({
               </button>
             );
           })}
-          <span className="min-w-0 shrink-[3] truncate font-normal text-text-secondary">
+          <span className="text-text-secondary min-w-0 shrink-[3] truncate font-normal">
             {description}
           </span>
           {errorCount > 0 && (
-            <CircleAlert aria-hidden="true" className="size-3.5 shrink-0 text-status-error" />
+            <CircleAlert aria-hidden="true" className="text-status-error size-3.5 shrink-0" />
           )}
         </span>
-        <span className="text-right font-normal tabular-nums text-text-secondary">
+        <span className="text-text-secondary text-right font-normal tabular-nums">
           {format.duration(
             row.type === 'turn' ? row.turn.end - row.turn.start : row.step.end - row.step.start,
           )}
@@ -493,7 +493,7 @@ function Ledger({
         onClick={() => activate(row)}
         className={cn(
           grid,
-          'absolute inset-x-0 cursor-pointer items-center gap-2 px-2 text-sm text-text-primary hover:bg-surface-hover',
+          'text-text-primary hover:bg-surface-hover absolute inset-x-0 cursor-pointer items-center gap-2 px-2 text-sm',
           selectedId === row.key && 'bg-surface-active-alt',
           active && ACTIVE_RING,
         )}
@@ -523,18 +523,18 @@ function Ledger({
             </span>
           )}
           {presentation.agent === undefined && toolNames == null && (
-            <Icon aria-hidden="true" className="size-3.5 shrink-0 text-text-secondary" />
+            <Icon aria-hidden="true" className="text-text-secondary size-3.5 shrink-0" />
           )}
           <span
             className={cn(
               'max-w-[60%] truncate',
-              isLabel ? 'shrink-0 text-text-secondary' : 'min-w-[3ch] shrink-[0.25]',
+              isLabel ? 'text-text-secondary shrink-0' : 'min-w-[3ch] shrink-[0.25]',
             )}
           >
             {title}
           </span>
           {caption != null && (
-            <span className="hidden shrink-[2] truncate text-xs text-text-secondary sm:inline">
+            <span className="text-text-secondary hidden shrink-[2] truncate text-xs sm:inline">
               {caption}
             </span>
           )}
@@ -543,8 +543,8 @@ function Ledger({
               className={cn(
                 'min-w-[4ch] shrink-[3] truncate text-xs',
                 isLabel
-                  ? 'rounded-full bg-surface-tertiary px-2 py-0.5 font-medium text-text-primary'
-                  : 'flex-1 text-text-secondary',
+                  ? 'bg-surface-tertiary text-text-primary rounded-full px-2 py-0.5 font-medium'
+                  : 'text-text-secondary flex-1',
               )}
               title={preview}
             >
@@ -552,26 +552,26 @@ function Ledger({
             </span>
           )}
           {model.mode === 'full' && technicalName != null && (
-            <span className="hidden min-w-0 shrink-[6] truncate font-mono text-[11px] text-text-tertiary lg:inline">
+            <span className="text-text-tertiary hidden min-w-0 shrink-[6] truncate font-mono text-[11px] lg:inline">
               {technicalName}
             </span>
           )}
           {record.model != null && (
-            <span className="hidden min-w-0 shrink-[4] truncate text-xs text-text-secondary sm:inline">
+            <span className="text-text-secondary hidden min-w-0 shrink-[4] truncate text-xs sm:inline">
               {record.model}
             </span>
           )}
           {record.status === 'error' && (
-            <CircleAlert aria-hidden="true" className="size-3.5 shrink-0 text-status-error" />
+            <CircleAlert aria-hidden="true" className="text-status-error size-3.5 shrink-0" />
           )}
           {running && (
-            <CircleDashed aria-hidden="true" className="size-3.5 shrink-0 text-text-secondary" />
+            <CircleDashed aria-hidden="true" className="text-text-secondary size-3.5 shrink-0" />
           )}
         </span>
-        <span className="truncate text-right text-xs tabular-nums text-text-secondary">
+        <span className="text-text-secondary truncate text-right text-xs tabular-nums">
           {duration}
         </span>
-        <span className="hidden text-right text-xs tabular-nums text-text-secondary md:block">
+        <span className="text-text-secondary hidden text-right text-xs tabular-nums md:block">
           {recordTokens(node)}
         </span>
         {costCell(record.cost)}
@@ -604,13 +604,13 @@ function Ledger({
         }
       }}
       data-testid="trace-ledger"
-      className="group/tree relative min-h-0 flex-1 overflow-auto focus-visible:outline-none"
+      className="group/tree relative min-h-0 flex-1 overflow-auto focus-visible:outline-hidden"
     >
       <div
         aria-hidden="true"
         className={cn(
           grid,
-          'sticky top-0 z-10 h-7 items-center gap-2 border-b border-border-light bg-presentation px-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary',
+          'border-border-light bg-presentation text-text-secondary sticky top-0 z-10 h-7 items-center gap-2 border-b px-2 text-[11px] font-medium tracking-wide uppercase',
         )}
       >
         <span>{localize('com_ui_trace_column_name')}</span>
@@ -622,7 +622,7 @@ function Ledger({
           </span>
         )}
         {viewDomain ? (
-          <span className="flex justify-between normal-case tabular-nums tracking-normal">
+          <span className="flex justify-between tracking-normal normal-case tabular-nums">
             <span>{position(viewDomain.start)}</span>
             <span>{position(viewDomain.start + viewDomain.span)}</span>
           </span>

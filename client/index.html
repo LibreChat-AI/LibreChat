@@ -28,51 +28,144 @@
       }
     </style>
     <script>
-      const theme = localStorage.getItem('color-theme');
-      const loadingContainerStyle = document.createElement('style');
-      let backgroundColor;
-
-      if (theme === 'high-contrast-dark') {
-        backgroundColor = '#000000';
-      } else if (theme === 'high-contrast-light') {
-        backgroundColor = '#ffffff';
-      } else if (theme === 'dark') {
-        backgroundColor = '#0d0d0d';
-      } else if (theme === 'light') {
-        backgroundColor = '#ffffff';
-      } else {
-        /* `system`, and anything unset or unrecognised, which ThemeProvider also
-         * resolves as `system`. The OS decides the scheme and the contrast, and
-         * a contrast request moves the dark canvas to pure black, so keying off
-         * the scheme alone would flash #0d0d0d behind the black palette.
-         * The three contrast queries mirror ThemeProvider's `CONTRAST_QUERIES`:
-         * a Windows Contrast Theme reports `forced-colors: active` with
-         * `prefers-contrast: custom`, never `more`. */
-        const prefersDarkScheme = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const prefersMoreContrast = [
-          '(prefers-contrast: more)',
-          '(prefers-contrast: custom)',
-          '(forced-colors: active)',
-        ].some(function (query) {
-          return window.matchMedia(query).matches;
-        });
-        backgroundColor = prefersDarkScheme
-          ? prefersMoreContrast
-            ? '#000000'
-            : '#0d0d0d'
-          : '#ffffff';
-      }
-
-      loadingContainerStyle.innerHTML = `
-        #loading-container {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 100vh;
-          background-color: ${backgroundColor};
+      (function () {
+        /* Applied before first paint so the app does not flash at the wrong scale.
+         * A stored value outside the supported range is clamped rather than ignored,
+         * so the rendered scale cannot disagree with the value the setting shows. */
+        let uiScale = 1;
+        try {
+          const storedScale = JSON.parse(localStorage.getItem('uiScale'));
+          if (typeof storedScale === 'number' && Number.isFinite(storedScale)) {
+            uiScale = Math.min(1.5, Math.max(0.5, storedScale));
+          }
+        } catch (e) {
+          /* Web Storage denied or unparsable: the default scale applies. */
         }
-      `;
-      document.head.appendChild(loadingContainerStyle);
+        /* The stylesheet's :root already declares 1, so the default leaves the
+         * root's inline style untouched. */
+        if (uiScale !== 1) {
+          document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+        }
+
+        let theme = null;
+        try {
+          theme = localStorage.getItem('color-theme');
+        } catch (e) {
+          /* Web Storage denied by browser policy: the shell falls back to the system theme. */
+        }
+        const loadingContainerStyle = document.createElement('style');
+        let dark;
+        let contrast;
+
+        if (theme === 'high-contrast-dark' || theme === 'high-contrast-light') {
+          dark = theme === 'high-contrast-dark';
+          contrast = true;
+        } else if (theme === 'dark' || theme === 'light') {
+          dark = theme === 'dark';
+          contrast = false;
+        } else {
+          /* `system`, and anything unset or unrecognised, which ThemeProvider also
+           * resolves as `system`. The OS decides the scheme and the contrast, and
+           * a contrast request moves the dark canvas to pure black, so keying off
+           * the scheme alone would flash #0d0d0d behind the black palette.
+           * The three contrast queries mirror ThemeProvider's `CONTRAST_QUERIES`:
+           * a Windows Contrast Theme reports `forced-colors: active` with
+           * `prefers-contrast: custom`, never `more`. */
+          dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          contrast = [
+            '(prefers-contrast: more)',
+            '(prefers-contrast: custom)',
+            '(forced-colors: active)',
+          ].some(function (query) {
+            return window.matchMedia(query).matches;
+          });
+        }
+        let backgroundColor = dark ? (contrast ? '#000000' : '#0d0d0d') : '#ffffff';
+        const root = document.documentElement;
+        root.classList.add(dark ? 'dark' : 'light');
+
+        /* The deployment theme (`interface.theme`) arrives with /api/config, so a
+         * signed-in reload replays the copy DeploymentTheme cached under
+         * `deployment-theme` (client/src/Providers/themeCache.ts) to paint it
+         * before the bundle runs. High contrast outranks it, as in ThemeProvider,
+         * which drops this copy (`data-theme-boot`) once it applies its own. */
+        const base = document.querySelector('base');
+        const basePath = base ? new URL(base.href).pathname : '/';
+        const path =
+          location.pathname.indexOf(basePath) === 0
+            ? location.pathname.slice(basePath.length)
+            : location.pathname.replace(/^\//, '');
+        /* Same list as `isPublicRoute`: auth pages and shared links never render
+         * under the viewer's signed-in config. */
+        const publicRoute =
+          /^(?:share|oauth|login|register|forgot-password|reset-password|verify)(?:\/|$)/i.test(
+            path,
+          );
+        if (!contrast && !publicRoute) {
+          try {
+            const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
+            const boot =
+              cached && cached.v === 2 && cached.modes && cached.modes[dark ? 'dark' : 'light'];
+            if (boot && Array.isArray(boot.properties)) {
+              let surface;
+              let canvas;
+              /* Only the conversation paints the canvas, and the redirects that land on it; other routes keep the split surface. */
+              const chatRoute =
+                path === '' ||
+                /^(?:c(?:\/|$)|prompts(?:\/new)?\/?$)/i.test(path) ||
+                (/^d(?:\/|$)/i.test(path) && !/^d\/prompts\/(?!new\/?$)[^/]/i.test(path));
+              boot.properties.forEach(function (entry) {
+                if (typeof entry[0] === 'string' && entry[0].indexOf('--') === 0) {
+                  root.style.setProperty(entry[0], String(entry[1]));
+                  /* Only an `R G B` triple reaches the shell's stylesheet text; any
+                   * whitespace between channels is accepted, as the theme validator does. */
+                  const channels = String(entry[1]).trim().split(/\s+/);
+                  if (
+                    (entry[0] === '--surface-primary-alt' || entry[0] === '--surface-canvas') &&
+                    channels.length === 3 &&
+                    channels.every(function (channel) {
+                      return /^\d{1,3}$/.test(channel);
+                    })
+                  ) {
+                    /* The conversation paints `surface-canvas`; a cache from before that role
+                     * existed carries only the split surface it followed. */
+                    if (entry[0] === '--surface-canvas') {
+                      canvas = channels.join(', ');
+                    } else {
+                      surface = channels.join(', ');
+                    }
+                  }
+                }
+              });
+              ['data-theme', 'data-theme-disabled', 'data-theme-field-focus'].forEach(
+                function (name) {
+                  const value = boot.attributes && boot.attributes[name];
+                  if (typeof value === 'string') {
+                    root.setAttribute(name, value);
+                  }
+                },
+              );
+              root.setAttribute('data-theme-boot', '');
+              if ((chatRoute && canvas) || surface) {
+                backgroundColor = 'rgb(' + ((chatRoute && canvas) || surface) + ')';
+              }
+            }
+          } catch (e) {
+            /* Denied or corrupt storage paints the stock shell, as before. */
+          }
+        }
+
+        loadingContainerStyle.innerHTML = `
+          #loading-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background-color: ${backgroundColor};
+          }
+        `;
+        document.head.appendChild(loadingContainerStyle);
+      })();
     </script>
     <script>
       (function () {
@@ -143,10 +236,18 @@
             return false;
           }
         }
+        /* Every caller in this page shares one recovery: once a reload is underway, later
+         * chunk failures (Vite preload, unhandled rejection, error boundary) join it instead
+         * of tripping the loop guard and painting the error page before the reload lands. */
         window.__lcRecoverStaleAssets = function () {
+          if (window.__lcStaleAssetRecoveryPending === true) {
+            return true;
+          }
           if (!shouldRecover()) {
+            window.__lcRumPush('stale-asset-recovery-declined');
             return false;
           }
+          window.__lcStaleAssetRecoveryPending = true;
           window.__lcRumPush('stale-asset-recovery-start');
           var reload = function () {
             window.__lcRumPush('stale-asset-recovery-reload');
@@ -201,7 +302,9 @@
                 assetUrl: el.src || el.href,
                 optional: isRumBootstrap,
               });
-              if (isRumBootstrap) {
+              /* Caught optional imports must not reload the app. Required lazy imports
+               * recover at their own boundary; preload links only report diagnostics. */
+              if (isRumBootstrap || failedPreload) {
                 return;
               }
               window.__lcRecoverStaleAssets();

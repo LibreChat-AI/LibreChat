@@ -3,14 +3,16 @@ import { useRecoilValue } from 'recoil';
 import { BookmarkPlusIcon } from 'lucide-react';
 import { useToastContext } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { Constants, QueryKeys } from 'librechat-data-provider';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
-
+import { Constants, QueryKeys, isForcedTemporaryRetention } from 'librechat-data-provider';
 import type { TConversationTag } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type * as t from '~/common';
-
-import { useConversationTagsQuery, useTagConversationMutation } from '~/data-provider';
+import {
+  useConversationTagsQuery,
+  useGetStartupConfig,
+  useTagConversationMutation,
+} from '~/data-provider';
 import { BookmarkEditDialog } from '~/components/Bookmarks';
 import { useBookmarkSuccess, useLocalize } from '~/hooks';
 import { isTemporaryConversation, logger } from '~/utils';
@@ -40,11 +42,19 @@ export default function useBookmarkItems({
   const queryClient = useQueryClient();
   const { showToast } = useToastContext();
 
+  const { data: startupConfig } = useGetStartupConfig();
   const conversation = useRecoilValue(store.conversationByIndex(0)) || undefined;
   const conversationId = conversation?.conversationId ?? '';
   const updateConvoTags = useBookmarkSuccess(conversationId);
   const tags = conversation?.tags;
-  const isTemporary = isTemporaryConversation(conversation);
+  /**
+   * A pre-existing permanent chat loaded under forced (ephemeral) retention stays
+   * non-temporary until the server converts it on the next write, so gate on the forced flag too
+   * to keep permanent-chat bookmarking hidden on a chat that is already effectively temporary.
+   */
+  const isTemporary =
+    isTemporaryConversation(conversation) ||
+    isForcedTemporaryRetention(startupConfig?.interface?.retentionMode);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const newBookmarkRef = useRef<HTMLButtonElement>(null);
 

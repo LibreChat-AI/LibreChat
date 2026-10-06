@@ -11,7 +11,7 @@ const Description = ({
   onValueChange,
   disabled,
   tabIndex,
-  labelBgClassName = 'bg-presentation',
+  labelBgClassName = 'bg-surface-primary-alt',
 }: {
   initialValue?: string;
   onValueChange?: (value: string) => void;
@@ -46,14 +46,14 @@ const Description = ({
   }
 
   return (
-    <div className="rounded-xl border border-border-medium">
+    <div className="border-border-medium rounded-xl border">
       <label
         htmlFor={descriptionId}
-        className="block px-4 pt-2 text-sm text-text-secondary md:hidden"
+        className="text-text-secondary block px-4 pt-2 text-sm md:hidden"
       >
         {localize('com_ui_description_placeholder')}
       </label>
-      <div className="relative flex h-10 items-center gap-1 pl-4 pr-2 text-sm text-text-secondary">
+      <div className="text-text-secondary relative flex h-10 items-center gap-1 pr-2 pl-4 text-sm">
         <Info className="icon-sm shrink-0" aria-hidden="true" />
         <div className="relative min-w-0 flex-1">
           <Input
@@ -70,7 +70,7 @@ const Description = ({
           <label
             htmlFor={descriptionId}
             className={cn(
-              'pointer-events-none absolute left-0 top-0.5 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm text-text-secondary transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-focus:text-text-primary peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block',
+              'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute top-0.5 left-0 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block',
               labelBgClassName,
             )}
           >
@@ -78,7 +78,7 @@ const Description = ({
           </label>
         </div>
         {!disabled && (
-          <span className="absolute right-2 shrink-0 text-xs text-text-secondary md:text-sm">{`${charCount}/${MAX_LENGTH}`}</span>
+          <span className="text-text-secondary absolute right-2 shrink-0 text-xs md:text-sm">{`${charCount}/${MAX_LENGTH}`}</span>
         )}
       </div>
     </div>

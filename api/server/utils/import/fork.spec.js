@@ -1,4 +1,4 @@
-const { Constants, ForkOptions } = require('librechat-data-provider');
+const { Constants, ForkOptions, RetentionMode } = require('librechat-data-provider');
 
 const mockLogger = {
   debug: jest.fn(),
@@ -116,6 +116,28 @@ describe('forkConversation', () => {
     getMessages.mockResolvedValue(mockMessages);
     bulkSaveConvos.mockResolvedValue(null);
     bulkSaveMessages.mockResolvedValue(null);
+  });
+
+  test('applies ephemeral retention to forked conversation and messages', async () => {
+    await forkConversation({
+      originalConvoId: 'abc123',
+      targetMessageId: '3',
+      requestUserId: 'user1',
+      option: ForkOptions.DIRECT_PATH,
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkSaveConvos).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+    );
+    expect(bulkSaveMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+      true,
+    );
   });
 
   test('should fork conversation without branches', async () => {
@@ -466,6 +488,75 @@ describe('duplicateConversation', () => {
     bulkIncrementTagCounts.mockResolvedValue(null);
   });
 
+  test('applies ephemeral retention to duplicated conversation and messages', async () => {
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkSaveConvos).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+    );
+    expect(bulkSaveMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ isTemporary: true, expiredAt: expect.any(Date) }),
+      ]),
+      true,
+    );
+  });
+
+  test('keeps a duplicate of a temporary chat temporary under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, isTemporary: true });
+
+    const result = await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(result.conversation.isTemporary).toBe(true);
+  });
+
+  test('keeps a duplicate of a legacy temporary chat temporary under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, expiredAt: new Date(Date.now() + 60_000) });
+
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(bulkSaveConvos.mock.calls[0][0][0].isTemporary).toBe(true);
+  });
+
+  test('leaves a duplicate of an ordinary chat visible under all-data retention', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, isTemporary: false });
+
+    const result = await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.ALL, generalChatRetention: 2160 },
+    });
+
+    expect(result.conversation.isTemporary).toBe(false);
+  });
+
+  test('neither counts nor stores tags on forced-temporary duplicates', async () => {
+    getConvo.mockResolvedValue({ ...mockConversation, tags: ['important', 'work'] });
+
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+      interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+    });
+
+    expect(bulkIncrementTagCounts.mock.calls.flatMap(([, tags]) => tags)).toEqual([]);
+    expect(bulkSaveConvos.mock.calls[0][0].map((convo) => convo.tags)).toEqual([[]]);
+  });
+
   test('should duplicate conversation and increment tag counts', async () => {
     const mockConvoWithTags = {
       ...mockConversation,
@@ -664,7 +755,7 @@ describe('forkSharedConversation', () => {
 
     expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: undefined,
-      preflight: undefined,
+      preflight: expect.any(Function),
     });
 
     const savedMessages = bulkSaveMessages.mock.calls[0][0];
@@ -800,7 +891,7 @@ describe('forkSharedConversation', () => {
 
     expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: false,
-      preflight: undefined,
+      preflight: expect.any(Function),
     });
   });
 
@@ -814,9 +905,12 @@ describe('forkSharedConversation', () => {
       sharedContentPreflight,
     });
 
+    const options = getSharedMessages.mock.calls[0][2];
+    await options.preflight(mockShare, { canonicalMessages: [] });
+    expect(sharedContentPreflight).toHaveBeenCalledWith(mockShare, { canonicalMessages: [] });
     expect(getSharedMessages).toHaveBeenCalledWith('share123', 'resource123', {
       snapshotFiles: undefined,
-      preflight: sharedContentPreflight,
+      preflight: expect.any(Function),
     });
   });
 
@@ -1453,6 +1547,27 @@ describe('splitAtTargetLevel', () => {
 });
 
 describe('cloneMessagesWithTimestamps', () => {
+  test('does not carry private owner metadata into a new message identity', () => {
+    const importBatchBuilder = createImportBatchBuilder('owner');
+    importBatchBuilder.startConversation();
+    cloneMessagesWithTimestamps(
+      [
+        {
+          messageId: 'source',
+          parentMessageId: Constants.NO_PARENT,
+          text: '[EMAIL_1]',
+          isCreatedByUser: true,
+          privateText: 'v1:ciphertext',
+          privacyRevision: 'source-revision',
+        },
+      ],
+      importBatchBuilder,
+    );
+    const cloned = importBatchBuilder.messages[0];
+    expect(cloned.text).toBe('[EMAIL_1]');
+    expect(cloned).not.toHaveProperty('privateText');
+    expect(cloned).not.toHaveProperty('privacyRevision');
+  });
   test('should preserve user-submitted provenance without marking untouched model output', () => {
     const messagesToClone = [
       {
@@ -1797,5 +1912,107 @@ describe('cloneMessagesWithTimestamps', () => {
 
     // Verify all messages are present
     expect(clonedMessages.length).toBe(complexMessages.length);
+  });
+});
+
+describe('native copy protected token admission', () => {
+  beforeEach(() => jest.clearAllMocks());
+  const revision = 'a'.repeat(32);
+  const token = `[EMAIL_1_${revision}]`;
+  const filters = {
+    messages: {
+      pii: {
+        fields: ['text'],
+        starterPatterns: [],
+        customPatterns: [{ id: 'hex', label: 'Credential', regex: '[a-f0-9]{32}' }],
+      },
+    },
+  };
+  const source = {
+    messageId: 'protected-source',
+    conversationId: 'source',
+    parentMessageId: Constants.NO_PARENT,
+    text: token,
+    isCreatedByUser: true,
+    privacyRevision: revision,
+  };
+  it.each(['fork', 'duplicate'])(
+    'admits %s with exact trusted tokens and persists only canonical provenance',
+    async (kind) => {
+      getConvo.mockResolvedValue({
+        conversationId: 'source',
+        endpoint: 'agents',
+        title: 'Safe copy',
+      });
+      getMessages.mockResolvedValue([source]);
+      const result =
+        kind === 'fork'
+          ? await forkConversation({
+              originalConvoId: 'source',
+              targetMessageId: source.messageId,
+              requestUserId: 'owner',
+              filters,
+            })
+          : await duplicateConversation({ conversationId: 'source', userId: 'owner', filters });
+      expect(result).toBeDefined();
+      const call = bulkSaveMessages.mock.calls.at(-1);
+      expect(call[0][0]).not.toHaveProperty('privacyRevision');
+      expect(call[0][0]).not.toHaveProperty('privateTextTokens');
+      expect(call[2].privateTextTokens.get(call[0][0].messageId)).toEqual([token]);
+    },
+  );
+  it("retains a copied row's server-only token provenance across a second native copy", async () => {
+    getConvo.mockResolvedValue({
+      conversationId: 'copy',
+      endpoint: 'agents',
+      title: 'Second copy',
+    });
+    getMessages.mockResolvedValue([
+      { ...source, privacyRevision: undefined, privateTextTokens: [token] },
+    ]);
+    await duplicateConversation({ conversationId: 'copy', userId: 'owner', filters });
+    const [rows, , metadata] = bulkSaveMessages.mock.calls.at(-1);
+    expect(metadata.privateTextTokens.get(rows[0].messageId)).toEqual([token]);
+    expect(rows[0]).not.toHaveProperty('privateTextTokens');
+  });
+
+  it('uses share-authorized canonical provenance without putting it in the shared DTO', async () => {
+    const share = {
+      title: 'Shared',
+      messages: [{ ...source, privacyRevision: undefined }],
+      conversationId: 'anonymous',
+      shareId: 'shared',
+    };
+    getSharedMessages.mockImplementationOnce(async (_id, _resource, options) => {
+      await options.preflight(share, { canonicalMessages: [source] });
+      return share;
+    });
+    getConvo.mockResolvedValue({ conversationId: 'copy', endpoint: 'agents' });
+    getMessages.mockResolvedValue([]);
+    const loadAppConfig = jest.fn(async () => ({ filters }));
+    await forkSharedConversation({ shareId: 'shared', requestUserId: 'viewer', loadAppConfig });
+    const [rows, , metadata] = bulkSaveMessages.mock.calls.at(-1);
+    expect(metadata.privateTextTokens.get(rows[0].messageId)).toEqual([token]);
+    expect(JSON.stringify(share)).not.toContain('privateTextTokens');
+    expect(rows[0]).not.toHaveProperty('privacyRevision');
+  });
+
+  it('does not grant token trust to untrusted use of the generic clone helper', async () => {
+    const builder = createImportBatchBuilder('owner', undefined, filters);
+    builder.startConversation();
+    cloneMessagesWithTimestamps([source], builder);
+    builder.finishConversation('Safe title');
+    await expect(builder.saveBatch()).rejects.toMatchObject({ code: 'content_filter_block' });
+  });
+  it('rejects raw credentials adjacent to native-copy placeholders', async () => {
+    getConvo.mockResolvedValue({
+      conversationId: 'source',
+      endpoint: 'agents',
+      title: 'Safe copy',
+    });
+    getMessages.mockResolvedValue([{ ...source, text: `${token} ${'b'.repeat(32)}` }]);
+    await expect(
+      duplicateConversation({ conversationId: 'source', userId: 'owner', filters }),
+    ).rejects.toMatchObject({ code: 'content_filter_block' });
   });
 });

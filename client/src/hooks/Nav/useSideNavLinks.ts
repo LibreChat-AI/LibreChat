@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { MCPIcon, AttachmentIcon, OpenAIMinimalIcon } from '@librechat/client';
+import { MCPIcon, OpenAIMinimalIcon } from '@librechat/client';
 import {
   Bot,
   Brain,
@@ -33,7 +33,6 @@ import PanelSwitch from '~/components/SidePanel/Builder/PanelSwitch';
 import { SchedulePanel } from '~/components/SidePanel/Schedules';
 import Parameters from '~/components/SidePanel/Parameters/Panel';
 import { MemoryPanel } from '~/components/SidePanel/Memories';
-import FilesPanel from '~/components/SidePanel/Files/Panel';
 import { PromptsAccordion } from '~/components/Prompts';
 import { SkillsAccordion } from '~/components/Skills';
 
@@ -195,14 +194,6 @@ export default function useSideNavLinks({
         Component: BookmarkPanel,
       });
     }
-
-    links.push({
-      title: 'com_sidepanel_attach_files',
-      label: '',
-      icon: AttachmentIcon,
-      id: 'files',
-      Component: FilesPanel,
-    });
 
     if (
       interfaceConfig.parameters === true &&

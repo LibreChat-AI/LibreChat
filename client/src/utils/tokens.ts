@@ -94,6 +94,8 @@ export interface BranchTotals {
   containsAnchor: boolean;
   /** Provider usage/cost summed along the active branch */
   usage: BranchUsage;
+  /** Recorded usage of the selected response, never an earlier ancestor's usage. */
+  lastTurnUsage?: BranchUsage;
   /** Compacted-context baseline from the deepest summarized response on the
    *  branch (0 if none). The branch walk stops there, so `input`/`output` cover
    *  only the post-summary messages; the estimate adds this to avoid counting
@@ -185,6 +187,33 @@ function addUsage(target: BranchUsage, usage?: BranchUsage): void {
   }
 }
 
+type ToolCallLengthFields = {
+  args?: unknown;
+  output?: unknown;
+  argsLength?: unknown;
+  outputLength?: unknown;
+};
+
+/** Stored lengths of a tool call's arguments and output. A preview carries the full lengths in
+ *  `argsLength`/`outputLength`, so estimates match the conversation the model actually sees. */
+function toolCallLengths(call: ToolCallLengthFields): { args: number; output: number } {
+  let args = 0;
+  if (typeof call.argsLength === 'number') {
+    args = call.argsLength;
+  } else if (typeof call.args === 'string') {
+    args = call.args.length;
+  } else if (call.args != null) {
+    args = JSON.stringify(call.args)?.length ?? 0;
+  }
+  let output = 0;
+  if (typeof call.outputLength === 'number') {
+    output = call.outputLength;
+  } else if (typeof call.output === 'string') {
+    output = call.output.length;
+  }
+  return { args, output };
+}
+
 /** Chars of a content part's text, handling both the string and `{ value }` forms.
  * Reasoning (`think`) and error parts are excluded — the send path strips them
  * before counting, so they aren't part of the next call's context. */
@@ -197,24 +226,12 @@ function partTextChars(part: unknown): number {
     return 0;
   }
   if (type === 'tool_call') {
-    const call = (part as { tool_call?: { name?: unknown; args?: unknown; output?: unknown } })
-      .tool_call;
+    const call = (part as { tool_call?: ToolCallLengthFields & { name?: unknown } }).tool_call;
     if (call == null) {
       return 0;
     }
-    let chars = typeof call.name === 'string' ? call.name.length : 0;
-    if (typeof call.args === 'string') {
-      chars += call.args.length;
-    } else if (call.args != null) {
-      const serialized = JSON.stringify(call.args);
-      if (typeof serialized === 'string') {
-        chars += serialized.length;
-      }
-    }
-    if (typeof call.output === 'string') {
-      chars += call.output.length;
-    }
-    return chars;
+    const lengths = toolCallLengths(call);
+    return (typeof call.name === 'string' ? call.name.length : 0) + lengths.args + lengths.output;
   }
   const text = (part as { text?: unknown }).text;
   if (typeof text === 'string') {
@@ -251,20 +268,10 @@ function messageToolChars(message: Partial<TMessage>): { chars: number; resultCh
       if ('name' in call && typeof call.name === 'string') {
         chars += call.name.length;
       }
-      if ('args' in call) {
-        if (typeof call.args === 'string') {
-          chars += call.args.length;
-        } else {
-          const serialized = JSON.stringify(call.args ?? null);
-          if (typeof serialized === 'string') {
-            chars += serialized.length;
-          }
-        }
-      }
-      if ('output' in call && typeof call.output === 'string') {
-        chars += call.output.length;
-        resultChars += call.output.length;
-      }
+      const lengths = toolCallLengths(call as ToolCallLengthFields);
+      chars += 'args' in call && call.args == null ? 4 : lengths.args;
+      chars += lengths.output;
+      resultChars += lengths.output;
     }
   }
   return { chars, resultChars };
@@ -429,6 +436,7 @@ export function sumBranch(
    *  message total holding tokens whose tool share had been removed, so both
    *  tail figures are zero for a counted tail. */
   const tailEntry = index.get(tailId);
+  const lastTurnUsage = tailEntry?.isCreatedByUser === false ? tailEntry.usage : undefined;
   const tailCounted = tailEntry != null && tailEntry.tokenCount > 0;
   const tailEstTokens = tailCounted ? 0 : (tailEntry?.estTokens ?? 0);
   const tailEstToolTokens = tailCounted
@@ -485,7 +493,15 @@ export function sumBranch(
     currentId = entry.parentMessageId;
   }
 
-  return { ...totals, tailEstTokens, tailEstToolTokens, tailId, usage, summaryBaseline };
+  return {
+    ...totals,
+    tailEstTokens,
+    tailEstToolTokens,
+    tailId,
+    usage,
+    lastTurnUsage,
+    summaryBaseline,
+  };
 }
 
 /**
@@ -547,7 +563,7 @@ export function prunedBranchTokens(
 /**
  * One persisted snapshot's used-context reading, with the basis it was measured
  * on. `remaining` is the authoritative pre-invoke figure (`budget − remaining`);
- * `breakdown` is the instruction+messages sum a snapshot saved before
+ * `breakdown` is the instructions+summary+messages sum a snapshot saved before
  * `remainingContextTokens` existed still supports. The two measure different
  * quantities (the backend's remaining covers content the breakdown does not),
  * so a growth delta may only compare readings of the same basis.
@@ -615,8 +631,8 @@ export function collectAnchorSeries(
         snapshot.contextBudget ?? snapshot.breakdown?.maxContextTokens,
       );
       const configuration = snapshotConfiguration(snapshot);
-      /** Same precedence as the render path's `baseUsed`: the backend's
-       *  remaining headroom when it was saved, else the breakdown sum. */
+      /** Runway growth keeps the raw remaining basis, even if the gauge floors
+       *  that reading to the breakdown; older snapshots use all breakdown parts. */
       if (snapshot.remainingContextTokens != null && budget > 0) {
         const remaining = normalizeTokenCount(snapshot.remainingContextTokens);
         series.push({ used: Math.max(0, budget - remaining), basis: 'remaining', configuration });
@@ -624,7 +640,9 @@ export function collectAnchorSeries(
         const used =
           normalizeTokenCount(
             snapshot.effectiveInstructionTokens ?? snapshot.breakdown?.instructionTokens,
-          ) + normalizeTokenCount(snapshot.breakdown?.messageTokens);
+          ) +
+          normalizeTokenCount(snapshot.breakdown?.summaryTokens) +
+          normalizeTokenCount(snapshot.breakdown?.messageTokens);
         if (used > 0) {
           series.push({ used, basis: 'breakdown', configuration });
         }

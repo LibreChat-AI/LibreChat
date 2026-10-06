@@ -3,15 +3,21 @@ import { randomUUID } from 'crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { ConversationMethods, MessageMethods } from '@librechat/data-schemas';
+import type { AttachedCodeEnvironmentPolicySettings } from '~/agents/hitl/byom';
 import type { TurnConversationRequest } from './save';
 import {
   runAfterSeed,
   saveTurnConversation,
   seedTurnConversation,
   getConversationWriteContext,
+  recoverTurnMessageReference,
 } from './save';
+import {
+  getCodeApprovalPreservedFields,
+  resolvePersistedCodeApprovalMode,
+} from '~/agents/hitl/byom';
 
-type Store = Pick<ConversationMethods, 'getConvo' | 'saveConvo'> &
+type Store = Pick<ConversationMethods, 'getConvo' | 'saveConvo' | 'appendConvoMessageReference'> &
   Pick<MessageMethods, 'saveMessage'>;
 
 let mongoServer: MongoMemoryServer;
@@ -47,6 +53,7 @@ beforeAll(async () => {
   store = {
     getConvo: methods.getConvo,
     saveConvo: methods.saveConvo,
+    appendConvoMessageReference: methods.appendConvoMessageReference,
     saveMessage: methods.saveMessage,
   };
 });
@@ -177,6 +184,302 @@ describe('seedTurnConversation', () => {
     await seedTurnConversation(store, seedFields({ body: {} }, randomUUID()));
 
     expect(saveConvo).not.toHaveBeenCalled();
+  });
+});
+
+describe('code approval mode across workspace choices', () => {
+  const permissive: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: {
+      permissions: {
+        fileWrite: { allowed: ['allow', 'ask'], default: 'ask' },
+        commandExecution: { allowed: ['allow', 'ask'], default: 'ask' },
+      },
+    },
+  };
+  const restricted: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: { permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } } },
+  };
+
+  /** One turn's save as `AgentClient` and `BaseClient` perform it: the row admission loaded is
+   *  the existing one, and a key the options omit is `$unset` from it unless the write keeps it.
+   *  `loadedId` names the row admission loaded when the turn is saved under another id. */
+  const saveTurn = async (
+    userId: string,
+    conversationId: string,
+    requested: unknown,
+    targets: Array<[string, AttachedCodeEnvironmentPolicySettings]>,
+    loadedId = conversationId,
+  ) => {
+    const req = createRequest(userId);
+    req.resolvedConversation = await store.getConvo(userId, loadedId);
+    const policies = targets.map(([, policy]) => policy);
+    const codeApprovalMode = resolvePersistedCodeApprovalMode({ requested, policies });
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      endpointOptions: {
+        ...endpointOptions,
+        ...(codeApprovalMode != null && { codeApprovalMode }),
+      },
+      preservedFields: getCodeApprovalPreservedFields(policies),
+      context: 'save.spec approval mode',
+      ctx: getConversationWriteContext(req),
+    });
+    return (await store.getConvo(userId, conversationId))?.codeApprovalMode;
+  };
+
+  it('keeps the pick through a turn without a workspace and revalidates it on return', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    /** A current client sends the gated `ask`; an older one still sends the remembered pick. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('fullAccess');
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBe('fullAccess');
+    await expect(saveTurn(userId, conversationId, 'unrestricted', [])).rejects.toThrow(
+      'not permitted',
+    );
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    await expect(
+      saveTurn(userId, conversationId, 'fullAccess', [['terra', restricted]]),
+    ).rejects.toThrow('not permitted');
+    expect(await saveTurn(userId, conversationId, 'ask', attached)).toBe('ask');
+    expect(await saveTurn(userId, conversationId, undefined, attached)).toBeUndefined();
+  });
+
+  it('leaves a new chat without a mode until a turn with a workspace validates one', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+
+    /** The gated `ask` a current client sends must not replace the remembered pick the composer
+     *  offers a chat that stores no mode of its own. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBeUndefined();
+    expect(await saveTurn(userId, randomUUID(), undefined, [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'acceptEdits', [['terra', permissive]])).toBe(
+      'acceptEdits',
+    );
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('acceptEdits');
+  });
+
+  it('keeps the mode of a conversation the turn is saved under instead of the loaded one', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const source = randomUUID();
+    const target = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, source, 'fullAccess', attached)).toBe('fullAccess');
+    expect(await saveTurn(userId, target, 'acceptEdits', attached)).toBe('acceptEdits');
+    expect(await saveTurn(userId, target, 'ask', [], source)).toBe('acceptEdits');
+    expect((await store.getConvo(userId, source))?.codeApprovalMode).toBe('fullAccess');
+  });
+});
+
+describe('saveTurnConversation reply stamp', () => {
+  const saveReply = async (reply: { content?: unknown; text?: string }) => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const req = createRequest(userId);
+    const ctx = getConversationWriteContext(req);
+    const messageId = randomUUID();
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      context: 'save.spec reply',
+      ctx,
+      reply: { messageId, ...reply },
+    });
+    return { row: await store.getConvo(userId, conversationId), messageId };
+  };
+
+  it('stamps a reply a reader can open', async () => {
+    const { row, messageId } = await saveReply({ content: [{ type: 'text', text: 'Done.' }] });
+
+    expect(row?.lastResponseAt).toBeInstanceOf(Date);
+    expect(row?.lastResponseMessageId).toBe(messageId);
+  });
+
+  /* Acknowledgement requires the stamped reply to be on screen, so a row that renders nothing
+     would leave a dot that opening the conversation could never clear. */
+  it('does not stamp a reply that persisted nothing to read', async () => {
+    const { row } = await saveReply({ content: [], text: '  ' });
+
+    expect(row?.lastResponseAt).toBeUndefined();
+    expect(row?.lastResponseMessageId).toBeUndefined();
+  });
+});
+
+describe('recoverTurnMessageReference', () => {
+  /** The whole failure path, in order: the user-message write fails and is swallowed, the
+   *  response's write creates the row referencing only itself, the terminal retries the user
+   *  row with a bare `saveMessage` that never touches the conversation, and the recovery
+   *  carries the reference the turn would otherwise have lost for good. */
+  const runFailedUserWriteTurn = async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const req = createRequest(userId);
+    const ctx = getConversationWriteContext(req);
+
+    const responseRow = await store.saveMessage(ctx, {
+      messageId: randomUUID(),
+      conversationId,
+      text: 'Answer',
+      isCreatedByUser: false,
+    });
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      ctx,
+      savedMessageId: responseRow?._id,
+    });
+
+    /** The retry: the row is restored, the conversation is not told. */
+    const recoveredUserRow = await store.saveMessage(ctx, {
+      messageId: randomUUID(),
+      conversationId,
+      text: 'First message',
+      isCreatedByUser: true,
+    });
+
+    return { userId, conversationId, ctx, responseRow, recoveredUserRow };
+  };
+
+  it('appends a recovered reference the conversation never received', async () => {
+    const turn = await runFailedUserWriteTurn();
+    const before = await store.getConvo(turn.userId, turn.conversationId);
+    expect(before?.messages?.map(String)).toEqual([String(turn.responseRow?._id)]);
+
+    const wrote = await recoverTurnMessageReference(store, {
+      userId: turn.userId,
+      conversationId: turn.conversationId,
+      messageId: String(turn.recoveredUserRow?._id),
+      alreadyRecorded: false,
+      managesConversation: true,
+      context: 'save.spec recovery',
+    });
+
+    expect(wrote).toBe(true);
+    const row = await store.getConvo(turn.userId, turn.conversationId);
+    expect(row?.messages?.map(String)).toEqual(
+      [turn.responseRow?._id, turn.recoveredUserRow?._id].map(String),
+    );
+  });
+
+  it('is idempotent, so a repeated recovery cannot duplicate the reference', async () => {
+    const turn = await runFailedUserWriteTurn();
+    const recovery = {
+      userId: turn.userId,
+      conversationId: turn.conversationId,
+      messageId: String(turn.recoveredUserRow?._id),
+      alreadyRecorded: false,
+      managesConversation: true,
+      context: 'save.spec recovery',
+    };
+
+    await recoverTurnMessageReference(store, recovery);
+    await recoverTurnMessageReference(store, recovery);
+
+    const row = await store.getConvo(turn.userId, turn.conversationId);
+    expect(row?.messages?.map(String)).toEqual(
+      [turn.responseRow?._id, turn.recoveredUserRow?._id].map(String),
+    );
+  });
+
+  /** A repair is bookkeeping beside an already-durable row, so it reorders nothing. */
+  it('does not count as activity, leaving the sidebar order alone', async () => {
+    const turn = await runFailedUserWriteTurn();
+    const before = await store.getConvo(turn.userId, turn.conversationId);
+
+    await recoverTurnMessageReference(store, {
+      userId: turn.userId,
+      conversationId: turn.conversationId,
+      messageId: String(turn.recoveredUserRow?._id),
+      alreadyRecorded: false,
+      managesConversation: true,
+      context: 'save.spec recovery',
+    });
+
+    const after = await store.getConvo(turn.userId, turn.conversationId);
+    expect(after?.updatedAt?.getTime()).toBe(before?.updatedAt?.getTime());
+  });
+
+  it.each([
+    ['the reference is already recorded', { alreadyRecorded: true, managesConversation: true }],
+    ['the turn does not own the row', { alreadyRecorded: false, managesConversation: false }],
+  ])('writes nothing when %s', async (_label, overrides) => {
+    const turn = await runFailedUserWriteTurn();
+    const append = jest.spyOn(store, 'appendConvoMessageReference');
+
+    const wrote = await recoverTurnMessageReference(store, {
+      userId: turn.userId,
+      conversationId: turn.conversationId,
+      messageId: String(turn.recoveredUserRow?._id),
+      context: 'save.spec recovery',
+      ...overrides,
+    });
+
+    expect(wrote).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['there is no recovered row to reference', undefined],
+    ['the recovered id is empty', ''],
+  ])('writes nothing when %s', async (_label, messageId) => {
+    const turn = await runFailedUserWriteTurn();
+    const append = jest.spyOn(store, 'appendConvoMessageReference');
+
+    const wrote = await recoverTurnMessageReference(store, {
+      userId: turn.userId,
+      conversationId: turn.conversationId,
+      messageId,
+      alreadyRecorded: false,
+      managesConversation: true,
+      context: 'save.spec recovery',
+    });
+
+    expect(wrote).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('never creates a row of its own', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+
+    const wrote = await recoverTurnMessageReference(store, {
+      userId,
+      conversationId,
+      messageId: new mongoose.Types.ObjectId().toString(),
+      alreadyRecorded: false,
+      managesConversation: true,
+      context: 'save.spec recovery',
+    });
+
+    expect(wrote).toBe(true);
+    expect(await store.getConvo(userId, conversationId)).toBeNull();
+  });
+
+  /** The repair must never take a turn down with it: the message it points at is already
+   *  durable, and the reference is the only thing at stake. */
+  it('reports failure instead of throwing when the append fails', async () => {
+    const turn = await runFailedUserWriteTurn();
+    jest
+      .spyOn(store, 'appendConvoMessageReference')
+      .mockRejectedValue(new Error('Error appending the message reference'));
+
+    await expect(
+      recoverTurnMessageReference(store, {
+        userId: turn.userId,
+        conversationId: turn.conversationId,
+        messageId: String(turn.recoveredUserRow?._id),
+        alreadyRecorded: false,
+        managesConversation: true,
+        context: 'save.spec recovery',
+      }),
+    ).resolves.toBe(false);
   });
 });
 

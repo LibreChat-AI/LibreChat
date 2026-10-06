@@ -1,6 +1,6 @@
 # Pull Request
 
-> Before submitting, please review the [Contributing Guide](https://github.com/danny-avila/LibreChat/blob/main/.github/CONTRIBUTING.md).
+> Before submitting, please review the [Contributing Guide](https://github.com/LibreChat-AI/LibreChat/blob/main/.github/CONTRIBUTING.md).
 >
 > Documentation changes belong in the [LibreChat documentation repository](https://github.com/LibreChat-AI/librechat.ai).
 
@@ -13,6 +13,12 @@ Briefly explain:
 - What does this PR change?
 - What is the resulting behavior?
 
+Write each paragraph as one unbroken line and let the browser wrap it. A single
+newline inside a paragraph renders as a line break here, so a hand-wrapped
+paragraph arrives as ragged short lines that never reflow to the reader's window.
+That holds for every section below, and for list items and table cells too. The
+only intentional breaks are the blank lines between paragraphs.
+
 Keep this focused on the final state of the code rather than the history of the
 branch or previous review iterations. Naming the merged pull request that
 introduced a regression is the exception: that is history the reader needs.
@@ -20,7 +26,7 @@ introduced a regression is the exception: that is history the reader needs.
 Link related issues, and name any dependency this change needs:
 Fixes #123
 Related to #123
-Depends on danny-avila/agents#123
+Depends on LibreChat-AI/agents#123
 -->
 
 ## How it works
@@ -81,7 +87,10 @@ use dashed arrows freely.
 
 ## Type of change
 
-<!-- Select all that apply. -->
+<!--
+Check every type that applies, then delete the lines that do not. The section
+should end up listing only the types this pull request actually is.
+-->
 
 * [ ] Bug fix
 * [ ] Feature
@@ -133,8 +142,49 @@ Write "Not applicable" when appropriate.
 ## Screenshots / recordings
 
 <!--
-For user-facing changes, include before/after screenshots or a short recording.
-Remove this section when not applicable.
+Required whenever the change alters something a user can see: a new, removed or
+restyled component, layout, spacing, copy, icons, empty/loading/error states,
+theming, or motion. The diff shows what the code says; only a screenshot shows
+what the screen looks like.
+
+Capture from the running app, never a mockup, and take the "before" from the
+base revision and the "after" from this branch, so the pair shows the change
+rather than the new state twice. Post them at the same size on the same screen,
+and label which is which.
+A brand new surface has no "before", so say that instead of leaving a cell
+blank. Include light and dark mode whenever the change touches color or theming.
+Use a recording rather than a still whenever the behavior is motion or
+interaction dependent, such as a transition, drag, hover or streaming state,
+where a frozen frame proves nothing.
+
+Upload the files with `gh` (v2.99.0 or newer). Write the body with ordinary
+relative image links, pass the same paths to `--attach`, and each link is
+rewritten to the uploaded asset:
+
+| Before | After |
+| --- | --- |
+| ![Before](./sidebar-before.png) | ![After](./sidebar-after.png) |
+
+    gh pr create --base dev --body-file ./pr-body.md \
+      --attach ./sidebar-before.png --attach ./sidebar-after.png
+
+    gh pr edit 123 --attach './sidebar-after.png#Sidebar after the change'
+
+`--attach` repeats, up to 50 files per command, and works on `gh pr create`,
+`gh pr edit` and `gh pr comment`. Alt text follows the path after `#`; a link
+already in the body keeps the alt text written there, and a file the body never
+references is appended to the end instead. PNG, JPEG, GIF, WebP, SVG, MP4, MOV
+and WebM are accepted, images and GIFs up to 10 MB.
+
+An asset URL only ever comes back from a real upload, whether that is `--attach`
+or dragging the file into the web editor. Do not commit screenshots to
+the repository or push them to a branch, do not link a path on the machine that
+captured them, do not host them on a gist or an image site, and never write a
+`user-attachments` link by hand: an invented link renders as a broken image and
+costs a review round.
+
+Write "No user-facing change" rather than removing this section, so reviewers can
+see the question was answered.
 -->
 
 ## Risk / compatibility

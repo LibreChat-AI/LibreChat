@@ -3,24 +3,27 @@ import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
 import {
-  areMessageFieldsEqual,
   cn,
-  getHeaderPrefixForScreenReader,
+  isSameTailRelation,
   getMessageAriaLabel,
+  areMessageFieldsEqual,
+  getHeaderPrefixForScreenReader,
 } from '~/utils';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
-import { parseWakeupText } from '~/components/Chat/Messages/Content/Parts/wakeup';
+import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
+import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { MessageContext } from '~/Providers';
+import WakeupRow from './WakeupRow';
 import store from '~/store';
 
 type MessageRenderProps = {
@@ -33,6 +36,9 @@ type MessageRenderProps = {
   isSubmitting?: boolean;
   /** Stable context object from wrapper — avoids ChatContext subscription inside memo */
   chatContext: TMessageChatContext;
+  /** The thread's tail; the comparator re-renders only when this row's relation to it changes */
+  latestMessageId?: string;
+  latestMessageDepth?: number;
 } & Pick<
   TMessageProps,
   'currentEditId' | 'setCurrentEditId' | 'siblingIdx' | 'setSiblingIdx' | 'siblingCount'
@@ -66,7 +72,7 @@ function areMessageRenderPropsEqual(prev: MessageRenderProps, next: MessageRende
     return false;
   }
 
-  return areMessageFieldsEqual(prev.message, next.message);
+  return areMessageFieldsEqual(prev.message, next.message) && isSameTailRelation(prev, next);
 }
 
 const MessageRender = memo(function MessageRender({
@@ -78,6 +84,8 @@ const MessageRender = memo(function MessageRender({
   setCurrentEditId,
   isSubmitting = false,
   chatContext,
+  latestMessageId,
+  latestMessageDepth,
 }: MessageRenderProps) {
   const localize = useLocalize();
   const {
@@ -91,11 +99,9 @@ const MessageRender = memo(function MessageRender({
     messageLabel,
     handleFeedback,
     handleContinue,
-    latestMessageId,
     copyToClipboard,
     getCanCopy,
     regenerateMessage,
-    latestMessageDepth,
     hasConfiguredSender,
   } = useMessageActions({
     message: msg,
@@ -106,6 +112,7 @@ const MessageRender = memo(function MessageRender({
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
 
   const handleRegenerateMessage = useCallback(() => regenerateMessage(), [regenerateMessage]);
+  const getLatestMessageId = useCallback(() => chatContext.latestMessageId, [chatContext]);
   const hasNoChildren = !(msg?.children?.length ?? 0);
   const isLast = useMemo(
     () => hasNoChildren && (msg?.depth === latestMessageDepth || msg?.depth === -1),
@@ -133,10 +140,7 @@ const MessageRender = memo(function MessageRender({
   );
 
   const { hasParallelContent } = useContentMetadata(msg);
-  const wakeupDisplay = useMemo(
-    () => (msg?.isCreatedByUser === true ? parseWakeupText(msg.text) : null),
-    [msg?.isCreatedByUser, msg?.text],
-  );
+  const wakeupDisplay = useMemo(() => parseWakeupMessage(msg), [msg]);
   const messageId = msg?.messageId ?? '';
   const messageContextValue = useMemo(
     () => ({
@@ -153,8 +157,15 @@ const MessageRender = memo(function MessageRender({
     return null;
   }
 
+  const showOwnerText = !edit && msg.isCreatedByUser && Boolean(msg.privacyRevision);
+  const subagentWakeup =
+    !edit && wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
+  const Row = subagentWakeup == null ? MessageRow : WakeupRow;
+
   return (
-    <MessageRow
+    <Row
+      task={subagentWakeup}
+      conversationId={msg.conversationId ?? conversation?.conversationId ?? ''}
       id={msg.messageId}
       icon={<MessageIcon iconData={iconData} assistant={assistant} agent={agent} />}
       label={messageLabel ?? ''}
@@ -172,7 +183,11 @@ const MessageRender = memo(function MessageRender({
       hasParallelContent={hasParallelContent}
       fullWidth={maximizeChatSpace}
       isEditing={edit}
-      systemLabel={wakeupDisplay != null && !edit ? localize('com_ui_system_event') : undefined}
+      systemLabel={
+        wakeupDisplay != null && subagentWakeup == null && !edit
+          ? localize('com_ui_system_event')
+          : undefined
+      }
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
           {/* The reading holds the column start: it takes over the slot the streaming
@@ -206,13 +221,13 @@ const MessageRender = memo(function MessageRender({
             isEditing={edit}
             message={msg}
             enterEdit={enterEdit}
-            isSubmitting={chatContext.isSubmitting}
             conversation={conversation ?? null}
             regenerate={handleRegenerateMessage}
             copyToClipboard={copyToClipboard}
             getCanCopy={getCanCopy}
             handleContinue={handleContinue}
             latestMessageId={latestMessageId}
+            getLatestMessageId={getLatestMessageId}
             handleFeedback={handleFeedback}
             isLast={isLast}
           />
@@ -220,26 +235,28 @@ const MessageRender = memo(function MessageRender({
       }
     >
       <MessageContext.Provider value={messageContextValue}>
-        {wakeupDisplay != null && !edit ? (
-          <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
-        ) : (
-          <MessageContent
-            ask={ask}
-            edit={edit}
-            isLast={isLast}
-            text={msg.text || ''}
-            message={msg}
-            enterEdit={enterEdit}
-            error={!!(msg.error ?? false)}
-            isSubmitting={isSubmitting}
-            unfinished={msg.unfinished ?? false}
-            isCreatedByUser={msg.isCreatedByUser ?? true}
-            siblingIdx={siblingIdx ?? 0}
-            setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-          />
-        )}
+        {showOwnerText && <PrivateText message={msg} />}
+        {!showOwnerText &&
+          (wakeupDisplay != null && !edit ? (
+            <Wakeup display={wakeupDisplay} conversationId={conversation?.conversationId} />
+          ) : (
+            <MessageContent
+              ask={ask}
+              edit={edit}
+              isLast={isLast}
+              text={msg.text || ''}
+              message={msg}
+              enterEdit={enterEdit}
+              error={!!(msg.error ?? false)}
+              isSubmitting={isSubmitting}
+              unfinished={msg.unfinished ?? false}
+              isCreatedByUser={msg.isCreatedByUser ?? true}
+              siblingIdx={siblingIdx ?? 0}
+              setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+            />
+          ))}
       </MessageContext.Provider>
-    </MessageRow>
+    </Row>
   );
 }, areMessageRenderPropsEqual);
 MessageRender.displayName = 'MessageRender';

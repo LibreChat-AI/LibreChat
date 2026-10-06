@@ -4,11 +4,14 @@ import {
   normalizeServerName,
   buildServerNameAliases,
 } from 'librechat-data-provider';
-import type { Action } from 'librechat-data-provider';
+import type { Action, AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 import type { AgentItem, AgentItemKind } from './types';
 import { isFileBackedCapabilityEnabled } from './capabilities';
+import { isHandoffEdge } from './orchestration';
 
 export interface FormSelection {
+  subagents?: AgentSubagentsConfig;
+  edges?: GraphEdge[];
   execute_code: boolean;
   web_search: boolean;
   file_search: boolean;
@@ -50,6 +53,10 @@ function isBuiltinSelected(item: AgentItem, form: FormSelection): boolean {
       return Boolean(form.artifacts);
     case 'context':
       return form.context_files.length > 0;
+    case 'subagents':
+      return form.subagents?.enabled === true;
+    case 'handoffs':
+      return form.edges?.some(isHandoffEdge) === true;
     case 'ask_user_question':
       // Native tool presented as a builtin — selection lives in agent.tools.
       return form.tools.includes('ask_user_question');

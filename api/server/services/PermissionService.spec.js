@@ -1062,9 +1062,9 @@ describe('PermissionService', () => {
           );
         }
 
-        const originalBulkWriteAclEntries = db.bulkWriteAclEntries;
+        const originalBulkWriteAclEntries = AclEntry.bulkWrite.bind(AclEntry);
         const bulkWriteSpy = jest
-          .spyOn(db, 'bulkWriteAclEntries')
+          .spyOn(AclEntry, 'bulkWrite')
           .mockImplementationOnce(async (...args) => {
             await AclEntry.updateOne(
               {
@@ -1091,6 +1091,7 @@ describe('PermissionService', () => {
             ],
             grantedBy: grantedById,
           });
+          expect(bulkWriteSpy).toHaveBeenCalled();
         } finally {
           bulkWriteSpy.mockRestore();
         }
@@ -1107,9 +1108,9 @@ describe('PermissionService', () => {
     );
 
     test('removes a stale-read upsert after a concurrent deletion and audit failure', async () => {
-      const originalBulkWriteAclEntries = db.bulkWriteAclEntries;
+      const originalBulkWriteAclEntries = AclEntry.bulkWrite.bind(AclEntry);
       const bulkWriteSpy = jest
-        .spyOn(db, 'bulkWriteAclEntries')
+        .spyOn(AclEntry, 'bulkWrite')
         .mockImplementationOnce(async (...args) => {
           await AclEntry.deleteOne({
             principalType: PrincipalType.USER,

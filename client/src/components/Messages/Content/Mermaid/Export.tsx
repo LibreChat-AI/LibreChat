@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { DropdownPopup, TooltipAnchor, useToastContext } from '@librechat/client';
 import { FileCode2, FileImage, ImageDown, LoaderCircle, Workflow } from 'lucide-react';
+import { DropdownPopup, TooltipAnchor, readThemeColor, useToastContext } from '@librechat/client';
 import type { LucideIcon } from 'lucide-react';
 import type { MermaidDimensions } from '~/utils/diagram/export';
 import type { TranslationKeys } from '~/hooks/useLocalize';
@@ -32,16 +32,7 @@ interface MermaidExportProps {
 }
 
 function surfaceBackground(): string | undefined {
-  const value = getComputedStyle(document.documentElement)
-    .getPropertyValue('--surface-primary-alt')
-    .trim();
-  if (!value) {
-    return undefined;
-  }
-  if (/^[\d.]+(?:\s+[\d.]+){2}(?:\s*\/\s*[\d.]+%?)?$/.test(value)) {
-    return `rgb(${value})`;
-  }
-  return value.startsWith('var(') ? undefined : value;
+  return readThemeColor('--surface-primary-alt') ?? undefined;
 }
 
 type ExportFormat = 'svg' | 'png' | 'source';
@@ -198,7 +189,7 @@ const MermaidExport = memo(function MermaidExport({
     });
     const items: MenuItemProps[] = EXPORT_FORMATS.map(({ format, labelKey, Icon }) => ({
       label: localize(labelKey),
-      icon: <Icon className="size-4 text-text-secondary" />,
+      icon: <Icon className="text-text-secondary size-4" />,
       ...(exporting === format ? loadingRow(format) : {}),
       disabled: svg == null || isBusy,
       onClick: format === 'svg' ? handleSvgExport : handlePngExport,
@@ -206,7 +197,7 @@ const MermaidExport = memo(function MermaidExport({
     if (onDownloadSource != null) {
       items.push({
         label: localize('com_ui_export_mermaid_source'),
-        icon: <Workflow className="size-4 text-text-secondary" />,
+        icon: <Workflow className="text-text-secondary size-4" />,
         ...(exporting === 'source' ? loadingRow('source') : {}),
         /* The source is the artifact's own content, so unlike SVG and PNG it
          * does not wait on a rendered preview. */
@@ -238,7 +229,8 @@ const MermaidExport = memo(function MermaidExport({
         setIsOpen={setIsOpen}
         items={dropdownItems}
         portalElement={portalElement}
-        className="absolute right-0 top-0 mt-2 min-w-52 motion-reduce:!transition-none"
+        className="absolute top-0 right-0 mt-2 motion-reduce:!transition-none"
+        minWidth="13rem"
         trigger={
           <TooltipAnchor
             portalElement={portalElement}
@@ -249,8 +241,8 @@ const MermaidExport = memo(function MermaidExport({
                 aria-label={localize('com_ui_export_mermaid')}
                 aria-busy={isBusy || undefined}
                 className={cn(
-                  'flex items-center justify-center rounded-lg p-1.5 text-text-secondary transition-colors motion-reduce:transition-none',
-                  'hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-heavy',
+                  'text-text-secondary flex items-center justify-center rounded-lg p-1.5 transition-colors motion-reduce:transition-none',
+                  'hover:bg-surface-hover hover:text-text-primary focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
                   buttonClassName,
                 )}
               >

@@ -1,14 +1,25 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import {
-  AUTH_USER_DOC_BY_ID_PREFIX,
-  CacheKeys,
-  type RefillIntervalUnit,
-  type StatefulCodeEnvironment,
+import { AUTH_USER_DOC_CACHE_TTL_MS, CacheKeys } from 'librechat-data-provider';
+import type {
+  BalanceRefillMode,
+  RefillIntervalUnit,
+  StatefulCodeEnvironment,
 } from 'librechat-data-provider';
-import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
+import type {
+  IUser,
+  BalanceConfig,
+  CreateUserRequest,
+  UserRecord,
+  NewUserData,
+  UserDeleteResult,
+  CreateUserIfAbsentResult,
+} from '~/types';
+import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { evictAuthUserDocs } from '~/utils/eviction';
 import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
+import logger from '~/config/winston';
 
 /** Default JWT session expiry: 15 minutes in milliseconds */
 export const DEFAULT_SESSION_EXPIRY: number = 1000 * 60 * 15;
@@ -17,9 +28,21 @@ export const USER_DELETION_FENCE_STALE_MS: number = 15 * 60_000;
 /** Bounds concurrent bulk deletions held for one owner at any moment. */
 const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
+/** Providers whose credentials LibreChat owns, and therefore the only ones it can enroll in 2FA. */
+const TWO_FACTOR_ENROLLMENT_PROVIDERS = [null, 'local', 'ldap'];
+const TWO_FACTOR_ENROLLMENT_PROJECTION =
+  '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash';
+
 interface UserMethodDeps {
   getCache?: (key: string) => CacheStore | undefined;
+  /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
+  delay?: (ms: number) => Promise<void>;
 }
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
+const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
 
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
@@ -39,6 +62,9 @@ export function createUserMethods(
     fieldsToSelect?: string | string[] | null,
     options?: { limit?: number; offset?: number; sort?: Record<string, 1 | -1> },
   ) => Promise<IUser[]>;
+  findOwnerContactUsers: (
+    ownerIds: string[],
+  ) => Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>>;
   countUsers: (filter?: FilterQuery<IUser>) => Promise<number>;
   createUser: (
     data: CreateUserRequest,
@@ -46,11 +72,27 @@ export function createUserMethods(
     disableTTL?: boolean,
     returnUser?: boolean,
   ) => Promise<mongoose.Types.ObjectId | Partial<IUser>>;
-  updateUser: (userId: string, updateData: Partial<IUser>) => Promise<IUser | null>;
+  createUserIfAbsent: (
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ) => Promise<CreateUserIfAbsentResult>;
+  updateUser: (
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState?: FilterQuery<IUser>,
+    options?: { preserveExpiresAt?: boolean },
+  ) => Promise<IUser | null>;
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  consumeBackupCode: (userId: string, codeHash: string) => Promise<boolean>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
     profileData: Pick<Partial<IUser>, 'username' | 'name'>,
+  ) => Promise<IUser | null>;
+  updateTwoFactorEnrollment: (
+    userId: string,
+    guard: TwoFactorEnrollmentGuard,
+    updateData: TwoFactorEnrollmentUpdate,
   ) => Promise<IUser | null>;
   acceptTerms: (userId: string) => Promise<IUser | null>;
   searchUsers: ({
@@ -96,6 +138,8 @@ export function createUserMethods(
         used: boolean;
         usedAt?: Date | null;
       }>;
+      twoFactorAcknowledgementNonceHash?: string | null;
+      twoFactorFinalizationNonceHash?: string | null;
       refreshToken?: Array<{
         refreshToken: string;
       }>;
@@ -212,6 +256,19 @@ export function createUserMethods(
     }
     return await query.lean<IUser[]>();
   }
+  async function findOwnerContactUsers(
+    ownerIds: string[],
+  ): Promise<Array<Pick<IUser, '_id' | 'name' | 'username'>>> {
+    if (ownerIds.length === 0) {
+      return [];
+    }
+
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const objectIds = ownerIds.map((ownerId) => new mongoose.Types.ObjectId(ownerId));
+    return await User.find({ _id: { $in: objectIds } })
+      .select('_id name username')
+      .lean<Array<Pick<IUser, '_id' | 'name' | 'username'>>>();
+  }
 
   /**
    * Count the number of user documents in the collection based on the provided filter.
@@ -219,6 +276,48 @@ export function createUserMethods(
   async function countUsers(filter: FilterQuery<IUser> = {}): Promise<number> {
     const User = mongoose.models.User;
     return await User.countDocuments(filter);
+  }
+
+  /**
+   * Initializes a new user's start balance, with auto-refill settings when complete. The write is
+   * insert-only, so it never replaces a balance that already exists or the activity recorded on it.
+   */
+  async function creditStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+
+    const Balance = mongoose.models.Balance;
+    const initial: {
+      tokenCredits: number;
+      autoRefillEnabled?: boolean;
+      refillIntervalValue?: number;
+      refillIntervalUnit?: RefillIntervalUnit;
+      refillAmount?: number;
+      refillMode?: BalanceRefillMode;
+    } = { tokenCredits: balanceConfig.startBalance };
+
+    if (
+      balanceConfig.autoRefillEnabled &&
+      balanceConfig.refillIntervalValue != null &&
+      balanceConfig.refillIntervalUnit != null &&
+      balanceConfig.refillAmount != null
+    ) {
+      initial.autoRefillEnabled = true;
+      initial.refillIntervalValue = balanceConfig.refillIntervalValue;
+      initial.refillIntervalUnit = balanceConfig.refillIntervalUnit;
+      initial.refillAmount = balanceConfig.refillAmount;
+      initial.refillMode = balanceConfig.refillMode ?? 'add';
+    }
+
+    await Balance.findOneAndUpdate(
+      { _id: userId },
+      { $setOnInsert: { ...initial, user: userId } },
+      { upsert: true, new: true },
+    ).lean();
   }
 
   /**
@@ -231,7 +330,6 @@ export function createUserMethods(
     returnUser: boolean = false,
   ): Promise<mongoose.Types.ObjectId | Partial<IUser>> {
     const User = mongoose.models.User;
-    const Balance = mongoose.models.Balance;
 
     const userData: Partial<IUser> = {
       ...data,
@@ -243,41 +341,7 @@ export function createUserMethods(
     }
 
     const user = await User.create(userData);
-
-    // If balance is enabled, create or update a balance record for the user
-    if (balanceConfig?.enabled && balanceConfig?.startBalance) {
-      const update: {
-        $inc: { tokenCredits: number };
-        $set?: {
-          autoRefillEnabled: boolean;
-          refillIntervalValue: number;
-          refillIntervalUnit: RefillIntervalUnit;
-          refillAmount: number;
-        };
-      } = {
-        $inc: { tokenCredits: balanceConfig.startBalance },
-      };
-
-      if (
-        balanceConfig.autoRefillEnabled &&
-        balanceConfig.refillIntervalValue != null &&
-        balanceConfig.refillIntervalUnit != null &&
-        balanceConfig.refillAmount != null
-      ) {
-        update.$set = {
-          autoRefillEnabled: true,
-          refillIntervalValue: balanceConfig.refillIntervalValue,
-          refillIntervalUnit: balanceConfig.refillIntervalUnit,
-          refillAmount: balanceConfig.refillAmount,
-        };
-      }
-
-      await Balance.findOneAndUpdate(
-        { _id: user._id },
-        { ...update, $setOnInsert: { user: user._id } },
-        { upsert: true, new: true },
-      ).lean();
-    }
+    await creditStartBalance(user._id, balanceConfig);
 
     if (returnUser) {
       return user.toObject() as Partial<IUser>;
@@ -286,20 +350,120 @@ export function createUserMethods(
   }
 
   /**
-   * Update a user with new data without overwriting existing properties.
+   * Creates a user without a TTL, or reports `user_exists` when a unique email or provider
+   * identity index already holds the account, as when concurrent first logins race to insert it.
+   * The start balance is initialized under the new user's id before the user is inserted, so
+   * the account is never visible without it and login balance sync never initializes it first.
+   * A balance write that fails, or an insert a unique index rejects, removes the balance under
+   * the id that never became a user; any other insert failure keeps it, since an unacknowledged
+   * insert may still have committed.
    */
-  async function updateUser(userId: string, updateData: Partial<IUser>): Promise<IUser | null> {
+  async function createUserIfAbsent(
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ): Promise<CreateUserIfAbsentResult> {
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const userData: Partial<IUser> = { ...data };
+    delete userData.expiresAt;
+
+    const user = new User(userData);
+    await user.validate();
+    try {
+      await creditStartBalance(user._id, balanceConfig);
+    } catch (error) {
+      await discardStartBalance(user._id, balanceConfig);
+      throw error;
+    }
+
+    try {
+      await user.save({ validateBeforeSave: false });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) {
+        throw error;
+      }
+      await discardStartBalance(user._id, balanceConfig);
+      return { ok: false, error: { code: 'user_exists' } };
+    }
+
+    return { ok: true, value: user.toObject() as UserRecord };
+  }
+
+  /** Removes, best effort, the start balance initialized for an id that never became a user. */
+  async function discardStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+    try {
+      await mongoose.models.Balance.deleteOne({ _id: userId });
+    } catch {
+      logger.warn(
+        '[createUserIfAbsent] Could not remove the start balance of a user never created',
+        {
+          userId: userId.toString(),
+        },
+      );
+    }
+  }
+
+  /**
+   * Update a user with new data without overwriting existing properties.
+   * Removes pending-account expiry unless preserveExpiresAt is requested.
+   */
+  async function updateUser(
+    userId: string,
+    updateData: Partial<IUser>,
+    expectedState: FilterQuery<IUser> = {},
+    options: { preserveExpiresAt?: boolean } = {},
+  ): Promise<IUser | null> {
     const User = mongoose.models.User;
     const updateOperation = {
       $set: updateData,
-      $unset: { expiresAt: '' }, // Remove the expiresAt field to prevent TTL
+      ...(options.preserveExpiresAt ? {} : { $unset: { expiresAt: '' } }),
     };
-    const updated = await User.findByIdAndUpdate(userId, updateOperation, {
-      new: true,
-      runValidators: true,
-    }).lean<IUser>();
+    const updated = await User.findOneAndUpdate(
+      { ...expectedState, _id: userId },
+      updateOperation,
+      {
+        new: true,
+        runValidators: true,
+      },
+    ).lean<IUser>();
     await invalidateAuthUserDocCache(userId);
     return updated;
+  }
+
+  /**
+   * The barrier a credential change passes before it is confirmed. A cached document without
+   * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
+   * eviction is retried and, when it still cannot remove every document, this resolves only
+   * after the cache TTL. Callers revoke sessions and passkeys first: during the wait those
+   * could otherwise mint access tokens issued after the stamp.
+   */
+  async function awaitAuthUserDocEviction(userId: string): Promise<void> {
+    if (await invalidateAuthUserDocCache(userId)) {
+      return;
+    }
+    logger.warn(
+      '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
+      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
+    );
+    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+  }
+
+  /** Only the request that atomically consumes an unused recovery code may authenticate. */
+  async function consumeBackupCode(userId: string, codeHash: string): Promise<boolean> {
+    const result = await mongoose.models.User.updateOne(
+      { _id: userId, backupCodes: { $elemMatch: { codeHash, used: false } } },
+      { $set: { 'backupCodes.$.used': true, 'backupCodes.$.usedAt': new Date() } },
+    );
+    if (result.modifiedCount !== 1) {
+      return false;
+    }
+    await invalidateAuthUserDocCache(userId);
+    return true;
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
@@ -327,26 +491,50 @@ export function createUserMethods(
     return updated;
   }
 
-  async function invalidateAuthUserDocCache(userId: string): Promise<void> {
+  /**
+   * Single compare-and-swap for every step of required two-factor enrollment. The filter always
+   * pins the user to an unenrolled, policy-eligible provider, and `guard` adds the exact pending
+   * secret, pending backup-code snapshot, or one-time nonce hash the caller observed. A step whose
+   * predicate has moved returns `null` instead of writing.
+   */
+  async function updateTwoFactorEnrollment(
+    userId: string,
+    guard: TwoFactorEnrollmentGuard,
+    updateData: TwoFactorEnrollmentUpdate,
+  ): Promise<IUser | null> {
+    const User = mongoose.models.User;
+    const updated = await User.findOneAndUpdate(
+      {
+        _id: userId,
+        twoFactorEnabled: { $ne: true },
+        provider: { $in: TWO_FACTOR_ENROLLMENT_PROVIDERS },
+        ...guard,
+      },
+      { $set: updateData, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    )
+      .select(TWO_FACTOR_ENROLLMENT_PROJECTION)
+      .lean<IUser>();
+    if (updated) {
+      await invalidateAuthUserDocCache(userId);
+    }
+    return updated;
+  }
+
+  /** Resolves false only when a cached document for the user may still be served. */
+  async function invalidateAuthUserDocCache(userId: string): Promise<boolean> {
     if (!isAuthUserDocCacheEnabled()) {
-      return;
+      return true;
     }
     const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get || !cache?.delete) {
-      return;
+    if (!cache?.get) {
+      return true;
     }
-    try {
-      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
-      const cachedKeys = await cache.get(indexKey);
-      if (Array.isArray(cachedKeys)) {
-        await Promise.all(
-          cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
-        );
-      }
-      await cache.delete(indexKey);
-    } catch {
-      // Cache invalidation must not make a user update fail.
+    const remove = cache.delete?.bind(cache);
+    if (!remove) {
+      return false;
     }
+    return evictAuthUserDocs({ get: (key) => cache.get(key), delete: remove }, { userId });
   }
 
   /**
@@ -413,6 +601,7 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
@@ -602,6 +791,9 @@ export function createUserMethods(
         username: user.username,
         provider: user.provider,
         email: user.email,
+        /** `iat` is whole seconds, too coarse to order this token against a password reset that
+         * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
+        issuedAtMs: Date.now(),
       },
       secret: process.env.JWT_SECRET,
       expirationTime: expires / 1000,
@@ -707,6 +899,8 @@ export function createUserMethods(
         used: boolean;
         usedAt?: Date | null;
       }>;
+      twoFactorAcknowledgementNonceHash?: string | null;
+      twoFactorFinalizationNonceHash?: string | null;
       refreshToken?: Array<{
         refreshToken: string;
       }>;
@@ -828,10 +1022,15 @@ export function createUserMethods(
   return {
     findUser,
     findUsers,
+    findOwnerContactUsers,
     countUsers,
     createUser,
+    createUserIfAbsent,
     updateUser,
+    awaitAuthUserDocEviction,
+    consumeBackupCode,
     claimSamlIdentity,
+    updateTwoFactorEnrollment,
     acceptTerms,
     searchUsers,
     getUserById,

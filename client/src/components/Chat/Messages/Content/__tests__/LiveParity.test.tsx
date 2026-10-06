@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -13,6 +14,9 @@ import type {
 import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
+import { getLiveActivity } from '../live';
+import * as mcpHooks from '~/hooks/MCP';
+import store from '~/store';
 
 /**
  * Parity between a live fold and the cards it unmounts.
@@ -26,7 +30,11 @@ import ContentParts from '../ContentParts';
  */
 jest.mock('~/hooks/MCP', () => {
   const mcpServerNames: string[] = [];
-  return { useMCPIconMap: () => new Map(), useMCPServerNames: () => mcpServerNames };
+  return {
+    __esModule: true,
+    useMCPIconMap: () => new Map(),
+    useMCPServerNames: () => mcpServerNames,
+  };
 });
 
 type Verdict = 'running' | 'completed' | 'failed' | 'cancelled';
@@ -155,6 +163,7 @@ const mount = (
         />
       </RecoilRoot>
     </QueryClientProvider>,
+    { wrapper: MemoryRouter },
   );
 
 /** What the real card says, read the way a user would, in the real English
@@ -183,6 +192,82 @@ const foldVerdict = (): Verdict => {
     ? 'running'
     : 'completed';
 };
+
+describe('live combo aggregation', () => {
+  const activity = (parts: Array<TMessageContentParts | undefined>) =>
+    getLiveActivity(parts, (key) => key, []);
+
+  it('counts a long repeated suffix without reading the historical prefix twice per delta', () => {
+    const parts = Array.from({ length: 1024 }, (_, index) =>
+      toPart({ name: 'lookup', output: 'ok' }, `call-${index}`),
+    );
+    const first = parts[0];
+    const readFirst = jest.fn(() => first);
+    Object.defineProperty(parts, 0, { get: readFirst });
+
+    for (const intent of ['Checking', 'Checking the', 'Checking the last file']) {
+      parts[parts.length - 1] = toPart({ name: 'lookup', args: { intent } }, 'tail');
+      readFirst.mockClear();
+      /** A tail that names its own work hides the count, but the span pass
+       *  still reaches the head, and must do so exactly once per delta. */
+      expect(activity(parts).comboCount).toBe(1);
+      expect(readFirst).toHaveBeenCalledTimes(1);
+    }
+
+    /** The same 1,024 parts under a generic tail: the whole suffix counts, on
+     *  the same single prefix read. */
+    parts[parts.length - 1] = toPart({ name: 'lookup', output: 'ok' }, 'tail');
+    readFirst.mockClear();
+    expect(activity(parts).comboCount).toBe(1024);
+    expect(readFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts only the suffix, ignoring descriptive metadata and sparse slots', () => {
+    const call = (name: string) => toPart({ name, output: 'ok' });
+    expect(
+      activity([
+        call('read_file'),
+        call('edit_file'),
+        call('read_file'),
+        undefined,
+        { type: ContentTypes.THINK, think: 'Checking another file' },
+        { type: ContentTypes.ACTIVITY_LABEL, activity_label: 'Read a file' },
+        call('read_file'),
+      ]).comboCount,
+    ).toBe(2);
+  });
+
+  it('uses full tool identity, not the shared MCP server or icon', () => {
+    expect(
+      activity([
+        toPart({ name: 'read_mcp_workspace', output: 'ok' }),
+        toPart({ name: 'edit_mcp_workspace', output: 'ok' }),
+      ]).comboCount,
+    ).toBe(1);
+  });
+
+  it('reuses normalized Bash identity and recomputes it when streamed arguments change', () => {
+    const first = toPart({ name: Tools.bash_tool, output: 'ok' });
+    const programmatic = (lang: string) =>
+      toPart({ name: Constants.PROGRAMMATIC_TOOL_CALLING, args: { lang } });
+    expect(activity([first, programmatic('bash')]).comboCount).toBe(2);
+    expect(activity([first, programmatic('python')]).comboCount).toBe(1);
+  });
+
+  it.each<TMessageContentParts>([
+    { type: ContentTypes.THINK, think: 'Considering the results' },
+    { type: ContentTypes.TEXT, text: 'Checking the results', phase: 'commentary' },
+    { type: ContentTypes.ACTIVITY_LABEL, activity_label: 'Checked the results' },
+  ])('does not attach a tool multiplier to a trailing $type line', (tail) => {
+    expect(
+      activity([
+        toPart({ name: 'lookup', output: 'ok' }, 'first'),
+        toPart({ name: 'lookup', output: 'ok' }, 'second'),
+        tail,
+      ]).comboCount,
+    ).toBe(1);
+  });
+});
 
 describe('live fold parity with the cards it hides', () => {
   afterEach(() => {
@@ -217,7 +302,7 @@ describe('live fold parity with the cards it hides', () => {
     mount([earlier, later], [artifact], true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1 failed');
+    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
     expect(button).not.toHaveTextContent(/^Failed/);
   });
 
@@ -229,6 +314,270 @@ describe('live fold parity with the cards it hides', () => {
 
     mount([toPart({ name: 'subagent', output: 'done' })], undefined, true);
     expect(screen.queryByTestId('activity-phase-card')).toBeNull();
+  });
+
+  it('describes repeated background-task polls as checks in the live fold', () => {
+    jest.useFakeTimers();
+    const poll = (id: string, output: string) =>
+      toPart(
+        {
+          name: Constants.CHECK_BACKGROUND_TASK,
+          args: { background_task_id: 'same-task' },
+          output,
+        },
+        id,
+      );
+    const completed = JSON.stringify({
+      background_task_id: 'same-task',
+      tool: Tools.bash_tool,
+      status: 'running',
+    });
+    const view = mount(
+      [poll('first', completed), poll('second', completed), poll('third', completed)],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getByRole('button');
+
+    expect(header).toHaveAccessibleName('Checked background tasks · 3 checks');
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('· 3 checks');
+    expect(header).not.toHaveTextContent('check_background_task');
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <ContentParts
+            content={[
+              poll('first', completed),
+              poll('second', completed),
+              poll('third', completed),
+              poll('fourth', ''),
+            ]}
+            messageId="m1"
+            conversationId="c1"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting
+            showThinking={false}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Checking background tasks · 4 checks');
+  });
+
+  it.each([
+    ['error', 'Failed: Background tasks · 1/1 failed'],
+    ['cancelled', 'Cancelled · 1 cancelled'],
+  ])('keeps the %s verdict of a polled background task in the live fold', (status, label) => {
+    const output = JSON.stringify({
+      background_task_id: 'bg1',
+      tool: Tools.bash_tool,
+      status,
+    });
+    mount(
+      [toPart({ name: Constants.CHECK_BACKGROUND_TASK, output, runStepStatus: 'completed' })],
+      undefined,
+      true,
+    );
+    expect(
+      within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
+    ).toHaveAccessibleName(label);
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+  });
+
+  it('shows a multiplier for consecutive uses of the same tool and resets on a different tool', () => {
+    jest.useFakeTimers();
+    const first = toPart({ name: 'create_file', output: 'created' }, 'first');
+    const second = toPart({ name: 'create_file', output: '' }, 'second');
+    const view = mount([first, second], undefined, true);
+
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
+    expect(
+      within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
+    ).toHaveAccessibleName(/×2/);
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <ContentParts
+            content={[first, second, toPart({ name: 'edit_file', output: '' }, 'third')]}
+            messageId="m1"
+            conversationId="c1"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting
+            showThinking={false}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+  });
+
+  it('prints the multiplier beside the line it counts, not at the row edge', () => {
+    mount(
+      [
+        toPart({ name: 'create_file', output: 'created' }, 'first'),
+        toPart({ name: 'create_file', output: '' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+    const [lineId] = (header.getAttribute('aria-labelledby') ?? '').split(' ');
+    const line = document.getElementById(lineId);
+    const combo = screen.getByTestId('live-phase-combo');
+
+    expect(line).not.toBeNull();
+    /** One flex track with the line, directly after the box holding it: the
+     *  count belongs to that line, so nothing may sit between them and the
+     *  row's free space has to open up after the pair, not inside it. */
+    expect(combo.parentElement).toContainElement(line);
+    expect(combo.previousElementSibling).toContainElement(line);
+    expect(combo.previousElementSibling?.className).not.toContain('flex-1');
+    expect(combo.nextElementSibling).toBeNull();
+  });
+
+  it('keeps the whole row for a line with no multiplier', () => {
+    /** The reasoning preview decides whether it may stream freely by comparing
+     *  itself to the row, so a lone line must still be measured full width. */
+    mount([toPart({ name: 'create_file', output: '' }, 'only')], undefined, true);
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+    const [lineId] = (header.getAttribute('aria-labelledby') ?? '').split(' ');
+
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+    expect(document.getElementById(lineId)?.parentElement?.className).toContain('flex-1');
+  });
+
+  it('keeps the span verdict after the multiplier', () => {
+    mount(
+      [
+        toPart({ name: 'create_file', output: 'created', runStepStatus: 'failed' }, 'first'),
+        toPart({ name: 'create_file', output: '' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+    const combo = screen.getByTestId('live-phase-combo');
+    const outcome = screen.getByTestId('live-phase-outcome');
+
+    expect(combo).toHaveTextContent('×2');
+    expect(outcome).toHaveTextContent('1/2 failed');
+    /** The count reads with the line; the verdict stays where the row ends. */
+    expect(combo.compareDocumentPosition(outcome) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(combo.parentElement).not.toContainElement(outcome);
+    expect(
+      within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
+    ).toHaveAccessibleName(/×2 · 1\/2 failed$/);
+  });
+
+  it('changes the multiplier with the throttled status line', () => {
+    jest.useFakeTimers();
+    /** Generic lines, because only those carry a count: the multiplier has to
+     *  arrive with the line it belongs to, not a paint ahead of it. */
+    const first = toPart({ name: 'create_file', output: 'created' }, 'first');
+    const second = toPart({ name: 'create_file', output: '' }, 'second');
+    const view = mount([first], undefined, true);
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <ContentParts
+            content={[first, second]}
+            messageId="m1"
+            conversationId="c1"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting
+            showThinking={false}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+    expect(header).toHaveAccessibleName('Ran Create File');
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Running Create File ×2');
+  });
+
+  it('drops the multiplier as soon as the call names its own work', () => {
+    /** A count modifies the tool's name. Once the line is a sentence about
+     *  this call, `×2` reads as a claim about the sentence. */
+    const view = mount(
+      [
+        toPart({ name: 'create_file', output: 'created' }, 'first'),
+        toPart({ name: 'create_file', args: '{"intent":"Creating the second file"}' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+
+    expect(header).toHaveAccessibleName('Creating the second file');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+
+    /** The same pair without the intent still counts, so the suppression is
+     *  the line's doing and not a lost count. */
+    view.unmount();
+    mount(
+      [
+        toPart({ name: 'create_file', output: 'created' }, 'first'),
+        toPart({ name: 'create_file', output: '' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
+  });
+
+  it('drops the multiplier on a line that reports how the call ended', () => {
+    mount(
+      [
+        toPart({ name: 'lookup', output: 'rows' }, 'first'),
+        toPart({ name: 'lookup', output: 'rows', runStepStatus: 'failed' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+    const header = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
+
+    /** The span's verdict still counts the failure; the line does not count
+     *  the tool, because "Failed lookup ×2" would blame both calls. */
+    expect(header).toHaveAccessibleName(/^Failed: lookup/);
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+    expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
+  });
+
+  it('resets the multiplier across an agent handoff', () => {
+    const handoff = {
+      type: ContentTypes.AGENT_UPDATE,
+      [ContentTypes.AGENT_UPDATE]: { agentId: 'agent-b', index: 1 },
+    } as TMessageContentParts;
+    mount(
+      [
+        toPart({ name: 'create_file', output: 'created' }, 'first'),
+        handoff,
+        toPart({ name: 'create_file', output: '' }, 'second'),
+      ],
+      undefined,
+      true,
+    );
+
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
   });
 
   it('treats a second call that reuses a provider id as a new line', () => {
@@ -267,8 +616,9 @@ describe('live fold parity with the cards it hides', () => {
     mount([toPart({ name: 'lookup', output: 'rows' }), think], undefined, true);
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('接下来检查顺序约定');
-    expect(button).not.toHaveTextContent('两个引用');
+    /** Only the finished sentence; the one still being written stays out. */
+    expect(button).toHaveTextContent('两个引用共享一个提交。');
+    expect(button).not.toHaveTextContent('接下来');
   });
 
   it('keeps a CJK sentence that ends exactly at the tail instead of reverting to the call', () => {
@@ -472,9 +822,8 @@ describe('live fold parity with the cards it hides', () => {
         true,
       );
       fireEvent.click(screen.getByRole('button', { name: 'Reviewed the work' }));
-      const group = screen.getByTestId('tool-call-group-panel')
-        .previousElementSibling as HTMLElement;
-      expect(group).toHaveAccessibleName(/1 failed/);
+      const group = screen.getByRole('button', { name: /Ran 2 actions.*1\/2 failed/ });
+      expect(group).toHaveAccessibleName(/1\/2 failed/);
       expect(group.querySelector('.lucide-triangle-alert')).not.toBeNull();
     });
 
@@ -540,9 +889,9 @@ describe('live fold parity with the cards it hides', () => {
     );
     const button = within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0];
 
-    expect(button).toHaveTextContent('Querying the graph');
-    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1 failed');
-    expect(button).toHaveAccessibleName(/Querying the graph.*1 failed/);
+    expect(button).toHaveTextContent('Preparing lookup');
+    expect(within(button).getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
+    expect(button).toHaveAccessibleName(/Preparing lookup.*1\/2 failed/);
   });
 
   it('announces a failure on the SAME call at once, without waiting for another source', () => {
@@ -572,7 +921,7 @@ describe('live fold parity with the cards it hides', () => {
       jest.advanceTimersByTime(500);
     });
 
-    expect(announcer()).toHaveTextContent('1 failed');
+    expect(announcer()).toHaveTextContent('1/1 failed');
     expect(announcer().closest('button')).toBeNull();
   });
 
@@ -641,9 +990,57 @@ describe('live activity hardening transitions', () => {
     </QueryClientProvider>
   );
 
+  it('shows a thought only as finished sentences, each held for a second', () => {
+    jest.useFakeTimers();
+    const content = (think: string): TMessageContentParts[] => [
+      { type: ContentTypes.THINK, think },
+    ];
+    const view = render(frame(content('Let me')));
+    const header = screen.getByRole('button');
+    /** Nothing finished yet: the generic line, not a fragment. */
+    expect(header).toHaveAccessibleName('Thinking...');
+    view.rerender(frame(content('Let me check the evidence')));
+    act(() => jest.advanceTimersByTime(1000));
+    expect(header).toHaveAccessibleName('Thinking...');
+
+    /** A sentence finishing a second after the last paint shows at once. */
+    view.rerender(frame(content('Let me check the evidence.')));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
+
+    /** The next sentence is written behind the finished one. */
+    view.rerender(frame(content('Let me check the evidence. Now I can')));
+    act(() => jest.advanceTimersByTime(200));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
+
+    /** Finished 200ms after the last paint: the line holds its sentence for
+     *  the rest of the second before the next one takes it. */
+    view.rerender(frame(content('Let me check the evidence. Now I can decide.')));
+    act(() => jest.advanceTimersByTime(200));
+    expect(header).toHaveAccessibleName('Let me check the evidence.');
+    act(() => jest.advanceTimersByTime(600));
+    expect(header).toHaveAccessibleName('Now I can decide.');
+    expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
+  });
+
+  it('keeps decimals and versions inside one sentence', () => {
+    jest.useFakeTimers();
+    const content = (think: string): TMessageContentParts[] => [
+      { type: ContentTypes.THINK, think },
+    ];
+    render(frame(content('The gain was 3.5 points on v2.1 today. Next up')));
+    expect(screen.getByRole('button')).toHaveAccessibleName(
+      'The gain was 3.5 points on v2.1 today.',
+    );
+  });
+
   function SandboxEvent() {
     const setStarting = useSetAtom(sandboxStartingByToolCallId('sandbox-call'));
-    return <button onClick={() => setStarting(true)}>{'Start sandbox'}</button>;
+    return (
+      <>
+        <button onClick={() => setStarting(true)}>{'Start sandbox'}</button>
+        <button onClick={() => setStarting(false)}>{'Clear sandbox startup'}</button>
+      </>
+    );
   }
 
   it.each([
@@ -658,20 +1055,92 @@ describe('live activity hardening transitions', () => {
      *  reads the same sandbox signal instead, and stays one card throughout. */
     jest.useFakeTimers();
     const call = { name, args, output: '' };
-    const view = render(frame([toPart(call, 'sandbox-call')], <SandboxEvent />));
+    const earlier = toPart({ ...call, output: 'ok' }, 'earlier');
+    const view = render(frame([earlier, toPart(call, 'sandbox-call')], <SandboxEvent />));
     const card = screen.getByTestId('activity-phase-card');
+    const header = within(card).getByRole('button');
     expect(screen.queryByTestId('tool-call')).toBeNull();
+    expect(header).toHaveAccessibleName(/×2$/);
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start sandbox' }));
+    expect(header).toHaveAccessibleName(/×2$/);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Starting sandbox environment');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear sandbox startup' }));
+    expect(header).toHaveAccessibleName('Starting sandbox environment');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName(/×2$/);
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
 
     fireEvent.click(screen.getByRole('button', { name: 'Start sandbox' }));
     act(() => {
       jest.advanceTimersByTime(500);
     });
-    expect(card).toHaveTextContent('Starting sandbox');
+    expect(header).toHaveAccessibleName('Starting sandbox environment');
+    /** Output can arrive before the transient startup flag is cleared. */
+    view.rerender(
+      frame([
+        earlier,
+        toPart({ ...call, output: 'ok', runStepStatus: 'completed' }, 'sandbox-call'),
+      ]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(header).toHaveAccessibleName(/^Ran .* ×2$/);
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
+  });
+
+  it('keeps startup and intent labels uncounted, then counts a new generic call', () => {
+    jest.useFakeTimers();
+    const earlier = toPart({ name: Tools.execute_code, output: 'ok' }, 'earlier');
+    const pending = toPart({ name: Tools.execute_code, output: '' }, 'sandbox-call');
+    const view = render(frame([earlier, pending], <SandboxEvent />));
+    const header = within(screen.getByTestId('activity-phase-card')).getByRole('button');
+    fireEvent.click(screen.getByRole('button', { name: 'Start sandbox' }));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Starting sandbox environment');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
+
+    const named = toPart(
+      { name: Tools.execute_code, args: '{"intent":"Checking the data', output: '' },
+      'sandbox-call',
+    );
+    view.rerender(frame([earlier, named]));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Preparing Code ×2');
+    const dispatched = toPart(
+      { name: Tools.execute_code, args: '{"intent":"Checking the data"}', output: '' },
+      'sandbox-call',
+    );
+    view.rerender(frame([earlier, dispatched]));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName('Checking the data');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
 
     view.rerender(
-      frame([toPart({ ...call, output: 'ok', runStepStatus: 'completed' }, 'sandbox-call')]),
+      frame([earlier, dispatched, toPart({ name: Tools.execute_code, output: '' }, 'next-call')]),
     );
-    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(header).toHaveAccessibleName(/^Running .* ×3$/);
+    expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×3');
   });
 
   it('holds one card across a run of code calls whose intent is not the first key', () => {
@@ -703,6 +1172,14 @@ describe('live activity hardening transitions', () => {
       frame([
         toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data', output: '' }),
       ]),
+    );
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(screen.getByTestId('activity-phase-card')).toBe(card);
+    expect(screen.getByRole('button')).toHaveAccessibleName('Preparing Code');
+    view.rerender(
+      frame([toPart({ name: Tools.execute_code, args: '{"intent":"Checking the data"}' })]),
     );
     act(() => {
       jest.advanceTimersByTime(500);
@@ -776,7 +1253,9 @@ describe('live activity hardening transitions', () => {
         });
       }
       expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
-      expect(screen.getByRole('button')).toHaveAccessibleName('Next sentence');
+      /** The finished sentence is the long run itself, clamped to one line;
+       *  the sentence after it is still being written. */
+      expect(screen.getByRole('button')).toHaveAccessibleName(`${'x'.repeat(255)}…`);
     },
   );
 
@@ -795,6 +1274,7 @@ describe('live activity hardening transitions', () => {
     });
     const header = screen.getByRole('button');
     expect(header).toHaveAccessibleName('Checking the next file');
+    expect(screen.queryByTestId('live-phase-combo')).toBeNull();
     expect(header.querySelector('.absolute[aria-hidden="true"]')).toBeNull();
   });
 
@@ -828,11 +1308,12 @@ describe('live activity hardening transitions', () => {
         jest.advanceTimersByTime(500);
       });
       const expected = {
-        error: /Failed.*1 failed/,
+        error: /Failed.*1\/1 failed/,
         cancelled: /Cancelled.*1 cancelled/,
         completed: 'Finished in background',
       }[status];
-      expect(screen.getByRole('button')).toHaveAccessibleName(expected);
+      /** The header is the first button; a failure adds the pill after it. */
+      expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(expected);
     },
   );
 
@@ -856,8 +1337,10 @@ describe('live activity hardening transitions', () => {
         ...calls.slice(1),
       ]),
     );
-    expect(screen.getByRole('button')).toHaveAccessibleName(/Looking up item 1023.*1 failed/);
-    expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('1 failed');
+    expect(screen.getAllByRole('button')[0]).toHaveAccessibleName(
+      /Looking up item 1023.*1\/1024 failed/,
+    );
+    expect(screen.getByTestId('activity-phase-announcer')).toHaveTextContent('1/1024 failed');
   });
 
   it('owns exactly one polite region across live-to-settled replacement', () => {
@@ -1007,3 +1490,217 @@ describe('live disclosure ownership', () => {
     expect(within(card).getAllByRole('button')[0]).toHaveAttribute('aria-expanded', 'true');
   });
 });
+
+describe('tool pane identity at finalization', () => {
+  const call = (id = 't1', extra: Record<string, unknown> = {}) =>
+    toPart(
+      {
+        name: 'bash_tool',
+        args: { command: 'printf hello' },
+        output: '',
+        ...extra,
+      },
+      id,
+    );
+
+  function setup(autoExpand = false) {
+    const client = new QueryClient();
+    const frame = (props: Partial<React.ComponentProps<typeof ContentParts>> = {}) => (
+      <QueryClientProvider client={client}>
+        <Provider>
+          <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, autoExpand)}>
+            <ContentParts
+              messageId="user-message_"
+              conversationId="c1"
+              content={[call()]}
+              isCreatedByUser={false}
+              isLast
+              isLatestMessage
+              isSubmitting
+              showThinking={false}
+              foldLiveActivity={false}
+              {...props}
+            />
+          </RecoilRoot>
+        </Provider>
+      </QueryClientProvider>
+    );
+    return frame;
+  }
+
+  const toggles = (container: HTMLElement) =>
+    Array.from(
+      container.querySelectorAll<HTMLButtonElement>('.progress-text-wrapper button[aria-expanded]'),
+    );
+
+  it.each(['completed', 'cancelled', 'failed'] as const)(
+    'keeps the opened pane after %s and sparse content compaction',
+    async (status) => {
+      const frame = setup();
+      const { container, rerender } = render(frame({ content: [undefined, call()] }));
+      fireEvent.click(toggles(container)[0]);
+      expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(container.querySelector('code.hljs span')).not.toBeNull();
+      rerender(
+        frame({
+          messageId: 'server-response',
+          isSubmitting: false,
+          content: [
+            {
+              ...call('t1', { output: 'hello', runStepStatus: status, stepId: 'final-step' }),
+              streamedIndex: 1,
+            },
+          ],
+        }),
+      );
+      expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(container.querySelector('code.hljs span')).not.toBeNull();
+    },
+  );
+
+  it('keeps an explicitly closed pane closed when auto-expand is enabled', () => {
+    const frame = setup(true);
+    const { container, rerender } = render(frame());
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggles(container)[0]);
+    rerender(frame({ messageId: 'server-response', isSubmitting: false }));
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps an untouched pane closed at completion', () => {
+    const frame = setup();
+    const { container, rerender } = render(frame());
+    rerender(frame({ messageId: 'server-response', isSubmitting: false }));
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps the tool choice when a live phase unwraps into settled content', () => {
+    const frame = setup();
+    const { container, rerender } = render(frame({ foldLiveActivity: true }));
+    fireEvent.click(within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0]);
+    /** The phase's only call opens with it, so the choice to record is closing it. */
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggles(container)[0]);
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
+    rerender(frame({ messageId: 'server-response', isSubmitting: false, foldLiveActivity: true }));
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it.each([
+    { messageId: 'other-response', isSubmitting: false },
+    { messageId: 'regenerated-response_', isSubmitting: true },
+    { messageId: 'server-response', conversationId: 'c2', isSubmitting: false },
+  ])('does not leak the choice into another response: %j', (next) => {
+    const frame = setup();
+    const { container, rerender } = render(
+      frame({ messageId: 'server-response', isSubmitting: false }),
+    );
+    fireEvent.click(toggles(container)[0]);
+    rerender(frame(next));
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps repeated provider ids independent by content position', () => {
+    const frame = setup();
+    const content = [
+      call(),
+      { type: ContentTypes.TEXT, text: 'Between calls' } as TMessageContentParts,
+      call(),
+    ];
+    const { container, rerender } = render(frame({ content }));
+    fireEvent.click(toggles(container)[0]);
+    rerender(frame({ content, messageId: 'server-response', isSubmitting: false }));
+    expect(toggles(container)[0]).toHaveAttribute('aria-expanded', 'true');
+    expect(toggles(container)[1]).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+describe('preparation labels across rendered tool cards', () => {
+  it.each([
+    'lookup',
+    Tools.bash_tool,
+    Tools.execute_code,
+    'create_file',
+    'edit_file',
+    'read_file',
+    'set_memory',
+    'skill',
+    Tools.web_search,
+    'file_search',
+    Constants.SUBAGENT,
+    'image_gen_oai',
+    'ask_user_question',
+    Constants.CHECK_BACKGROUND_TASK,
+  ])('does not present %s as executing while its args are streaming', (name) => {
+    const part = toPart({ name, args: '{"intent":"Checking a record","value":"unfinished' });
+    const { container } = mount([part], undefined, false);
+    expect(container.textContent).toContain('Preparing ');
+    if (name === Constants.SUBAGENT) {
+      expect(screen.getByRole('button', { name: /^Preparing / })).toBeInTheDocument();
+    } else {
+      expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    }
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
+  });
+
+  it('keeps collapsed activity in preparation until dispatch, without a sandbox-startup override', () => {
+    const call = {
+      name: Tools.bash_tool,
+      args: '{"command":"echo hi',
+      toolPreparationStartedAt: 100,
+    };
+    const preparing = getLiveActivity([toPart(call)], (key) => key, []);
+    expect(preparing.text).toBe('com_ui_tool_preparing');
+    expect(preparing.pendingToolCallId).toBeUndefined();
+    const dispatched = getLiveActivity(
+      [toPart({ ...call, args: '{"command":"echo hi"}', toolDispatchedAt: 200 })],
+      (key) => key,
+      [],
+    );
+    expect(dispatched.text).toBe('com_assistants_running_var');
+  });
+});
+
+it('keeps delimiter-bearing MCP server names out of preparation labels', () => {
+  const names = jest.spyOn(mcpHooks, 'useMCPServerNames').mockReturnValue(['Google_mcp_Workspace']);
+  try {
+    mount(
+      [toPart({ name: 'search_mcp_Google_mcp_Workspace', args: '{"query":"partial' })],
+      undefined,
+      false,
+    );
+    const card = screen.getByTestId('tool-call');
+    expect(within(card).getByRole('button')).toHaveTextContent('Preparing search');
+    expect(within(card).getByRole('button')).not.toHaveTextContent('Preparing search_mcp_Google');
+  } finally {
+    names.mockRestore();
+  }
+});
+
+it.each(['lookup', 'image_gen_oai'])(
+  'prepares legacy %s function cards while arguments stream',
+  (name) => {
+    const part: TMessageContentParts = {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'legacy',
+        type: ToolCallTypes.FUNCTION,
+        function: { name, arguments: '{"prompt":"unfinished', output: '' },
+        progress: 0.1,
+      },
+    };
+    const { container } = mount([part], undefined, false);
+    expect(container.querySelector('.shimmer')).toHaveTextContent(/^Preparing /);
+    for (const announcement of container.querySelectorAll('[aria-live]')) {
+      expect(announcement).toHaveTextContent(/^Preparing /);
+    }
+  },
+);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import {
   CODE_ENVIRONMENT_COMMAND_TIMEOUT_HARD_MAX_MS,
   CODE_WORKSPACE_ID_PATTERN,
@@ -8,6 +9,8 @@ import {
   isRepositoryInstructionDescriptor,
 } from 'librechat-data-provider';
 import type { CodeWorkspaceDescriptor, CodeWorkspaceOperation } from 'librechat-data-provider';
+import type { WorkspaceEditFileFeature } from './edits';
+import { WORKSPACE_EDIT_FILE_FEATURES } from './edits';
 
 const CODE_BRIDGE_REQUEST_TIMEOUT_MS = 10_000;
 // Covers 32 roots with 32 bounded action names and escaped metadata per root.
@@ -39,6 +42,8 @@ export type CodeBridgeWorkerStatus = {
   operations?: CodeWorkspaceOperation[];
   workspaces?: CodeWorkspaceDescriptor[];
   programmaticLanguages?: ['bash'];
+  /** Negotiated edit features; unknown names are dropped. */
+  editFileFeatures?: WorkspaceEditFileFeature[];
   maxCommandTimeoutMs?: number;
 };
 
@@ -77,6 +82,23 @@ export class CodeBridgeStatusError extends Error {
   }
 }
 
+/** Transport failures that say nothing about the worker itself; its own heartbeat lease still does. */
+function isTransientStatusFailure(error: unknown): boolean {
+  if (!(error instanceof CodeBridgeStatusError)) return false;
+  if (error.reason === 'timeout' || error.reason === 'failed') return true;
+  return error.reason === 'rejected' && error.upstreamStatus != null && error.upstreamStatus >= 500;
+}
+
+type RememberedReadyStatus = { status: CodeBridgeWorkerStatus; leaseExpiresAt: number };
+
+/**
+ * Polls worker status with a short shared cache. A transient transport failure (timeout, network
+ * error, 5xx from the Code API or the proxy in front of it) is not evidence that the worker left:
+ * while the last `ready` observation's heartbeat lease is still running, that observation answers
+ * for it, and without one the poll is retried once. Rejections and malformed responses fail
+ * immediately and forget the remembered status. `bypassCache` callers validate a selection before
+ * it is persisted, so they get exactly one fresh observation: no retry, no remembered status.
+ */
 export function createCodeBridgeStatusPoller({
   fetchImpl,
   maxConcurrent = 32,
@@ -91,16 +113,85 @@ export function createCodeBridgeStatusPoller({
   baseURL: string;
   token: string;
   workerId: string;
+  /** Force a new upstream request, bypassing cached results and older in-flight polls. */
+  bypassCache?: boolean;
 }) => Promise<CodeBridgeWorkerStatus> {
   const requests = new Map<
     string,
     { expiresAt: number; request: Promise<CodeBridgeWorkerStatus> }
   >();
+  const lastReady = new Map<string, RememberedReadyStatus>();
   let active = 0;
+
+  const remember = (key: string, status: CodeBridgeWorkerStatus, startedAt: number): void => {
+    lastReady.delete(key);
+    if (status.status !== 'ready' || status.leaseExpiresInMs == null) return;
+    if (lastReady.size >= maxEntries) {
+      const oldest = lastReady.keys().next().value;
+      if (oldest != null) lastReady.delete(oldest);
+    }
+    /** The lease was read after the request started, so this bound never outlives it. */
+    lastReady.set(key, { status, leaseExpiresAt: startedAt + status.leaseExpiresInMs });
+  };
+
+  const recall = (key: string): CodeBridgeWorkerStatus | undefined => {
+    const entry = lastReady.get(key);
+    if (entry == null) return undefined;
+    const remainingMs = entry.leaseExpiresAt - Date.now();
+    if (remainingMs <= 0) {
+      lastReady.delete(key);
+      return undefined;
+    }
+    return { ...entry.status, leaseExpiresInMs: remainingMs };
+  };
+
+  const fetchStatus = async (
+    params: { baseURL: string; token: string; workerId: string },
+    key: string,
+  ): Promise<CodeBridgeWorkerStatus> => {
+    const startedAt = Date.now();
+    try {
+      const status = await getCodeBridgeWorkerStatus({ ...params, fetchImpl });
+      remember(key, status, startedAt);
+      return status;
+    } catch (error) {
+      if (!isTransientStatusFailure(error)) lastReady.delete(key);
+      throw error;
+    }
+  };
+
+  const observe = async (
+    params: { baseURL: string; token: string; workerId: string },
+    key: string,
+  ): Promise<CodeBridgeWorkerStatus> => {
+    try {
+      return await fetchStatus(params, key);
+    } catch (error) {
+      if (!isTransientStatusFailure(error)) throw error;
+      const remembered = recall(key);
+      if (remembered != null) {
+        logger.warn(
+          `[codeBridge] Worker status poll failed (${(error as CodeBridgeStatusError).reason}); ` +
+            `using the last ready status for ${remembered.leaseExpiresInMs}ms more of its lease`,
+        );
+        return remembered;
+      }
+      return await fetchStatus(params, key);
+    }
+  };
+
   return (params) => {
     const credentialId = createHash('sha256').update(params.token).digest('base64url');
     const normalizedBaseURL = params.baseURL.trim().replace(/\/+$/, '');
     const key = `${normalizedBaseURL}\u0000${params.workerId}\u0000${credentialId}`;
+    if (params.bypassCache) {
+      if (active >= maxConcurrent) return Promise.reject(new CodeBridgeStatusError('busy'));
+      active += 1;
+      // Mutation validation needs its own observation, but still shares the polling capacity.
+      return fetchStatus(params, key).finally(() => {
+        active -= 1;
+      });
+    }
     const now = Date.now();
     const cached = requests.get(key);
     if (cached != null && cached.expiresAt > now) return cached.request;
@@ -116,7 +207,7 @@ export function createCodeBridgeStatusPoller({
     }
     active += 1;
     const startedAt = Date.now();
-    const request = getCodeBridgeWorkerStatus({ ...params, fetchImpl })
+    const request = observe(params, key)
       .then((status) => {
         const completedAt = Date.now();
         const ttl =
@@ -166,11 +257,19 @@ function validWorkspaceOperations(value: unknown): value is CodeWorkspaceOperati
   );
 }
 
+function knownEditFileFeatures(value: unknown): WorkspaceEditFileFeature[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return WORKSPACE_EDIT_FILE_FEATURES.filter((feature) => value.includes(feature));
+}
+
 function validWorkspaceCapabilities(value: unknown): value is {
   protocolVersion: 1;
   operations: CodeWorkspaceOperation[];
   workspaces: CodeWorkspaceDescriptor[];
   programmaticLanguages?: unknown;
+  editFileFeatures?: unknown;
 } {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
   const capabilities = value as Record<string, unknown>;
@@ -195,6 +294,7 @@ function validWorkspaceCapabilities(value: unknown): value is {
           key !== 'name' &&
           key !== 'operations' &&
           key !== 'workspaceInstances' &&
+          key !== 'workspaceScopes' &&
           key !== 'environment' &&
           key !== 'instructions',
       ) ||
@@ -210,6 +310,10 @@ function validWorkspaceCapabilities(value: unknown): value is {
         (!Array.isArray(workspace.workspaceInstances) ||
           workspace.workspaceInstances.length !== 1 ||
           workspace.workspaceInstances[0] !== 'git_worktree')) ||
+      (workspace.workspaceScopes !== undefined &&
+        (!Array.isArray(workspace.workspaceScopes) ||
+          workspace.workspaceScopes.length !== 1 ||
+          workspace.workspaceScopes[0] !== 'git_linked_worktree')) ||
       (workspace.name !== undefined &&
         (typeof workspace.name !== 'string' ||
           workspace.name.trim().length === 0 ||
@@ -351,7 +455,7 @@ export async function getCodeBridgeWorkerStatus({
     }
     let workspaceStatus: Pick<
       CodeBridgeWorkerStatus,
-      'operations' | 'workspaces' | 'programmaticLanguages'
+      'operations' | 'workspaces' | 'programmaticLanguages' | 'editFileFeatures'
     > = {};
     if (validWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = {
@@ -369,6 +473,10 @@ export async function getCodeBridgeWorkerStatus({
         capabilities.workspaceTools.programmaticLanguages.includes('bash')
       ) {
         workspaceStatus.programmaticLanguages = ['bash'];
+      }
+      const editFileFeatures = knownEditFileFeatures(capabilities.workspaceTools.editFileFeatures);
+      if (editFileFeatures.length > 0) {
+        workspaceStatus.editFileFeatures = editFileFeatures;
       }
     } else if (validLegacyWorkspaceCapabilities(capabilities?.workspaceTools)) {
       workspaceStatus = { operations: [...capabilities.workspaceTools.operations] };

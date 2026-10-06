@@ -1,6 +1,8 @@
 const express = require('express');
 const {
   isEnabled,
+  resolveEmailChangeSettings,
+  checkEmailConfig,
   isLangfuseConnectionAvailable,
   isLangfuseFanoutEnabled,
   getBalanceConfig,
@@ -8,14 +10,26 @@ const {
   getAppConfigOptionsFromUser,
   resolveBuildInfo,
   resolveTitleTiming,
+  getConversationTitleCapabilities,
   sanitizeModelSpecs,
   excludeHiddenModelSpecs,
   isFileSnapshotEnabled,
   getEndpointsDropParamsMap,
   resolveCodeEnvironmentDecisionVersion,
-  resolveCodeEnvironmentMoveVersion,
+  isPasskeyEnabled,
+  buildPreLoginInterface,
+  resolveMaxPasskeysPerUser,
+  resolveCodeEnvironmentMoveCapabilities,
+  resolveCodeWorkspaceInheritanceCapability,
+  resolveCodeEnvironmentTransitionVersion,
+  loadConversationListLimits,
 } = require('@librechat/api');
-const { EModelEndpoint, defaultSocialLogins } = require('librechat-data-provider');
+const {
+  DEFAULT_MCP_APP_CSP_LIMITS,
+  EModelEndpoint,
+  defaultSocialLogins,
+  resolveMCPAppsPolicy,
+} = require('librechat-data-provider');
 const { logger, getTenantId, SystemCapabilities } = require('@librechat/data-schemas');
 const { hasCapability, hasConfigCapability } = require('~/server/middleware/roles/capabilities');
 const { getLdapConfig } = require('~/server/services/Config/ldap');
@@ -82,6 +96,7 @@ function buildPreLoginPayload() {
       !!process.env.APPLE_TEAM_ID &&
       !!process.env.APPLE_KEY_ID &&
       !!process.env.APPLE_PRIVATE_KEY_PATH,
+    passkeyLoginEnabled: isPasskeyEnabled(),
     openidLoginEnabled: isOpenIdEnabled,
     openidLabel: process.env.OPENID_BUTTON_LABEL || 'Continue with OpenID',
     openidImageUrl: process.env.OPENID_IMAGE_URL,
@@ -93,12 +108,9 @@ function buildPreLoginPayload() {
     emailLoginEnabled,
     registrationEnabled: !ldap?.enabled && isEnabled(process.env.ALLOW_REGISTRATION),
     socialLoginEnabled: isEnabled(process.env.ALLOW_SOCIAL_LOGIN),
-    emailEnabled:
-      (!!process.env.EMAIL_SERVICE || !!process.env.EMAIL_HOST) &&
-      !!process.env.EMAIL_USERNAME &&
-      !!process.env.EMAIL_PASSWORD &&
-      !!process.env.EMAIL_FROM,
+    emailEnabled: checkEmailConfig(),
     passwordResetEnabled,
+    twoFactorAuthenticationRequired: isEnabled(process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION),
   };
 
   const minPasswordLength = parseInt(process.env.MIN_PASSWORD_LENGTH, 10);
@@ -137,7 +149,7 @@ function buildPublicSharePayload() {
  * openid token-reuse marker) and are not needed on the pre-login screens, so they
  * are not exposed to unauthenticated callers.
  */
-function buildPostLoginPayload() {
+function buildPostLoginPayload(appConfig) {
   /** @type {Partial<TStartupConfig>} */
   const payload = {
     showBirthdayIcon:
@@ -148,10 +160,13 @@ function buildPostLoginPayload() {
     sharedLinksEnabled,
     publicSharedLinksEnabled,
     openidReuseTokens,
+    ragEnabled: Boolean(process.env.RAG_API_URL?.trim()),
     /** Read inline (not module-level) for per-request evaluation and test isolation */
     allowAccountDeletion:
       process.env.ALLOW_ACCOUNT_DELETION === undefined ||
       isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
+    allowEmailChange: resolveEmailChangeSettings(appConfig?.emailChange).enabled,
+    maxPasskeysPerUser: resolveMaxPasskeysPerUser(appConfig?.passkeys),
   };
 
   return payload;
@@ -228,18 +243,9 @@ router.get('/', async function (req, res) {
       };
 
       const interfaceConfig = baseConfig?.interfaceConfig;
-      const buildInfoDisabled = interfaceConfig?.buildInfo === false;
-      if (interfaceConfig?.privacyPolicy || interfaceConfig?.termsOfService || buildInfoDisabled) {
-        payload.interface = {};
-        if (interfaceConfig.privacyPolicy) {
-          payload.interface.privacyPolicy = interfaceConfig.privacyPolicy;
-        }
-        if (interfaceConfig.termsOfService) {
-          payload.interface.termsOfService = interfaceConfig.termsOfService;
-        }
-        if (buildInfoDisabled) {
-          payload.interface.buildInfo = false;
-        }
+      const preLoginInterface = buildPreLoginInterface(interfaceConfig);
+      if (preLoginInterface) {
+        payload.interface = preLoginInterface;
       }
 
       const unauthBuildInfo = buildBuildInfoPayload(interfaceConfig);
@@ -250,11 +256,18 @@ router.get('/', async function (req, res) {
       return res.status(200).send(payload);
     }
 
-    const appConfig = await getAppConfig(getAppConfigOptionsFromUser(req.user));
+    const [appConfig, conversationListLimits] = await Promise.all([
+      getAppConfig({
+        ...getAppConfigOptionsFromUser(req.user),
+        failClosed: true,
+      }),
+      loadConversationListLimits(getAppConfig),
+    ]);
     const codeEnvironmentDecisionVersion = resolveCodeEnvironmentDecisionVersion(
       process.env.CODE_ENVIRONMENT_DECISION_VERSION,
     );
-    const codeEnvironmentMoveVersion = resolveCodeEnvironmentMoveVersion(appConfig);
+    const codeEnvironmentMoveCapabilities = resolveCodeEnvironmentMoveCapabilities(appConfig);
+    const codeEnvironmentTransitionVersion = resolveCodeEnvironmentTransitionVersion(appConfig);
 
     const endpointsDropParamsMap = getEndpointsDropParamsMap(appConfig?.endpoints);
 
@@ -291,9 +304,12 @@ router.get('/', async function (req, res) {
     const payload = {
       ...preLoginPayload,
       ...publicSharePayload,
-      ...buildPostLoginPayload(),
+      ...buildPostLoginPayload(appConfig),
+      ...getConversationTitleCapabilities(appConfig?.interfaceConfig),
+      conversationListLimits,
       sharedLinksSnapshotFilesEnabled: sharedLinksEnabled && isFileSnapshotEnabled(appConfig),
       socialLogins: appConfig?.registration?.socialLogins ?? defaultSocialLogins,
+      projects: appConfig?.projects,
       interface: appConfig?.interfaceConfig,
       titleGenerationTiming: resolveTitleTiming({
         appConfig,
@@ -316,7 +332,19 @@ router.get('/', async function (req, res) {
       insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
       compactionEnabled: appConfig?.summarization?.enabled !== false,
       ...(codeEnvironmentDecisionVersion != null ? { codeEnvironmentDecisionVersion } : {}),
-      ...(codeEnvironmentMoveVersion != null ? { codeEnvironmentMoveVersion } : {}),
+      mcpApps: resolveMCPAppsPolicy(
+        appConfig?.mcpSettings?.apps,
+        appConfig?.mcpAppSandbox ?? DEFAULT_MCP_APP_CSP_LIMITS,
+        appConfig?.mcpAppSandbox?.maxPersistedAppBytes,
+        appConfig?.mcpAppSandbox?.maxAdmissionRequestsPerMinute,
+        appConfig?.mcpAppSandbox?.url,
+        appConfig?.mcpAppSandbox?.maxActiveViews,
+        appConfig?.mcpAppSandbox?.maxActionPreviewChars,
+        appConfig?.mcpAppSandbox?.operationLimits,
+      ),
+      ...codeEnvironmentMoveCapabilities,
+      ...resolveCodeWorkspaceInheritanceCapability(process.env.CODE_ENVIRONMENT_DECISION_VERSION),
+      ...(codeEnvironmentTransitionVersion != null ? { codeEnvironmentTransitionVersion } : {}),
       ...(cloudFront ? { cloudFront } : {}),
       ...(rum ? { rum } : {}),
       fileUploadSseEnabled: isEnabled(process.env.FILE_UPLOAD_SSE_ENABLED),

@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { useState } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OGDialog, OGDialogContent, OGDialogTitle } from './OriginalDialog';
 import ControlCombobox from './ControlCombobox';
 
@@ -221,6 +222,115 @@ describe('ControlCombobox popover sizing', () => {
   });
 });
 
+describe('ControlCombobox dropdown caps', () => {
+  const manyItems = Array.from({ length: 15 }, (_, index) => ({
+    label: `Agent ${index + 1}`,
+    value: `agent-${index + 1}`,
+  }));
+
+  const renderCapped = (
+    overrides: { popoverMaxHeight?: number; unsearchedLimit?: number; selectedValue?: string } = {},
+  ) =>
+    render(
+      <ControlCombobox
+        selectedValue={overrides.selectedValue ?? 'agent-1'}
+        displayValue="Agent 1"
+        items={manyItems}
+        setValue={() => undefined}
+        ariaLabel="Test combobox"
+        searchPlaceholder="Search agents"
+        isCollapsed={false}
+        showCarat
+        popoverMaxHeight={480}
+        unsearchedLimit={10}
+        {...overrides}
+      />,
+    );
+
+  it('lists at most unsearchedLimit options while the search field is empty', () => {
+    renderCapped();
+    openPopover();
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '10');
+    expect(screen.queryByRole('option', { name: 'Agent 11' })).not.toBeInTheDocument();
+  });
+
+  it('lifts the cap while searching so options past the cut stay reachable', () => {
+    renderCapped();
+    openPopover();
+    fireEvent.change(screen.getByPlaceholderText('Search agents'), {
+      target: { value: 'Agent 15' },
+    });
+    expect(screen.getByRole('option', { name: 'Agent 15' })).toBeInTheDocument();
+  });
+
+  it('clears a completed search when the select popover closes, retaining the chosen agent', async () => {
+    function Picker() {
+      const [selected, setSelected] = useState('agent-1');
+      return (
+        <ControlCombobox
+          selectedValue={selected}
+          items={manyItems}
+          setValue={setSelected}
+          ariaLabel="Test combobox"
+          searchPlaceholder="Search agents"
+          isCollapsed={false}
+          unsearchedLimit={10}
+        />
+      );
+    }
+    render(<Picker />);
+    openPopover();
+    fireEvent.change(screen.getByPlaceholderText('Search agents'), {
+      target: { value: 'Agent 15' },
+    });
+    fireEvent.click(screen.getByRole('option', { name: 'Agent 15' }));
+    const trigger = screen.getByRole('combobox', { name: 'Test combobox' });
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'));
+    expect(trigger).toHaveTextContent('agent-15');
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByPlaceholderText('Search agents')).toHaveValue(''));
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '10');
+    expect(screen.getByRole('option', { name: 'Agent 15' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+  });
+
+  it('keeps the selected option in the capped list when it ranks past the cut', () => {
+    renderCapped({ selectedValue: 'agent-15' });
+    openPopover();
+    /** SelectRenderer windowing renders only the visible slice in jsdom, so
+     * the cap is read off aria-setsize rather than the option count. */
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '10');
+    expect(screen.getByRole('option', { name: 'Agent 15' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.queryByRole('option', { name: 'Agent 10' })).not.toBeInTheDocument();
+  });
+
+  it('caps the popover at popoverMaxHeight with the list as the scrolling region', () => {
+    renderCapped();
+    openPopover();
+    const popover = document.querySelector('.animate-popover') as HTMLElement;
+    expect(popover.style.maxHeight).toBe('min(30rem, var(--popover-available-height, 30rem))');
+    expect(popover.className).toContain('flex-col');
+    const scroller = popover.querySelector('div.overflow-auto');
+    expect(scroller?.className).toContain('flex-1');
+    expect(scroller?.className).toContain('min-h-0');
+  });
+
+  it('keeps the fixed list cap (300px at 100% scale) for consumers that pass neither prop', () => {
+    renderCapped({ popoverMaxHeight: undefined, unsearchedLimit: undefined });
+    openPopover();
+    const popover = document.querySelector('.animate-popover') as HTMLElement;
+    expect(popover.style.maxHeight).toBe('');
+    const scroller = popover.querySelector('div.overflow-auto');
+    expect(scroller?.className).toContain('max-h-[18.75rem]');
+    expect(screen.getAllByRole('option')[0]).toHaveAttribute('aria-setsize', '15');
+  });
+});
+
 describe('ControlCombobox portal placement', () => {
   const renderInDialog = (portal: boolean) =>
     render(
@@ -258,6 +368,37 @@ describe('ControlCombobox portal placement', () => {
     const search = screen.getByPlaceholderText('Search projects');
     expect(dialog.contains(search)).toBe(true);
 
+    fireEvent.change(search, { target: { value: 'Option B' } });
+    expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
+  });
+  it('portals into the dialog outside a clipping scroll region', () => {
+    function Harness() {
+      const [container, setContainer] = useState<HTMLDivElement | null>(null);
+      return (
+        <OGDialog open>
+          <OGDialogContent ref={setContainer}>
+            <OGDialogTitle>Change project</OGDialogTitle>
+            <div data-testid="scroller" className="overflow-auto">
+              <ControlCombobox
+                selectedValue="a"
+                items={items}
+                setValue={() => undefined}
+                ariaLabel="Test combobox"
+                searchPlaceholder="Search projects"
+                isCollapsed={false}
+                portalElement={container}
+              />
+            </div>
+          </OGDialogContent>
+        </OGDialog>
+      );
+    }
+    render(<Harness />);
+    openPopover();
+    const search = screen.getByPlaceholderText('Search projects');
+    expect(screen.getByRole('dialog', { name: 'Change project' }).contains(search)).toBe(true);
+    expect(screen.getByTestId('scroller').contains(search)).toBe(false);
     fireEvent.change(search, { target: { value: 'Option B' } });
     expect(screen.getByRole('option', { name: 'Option B' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();

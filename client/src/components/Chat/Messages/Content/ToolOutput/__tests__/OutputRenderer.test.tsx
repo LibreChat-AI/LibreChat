@@ -1,5 +1,7 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import copy from 'copy-to-clipboard';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { ToolContentPendingContext } from '../../disclosure';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
 jest.mock('copy-to-clipboard', () => jest.fn());
@@ -10,19 +12,161 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Messages/Content/CopyButton', () => ({
   __esModule: true,
-  default: () => <button type="button" data-testid="copy-output" />,
+  default: ({
+    onClick,
+    className,
+    disabled,
+  }: {
+    onClick: () => void;
+    className?: string;
+    disabled?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-testid="copy-output"
+      className={className}
+      onClick={onClick}
+      disabled={disabled}
+    />
+  ),
 }));
 
 describe('OutputRenderer', () => {
-  it('vertically centers the copy control beside the output', () => {
+  beforeEach(() => {
+    (copy as jest.Mock).mockClear();
+  });
+
+  it('lays the copy control over the bottom right of the output without reserving width', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
-    const copyPositioner = screen.getByTestId('copy-output').parentElement;
-    expect(copyPositioner).toHaveClass('absolute', 'right-0', 'top-1/2', '-translate-y-1/2');
-    expect(copyPositioner?.parentElement).toHaveClass('relative', 'pr-10');
+    const copyButton = screen.getByTestId('copy-output');
+    expect(copyButton).toHaveClass('absolute', 'right-0', 'bottom-0');
+    expect(copyButton).toHaveClass('[@media(hover:hover)]:group-hover/copy:opacity-100');
+    expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
+    expect(copyButton.parentElement).not.toHaveClass('pr-10');
+  });
+
+  it('copies original bytes when a code result has been formatted for display', () => {
+    const raw = 'stdout:\n{"ok":true}';
+    render(<OutputRenderer text={'stdout:\n{\n  "ok": true\n}'} copyText={raw} />);
+    fireEvent.click(screen.getByTestId('copy-output'));
+    expect(copy).toHaveBeenCalledWith(raw, { format: 'text/plain' });
+  });
+
+  it('will not copy a server preview before the stored output arrives', () => {
+    render(
+      <ToolContentPendingContext.Provider value={true}>
+        <OutputRenderer text={'head\n…\ntail'} copyText={'head\n…\ntail'} />
+      </ToolContentPendingContext.Provider>,
+    );
+    const button = screen.getByTestId('copy-output');
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(copy).not.toHaveBeenCalled();
+  });
+
+  it('renders long output in full with no show more toggle', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const { unmount } = render(<OutputRenderer text={text} />);
+    expect(screen.getByText(/line 1/).textContent?.split('\n')).toHaveLength(30);
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+    unmount();
+
+    render(<OutputRenderer text={text} variant="terminal" />);
+    const pre = screen.getByText(/line 30/);
+    expect(pre.textContent).toBe(text);
+    expect(pre).toHaveClass('max-h-[18.75rem]', 'overflow-auto');
+    expect(screen.queryByText('com_ui_show_more')).not.toBeInTheDocument();
+  });
+
+  it('opens terminal output on its last lines and default output on its first', () => {
+    const text = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    try {
+      const { unmount } = render(<OutputRenderer text={text} variant="terminal" />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(900);
+      unmount();
+
+      render(<OutputRenderer text={text} />);
+      expect(screen.getByText(/line 30/).scrollTop).toBe(0);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+  });
+
+  it('stops following streamed terminal output once the reader scrolls up', () => {
+    const lines = (count: number) =>
+      Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n');
+    const scrollHeight = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(900);
+    const clientHeight = jest
+      .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockReturnValue(300);
+    try {
+      const { rerender } = render(<OutputRenderer text={lines(30)} variant="terminal" />);
+      const pre = screen.getByText(/line 30/);
+      expect(pre.scrollTop).toBe(900);
+
+      pre.scrollTop = 100;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(40)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(100);
+
+      pre.scrollTop = 600;
+      fireEvent.scroll(pre);
+      rerender(<OutputRenderer text={lines(50)} variant="terminal" />);
+      expect(pre.scrollTop).toBe(900);
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
+  it('keeps whitespace-only terminal output', () => {
+    const { container } = render(<OutputRenderer text={'\n\n'} variant="terminal" />);
+    expect(container.querySelector('pre')?.textContent).toBe('\n\n');
+  });
+
+  it('keeps segment styling across the full terminal output', () => {
+    const out = Array.from({ length: 25 }, (_, i) => `out ${i + 1}`).join('\n') + '\n';
+    const err = 'stderr:\nboom\n';
+    const trailer = '[exit code: 1]';
+    render(
+      <OutputRenderer
+        text={out + err + trailer}
+        variant="terminal"
+        segments={[
+          { text: out },
+          { text: err, className: 'text-status-error' },
+          { text: trailer, className: 'text-text-tertiary' },
+        ]}
+      />,
+    );
+    const pre = screen.getByText(/out 25/).closest('pre') as HTMLElement;
+    const shown = (pre.textContent ?? '').split('\n');
+    expect(shown[0]).toBe('out 1');
+    expect(pre.textContent).toBe(out + err + trailer);
+    expect(screen.getByText(/boom/)).toHaveClass('text-status-error');
+    expect(screen.getByText('[exit code: 1]')).toHaveClass('text-text-tertiary');
   });
 
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
+  });
+
+  /** The server's `completedToolExecutionStatus` counts this shape as a
+   *  failure while the run step stays `completed`; the card must agree with
+   *  the label the server wrote for the same call. */
+  it('treats schema-validation feedback as a failed call', () => {
+    expect(
+      isError(
+        'Error: Tool "slow_echo" input failed schema validation. Missing required fields: text.' +
+          "Use this tool's declared arguments.\n Please fix your mistakes.",
+      ),
+    ).toBe(true);
+    expect(isError('Error: something went wrong, then it recovered')).toBe(false);
   });
 });

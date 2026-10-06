@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import { AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, HumanMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 import {
   createMethods,
   createModels,
@@ -29,6 +29,7 @@ import type {
 } from './subagentTaskRouting';
 import type { SubagentTaskWakeupRegistration } from './subagentThreads';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
+import type { SubagentActivityEnvelope } from './subagentActivity';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import {
   buildSubagentThreadTaskConfig,
@@ -36,9 +37,12 @@ import {
   SubagentThreadTaskStore,
 } from './subagentThreads';
 import { controlFingerprint, SubagentTaskOwnerUnavailableError } from './subagentTaskRouting';
+import { snapshotActivity, snapshotActivitySummary } from './digest';
 import { SUBAGENT_COMPLETION_DELIVERY } from './subagentDelivery';
 import { createSubagentAttemptKey } from './subagentThreadIds';
 import { SubagentActivityStream } from './subagentActivity';
+import { runCheckBackgroundTask } from './background';
+import { InMemoryEventTransport } from '~/stream';
 import { createSubagentUsageSink } from './usage';
 
 let mongod: MongoMemoryServer;
@@ -215,8 +219,9 @@ async function waitForSettled(
 async function waitUntil(
   condition: () => boolean | Promise<boolean>,
   description: string,
+  timeoutMs = 4_000,
 ): Promise<void> {
-  for (let attempt = 0; attempt < 400; attempt += 1) {
+  for (let attempt = 0; attempt < Math.ceil(timeoutMs / 10); attempt += 1) {
     if (await condition()) {
       return;
     }
@@ -303,6 +308,97 @@ describe('SubagentThreadTaskStore', () => {
     expect(automaticStore.controlTask).toEqual(expect.any(Function));
     await expect(automaticStore.hasTasks(automatic.scopeId)).resolves.toBe(false);
     await expect(automaticStore.listTasks(automatic.scopeId)).resolves.toEqual([]);
+  });
+
+  it('scopes the plain agent-name lookup to the execution tenant', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const id = 'tenant-name-agent';
+    await tenantStorage.run({ tenantId: 'name-tenant-a', userId }, async () => {
+      await methods.createAgent({
+        id,
+        name: 'Scoped Reviewer',
+        author: userId,
+        provider: 'openAI',
+        model: 'test-model',
+      });
+      expect(await methods.getAgentName(id, 'name-tenant-a')).toBe('Scoped Reviewer');
+      expect(await methods.getAgentName(id, 'name-tenant-b')).toBeUndefined();
+      expect(await methods.getAgentName(id)).toBeUndefined();
+    });
+  });
+
+  it('keeps child execution independent of display-name lookup failure', async () => {
+    const userId = 'name-fallback-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    jest
+      .spyOn(methods, 'getAgentName')
+      .mockRejectedValueOnce(new Error('display-name lookup unavailable'));
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, started);
+    expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
+      'completed',
+    );
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'researcher-agent',
+    );
+    store.destroyActivityStream();
+  });
+
+  it('resolves legacy null-tenant names without crossing tenant boundaries', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    await methods.createAgent({
+      id: 'null-tenant-agent',
+      name: 'Legacy Reviewer',
+      author: userId,
+      provider: 'openAI',
+      model: 'test-model',
+    });
+    await mongoose.connection
+      .collection('agents')
+      .updateOne({ id: 'null-tenant-agent' }, { $set: { tenantId: null } });
+    expect(await methods.getAgentName('null-tenant-agent')).toBe('Legacy Reviewer');
+    expect(await methods.getAgentName('null-tenant-agent', 'other-tenant')).toBeUndefined();
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const started = store.start(taskRequest(config.scopeId, { subagentType: 'null-tenant-agent' }));
+    await waitForSettled(store, config.scopeId, started);
+    expect((await methods.getConvo(userId, requireThreadId(started)))?.title).toBe(
+      'Legacy Reviewer',
+    );
+    store.destroyActivityStream();
+  });
+
+  it('persists the child agent name and falls back to its id', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    await methods.createAgent({
+      id: 'researcher-agent',
+      name: 'PR Reviewer',
+      author: userId,
+      provider: 'openAI',
+      model: 'test-model',
+    });
+    const store = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const named = store.start(taskRequest(config.scopeId));
+    await waitForSettled(store, config.scopeId, named);
+    expect((await methods.getConvo(userId, requireThreadId(named)))?.title).toBe('PR Reviewer');
+    const unnamed = store.start(
+      taskRequest(config.scopeId, {
+        subagentType: 'missing-agent',
+        idempotencyKey: randomUUID(),
+        parentToolCallId: 'second-call',
+      }),
+    );
+    await waitForSettled(store, config.scopeId, unnamed);
+    expect((await methods.getConvo(userId, requireThreadId(unnamed)))?.title).toBe('missing-agent');
+    store.destroyActivityStream();
   });
 
   it('maps one logical SDK thread to a durable, view-only LibreChat conversation', async () => {
@@ -423,6 +519,7 @@ describe('SubagentThreadTaskStore', () => {
       userId,
       parentConversationId,
       parentMessageId: 'parent-response-1',
+      scheduleMCPIdentity: null,
       parentAgentId: 'agent_parent_1',
       taskId: requireAccepted(started).task.taskId,
       threadId: requireThreadId(started),
@@ -430,6 +527,125 @@ describe('SubagentThreadTaskStore', () => {
       createdAt: expect.any(Number),
     });
   });
+
+  it('captures authority from the parent task config, never SDK request fields or a reused conversation', async () => {
+    const userId = 'task-origin-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const prepared = jest.fn(async (_registration: SubagentTaskWakeupRegistration) => {});
+    const store = new SubagentThreadTaskStore(methods, { onTaskPrepared: prepared });
+    const identity = {
+      scheduleId: 'original-schedule',
+      ownerId: userId,
+      tenantId: null,
+      agentId: 'parent-agent',
+      invocationMode: 'delegated' as const,
+    };
+    const scheduled = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true, scheduleMCPIdentity: identity },
+    );
+    identity.agentId = 'mutated-after-construction';
+    const first = scheduled.store.start(
+      taskRequest(scheduled.scopeId, {
+        parentRunId: 'scheduled-response',
+        idempotencyKey: randomUUID(),
+        scheduleMCPIdentity: null,
+      } as never),
+    );
+    await waitForSettled(store, scheduled.scopeId, first);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        parentMessageId: 'scheduled-response',
+        scheduleMCPIdentity: { ...identity, agentId: 'parent-agent' },
+      }),
+    );
+    const ordinary = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const later = ordinary.store.start(
+      taskRequest(ordinary.scopeId, {
+        parentRunId: 'ordinary-response',
+        idempotencyKey: randomUUID(),
+        scheduleMCPIdentity: identity,
+      } as never),
+    );
+    await waitForSettled(store, ordinary.scopeId, later);
+    expect(prepared).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parentMessageId: 'ordinary-response', scheduleMCPIdentity: null }),
+    );
+    store.destroyActivityStream();
+  });
+
+  it('announces a settled child only after its terminal message is durable', async () => {
+    const userId = 'settled-child-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const saveMessage = jest.spyOn(methods, 'saveMessage');
+    const terminalSavedAtSettle: boolean[] = [];
+    const store = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled: (settledUserId, settledConversationId, taskIds) => {
+        expect(taskIds).toHaveLength(1);
+        expect(
+          saveMessage.mock.calls.some(
+            ([, message]) =>
+              (message as { messageId?: string }).messageId === `${taskIds[0]}:assistant`,
+          ),
+        ).toBe(true);
+        expect(settledUserId).toBe(userId);
+        expect(settledConversationId).toBe(parentConversationId);
+        terminalSavedAtSettle.push(
+          saveMessage.mock.calls.some(([, message]) =>
+            String((message as { messageId?: string }).messageId).endsWith(':assistant'),
+          ),
+        );
+      },
+    });
+    const config = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const started = config.store.start(
+      taskRequest(config.scopeId, {
+        parentRunId: 'parent-response-1',
+        parentAgentId: 'agent_parent_1',
+      }),
+    );
+    await waitForSettled(store, config.scopeId, started);
+    saveMessage.mockRestore();
+
+    expect(terminalSavedAtSettle).toEqual([true]);
+  });
+
+  it.each([false, true])(
+    'does not announce a child without an admitted delivery (wakeups enabled: %s)',
+    async (completionWakeups) => {
+      const userId = 'poll-only-settled-user';
+      const parentConversationId = randomUUID();
+      await saveParent(userId, parentConversationId);
+      const onTaskSettled = jest.fn();
+      const store = new SubagentThreadTaskStore(methods, {
+        onTaskPrepared: jest.fn(() => false),
+        onTaskSettled,
+      });
+      const config = buildSubagentThreadTaskConfig(
+        store,
+        { userId, parentConversationId },
+        { completionWakeups },
+      );
+      const started = config.store.start(
+        taskRequest(config.scopeId, { parentRunId: 'parent-response-1' }),
+      );
+      await waitForSettled(store, config.scopeId, started);
+
+      expect(onTaskSettled).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps subagent completion delivery poll-only when wakeups are disabled', async () => {
     const userId = 'poll-only-user';
@@ -496,6 +712,7 @@ describe('SubagentThreadTaskStore', () => {
 
     await expect(terminal).resolves.toBe('completed');
     expect(events).toEqual([
+      { event: 'subagent_activity_replay', data: [] },
       {
         event: 'on_subagent_update',
         data: expect.objectContaining({
@@ -581,6 +798,153 @@ describe('SubagentThreadTaskStore', () => {
     expect(publicationOrder).toEqual(['first', 'second', 'done']);
   });
 
+  it('retries a transient publication and shows overflow counts without blocking persistence', async () => {
+    const userId = 'activity-recovery-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const store = new SubagentThreadTaskStore(methods, {
+      activity: {
+        publicationTimeoutMs: 200,
+        retryAttempts: 3,
+        retryBaseDelayMs: 10,
+        recoveryDelayMs: 100,
+      },
+    });
+    const stream = new SubagentActivityStream(new InMemoryEventTransport());
+    store.configureActivityStream(stream);
+    const originalPublish = stream.publish.bind(stream);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const publish = jest
+      .spyOn(stream, 'publish')
+      .mockRejectedValueOnce(new Error('transient Redis failure'));
+    publish.mockImplementationOnce(async (...args) => {
+      await blocked;
+      return originalPublish(...args);
+    });
+    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const defaultRun = taskRequest(config.scopeId).run;
+    const run = async (...args: Parameters<typeof defaultRun>) => {
+      for (let i = 0; i < 120; i++)
+        args[0].reportProgress({
+          runId: 'parent',
+          parentRunId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher-agent',
+          subagentKind: 'agent',
+          subagentAgentId: 'agent-1',
+          depth: 1,
+          ancestry: [],
+          phase: 'message_delta',
+          data: { delta: { content: [{ type: 'text', text: `${i},` }] } },
+          timestamp: '2026-09-29T00:00:00.000Z',
+        });
+      return defaultRun(...args);
+    };
+    const started = store.start(taskRequest(config.scopeId, { run }));
+    const events: SubagentActivityEnvelope[] = [];
+    const onDone = jest.fn();
+    const subscription = store.subscribeActivity(
+      requireThreadId(started),
+      requireAccepted(started).task.taskId,
+      {
+        onEvent: (event) => {
+          if (event.event === 'on_subagent_update') events.push(event);
+        },
+        onDone,
+      },
+    );
+    await subscription.ready;
+    await waitForSettled(store, config.scopeId, started);
+    await waitUntil(() => publish.mock.calls.length === 2, 'retry after transient failure');
+    release();
+    await waitUntil(() => onDone.mock.calls.length === 1, 'recovered activity terminal');
+    expect(events[0].data.activitySequence).toBe(0);
+    expect(events[events.length - 1].data.activitySequence).toBe(119);
+    expect(events.reduce((count, event) => count + (event.droppedCount ?? 0), 0)).toBe(19);
+    expect(events).toHaveLength(102);
+    const durable = await methods.getMessages({
+      user: userId,
+      conversationId: requireThreadId(started),
+      messageId: `${requireAccepted(started).task.taskId}:assistant`,
+    });
+    expect(durable).toHaveLength(1);
+    subscription.unsubscribe();
+    store.destroyActivityStream();
+  });
+
+  it.each([true, false])(
+    'drains activity admitted during worker release before DONE (hold run: %s)',
+    async (holdRun) => {
+      const userId = `activity-handoff-${holdRun}`;
+      const parentConversationId = randomUUID();
+      await saveParent(userId, parentConversationId);
+      const store = new SubagentThreadTaskStore(methods);
+      const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+      const defaultRun = taskRequest(config.scopeId).run;
+      let activityRuntime!: SubagentTaskRuntime;
+      let release!: () => void;
+      const finish = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const progress: SubagentUpdateEvent = {
+        runId: 'parent',
+        parentRunId: 'parent',
+        subagentRunId: 'child',
+        subagentType: 'researcher-agent',
+        subagentKind: 'agent',
+        subagentAgentId: 'agent-1',
+        depth: 1,
+        ancestry: [],
+        phase: 'message_delta',
+        data: { delta: { content: [{ type: 'text', text: 'first' }] } },
+        timestamp: '2026-09-29T00:00:00.000Z',
+      };
+      const drainStore = store as object as { drainActivity: (typeof store)['drainActivity'] };
+      const originalDrain = drainStore.drainActivity.bind(store);
+      jest.spyOn(drainStore, 'drainActivity').mockImplementationOnce(async (...args) => {
+        await originalDrain(...args);
+        activityRuntime.reportProgress({
+          ...progress,
+          data: { delta: { content: [{ type: 'text', text: 'last' }] } },
+        });
+      });
+      const run = async (...args: Parameters<typeof defaultRun>) => {
+        activityRuntime = args[0];
+        activityRuntime.reportProgress(progress);
+        if (holdRun) await finish;
+        return defaultRun(...args);
+      };
+      const started = store.start(taskRequest(config.scopeId, { run }));
+      const received: Array<number | 'done'> = [];
+      const subscription = store.subscribeActivity(
+        requireThreadId(started),
+        requireAccepted(started).task.taskId,
+        {
+          onEvent: (envelope) => {
+            const events =
+              envelope.event === 'subagent_activity_replay' ? envelope.data : [envelope];
+            for (const event of events)
+              if (event.data.activitySequence != null) received.push(event.data.activitySequence);
+          },
+          onDone: () => {
+            received.push('done');
+          },
+        },
+      );
+      await subscription.ready;
+      await waitUntil(() => received.includes(1), 'activity admitted at the idle handoff');
+      release();
+      await waitUntil(() => received.includes('done'), 'terminal after all admitted activity');
+      expect(received).toEqual([0, 1, 'done']);
+      await waitForSettled(store, config.scopeId, started);
+      subscription.unsubscribe();
+      store.destroyActivityStream();
+    },
+  );
+
   it('keeps activity delivery observational when its transport is unavailable', async () => {
     const userId = 'activity-stream-failure-user';
     const parentConversationId = randomUUID();
@@ -642,7 +1006,10 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    expect(emitChunk).toHaveBeenCalledTimes(1);
+    await waitUntil(
+      () => emitChunk.mock.calls.length === 6,
+      'bounded activity and gap-marker retries',
+    );
   });
 
   it('bounds stalled activity and still attempts terminal delivery', async () => {
@@ -707,8 +1074,8 @@ describe('SubagentThreadTaskStore', () => {
     expect(store.get(config.scopeId, requireAccepted(started).task.taskId)?.status).toBe(
       'completed',
     );
-    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery');
-    expect(emitChunk).toHaveBeenCalledTimes(1);
+    await waitUntil(() => emitDone.mock.calls.length === 1, 'terminal activity delivery', 10_000);
+    expect(emitChunk).toHaveBeenCalledTimes(6);
   });
 
   it('fails before provider work and keeps the durable failure collectable when registration fails', async () => {
@@ -951,7 +1318,11 @@ describe('SubagentThreadTaskStore', () => {
       async (_registration: SubagentTaskWakeupRegistration) => undefined,
     );
     const firstWorker = new SubagentThreadTaskStore(methods, { onTaskPrepared: firstWakeup });
-    const secondWorker = new SubagentThreadTaskStore(methods, { onTaskPrepared: replayWakeup });
+    const onReplaySettled = jest.fn();
+    const secondWorker = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: replayWakeup,
+      onTaskSettled: onReplaySettled,
+    });
     const config = buildSubagentThreadTaskConfig(
       firstWorker,
       { userId, parentConversationId },
@@ -999,6 +1370,10 @@ describe('SubagentThreadTaskStore', () => {
 
     expect(firstRun).toHaveBeenCalledTimes(1);
     expect(replayRun).not.toHaveBeenCalled();
+    expect(onReplaySettled).toHaveBeenCalledTimes(1);
+    expect(onReplaySettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(first).task.taskId,
+    ]);
     expect(firstWakeup).toHaveBeenCalledTimes(1);
     const firstRegistration = firstWakeup.mock.calls[0]?.[0];
     const replayRegistration = replayWakeup.mock.calls[0]?.[0];
@@ -1056,8 +1431,16 @@ describe('SubagentThreadTaskStore', () => {
     const parentConversationId = randomUUID();
     const threadId = randomUUID();
     await saveParent(userId, parentConversationId);
-    const store = new SubagentThreadTaskStore(methods);
-    const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    const onTaskSettled = jest.fn();
+    const store = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled,
+    });
+    const config = buildSubagentThreadTaskConfig(
+      store,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
     await methods.saveConvo(
       { userId },
       {
@@ -1095,7 +1478,7 @@ describe('SubagentThreadTaskStore', () => {
       },
     );
     const run = jest.fn(taskRequest(config.scopeId).run);
-    const retry = store.start(
+    const retry = config.store.start(
       taskRequest(config.scopeId, {
         threadId,
         idempotencyKey: 'abandoned-attempt',
@@ -1106,6 +1489,11 @@ describe('SubagentThreadTaskStore', () => {
     await waitForSettled(store, config.scopeId, retry);
 
     expect(run).not.toHaveBeenCalled();
+    expect(onTaskSettled).toHaveBeenCalledTimes(1);
+    expect(onTaskSettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(retry).task.taskId,
+      'abandoned',
+    ]);
     expect(store.claim(config.scopeId, requireAccepted(retry).task.taskId)).toMatchObject({
       status: 'error',
       error:
@@ -1116,6 +1504,32 @@ describe('SubagentThreadTaskStore', () => {
       '+subagentTask',
     );
     expect(messages.map((message) => message.subagentTask?.status)).toEqual(['running', 'error']);
+
+    const replaySettled = jest.fn();
+    const replayWorker = new SubagentThreadTaskStore(methods, {
+      onTaskPrepared: jest.fn(),
+      onTaskSettled: replaySettled,
+    });
+    const replayConfig = buildSubagentThreadTaskConfig(
+      replayWorker,
+      { userId, parentConversationId },
+      { completionWakeups: true },
+    );
+    const replay = replayConfig.store.start(
+      taskRequest(replayConfig.scopeId, {
+        threadId,
+        idempotencyKey: 'abandoned-attempt',
+        requestFingerprint: 'same-inputs',
+        run,
+      }),
+    );
+    await waitForSettled(replayWorker, replayConfig.scopeId, replay);
+    expect(replaySettled).toHaveBeenCalledTimes(1);
+    expect(replaySettled).toHaveBeenCalledWith(userId, parentConversationId, [
+      requireAccepted(retry).task.taskId,
+      'abandoned',
+    ]);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it('holds one active lease per child and exposes provisional ownership safely', async () => {
@@ -4502,5 +4916,191 @@ describe('SubagentThreadTaskStore', () => {
       status: 'error',
     });
     expect(await methods.getConvo(userId, requireThreadId(started))).toBeNull();
+  });
+});
+
+describe('subagent progress trees', () => {
+  const progress = (phase: SubagentUpdateEvent['phase'], data: unknown): SubagentUpdateEvent => ({
+    runId: 'root-run',
+    parentRunId: 'parent-run',
+    subagentRunId: 'child-run',
+    subagentType: 'researcher-agent',
+    subagentKind: 'agent',
+    subagentAgentId: 'agent-1',
+    parentToolCallId: 'tool-call',
+    phase,
+    data,
+    timestamp: new Date().toISOString(),
+  });
+
+  const reportSteps = (runtime: SubagentTaskRuntime): void => {
+    runtime.reportProgress(
+      progress('run_step', {
+        id: 'step-1',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [
+            {
+              id: 'call-1',
+              name: 'read_file',
+              args: { intent: 'Reading the notes', path: '/srv/.env' },
+            },
+          ],
+        },
+      }),
+    );
+    runtime.reportProgress(
+      progress('run_step_completed', {
+        result: {
+          type: 'tool_call',
+          tool_call: { id: 'call-1', name: 'read_file', output: 'SECRET=1' },
+        },
+      }),
+    );
+    runtime.reportProgress(
+      progress('run_step', {
+        id: 'step-2',
+        stepDetails: {
+          type: 'tool_calls',
+          tool_calls: [{ id: 'call-2', name: 'bash_tool', args: { intent: 'Running the tests' } }],
+        },
+      }),
+    );
+  };
+
+  it('serves a running child progress to local and routed polls, scoped to its parent', async () => {
+    const userId = 'progress-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const hub = new TestTaskRoutingHub();
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const requesterStore = new SubagentThreadTaskStore(methods);
+    await ownerStore.configureTaskControlTransport(new TestTaskControlTransport(hub));
+    await requesterStore.configureTaskControlTransport(new TestTaskControlTransport(hub));
+    const config = buildSubagentThreadTaskConfig(ownerStore, { userId, parentConversationId });
+    let finish = (_value: { content: string }): void => undefined;
+    const result = new Promise<{ content: string }>((resolve) => (finish = resolve));
+    let reported = false;
+    const started = ownerStore.start(
+      taskRequest(config.scopeId, {
+        run: async (runtime) => {
+          reportSteps(runtime);
+          reported = true;
+          return result;
+        },
+      }),
+    );
+    const taskId = requireAccepted(started).task.taskId;
+    await waitUntil(() => reported, 'the child to report progress');
+
+    const local = await ownerStore.claimTask(config.scopeId, taskId);
+    const localTree = local.status === 'running' ? snapshotActivity(local.task) : undefined;
+    expect(localTree?.root.turns.map((turn) => turn.children.map((leaf) => leaf.name))).toEqual([
+      ['read_file'],
+      ['bash_tool'],
+    ]);
+    expect(JSON.stringify(localTree)).not.toContain('SECRET');
+    expect(JSON.stringify(localTree)).not.toContain('.env');
+
+    const routed = await requesterStore.claimTask(config.scopeId, taskId);
+    expect(routed.status === 'running' ? snapshotActivity(routed.task) : undefined).toEqual(
+      localTree,
+    );
+    const [listed] = await requesterStore.listTasks(config.scopeId);
+    expect(snapshotActivitySummary(listed)).toMatchObject({
+      turns: 2,
+      tools: 2,
+      active: { path: '2.1', leaf: { name: 'bash_tool', label: 'Running the tests' } },
+    });
+
+    const polled = JSON.parse(
+      await runCheckBackgroundTask({
+        userId,
+        conversationId: parentConversationId,
+        agentId: 'agent_parent',
+        args: { background_task_id: taskId },
+        subagentTasks: buildSubagentThreadTaskConfig(requesterStore, {
+          userId,
+          parentConversationId,
+        }),
+      }),
+    );
+    expect(polled.activity).toMatchObject({ turns: 2, tools: 2, active: '2.1', cursor: '1.1' });
+
+    const otherParent = randomUUID();
+    await saveParent(userId, otherParent);
+    for (const scope of [
+      buildSubagentThreadTaskConfig(requesterStore, { userId: 'intruder', parentConversationId }),
+      buildSubagentThreadTaskConfig(requesterStore, { userId, parentConversationId: otherParent }),
+    ]) {
+      await expect(requesterStore.claimTask(scope.scopeId, taskId)).resolves.toEqual({
+        status: 'not_found',
+      });
+      await expect(requesterStore.listTasks(scope.scopeId)).resolves.toEqual([]);
+    }
+
+    finish({ content: 'Finished research.' });
+    await waitForSettled(ownerStore, config.scopeId, started);
+    const collected = await requesterStore.claimTask(config.scopeId, taskId, 'poll-1');
+    expect(collected).toMatchObject({ status: 'completed', result: 'Finished research.' });
+    const settledTree =
+      collected.status === 'completed' ? snapshotActivity(collected.task) : undefined;
+    expect(settledTree?.root.turns[1].children[0].status).toBe('ok');
+    await Promise.all([
+      ownerStore.destroyTaskControlTransport(),
+      requesterStore.destroyTaskControlTransport(),
+    ]);
+  });
+
+  it('rebuilds a finished child progress from its durable projection once the owner is gone', async () => {
+    const userId = 'durable-progress-user';
+    const parentConversationId = randomUUID();
+    await saveParent(userId, parentConversationId);
+    const ownerStore = new SubagentThreadTaskStore(methods);
+    const config = buildSubagentThreadTaskConfig(ownerStore, { userId, parentConversationId });
+    const input = 'Investigate the outage.';
+    const started = ownerStore.start(
+      taskRequest(config.scopeId, {
+        input,
+        run: async (_runtime, initialMessages = []) => ({
+          content: 'Root cause found.',
+          messages: [
+            ...initialMessages,
+            new HumanMessage(input),
+            new AIMessage({
+              content: '',
+              tool_calls: [
+                {
+                  id: 'call-1',
+                  name: 'read_file',
+                  args: { intent: 'Reading the incident log', path: '/var/log/private' },
+                },
+              ],
+            }),
+            new ToolMessage({ tool_call_id: 'call-1', name: 'read_file', content: 'token=abc' }),
+            new AIMessage('Root cause found.'),
+          ],
+        }),
+      }),
+    );
+    const taskId = requireAccepted(started).task.taskId;
+    await waitForSettled(ownerStore, config.scopeId, started);
+
+    const restartedStore = new SubagentThreadTaskStore(methods);
+    const recovered = await restartedStore.claimTask(config.scopeId, taskId, 'poll-1');
+    expect(recovered).toMatchObject({ status: 'completed', result: 'Root cause found.' });
+    const tree = recovered.status === 'completed' ? snapshotActivity(recovered.task) : undefined;
+    expect(tree?.root.turns.map((turn) => turn.children.map((leaf) => leaf.kind))).toEqual([
+      ['tool'],
+      ['text'],
+    ]);
+    expect(tree?.root.turns[0].children[0]).toMatchObject({
+      name: 'read_file',
+      label: 'Reading the incident log',
+      status: 'ok',
+      chars: 9,
+    });
+    expect(JSON.stringify(tree)).not.toContain('token');
+    expect(JSON.stringify(tree)).not.toContain('private');
   });
 });

@@ -73,6 +73,33 @@ describe('parseWakeupText', () => {
     });
   });
 
+  it('parses a cancelled background tool wake-up without exposing its host envelope', () => {
+    const text = [
+      'A background tool task has finished. Continue using its durable result below.',
+      JSON.stringify([
+        {
+          background_task_id: 'bg-2',
+          tool_call_id: 'call-2',
+          tool: 'bash_tool',
+          status: 'cancelled',
+          result: 'Cancelled by the user.',
+        },
+      ]),
+    ].join('\n');
+    expect(parseWakeupText(text)).toEqual({
+      kind: 'background_tool',
+      tasks: [
+        {
+          taskId: 'bg-2',
+          toolCallId: 'call-2',
+          toolName: 'bash_tool',
+          status: 'cancelled',
+          result: 'Cancelled by the user.',
+        },
+      ],
+    });
+  });
+
   it('parses a plural background tool wake-up', () => {
     const text = [
       '2 background tool tasks have finished. Continue using their durable results below.',

@@ -3,24 +3,39 @@ import type { TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common/types';
 import { useChatContext } from '~/Providers';
 
+type LiveChatValues = {
+  isSubmitting: boolean;
+  latestMessageId: string | undefined;
+  latestMessageDepth: number | undefined;
+};
+
 /**
  * Creates a stable `TMessageChatContext` object for memo'd message components.
  *
  * Subscribes to `useChatContext()` internally (intended to be called from non-memo'd
  * wrapper components like `Message` and `MessageContent`), then produces:
- * - A `chatContext` object that stays referentially stable during streaming
- *   (uses a getter for `isSubmitting` backed by a ref)
+ * - A `chatContext` object that stays referentially stable across submissions and
+ *   new turns: `isSubmitting`, `latestMessageId` and `latestMessageDepth` are
+ *   getters backed by a ref, for reads at call time (click handlers)
  * - A stable `conversation` reference that only updates when rendering-relevant fields change
  * - An `effectiveIsSubmitting` value (false for non-latest messages)
+ * - The current `latestMessageId` / `latestMessageDepth`, which the wrapper passes
+ *   to the row as props so the row's comparator can ignore changes that leave
+ *   this row's relation to the tail unchanged (see `isSameTailRelation`)
+ *
+ * Every submission and every server id hydration moves the tail, so keying the
+ * context object on those values re-rendered every row of the thread several
+ * times per send, when only the rows entering or leaving the tail change.
  */
 export default function useMemoizedChatContext(
   message: TMessage | null | undefined,
   isSubmitting: boolean,
 ) {
   const chatCtx = useChatContext();
+  const { latestMessageId, latestMessageDepth } = chatCtx;
 
-  const isSubmittingRef = useRef(isSubmitting);
-  isSubmittingRef.current = isSubmitting;
+  const liveRef = useRef<LiveChatValues>({ isSubmitting, latestMessageId, latestMessageDepth });
+  liveRef.current = { isSubmitting, latestMessageId, latestMessageDepth };
 
   /**
    * Stabilize conversation: only update when rendering-relevant fields change,
@@ -39,44 +54,37 @@ export default function useMemoizedChatContext(
     ],
   );
 
-  /**
-   * `isSubmitting` is included in deps so that chatContext gets a new reference
-   * when streaming starts/ends (2x per session). This ensures HoverButtons
-   * re-renders to update regenerate/edit button visibility via useGenerationsByLatest.
-   * The getter pattern is still valuable: callbacks reading chatContext.isSubmitting
-   * at call-time always get the current value even between these re-renders.
-   */
   const chatContext: TMessageChatContext = useMemo(
     () => ({
       ask: chatCtx.ask,
       index: chatCtx.index,
       regenerate: chatCtx.regenerate,
       conversation: stableConversation,
-      latestMessageId: chatCtx.latestMessageId,
-      latestMessageDepth: chatCtx.latestMessageDepth,
       handleContinue: chatCtx.handleContinue,
       feedbackEnabled: chatCtx.feedbackEnabled,
       get isSubmitting() {
-        return isSubmittingRef.current;
+        return liveRef.current.isSubmitting;
+      },
+      get latestMessageId() {
+        return liveRef.current.latestMessageId;
+      },
+      get latestMessageDepth() {
+        return liveRef.current.latestMessageDepth;
       },
     }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       chatCtx.ask,
       chatCtx.index,
       chatCtx.regenerate,
       stableConversation,
-      chatCtx.latestMessageId,
-      chatCtx.latestMessageDepth,
       chatCtx.handleContinue,
       chatCtx.feedbackEnabled,
-      isSubmitting, // intentional: forces new reference on streaming start/end so HoverButtons re-renders
     ],
   );
 
   const messageId = message?.messageId ?? null;
-  const isLatestMessage = messageId === chatCtx.latestMessageId;
+  const isLatestMessage = messageId === latestMessageId;
   const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
 
-  return { chatContext, effectiveIsSubmitting };
+  return { chatContext, effectiveIsSubmitting, latestMessageId, latestMessageDepth };
 }

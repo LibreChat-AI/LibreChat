@@ -1,5 +1,10 @@
+import { useEffect } from 'react';
 import { Button } from '@librechat/client';
 import { useRouteError } from 'react-router-dom';
+import { onClientLogsStarted, reportBoundaryError } from '~/lib/rum/logs';
+import useStaleAssetRecovery from '~/lib/assets/useRecovery';
+import { isChunkLoadError } from '~/lib/assets/recovery';
+import Updating from '~/components/System/Updating';
 import { useLocalize } from '~/hooks';
 import logger from '~/utils/logger';
 
@@ -72,13 +77,21 @@ const getBrowserInfo = async () => {
 
 export default function RouteErrorBoundary() {
   const localize = useLocalize();
-  const typedError = useRouteError() as {
+  const routeError = useRouteError();
+  const updating = useStaleAssetRecovery(routeError);
+  const typedError = (routeError ?? {}) as {
     message?: string;
     stack?: string;
     status?: number;
     statusText?: string;
     data?: unknown;
   };
+
+  useEffect(() => {
+    const report = () => reportBoundaryError('route', routeError, isChunkLoadError(routeError));
+    report();
+    return onClientLogsStarted(report);
+  }, [routeError]);
 
   const errorDetails = {
     message: typedError.message ?? 'An unexpected error occurred',
@@ -124,20 +137,24 @@ export default function RouteErrorBoundary() {
     }
   };
 
+  if (updating) {
+    return <Updating />;
+  }
+
   return (
     <div
       role="alert"
-      className="flex min-h-screen flex-col items-center justify-center bg-surface-primary bg-gradient-to-br"
+      className="bg-surface-primary flex min-h-screen flex-col items-center justify-center bg-gradient-to-br"
     >
-      <div className="mx-4 w-11/12 max-w-4xl rounded-2xl border border-border-light bg-surface-primary/60 p-8 shadow-2xl backdrop-blur-xl">
-        <h2 className="mb-6 text-center text-3xl font-medium tracking-tight text-text-primary">
+      <div className="border-border-light bg-surface-primary/60 mx-4 w-11/12 max-w-4xl rounded-2xl border p-8 shadow-2xl backdrop-blur-xl">
+        <h2 className="text-text-primary mb-6 text-center text-3xl font-medium tracking-tight">
           {localize('com_ui_error_unexpected')}
         </h2>
 
         {/* Error Message */}
-        <div className="mb-4 rounded-xl border border-status-error-border bg-status-error-subtle p-4 text-sm text-text-secondary">
+        <div className="border-status-error-border bg-status-error-subtle text-text-secondary mb-4 rounded-xl border p-4 text-sm">
           <h3 className="mb-2 font-medium">{localize('com_ui_error_message_prefix')}</h3>
-          <pre className="whitespace-pre-wrap text-sm font-light leading-relaxed text-text-primary">
+          <pre className="text-text-primary text-sm leading-relaxed font-light whitespace-pre-wrap">
             {errorDetails.message}
           </pre>
         </div>
@@ -145,7 +162,7 @@ export default function RouteErrorBoundary() {
         {/* Status Information */}
         {(typeof errorDetails.status === 'number' ||
           typeof errorDetails.statusText === 'string') && (
-          <div className="mb-4 rounded-xl border border-status-warning-border bg-status-warning-subtle p-4 text-sm text-text-primary">
+          <div className="border-status-warning-border bg-status-warning-subtle text-text-primary mb-4 rounded-xl border p-4 text-sm">
             <h3 className="mb-2 font-medium">{localize('com_ui_status_prefix')}:</h3>
             <p className="text-text-primary">
               {typeof errorDetails.status === 'number' && `${errorDetails.status} `}
@@ -156,8 +173,8 @@ export default function RouteErrorBoundary() {
 
         {/* Stack Trace - Collapsible */}
         {errorDetails.stack != null && errorDetails.stack.trim() !== '' && (
-          <details className="group mb-4 rounded-xl border border-border-light p-4">
-            <summary className="mb-2 flex cursor-pointer items-center justify-between text-sm font-medium text-text-primary">
+          <details className="group border-border-light mb-4 rounded-xl border p-4">
+            <summary className="text-text-primary mb-2 flex cursor-pointer items-center justify-between text-sm font-medium">
               <span>{localize('com_ui_stack_trace')}</span>
               <div className="flex items-center">
                 <Button
@@ -171,13 +188,13 @@ export default function RouteErrorBoundary() {
                 </Button>
               </div>
             </summary>
-            <div className="overflow-x-auto rounded-lg bg-surface-tertiary p-4">
+            <div className="bg-surface-tertiary overflow-x-auto rounded-lg p-4">
               {formatStackTrace(errorDetails.stack).map(({ number, content }) => (
                 <div key={number} className="flex">
-                  <span className="select-none pr-4 font-mono text-xs text-text-secondary">
+                  <span className="text-text-secondary pr-4 font-mono text-xs select-none">
                     {String(number).padStart(3, '0')}
                   </span>
-                  <pre className="flex-1 font-mono text-xs leading-relaxed text-text-primary">
+                  <pre className="text-text-primary flex-1 font-mono text-xs leading-relaxed">
                     {content}
                   </pre>
                 </div>
@@ -188,22 +205,22 @@ export default function RouteErrorBoundary() {
 
         {/* Additional Error Data */}
         {errorDetails.data != null && (
-          <details className="group mb-4 rounded-xl border border-border-light p-4">
-            <summary className="mb-2 flex cursor-pointer items-center justify-between text-sm font-medium text-text-primary">
+          <details className="group border-border-light mb-4 rounded-xl border p-4">
+            <summary className="text-text-primary mb-2 flex cursor-pointer items-center justify-between text-sm font-medium">
               <span>{localize('com_ui_additional_details')}</span>
               <span className="transition-transform group-open:rotate-90">{'>'}</span>
             </summary>
-            <pre className="whitespace-pre-wrap text-xs font-light leading-relaxed text-text-primary">
+            <pre className="text-text-primary text-xs leading-relaxed font-light whitespace-pre-wrap">
               {JSON.stringify(errorDetails.data, null, 2)}
             </pre>
           </details>
         )}
 
         <div className="mt-6 flex flex-col gap-4">
-          <p className="text-sm font-light text-text-secondary">
+          <p className="text-text-secondary text-sm font-light">
             {localize('com_ui_error_try_following_prefix')}:
           </p>
-          <ul className="list-inside list-disc text-sm text-text-secondary">
+          <ul className="text-text-secondary list-inside list-disc text-sm">
             <li>{localize('com_ui_refresh_page')}</li>
             <li>{localize('com_ui_clear_browser_cache')}</li>
             <li>{localize('com_ui_check_internet')}</li>

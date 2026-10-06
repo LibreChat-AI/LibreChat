@@ -38,6 +38,28 @@ afterEach(() => {
   jest.clearAllMocks();
 });
 
+it('strips server-private owner metadata from untrusted LibreChat imports', async () => {
+  const jsonData = {
+    conversationId: 'imported',
+    title: 'Imported',
+    messages: [
+      {
+        messageId: 'source',
+        parentMessageId: Constants.NO_PARENT,
+        text: '[EMAIL_1]',
+        isCreatedByUser: true,
+        privateText: 'v1:forged',
+        privacyRevision: 'forged',
+      },
+    ],
+  };
+  const importBatchBuilder = new ImportBatchBuilder('owner');
+  await getImporter(jsonData)(jsonData, 'owner', () => importBatchBuilder);
+  expect(importBatchBuilder.messages[0].text).toBe('[EMAIL_1]');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privateText');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privacyRevision');
+});
+
 describe('importChatGptConvo', () => {
   it('should import conversation correctly', async () => {
     const expectedNumberOfMessages = 19;
@@ -1355,6 +1377,23 @@ describe('importLibreChatConvo', () => {
         expect(message.expiredAt.getTime()).toBeLessThan(now + hours * 3600000 + 1000);
       },
     );
+
+    it('marks imported conversations and messages temporary under ephemeral retention', () => {
+      const requestUserId = 'user-123';
+      const builder = new ImportBatchBuilder(requestUserId, {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChatRetention: 24,
+      });
+      builder.startConversation(EModelEndpoint.openAI);
+      const message = builder.addUserMessage('Ephemeral import');
+      const result = builder.finishConversation('Imported ephemeral chat');
+
+      expect(message.isTemporary).toBe(true);
+      expect(message.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.isTemporary).toBe(true);
+      expect(result.conversation.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.expiredAt).toBe(message.expiredAt);
+    });
   });
 });
 

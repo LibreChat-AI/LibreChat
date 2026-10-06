@@ -1,14 +1,15 @@
 import * as Ariakit from '@ariakit/react';
+import { TooltipAnchor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, Constants } from 'librechat-data-provider';
-import { TooltipAnchor, composerControlClasses } from '@librechat/client';
 import { Check, ChevronDown, FilePen, FileQuestionMark, FileTerminal } from 'lucide-react';
-import type { CodeApprovalMode, TConversation } from 'librechat-data-provider';
+import type { TConversation, CodeApprovalMode, CodeEnvironmentMode } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
 import { useCodeApprovalModePreference } from '~/hooks/Agents/codeApprovalPreference';
 import { useCodeApprovalMode, useLocalize } from '~/hooks';
+import { chipClasses } from './chip';
 import { cn } from '~/utils';
 
 /** The modes answer one question — what may happen to the workspace without the
@@ -41,17 +42,24 @@ const modeOptions: Record<
 export default function CodeApprovalMenu({
   conversation,
   addedConversation,
+  codeEnvironmentMode,
   setConversation,
   disabled,
 }: {
   conversation: TConversation | null;
   addedConversation?: TConversation | null;
+  /** The workspace mode the composer resolved for the next turn. */
+  codeEnvironmentMode?: CodeEnvironmentMode;
   setConversation: SetterOrUpdater<TConversation | null>;
   disabled: boolean;
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
-  const { available, modes, selected } = useCodeApprovalMode(conversation, addedConversation);
+  const { available, modes, selected } = useCodeApprovalMode(
+    conversation,
+    addedConversation,
+    codeEnvironmentMode,
+  );
   const preference = useCodeApprovalModePreference();
   const menuStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
   const isOpen = menuStore.useState('open');
@@ -101,21 +109,20 @@ export default function CodeApprovalMenu({
               modeOptions[selected].label,
             )}`}
             className={cn(
-              composerControlClasses(),
-              'min-w-0 max-w-full px-2.5 md:px-theme-normal',
+              chipClasses,
               isOpen && 'bg-surface-hover',
               disabled && 'cursor-not-allowed opacity-50',
             )}
           />
         }
       >
-        <SelectedIcon className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="min-w-0 max-w-[12rem] truncate">
+        <SelectedIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+        <span className="max-w-[12rem] min-w-0 truncate">
           {localize(modeOptions[selected].label)}
         </span>
         <ChevronDown
           className={cn(
-            'size-3 shrink-0 text-text-secondary transition-transform',
+            'text-text-secondary size-3 shrink-0 transition-transform',
             isOpen && 'rotate-180',
           )}
           aria-hidden="true"
@@ -126,8 +133,8 @@ export default function CodeApprovalMenu({
         gutter={8}
         unmountOnHide={true}
         className={cn(
-          'z-50 flex min-w-[280px] max-w-[min(320px,calc(100vw-2rem))] flex-col rounded-xl',
-          'max-h-[var(--popover-available-height)] overflow-y-auto border border-border-light bg-presentation p-1.5 shadow-lg',
+          'z-50 flex max-w-[min(320px,calc(100vw-2rem))] min-w-[260px] flex-col rounded-2xl',
+          'border-border-menu bg-surface-menu max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
           'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out',
           'data-[enter]:scale-100 data-[enter]:opacity-100',
           'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -136,7 +143,7 @@ export default function CodeApprovalMenu({
         {/* Names the menu without adding an `h1` to the page outline. */}
         <Ariakit.MenuHeading
           render={<div />}
-          className="px-2.5 py-1.5 text-xs font-medium text-text-secondary"
+          className="text-text-secondary px-2.5 pt-2 pb-1 text-xs font-semibold"
         >
           {localize('com_ui_code_approval_mode')}
         </Ariakit.MenuHeading>
@@ -152,19 +159,19 @@ export default function CodeApprovalMenu({
               hideOnClick={true}
               onChange={() => selectMode(mode)}
               className={cn(
-                'group flex w-full cursor-pointer items-start gap-3 rounded-lg px-2.5 py-2',
-                'outline-none transition-colors duration-theme-fast',
+                'group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-1.5',
+                'duration-theme-fast outline-hidden transition-colors',
                 'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
                 isSelected && 'bg-surface-active-alt',
               )}
             >
-              <Icon className="mt-0.5 size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+              <Icon className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <div className="min-w-0 flex-1 text-left">
-                <div className="text-sm font-medium text-text-primary">{localize(label)}</div>
-                <p className="text-xs text-text-secondary">{localize(description)}</p>
+                <div className="text-text-primary text-sm font-medium">{localize(label)}</div>
+                <p className="text-text-secondary text-xs">{localize(description)}</p>
               </div>
               {isSelected && (
-                <Check className="mt-0.5 size-4 shrink-0 text-text-primary" aria-hidden="true" />
+                <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
               )}
             </Ariakit.MenuItemRadio>
           );

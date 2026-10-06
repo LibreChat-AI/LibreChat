@@ -11,9 +11,36 @@ import {
   eReasoningEffortSchema,
   eReasoningModeSchema,
   eReasoningContextSchema,
+  reasoningOverrideSchema,
   subagentThreadLineageSchema,
   getGoogleThinkingBudgetBounds,
+  tPresetSchema,
 } from './schemas';
+
+describe('reasoningOverrideSchema', () => {
+  it.each([
+    { key: 'reasoning_effort', value: ReasoningEffort.high },
+    { key: 'effort', value: AnthropicEffort.medium },
+    { key: 'thinkingLevel', value: 'low' },
+    { key: 'thinkingBudget', value: -1 },
+    { key: 'thinkingBudget', value: 32768 },
+    { key: 'thinkingBudget', value: 500000 },
+  ])('accepts a supported request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.parse(override)).toEqual(override);
+  });
+
+  it.each([
+    { key: 'temperature', value: 1 },
+    { key: 'reasoning_effort', value: 'turbo' },
+    { key: 'effort', value: 'none' },
+    { key: 'thinkingLevel', value: 'max' },
+    { key: 'thinkingBudget', value: 1.5 },
+    { key: 'thinkingBudget', value: -2 },
+    { key: 'thinkingBudget', value: 1000, extra: true },
+  ])('rejects an invalid request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.safeParse(override).success).toBe(false);
+  });
+});
 
 describe('anthropicSettings', () => {
   describe('maxOutputTokens.reset()', () => {
@@ -683,6 +710,34 @@ describe('subagentThreadLineageSchema', () => {
   });
 });
 
+describe('tMessageSchema context fading', () => {
+  const message = {
+    messageId: 'message-1',
+    conversationId: 'conversation-1',
+    parentMessageId: null,
+    text: 'Assistant-role text',
+    isCreatedByUser: false,
+  };
+
+  it.each([1, 2])('round-trips stored version %i tiers', (v) => {
+    const fading = { v, budgetTokens: 10_000, masked: true };
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading,
+      fadingTiers: [{ agentId: 'agent-a', ...fading }],
+    };
+    expect(tMessageSchema.parse({ ...message, contextMeta }).contextMeta).toEqual(contextMeta);
+  });
+
+  it('rejects unknown tier versions', () => {
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading: { v: 3, budgetTokens: 10_000, masked: true },
+    };
+    expect(() => tMessageSchema.parse({ ...message, contextMeta })).toThrow();
+  });
+});
+
 describe('tMessageSchema user-submitted provenance', () => {
   const message = {
     messageId: 'message-1',
@@ -730,5 +785,39 @@ describe('tMessageSchema user-submitted provenance', () => {
     [{ path: '/content/0/tool_call/output', field: 'answer', extra: true }],
   ])('rejects invalid exact message-field provenance %#', (userSubmittedMessageFieldPaths) => {
     expect(() => tMessageSchema.parse({ ...message, userSubmittedMessageFieldPaths })).toThrow();
+  });
+});
+
+describe('tPresetSchema', () => {
+  it('strips all unseen-reply state from preset payloads', () => {
+    /* Saving a preset off a live conversation captures read-state fields; none may stamp stale
+       state back onto every conversation it is applied to. */
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      lastResponseAt: '2026-08-16T10:00:00.000Z',
+      lastResponseMessageId: 'reply-1',
+      lastResponseIsManual: true,
+      isMarkedUnread: true,
+      lastSeenAt: '2026-08-16T09:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('lastResponseAt');
+    expect(parsed).not.toHaveProperty('lastResponseMessageId');
+    expect(parsed).not.toHaveProperty('lastResponseIsManual');
+    expect(parsed).not.toHaveProperty('isMarkedUnread');
+    expect(parsed).not.toHaveProperty('lastSeenAt');
+  });
+
+  it('keeps stripping the runtime timestamps presets never carry', () => {
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      createdAt: '2026-08-16T10:00:00.000Z',
+      updatedAt: '2026-08-16T10:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('createdAt');
+    expect(parsed).not.toHaveProperty('updatedAt');
   });
 });

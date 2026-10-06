@@ -216,6 +216,19 @@ const base: ChildActivity = {
   ],
 };
 
+it('keeps a host notice inside the floating-header clearance', () => {
+  const activity: ChildActivity = { title: 'Review', status: 'running', items: [] };
+  const { container } = render(
+    <SubagentActivity
+      activity={activity}
+      headerInset
+      notice={<div role="status">{String(19)}</div>}
+    />,
+  );
+  const inset = container.querySelector('[class~="pt-13"]');
+  expect(inset).toContainElement(screen.getByRole('status'));
+});
+
 describe('SubagentActivity', () => {
   it.each(['failed', 'cancelled'] as const)(
     'renders the %s lifecycle through the shared view',
@@ -411,7 +424,11 @@ describe('SubagentActivity', () => {
     expect(screen.getByText('com_ui_subagent_control_message_truncated')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_control_reason_task_completed')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' }));
+    const accepted = screen.getByText('com_ui_subagent_control_status_accepted');
+    const withdraw = screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' });
+    expect(accepted.parentElement).toContainElement(withdraw);
+    expect(screen.queryByText('com_ui_queued_turn_starting')).toBeNull();
+    fireEvent.click(withdraw);
     expect(onCancelControl).toHaveBeenCalledWith('control-1');
   });
 

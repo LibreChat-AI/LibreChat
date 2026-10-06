@@ -56,6 +56,9 @@ export function trackSockets(httpServer: http.Server): () => Promise<void> {
 }
 
 export interface OAuthTestServerOptions {
+  resourceFailure?: (
+    req: http.IncomingMessage,
+  ) => 401 | 403 | undefined | Promise<401 | 403 | undefined>;
   tokenTTLMs?: number;
   issueRefreshTokens?: boolean;
   refreshTokenTTLMs?: number;
@@ -81,6 +84,11 @@ export interface OAuthTestServerOptions {
   refreshGate?: () => Promise<void> | undefined;
   /** Optional test hook for controlling echo-tool completion. */
   echoHandler?: (message: string) => string | Promise<string>;
+  /** Observes MCP resource requests, including unauthenticated and cancellation POSTs. */
+  onResourceRequest?: (request: http.IncomingMessage) => void;
+  /** Observes parsed resource RPC methods without consuming the SDK's request body. */
+  onRPCRequest?: (method: string) => void;
+  appResourceUri?: string;
 }
 
 export interface OAuthTokenRequestRecord {
@@ -102,6 +110,7 @@ export interface OAuthTestServer {
   registeredClients: Map<string, { client_id: string; client_secret: string }>;
   tokenRequests: OAuthTokenRequestRecord[];
   getAuthCode: () => Promise<string>;
+  notifyToolsChanged: () => Promise<void>;
 }
 
 async function readRequestBody(req: http.IncomingMessage): Promise<string> {
@@ -149,11 +158,13 @@ export async function createOAuthMCPServer(
     requireResourceParameter = false,
     rejectRefreshTokens = 0,
     echoHandler,
+    onResourceRequest,
     refreshFailure,
     refreshGate,
   } = options;
 
   const sessions = new Map<string, StreamableHTTPServerTransport>();
+  const notifyToolsChanged = new Set<() => Promise<void>>();
   const issuedTokens = new Set<string>();
   const tokenIssueTimes = new Map<string, number>();
   const accessTokenScopes = new Map<string, string[]>();
@@ -466,6 +477,12 @@ export async function createOAuthMCPServer(
     }
 
     // All other paths require Bearer token auth
+    onResourceRequest?.(req);
+    const failure = await options.resourceFailure?.(req);
+    if (failure) {
+      writeBearerChallenge(res, failure, 'invalid_token', 'Rejected bearer');
+      return;
+    }
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       writeBearerChallenge(res, 401, 'invalid_token', 'Missing Authorization header');
@@ -503,14 +520,39 @@ export async function createOAuthMCPServer(
         sessionIdGenerator: () => randomUUID(),
       });
       const mcp = new McpServer({ name: 'oauth-test-server', version: '0.0.1' });
-      mcp.tool('echo', { message: z.string() }, async (args) => {
-        const text = echoHandler ? await echoHandler(args.message) : `echo: ${args.message}`;
-        return { content: [{ type: 'text' as const, text }] };
-      });
+      mcp.registerTool(
+        'echo',
+        {
+          inputSchema: { message: z.string() },
+          ...(options.appResourceUri && { _meta: { ui: { resourceUri: options.appResourceUri } } }),
+        },
+        async (args) => {
+          const text = echoHandler ? await echoHandler(args.message) : `echo: ${args.message}`;
+          return { content: [{ type: 'text' as const, text }] };
+        },
+      );
+      if (options.appResourceUri)
+        mcp.registerResource(
+          'app',
+          options.appResourceUri,
+          { mimeType: 'text/html;profile=mcp-app' },
+          async (uri) => ({
+            contents: [
+              { uri: uri.href, mimeType: 'text/html;profile=mcp-app', text: '<p>Read only</p>' },
+            ],
+          }),
+        );
       await mcp.connect(transport);
+      notifyToolsChanged.add(() => mcp.server.sendToolListChanged());
     }
 
-    await transport.handleRequest(req, res);
+    const body: unknown =
+      options.onRPCRequest && req.method === 'POST'
+        ? JSON.parse(await readRequestBody(req))
+        : undefined;
+    if (body && typeof body === 'object' && 'method' in body && typeof body.method === 'string')
+      options.onRPCRequest?.(body.method);
+    await transport.handleRequest(req, res, body);
 
     if (transport.sessionId && !sessions.has(transport.sessionId)) {
       sessions.set(transport.sessionId, transport);
@@ -532,6 +574,9 @@ export async function createOAuthMCPServer(
     issuedRefreshTokens,
     registeredClients,
     tokenRequests,
+    notifyToolsChanged: async () => {
+      await Promise.all([...notifyToolsChanged].map((notify) => notify()));
+    },
     getAuthCode: async () => {
       const authUrl = new URL(`${getBaseUrl()}/authorize`);
       authUrl.searchParams.set('redirect_uri', 'http://localhost');

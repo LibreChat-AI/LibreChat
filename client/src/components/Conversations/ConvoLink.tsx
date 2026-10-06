@@ -8,6 +8,9 @@ interface ConvoLinkProps {
   isPopoverActive: boolean;
   isHovered: boolean;
   isSharedBadgeVisible: boolean;
+  isUnseen: boolean;
+  /** The avatar's ring is decorative, so the label carries the running state. */
+  isGenerating?: boolean;
   title: string | null;
   onRename: () => void;
   isSmallScreen: boolean;
@@ -15,6 +18,8 @@ interface ConvoLinkProps {
   /** Shortcuts the row responds to, declared on the element that takes focus so
    *  assistive tech announces them when the user arrives here. */
   keyShortcuts?: string;
+  /** Id of text that adds context the title does not carry, such as the chat's project. */
+  describedBy?: string;
   children: React.ReactNode;
 }
 
@@ -38,11 +43,14 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
   isPopoverActive,
   isHovered,
   isSharedBadgeVisible,
+  isUnseen,
+  isGenerating = false,
   title,
   onRename,
   isSmallScreen,
   localize,
   keyShortcuts,
+  describedBy,
   children,
 }) => {
   const [isOverflowing, setIsOverflowing] = useState(false);
@@ -126,26 +134,30 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
     <button
       type="button"
       className={cn(
-        'flex w-full min-w-0 grow cursor-pointer items-center gap-2 overflow-hidden rounded-lg px-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary',
-        isActiveConvo || isPopoverActive ? 'bg-surface-active-alt' : '',
+        'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 self-stretch overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+        isActiveConvo || isPopoverActive ? 'bg-surface-nav-selected' : '',
       )}
       aria-current={isActiveConvo ? 'page' : undefined}
       aria-keyshortcuts={keyShortcuts}
+      aria-describedby={describedBy}
       aria-label={
-        isSharedBadgeVisible
+        (isSharedBadgeVisible
           ? localize('com_ui_conversation_label_shared', {
               title: title || localize('com_ui_untitled'),
             })
           : localize('com_ui_conversation_label', {
               title: title || localize('com_ui_untitled'),
-            })
+            })) +
+        (isGenerating ? `, ${localize('com_ui_generating')}` : '') +
+        (isUnseen && !isGenerating ? `, ${localize('com_ui_unread')}` : '')
       }
     >
       {children}
       <span
         ref={titleRef}
         className={cn(
-          'min-w-0 flex-1 overflow-hidden whitespace-nowrap [--convo-title-fade-width:24px] [--convo-title-reveal-duration:800ms] [mask-position:left] [mask-repeat:no-repeat] [mask-size:100%_100%] [text-align:start] [transition-duration:0ms] [transition-property:mask-size] [transition-timing-function:linear] [&:dir(rtl)]:[mask-position:right]',
+          isUnseen && !isGenerating && 'font-semibold',
+          'min-w-0 flex-1 overflow-hidden [mask-size:100%_100%] [mask-position:left] [mask-repeat:no-repeat] [text-align:start] whitespace-nowrap [transition-property:mask-size] [transition-duration:0ms] [transition-timing-function:linear] [--convo-title-fade-width:24px] [--convo-title-reveal-duration:800ms] [&:dir(rtl)]:[mask-position:right]',
           isOverflowing &&
             '[mask-image:linear-gradient(to_right,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)] [&:dir(rtl)]:[mask-image:linear-gradient(to_left,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)]',
           'data-[title-revealed=true]:[mask-size:calc(100%_+_var(--convo-title-fade-width))_100%] data-[title-revealed=true]:[transition-duration:var(--convo-title-reveal-duration)]',

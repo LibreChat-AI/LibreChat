@@ -256,6 +256,31 @@ describe('memory partitions', () => {
     expect(partitionA.withKeys).not.toContain('personal one');
   });
 
+  it('signals a read failure rather than reporting an empty memory partition', async () => {
+    const find = jest.spyOn(MemoryEntry, 'find').mockImplementationOnce(() => {
+      throw new Error('simulated memory read failure');
+    });
+    try {
+      const failed = await methods.getFormattedMemories({ userId });
+      expect(failed).toEqual({
+        withKeys: undefined,
+        withoutKeys: undefined,
+        totalTokens: 0,
+        tokenCountsByKey: new Map(),
+        readFailed: true,
+      });
+    } finally {
+      find.mockRestore();
+    }
+    const empty = await methods.getFormattedMemories({ userId });
+    expect(empty).toEqual({
+      withKeys: '',
+      withoutKeys: '',
+      totalTokens: 0,
+      tokenCountsByKey: new Map(),
+    });
+  });
+
   it('returns every partition from getAllUserMemories and wipes them all on deleteAllUserMemories', async () => {
     await methods.setMemory({ userId, key: 'one', value: 'personal', tokenCount: 1 });
     await methods.setMemory({ userId, key: 'two', value: 'agent a', tokenCount: 1, agentId });

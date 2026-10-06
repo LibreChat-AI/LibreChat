@@ -1,7 +1,8 @@
 import { useCallback, useState, useEffect, useRef, memo } from 'react';
+import { useAtom } from 'jotai';
 import { useForm } from 'react-hook-form';
-import { useMediaQuery } from '@librechat/client';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { pxToRem, useRemScale, useMediaQuery } from '@librechat/client';
 import type { ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
 import {
@@ -15,8 +16,11 @@ import {
   MOBILE_DRAWER_WIDTH,
   DRAWER_UNPAINTED,
 } from './constants';
+import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
 import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
+import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
+import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
@@ -46,15 +50,26 @@ function SidebarChatProvider({ children }: { children: ReactNode }) {
   );
 }
 
-function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
+function UnifiedSidebar({
+  isSliding = false,
+  switchToHistory,
+}: {
+  isSliding?: boolean;
+  /** The user's "new chat returns to the chat list" preference. App-global
+   *  shell state the sidebar only reads, so the host passes it in. */
+  switchToHistory: boolean;
+}) {
   const localize = useLocalize();
   const location = useLocation();
   const navigate = useNavigate();
   const { isSmallScreen, expanded } = useSidebarState();
+  const [showFiles, setShowFiles] = useAtom(showFilesDialogAtom);
+  const [filesDialogTrigger, setFilesDialogTrigger] = useAtom(filesDialogTriggerAtom);
   const { setSidebarOpen } = useSidebarToggle();
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [sidebarWidth, setSidebarWidth] = useState(getInitialWidth);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const remScale = useRemScale();
   const [isResizing, setIsResizing] = useState(false);
   const resizeHandlers = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null);
 
@@ -70,12 +85,11 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
     return () => window.removeEventListener('resize', handleViewportResize);
   }, []);
 
-  /** Mirrors the bounds the aside is rendered with, so the handle never announces a value
-   *  outside its own range. CSS resolves a 40% that falls under `min-width` in favor of the
-   *  minimum, and the resize handlers clamp the same way, so the floor belongs here too. */
-  const resizeMax = Math.max(EXPANDED_MIN, Math.round(viewportWidth * 0.4));
+  /** Keep the handle's announced range in the same baseline units as stored widths. */
+  const resizeMax = (viewportWidth * 0.4) / remScale;
+  const resizeMin = Math.min(EXPANDED_MIN, resizeMax);
   const resizeNow = panelExpanded
-    ? Math.min(Math.max(sidebarWidth, EXPANDED_MIN), resizeMax)
+    ? Math.min(Math.max(sidebarWidth, resizeMin), resizeMax)
     : COLLAPSED_WIDTH;
 
   const handleCollapse = useCallback(
@@ -103,7 +117,9 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
   const handleResizeStart = useCallback(() => {
     setIsResizing(true);
     document.body.style.userSelect = 'none';
-    const maxWidth = window.innerWidth * 0.4;
+    const maxWidth = (window.innerWidth * 0.4) / remScale;
+    /** The scaled minimum can exceed the viewport cap, so it yields to the cap. */
+    const minWidth = Math.min(EXPANDED_MIN, maxWidth);
     let rafId: number | null = null;
 
     const move = (e: MouseEvent) => {
@@ -112,7 +128,7 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
       }
       rafId = requestAnimationFrame(() => {
         rafId = null;
-        const next = Math.max(EXPANDED_MIN, Math.min(e.clientX, maxWidth));
+        const next = Math.max(minWidth, Math.min(e.clientX / remScale, maxWidth));
         setSidebarWidth(next);
       });
     };
@@ -136,18 +152,25 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
     resizeHandlers.current = { move, up };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
-  }, []);
+  }, [remScale]);
 
-  const handleResizeKeyboard = useCallback((direction: 'shrink' | 'grow') => {
-    setSidebarWidth((w) => {
-      const next =
-        direction === 'shrink'
-          ? Math.max(w - 20, EXPANDED_MIN)
-          : Math.min(w + 20, window.innerWidth * 0.4);
-      localStorage.setItem('side:width', String(Math.round(next)));
-      return next;
-    });
-  }, []);
+  const handleResizeKeyboard = useCallback(
+    (direction: 'shrink' | 'grow') => {
+      setSidebarWidth((w) => {
+        const maxWidth = (window.innerWidth * 0.4) / remScale;
+        /** A width stored at a lower scale can exceed the current maximum, so it
+         *  is brought into range before stepping rather than crawling down by 20. */
+        const current = Math.min(w, maxWidth);
+        const next =
+          direction === 'shrink'
+            ? Math.max(current - 20, Math.min(EXPANDED_MIN, maxWidth))
+            : Math.min(current + 20, maxWidth);
+        localStorage.setItem('side:width', String(Math.round(next)));
+        return next;
+      });
+    },
+    [remScale],
+  );
 
   useEffect(() => {
     return () => {
@@ -184,69 +207,85 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
     return () => document.removeEventListener('keydown', handler);
   }, [isSmallScreen, expanded, handleCollapse]);
 
-  if (isSmallScreen) {
-    return (
-      <div
-        id={MOBILE_DRAWER_ID}
-        className={cn(
-          /** The close swipe reads horizontal touches here (the drawer holds no
-           * horizontal scrollers), while pinch-zoom stays with the browser —
-           * this full-viewport surface must not disable zooming entirely. */
-          'fixed inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col bg-surface-primary-alt',
-          expanded ? 'translate-x-0' : '-translate-x-full',
-        )}
-        style={{
-          width: MOBILE_DRAWER_WIDTH,
-          /** The strip setting changes the width without passing through the
-           *  snap path, so the preference has to reach the declarative style
-           *  too or that one change still animates. */
-          transition: prefersReducedMotion ? undefined : MOBILE_DRAWER_TRANSITION,
-          zIndex: DRAWER_Z_INDEX,
-          /** Why a closed drawer is not painted at all: see DRAWER_UNPAINTED.
-           *  The travel stays painted — `isSliding` covers the frames Recoil's
-           *  deferred flip leaves uncovered at both ends, and a drag claims
-           *  painting inline (see useDrawerSwipe), which hands this value back
-           *  explicitly because React cannot re-assert it on its own. */
-          visibility: expanded || isSliding ? undefined : DRAWER_UNPAINTED,
-        }}
-        inert={!expanded ? '' : undefined}
-      >
-        <SidebarChatProvider>
-          <ActivePanelProvider>
-            <MobileHeader
-              links={links}
-              expanded={expanded}
-              onClose={handleCollapse}
-              onLeaveInsights={handleLeaveInsights}
-              routeActiveId={isInsightsRoute ? 'insights' : undefined}
-            />
-            <nav
-              id="chat-history-nav"
-              className="min-h-0 flex-1 overflow-hidden bg-surface-primary-alt"
-            >
-              <SidePanelNav links={links} />
-            </nav>
-            <MobileShortcutTargets
-              links={links}
-              onLeaveInsights={handleLeaveInsights}
-              routeActiveId={isInsightsRoute ? 'insights' : undefined}
-            />
-            <MobileBottomBar links={links} onNewChat={handleCollapse} />
-          </ActivePanelProvider>
-        </SidebarChatProvider>
-      </div>
-    );
-  }
-
-  return (
+  const sidebarContent = isSmallScreen ? (
+    <div
+      id={MOBILE_DRAWER_ID}
+      className={cn(
+        /** The close swipe reads horizontal touches here (the drawer holds no
+         * horizontal scrollers), while pinch-zoom stays with the browser:
+         * this full-height surface must not disable zooming entirely.
+         * Absolute in the app container rather than fixed to the viewport, so
+         * a site banner above that container stays above the drawer too
+         * instead of covering its header strip, as it already does for the
+         * scrim and the pane. */
+        'bg-surface-primary-alt text-text-primary absolute inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+        /** In dark mode the scrim and the drawer are both near-black, and no
+         *  scrim opacity separates them by 3:1, so the drawer draws its own
+         *  edge. Light palettes get that separation from the scrim, so the
+         *  `drawer-edge` role defaults to the drawer's own fill there. */
+        'border-drawer-edge border-r',
+        expanded ? 'translate-x-0' : '-translate-x-full',
+      )}
+      style={{
+        width: MOBILE_DRAWER_WIDTH,
+        /** The strip setting changes the width without passing through the
+         * snap path, so the preference has to reach the declarative style
+         * too or that one change still animates. */
+        transition: prefersReducedMotion ? undefined : MOBILE_DRAWER_TRANSITION,
+        zIndex: DRAWER_Z_INDEX,
+        /** Why a closed drawer is not painted at all: see DRAWER_UNPAINTED.
+         * The travel stays painted — `isSliding` covers the frames Recoil's
+         * deferred flip leaves uncovered at both ends, and a drag claims
+         * painting inline (see useDrawerSwipe), which hands this value back
+         * explicitly because React cannot re-assert it on its own. */
+        visibility: expanded || isSliding ? undefined : DRAWER_UNPAINTED,
+      }}
+      inert={!expanded ? '' : undefined}
+    >
+      <SidebarChatProvider>
+        <ActivePanelProvider>
+          <MobileHeader
+            links={links}
+            expanded={expanded}
+            onClose={handleCollapse}
+            onNewChat={handleCollapse}
+            switchToHistory={switchToHistory}
+            onLeaveInsights={handleLeaveInsights}
+            routeActiveId={isInsightsRoute ? 'insights' : undefined}
+          />
+          {/* Above the panel rather than inside it: the marketplace is a
+              destination like the panels themselves, not a row of whichever
+              list happens to be showing, so it stays put while they change and
+              does not scroll away with the chats. */}
+          <div className="shrink-0 px-3 pt-2 empty:hidden">
+            <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
+          </div>
+          <nav
+            id="chat-history-nav"
+            className="bg-surface-primary-alt min-h-0 flex-1 overflow-hidden"
+          >
+            <SidePanelNav links={links} />
+          </nav>
+          <MobileShortcutTargets
+            links={links}
+            onLeaveInsights={handleLeaveInsights}
+            routeActiveId={isInsightsRoute ? 'insights' : undefined}
+          />
+          <MobileBottomBar links={links} />
+        </ActivePanelProvider>
+      </SidebarChatProvider>
+    </div>
+  ) : (
     <SidebarChatProvider>
       <ActivePanelProvider>
         <aside
-          className="relative flex h-full flex-shrink-0 overflow-hidden"
+          className="relative flex h-full shrink-0 overflow-hidden"
           style={{
-            width: panelExpanded ? sidebarWidth : COLLAPSED_WIDTH,
-            minWidth: panelExpanded ? EXPANDED_MIN : COLLAPSED_WIDTH,
-            maxWidth: panelExpanded ? '40%' : COLLAPSED_WIDTH,
+            width: pxToRem(panelExpanded ? sidebarWidth : COLLAPSED_WIDTH),
+            minWidth: panelExpanded
+              ? `min(${pxToRem(EXPANDED_MIN)}, 40%)`
+              : pxToRem(COLLAPSED_WIDTH),
+            maxWidth: panelExpanded ? '40%' : pxToRem(COLLAPSED_WIDTH),
             transition: isResizing
               ? 'none'
               : `width ${TRANSITION_MS}ms ${EASING}, min-width ${TRANSITION_MS}ms ${EASING}, max-width ${TRANSITION_MS}ms ${EASING}`,
@@ -257,17 +296,43 @@ function UnifiedSidebar({ isSliding = false }: { isSliding?: boolean }) {
             links={links}
             expanded={panelExpanded}
             width={resizeNow}
-            minWidth={panelExpanded ? EXPANDED_MIN : COLLAPSED_WIDTH}
+            minWidth={panelExpanded ? resizeMin : COLLAPSED_WIDTH}
             maxWidth={panelExpanded ? resizeMax : COLLAPSED_WIDTH}
             onCollapse={handleCollapse}
             onExpand={handlePanelExpand}
             onLeaveInsights={handleLeaveInsights}
+            switchToHistory={switchToHistory}
             onResizeStart={handleResizeStart}
             onResizeKeyboard={handleResizeKeyboard}
           />
         </aside>
       </ActivePanelProvider>
     </SidebarChatProvider>
+  );
+
+  const closeFiles = useCallback(
+    (open: boolean) => {
+      setShowFiles(open);
+      if (!open) {
+        /** A stale opener would capture focus for the NEXT open, which the
+         *  shortcut path deliberately leaves to the composer. */
+        setFilesDialogTrigger(null);
+      }
+    },
+    [setFilesDialogTrigger, setShowFiles],
+  );
+
+  return (
+    <>
+      {sidebarContent}
+      {showFiles && (
+        <MyFilesModal
+          open={showFiles}
+          onOpenChange={closeFiles}
+          triggerRef={filesDialogTrigger ?? undefined}
+        />
+      )}
+    </>
   );
 }
 

@@ -12,4 +12,8 @@ describe('resolveSubagentAgentId', () => {
     expect(resolveSubagentAgentId(graph, agent)).toBeUndefined();
     expect(resolveSubagentAgentId(null, graph)).toBeUndefined();
   });
+  it('does not infer a saved agent when identity is absent', () => {
+    expect(resolveSubagentAgentId(null, undefined)).toBeUndefined();
+    expect(resolveSubagentAgentId({ subagentKind: 'graph' }, undefined)).toBeUndefined();
+  });
 });

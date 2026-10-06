@@ -1,7 +1,9 @@
+import { useMemo } from 'react';
 import type { TMessageProps } from '~/common';
 import SearchContent, {
   rendersMarkdownLite,
 } from '~/components/Chat/Messages/Content/SearchContent';
+import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
@@ -9,6 +11,8 @@ import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
+import WakeupRow from '~/components/Chat/Messages/ui/WakeupRow';
+import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import { MessageContext, useShareContext } from '~/Providers';
 import SubRow from '~/components/Chat/Messages/SubRow';
 import { useAttachments, useLocalize } from '~/hooks';
@@ -32,6 +36,7 @@ export default function Message(props: TMessageProps) {
     messageId: message?.messageId,
     attachments: message?.attachments,
   });
+  const wakeupDisplay = useMemo(() => parseWakeupMessage(message), [message]);
 
   if (!message) {
     return null;
@@ -51,12 +56,16 @@ export default function Message(props: TMessageProps) {
    *  view and wrong here: it is the screen-reader heading for the user turn, and it
    *  would credit every prompt the sharer wrote to the person reading the transcript. */
   const messageLabel = isCreatedByUser ? localize('com_ui_user') : (message.sender ?? '');
+  const subagentWakeup = wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
+  const Row = subagentWakeup == null ? MessageRow : WakeupRow;
 
   return (
     <>
-      <div className="w-full border-0 bg-transparent text-text-primary">
+      <div className="text-text-primary w-full border-0 bg-transparent">
         <div className="m-auto justify-center px-4 py-3 sm:px-0">
-          <MessageRow
+          <Row
+            task={subagentWakeup}
+            conversationId={message.conversationId ?? conversation?.conversationId ?? ''}
             id={messageId}
             icon={<Icon message={message} conversation={conversation} />}
             label={messageLabel}
@@ -65,6 +74,11 @@ export default function Message(props: TMessageProps) {
             ariaLabel={getMessageAriaLabel(message, localize)}
             headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
             isCreatedByUser={isCreatedByUser}
+            systemLabel={
+              wakeupDisplay != null && subagentWakeup == null
+                ? localize('com_ui_system_event')
+                : undefined
+            }
             className="final-completion"
             footer={
               <SubRow classes={isCreatedByUser ? 'justify-end text-xs' : 'text-xs'}>
@@ -90,38 +104,42 @@ export default function Message(props: TMessageProps) {
                 isLatestMessage: false,
               }}
             >
-              {message.content ? (
-                <SearchContent
-                  message={message}
-                  attachments={attachments}
-                  searchResults={searchResults}
-                  authorHeader={
-                    isCreatedByUser ? undefined : (
-                      <AuthorHeader
-                        icon={<Icon message={message} conversation={conversation} />}
-                        label={messageLabel}
-                      />
-                    )
-                  }
-                />
-              ) : (
-                <MessageContent
-                  edit={false}
-                  error={error}
-                  isLast={false}
-                  ask={() => {}}
-                  text={text || ''}
-                  message={message}
-                  isSubmitting={false}
-                  enterEdit={() => ({})}
-                  unfinished={unfinished}
-                  siblingIdx={siblingIdx ?? 0}
-                  isCreatedByUser={isCreatedByUser}
-                  setSiblingIdx={setSiblingIdx ?? (() => ({}))}
-                />
+              {wakeupDisplay != null && (
+                <Wakeup display={wakeupDisplay} conversationId={message.conversationId} />
               )}
+              {wakeupDisplay == null &&
+                (message.content ? (
+                  <SearchContent
+                    message={message}
+                    attachments={attachments}
+                    searchResults={searchResults}
+                    authorHeader={
+                      isCreatedByUser ? undefined : (
+                        <AuthorHeader
+                          icon={<Icon message={message} conversation={conversation} />}
+                          label={messageLabel}
+                        />
+                      )
+                    }
+                  />
+                ) : (
+                  <MessageContent
+                    edit={false}
+                    error={error}
+                    isLast={false}
+                    ask={() => {}}
+                    text={text || ''}
+                    message={message}
+                    isSubmitting={false}
+                    enterEdit={() => ({})}
+                    unfinished={unfinished}
+                    siblingIdx={siblingIdx ?? 0}
+                    isCreatedByUser={isCreatedByUser}
+                    setSiblingIdx={setSiblingIdx ?? (() => ({}))}
+                  />
+                ))}
             </MessageContext.Provider>
-          </MessageRow>
+          </Row>
         </div>
       </div>
       <MultiMessage

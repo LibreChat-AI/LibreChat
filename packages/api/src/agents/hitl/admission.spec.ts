@@ -1,7 +1,17 @@
+import { Constants } from 'librechat-data-provider';
+import { createToolPolicyHook } from '@librechat/agents';
+import type { AgentToolOptions } from 'librechat-data-provider';
 import type { PluginHookSource } from '~/agents/hooks/source';
 import type { ToolApprovalAdmissionAgent } from './admission';
 import type { ToolApprovalHook } from './hooks';
-import { agentRunUsesCheckpointer, canAgentGraphPause } from './admission';
+import {
+  agentRunUsesCheckpointer,
+  canAgentGraphPause,
+  copyToolApprovalAdmissionMetadata,
+} from './admission';
+import { loadToolDefinitions } from '~/tools/definitions';
+import { formatMCPServerTools } from '~/mcp/tools';
+import { mapToolApprovalPolicy } from './policy';
 
 const askHook: ToolApprovalHook = async () => ({ decision: 'ask' });
 
@@ -160,4 +170,1207 @@ describe('agentRunUsesCheckpointer', () => {
       }),
     ).toBe(false);
   });
+});
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each([
+    { tools: ['selected_mcp_db'] },
+    { tools: [{ name: 'selected_mcp_db' }] },
+    { toolDefinitions: [{ name: 'selected_mcp_db' }] },
+    { toolRegistry: new Map([['selected_mcp_db', {}]]) },
+  ])(`${mode} options only affect reachable initialized tools (%#)`, (surface) => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const options = {
+      selected_mcp_db: { approval_mode: 'allow' as const },
+      deselected_mcp_db: { approval_mode: mode },
+    };
+    expect(canAgentGraphPause({ policy, agents: [{ ...surface, tool_options: options }] })).toBe(
+      false,
+    );
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            ...surface,
+            tool_options: {
+              ...options,
+              selected_mcp_db: { approval_mode: mode },
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: ['selected_mcp_db'] },
+        agents: [{ ...surface, tool_options: { selected_mcp_db: { approval_mode: mode } } }],
+      }),
+    ).toBe(false);
+  });
+
+  test(`${mode} inactive modes cannot borrow another agent's reachable tool`, () => {
+    expect(
+      canAgentGraphPause({
+        policy: { enabled: true, mode: 'bypass' },
+        agents: [
+          {
+            id: 'a',
+            tools: ['other_mcp_db'],
+            tool_options: { selected_mcp_db: { approval_mode: mode } },
+          },
+          {
+            id: 'b',
+            tools: ['selected_mcp_db'],
+            tool_options: { selected_mcp_db: { approval_mode: 'allow' } },
+          },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  test(`${mode} follows verified aliases without changing saved options or overriding current entries`, () => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const options = { db_query_mcp_db: { approval_mode: mode } };
+    const agent = {
+      tools: ['query_mcp_db'],
+      tool_options: options,
+      mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    };
+    expect(canAgentGraphPause({ policy, agents: [agent] })).toBe(true);
+    expect(Object.keys(options)).toEqual(['db_query_mcp_db']);
+    expect(canAgentGraphPause({ policy, agents: [{ ...agent, mcpToolAliases: [] }] })).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            ...agent,
+            tool_options: {
+              ...options,
+              query_mcp_db: { approval_mode: 'allow' },
+            },
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({ policy: { ...policy, deny: ['db_query_mcp_db'] }, agents: [agent] }),
+    ).toBe(false);
+  });
+
+  test(`${mode} remains conservative for unresolved lazy tools but ignores known deselection`, () => {
+    const policy = { enabled: true, mode: 'bypass' as const };
+    const option = { query_mcp_db: { approval_mode: mode } };
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ lazySubagentConfigs: [{ id: 'lazy', tool_options: option }] }],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            lazySubagentConfigs: [
+              {
+                id: 'lazy',
+                tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}db`],
+                tool_options: option,
+              },
+            ],
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ lazySubagentConfigs: [{ id: 'lazy', tools: [], tool_options: option }] }],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          { lazySubagentConfigs: [{ id: 'lazy', tools: ['other_mcp_db'], tool_options: option }] },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [
+          { lazySubagentConfigs: [{ id: 'lazy', toolDefinitions: [], tool_options: option }] },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: ['query_mcp_db'] },
+        agents: [{ lazySubagentConfigs: [{ tool_options: option }] }],
+      }),
+    ).toBe(false);
+  });
+}
+
+test('disabled modes, inherited options, cycles and duplicate agent IDs preserve admission defaults', () => {
+  const child: ToolApprovalAdmissionAgent = {
+    id: 'same',
+    tools: ['selected_mcp_db'],
+    tool_options: { selected_mcp_db: { approval_mode: 'ask' } },
+  };
+  const parent: ToolApprovalAdmissionAgent = {
+    id: 'same',
+    tools: ['read_file'],
+    subagentAgentConfigs: [child],
+  };
+  Object.assign(child, { subagentAgentConfigs: [parent] });
+  expect(canAgentGraphPause({ policy: { enabled: true, mode: 'bypass' }, agents: [parent] })).toBe(
+    true,
+  );
+  expect(canAgentGraphPause({ policy: { enabled: false, mode: 'bypass' }, agents: [parent] })).toBe(
+    false,
+  );
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'bypass' },
+      agents: [{ tools: ['read_file'], tool_options: { read_file: { defer_loading: true } } }],
+    }),
+  ).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test(`${placement} preserves private approval metadata across multiple projections`, () => {
+    const source: ToolApprovalAdmissionAgent = {
+      id: 'child',
+      tools: ['query_mcp_db'],
+      tool_options: {
+        query_mcp_db: { approval_mode: 'chat' as const, approval_revision: 'revision' },
+      },
+    };
+    const metadata = copyToolApprovalAdmissionMetadata({ id: source.id, name: 'Child' }, source);
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: source.id, configId: 'private-config' },
+      metadata,
+    );
+    source.tool_options!.query_mcp_db.approval_mode = 'allow';
+    const agents = [{ [placement]: [descriptor] }];
+    const policy = { enabled: true, mode: 'bypass' as const };
+    expect(canAgentGraphPause({ policy, agents })).toBe(true);
+    expect(canAgentGraphPause({ policy: { ...policy, deny: ['query_mcp_db'] }, agents })).toBe(
+      false,
+    );
+    expect(canAgentGraphPause({ policy: { ...policy, enabled: false }, agents })).toBe(false);
+    expect(descriptor).not.toHaveProperty('tool_options');
+    expect(descriptor).not.toHaveProperty('tools');
+    expect(JSON.stringify(descriptor)).not.toContain('approval_');
+    expect(Object.getOwnPropertySymbols(descriptor)).toEqual([]);
+  });
+}
+
+test('private projections retain verified aliases and current-option precedence', () => {
+  const source = {
+    tools: ['query_mcp_db'],
+    mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+    tool_options: { db_query_mcp_db: { approval_mode: 'ask' as const } },
+  };
+  const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, source);
+  const policy = { enabled: true, mode: 'bypass' as const };
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+    true,
+  );
+  const allow = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    {
+      ...source,
+      tool_options: {
+        query_mcp_db: { approval_mode: 'allow' as const },
+        db_query_mcp_db: { approval_mode: 'ask' as const },
+      },
+    },
+  );
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [allow] }] })).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['db', 'finance_mcp_eu'])(
+    `${placement} cannot treat unresolved legacy selection as a closed catalog (%s)`,
+    (server) => {
+      const canonical = `query${Constants.mcp_delimiter}${server}`;
+      const selected = `${server}_query${Constants.mcp_delimiter}${server}`;
+      const source = {
+        id: 'child',
+        tools: [selected],
+        tool_options: { [canonical]: { approval_mode: 'chat' as const } },
+      };
+      const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, source);
+      const policy = { enabled: true, mode: 'bypass' as const };
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: [canonical] },
+          agents: [{ [placement]: [descriptor] }],
+        }),
+      ).toBe(false);
+      const collision = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { ...source, toolDefinitions: [{ name: selected }] },
+      );
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [collision] }] })).toBe(false);
+      const explicit = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        {
+          ...source,
+          tool_options: { ...source.tool_options, [selected]: { approval_mode: 'allow' as const } },
+        },
+      );
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [explicit] }] })).toBe(false);
+    },
+  );
+}
+
+const normalizedLazySelections = [
+  { selected: 'db_query_mcp_DB', current: 'query_mcp_DB', raw: 'DB' },
+  { selected: 'db_ops_query_mcp_db ops', current: 'query_mcp_db_ops', raw: 'db ops' },
+  { selected: 'db_ops_query_mcp_db_ops', current: 'query_mcp_db ops', raw: 'db ops' },
+  { selected: 'db_ops_query_mcp_db ops', current: 'query_mcp_db ops', raw: 'db ops' },
+  {
+    selected: 'finance_mcp_eu_get_mcp_version_mcp_Finance_mcp_EU',
+    current: 'get_mcp_version_mcp_Finance_mcp_EU',
+    raw: 'Finance_mcp_EU',
+  },
+];
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(normalizedLazySelections)(
+    `${placement} predicts runtime normalization without proving an alias ($selected)`,
+    ({ selected, current, raw }) => {
+      const source = {
+        tools: [selected],
+        tool_options: { [current]: { approval_mode: 'chat' as const } },
+      };
+      const metadata = copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+        rawMcpServerNames: [raw],
+      });
+      const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, metadata);
+      const policy = { enabled: true, mode: 'bypass' as const };
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, enabled: false },
+          agents: [{ [placement]: [descriptor] }],
+        }),
+      ).toBe(false);
+      expect(descriptor).not.toHaveProperty('mcpToolAliases');
+      expect(descriptor).not.toHaveProperty('tools');
+      expect(source).toEqual({
+        tools: [selected],
+        tool_options: { [current]: { approval_mode: 'chat' } },
+      });
+      const closed = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { ...source, toolDefinitions: [{ name: selected }] },
+        { rawMcpServerNames: [raw] },
+      );
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [closed] }] })).toBe(false);
+    },
+  );
+}
+
+test('catalog-free stripping follows runtime reserved-name and classification protections', () => {
+  for (const current of ['oauth', 'mcp_all', 'mcp_server', 'mcp_db', 'lc_transfer_to_child']) {
+    const selected = `db_${current}_mcp_db`;
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools: [selected], tool_options: { [`${current}_mcp_db`]: { approval_mode: 'ask' } } },
+    );
+    expect(
+      canAgentGraphPause({
+        policy: { enabled: true, mode: 'bypass' },
+        agents: [{ lazySubagentConfigs: [descriptor] }],
+      }),
+    ).toBe(false);
+  }
+});
+
+test('normalized current options win while explicit selected options and server deny remain authoritative', () => {
+  const policy = { enabled: true, mode: 'bypass' as const };
+  const contexts = { rawMcpServerNames: ['db ops'] };
+  const scenarios: AgentToolOptions[] = [
+    {
+      query_mcp_db_ops: { approval_mode: 'allow' as const },
+      'query_mcp_db ops': { approval_mode: 'ask' as const },
+    },
+    {
+      'query_mcp_db ops': { approval_mode: 'ask' as const },
+      query_mcp_db_ops: { approval_mode: 'allow' as const },
+    },
+    {
+      query_mcp_db_ops: { approval_mode: 'ask' as const },
+      db_ops_query_mcp_db_ops: { approval_mode: 'allow' as const },
+    },
+  ];
+  for (const tool_options of scenarios) {
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools: ['db_ops_query_mcp_db ops'], tool_options },
+      contexts,
+    );
+    expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+      false,
+    );
+  }
+  const descriptor = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    { tools: ['db_query_mcp_DB'], tool_options: { query_mcp_DB: { approval_mode: 'ask' } } },
+  );
+  for (const name of ['db_query_mcp_DB', 'query_mcp_DB']) {
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: [name] },
+        agents: [{ lazySubagentConfigs: [descriptor] }],
+      }),
+    ).toBe(false);
+  }
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['query_mcp_db_ops', 'db_ops_query_mcp_db ops'])(
+    `${placement} includes resolved skill-only tools with empty saved selection (%s)`,
+    (contributed) => {
+      const skillPrimes = [{ name: 'analysis', allowedTools: [contributed, contributed] }];
+      const source = {
+        tools: [],
+        tool_options: { query_mcp_db_ops: { approval_mode: 'ask' as const } },
+      };
+      const metadata = copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+        skillPrimes,
+        rawMcpServerNames: ['db ops'],
+        toolsAvailable: true,
+      });
+      const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, metadata);
+      skillPrimes[0].allowedTools.length = 0;
+      const policy = { enabled: true, mode: 'bypass' as const };
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: ['query_mcp_db_ops'] },
+          agents: [{ [placement]: [descriptor] }],
+        }),
+      ).toBe(false);
+      expect(JSON.stringify(descriptor)).not.toContain('query');
+      expect(Object.keys(source.tool_options)).toEqual(['query_mcp_db_ops']);
+    },
+  );
+}
+
+test('skill projection preserves absent surfaces, inactive/default modes, MCP capability gates and unrelated selections', () => {
+  const policy = { enabled: true, mode: 'bypass' as const };
+  for (const mode of ['ask', 'chat', 'always', 'allow', undefined] as const) {
+    const source = { tools: [], tool_options: { query_mcp_db: { approval_mode: mode } } };
+    const project = (allowedTools: string[], toolsAvailable = true) =>
+      copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+        skillPrimes: [{ name: 'analysis', allowedTools }],
+        toolsAvailable,
+      });
+    for (const descriptor of [
+      project([]),
+      project(['other_mcp_db']),
+      project(['query_mcp_db'], false),
+    ]) {
+      expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+        false,
+      );
+    }
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ lazySubagentConfigs: [project(['query_mcp_db'])] }],
+      }),
+    ).toBe(mode != null && mode !== 'allow');
+  }
+  const unresolved = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    { tool_options: { query_mcp_db: { approval_mode: 'ask' } } },
+  );
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [unresolved] }] })).toBe(
+    true,
+  );
+});
+
+const inverseSelections = [
+  { selected: 'query_mcp_db', option: 'db_query_mcp_db', server: 'db' },
+  { selected: 'query_mcp_DB', option: 'db_query_mcp_DB', server: 'DB' },
+  { selected: 'query_mcp_DB', option: 'DB_query_mcp_DB', server: 'DB' },
+  { selected: 'query_mcp_db ops', option: 'db_ops_query_mcp_db_ops', server: 'db ops' },
+  { selected: 'query_mcp_db_ops', option: 'DB_OPS_query_mcp_db ops', server: 'db ops' },
+  {
+    selected: 'get_mcp_version_mcp_Finance_mcp_EU',
+    option: 'finance_mcp_eu_get_mcp_version_mcp_Finance_mcp_EU',
+    server: 'Finance_mcp_EU',
+  },
+];
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(inverseSelections)(
+    `${placement} considers inverse option spellings without assigning identity ($option)`,
+    ({ selected, option, server }) => {
+      const source = {
+        tools: [selected],
+        tool_options: { [option]: { approval_mode: 'chat' as const } },
+      };
+      const metadata = copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+        rawMcpServerNames: [server],
+      });
+      const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, metadata);
+      const policy = { enabled: true, mode: 'bypass' as const };
+      expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, enabled: false },
+          agents: [{ [placement]: [descriptor] }],
+        }),
+      ).toBe(false);
+      expect(canAgentGraphPause({ policy, agents: [descriptor] })).toBe(false);
+      expect(descriptor).not.toHaveProperty('mcpToolAliases');
+      expect(JSON.stringify(descriptor)).not.toContain(option);
+      expect(source.tool_options[option].approval_mode).toBe('chat');
+    },
+  );
+}
+
+test('selected keys, closed catalogs and administrator deny win over an inverse option hint', () => {
+  const policy = { enabled: true, mode: 'bypass' as const };
+  for (const entry of [{ approval_mode: 'allow' as const }, { defer_loading: true }]) {
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      {
+        tools: ['query_mcp_db'],
+        tool_options: { db_query_mcp_db: { approval_mode: 'ask' }, query_mcp_db: entry },
+      },
+    );
+    expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+      false,
+    );
+  }
+  for (const name of ['query_mcp_db', 'db_query_mcp_db']) {
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools: ['query_mcp_db'], tool_options: { db_query_mcp_db: { approval_mode: 'ask' } } },
+    );
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: [name] },
+        agents: [{ lazySubagentConfigs: [descriptor] }],
+      }),
+    ).toBe(false);
+  }
+  const closed = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    {
+      tools: ['query_mcp_db'],
+      toolDefinitions: [{ name: 'query_mcp_db' }],
+      tool_options: { db_query_mcp_db: { approval_mode: 'ask' } },
+    },
+  );
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [closed] }] })).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['db', 'db ops', 'Finance_mcp_EU'])(
+    `${placement} wildcard modes are scoped to the exact selected server (%s)`,
+    (server) => {
+      const normalized = server.replace(/ /g, '_');
+      const marker = `${Constants.mcp_all}${Constants.mcp_delimiter}${server}`;
+      const project = (tool_options: AgentToolOptions) =>
+        copyToolApprovalAdmissionMetadata(
+          { id: 'child' },
+          { tools: [marker], tool_options },
+          { rawMcpServerNames: [server, 'other', `other_mcp_${normalized}`] },
+        );
+      const policy = { enabled: true, mode: 'bypass' as const };
+      for (const other of [
+        'read_mcp_other',
+        `read_mcp_other_mcp_${normalized}`,
+        `read_mcp_not${normalized}`,
+      ]) {
+        const descriptor = project({ [other]: { approval_mode: 'ask' } });
+        expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(false);
+      }
+      for (const suffix of [server, normalized]) {
+        const name = `get_mcp_version_mcp_${suffix}`;
+        const descriptor = project({ [name]: { approval_mode: 'always' } });
+        expect(canAgentGraphPause({ policy, agents: [{ [placement]: [descriptor] }] })).toBe(true);
+        expect(
+          canAgentGraphPause({
+            policy: { ...policy, deny: ['get_mcp_version_mcp_*'] },
+            agents: [{ [placement]: [descriptor] }],
+          }),
+        ).toBe(false);
+        expect(descriptor).not.toHaveProperty('rawMcpServerNames');
+      }
+    },
+  );
+}
+
+test('wildcards preserve raw direct-first collisions, distinct casing and genuinely unknown surfaces', () => {
+  const marker = `${Constants.mcp_all}${Constants.mcp_delimiter}`;
+  const policy = { enabled: true, mode: 'bypass' as const };
+  const project = (
+    tools: string[] | undefined,
+    tool_options: AgentToolOptions,
+    rawMcpServerNames: string[] = [],
+  ) =>
+    copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools, tool_options },
+      { rawMcpServerNames },
+    );
+  for (const descriptor of [
+    project([marker + 'db'], { read_mcp_DB: { approval_mode: 'ask' } }, ['db', 'DB']),
+    project([marker + 'db_ops'], { 'read_mcp_db ops': { approval_mode: 'ask' } }, [
+      'db ops',
+      'db_ops',
+    ]),
+    project([marker + 'db'], { read_mcp_other: { approval_mode: 'allow' } }),
+    project([], { read_mcp_other: { approval_mode: 'ask' } }),
+  ])
+    expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+      false,
+    );
+  const unknown = project(undefined, { read_mcp_other: { approval_mode: 'ask' } });
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [unknown] }] })).toBe(true);
+  const selected = project(
+    [marker + 'db', marker + 'other'],
+    { read_mcp_other: { approval_mode: 'ask' } },
+    ['db', 'other'],
+  );
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [selected] }] })).toBe(true);
+});
+
+test('a skill-contributed current selection retains inverse review options privately', () => {
+  const source = {
+    tools: [],
+    tool_options: { db_query_mcp_db: { approval_mode: 'ask' as const } },
+  };
+  const descriptor = copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+    skillPrimes: [{ name: 'analysis', allowedTools: ['query_mcp_db'] }],
+    toolsAvailable: true,
+    rawMcpServerNames: ['db'],
+  });
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'bypass' },
+      agents: [{ lazySubagentConfigs: [descriptor] }],
+    }),
+  ).toBe(true);
+  expect(source.tools).toEqual([]);
+});
+
+for (const tools of [['query_mcp_db'], [`${Constants.mcp_all}${Constants.mcp_delimiter}db`]]) {
+  test.each(['ask', 'chat', 'always', 'allow', undefined] as const)(
+    `unresolved admission matches actual stripped catalog loading for ${tools[0]} mode=%s`,
+    async (mode) => {
+      const option = 'db_query_mcp_db';
+      const options: AgentToolOptions = { [option]: { approval_mode: mode } };
+      const descriptor = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools, tool_options: options },
+        { rawMcpServerNames: ['db', 'other'] },
+      );
+      const catalog = formatMCPServerTools('db', [
+        { name: 'db_query', inputSchema: { type: 'object', properties: {} } },
+      ]);
+      const result = await loadToolDefinitions(
+        {
+          userId: 'user',
+          agentId: 'child',
+          tools,
+          toolOptions: { ...options },
+          mcpServerNames: ['db', 'other'],
+          rawServerNames: ['db', 'other'],
+        },
+        { getOrFetchMCPServerTools: async () => catalog, isBuiltInTool: () => false },
+      );
+      expect(result.mcpToolAliases).toContainEqual({ name: 'query_mcp_db', aliasName: option });
+      const policy = { enabled: true, mode: 'bypass' as const };
+      const actual = canAgentGraphPause({
+        policy,
+        agents: [
+          {
+            id: 'child',
+            tool_options: options,
+            toolDefinitions: result.toolDefinitions,
+            mcpToolAliases: result.mcpToolAliases,
+          },
+        ],
+      });
+      expect(actual).toBe(mode != null && mode !== 'allow');
+      expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+        actual,
+      );
+    },
+  );
+}
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  for (const mode of ['ask', 'chat', 'always'] as const) {
+    test.each([
+      { tools: undefined, options: 'query_mcp_db' },
+      { tools: ['query_mcp_db'], options: 'query_mcp_db' },
+      { tools: ['query_mcp_db'], options: 'db_query_mcp_db' },
+      { tools: ['db_query_mcp_db'], options: 'query_mcp_db' },
+      { tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}db`], options: 'query_mcp_db' },
+      { tools: ['db_ops_query_mcp_db ops'], options: 'query_mcp_db_ops' },
+    ])(
+      `${placement} omits disabled saved MCP selections in ${mode}: $options / $tools`,
+      ({ tools, options }) => {
+        const source = { tools, tool_options: { [options]: { approval_mode: mode } } };
+        const project = (toolsAvailable: boolean) => {
+          const metadata = copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+            toolsAvailable,
+            rawMcpServerNames: ['db', 'db ops'],
+            skillPrimes: [{ name: 'analysis', allowedTools: ['query_mcp_db'] }],
+          });
+          return copyToolApprovalAdmissionMetadata({ id: 'child' }, metadata);
+        };
+        const policy = { enabled: true, mode: 'bypass' as const };
+        expect(canAgentGraphPause({ policy, agents: [{ [placement]: [project(false)] }] })).toBe(
+          false,
+        );
+        expect(canAgentGraphPause({ policy, agents: [{ [placement]: [project(true)] }] })).toBe(
+          true,
+        );
+        expect(source.tool_options[options].approval_mode).toBe(mode);
+        expect(project(false)).not.toHaveProperty('tool_options');
+      },
+    );
+  }
+}
+
+test('disabled MCP capability preserves independently enabled non-MCP review and unknown surfaces', () => {
+  const policy = { enabled: true, mode: 'bypass' as const };
+  for (const tools of [undefined, ['query_mcp_db', 'read_file']]) {
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      {
+        tools,
+        tool_options: {
+          query_mcp_db: { approval_mode: 'ask' },
+          read_file: { approval_mode: 'chat' },
+        },
+      },
+      {
+        toolsAvailable: false,
+        skillPrimes: [{ name: 'analysis', allowedTools: ['query_mcp_db', 'read_file'] }],
+      },
+    );
+    expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+      true,
+    );
+    expect(
+      canAgentGraphPause({
+        policy: { ...policy, deny: ['read_file'] },
+        agents: [{ lazySubagentConfigs: [descriptor] }],
+      }),
+    ).toBe(false);
+  }
+});
+
+test('MCP capability filtering keeps action-classified keys with MCP text under their independent gate', () => {
+  const action = 'query_mcp_docs_action_service';
+  const mcp = 'query_action_method_mcp_service';
+  const descriptor = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    {
+      tools: [action, mcp],
+      tool_options: { [action]: { approval_mode: 'ask' }, [mcp]: { approval_mode: 'chat' } },
+    },
+    { toolsAvailable: false },
+  );
+  const policy = { enabled: true, mode: 'bypass' as const };
+  expect(canAgentGraphPause({ policy, agents: [{ lazySubagentConfigs: [descriptor] }] })).toBe(
+    true,
+  );
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: [action] },
+      agents: [{ lazySubagentConfigs: [descriptor] }],
+    }),
+  ).toBe(false);
+});
+
+for (const mode of ['ask', 'chat', 'always'] as const) {
+  test.each(['selected', 'inverse', 'legacy', 'wildcard', 'unknown'] as const)(
+    `${mode} agent modes cannot override dontAsk fallback in %s admission`,
+    async (surface) => {
+      let tools: string[] | undefined = ['query_mcp_db'];
+      let option = 'query_mcp_db';
+      if (surface === 'inverse') option = 'db_query_mcp_db';
+      if (surface === 'legacy') tools = ['db_query_mcp_db'];
+      if (surface === 'wildcard') tools = [`${Constants.mcp_all}${Constants.mcp_delimiter}db`];
+      if (surface === 'unknown') tools = undefined;
+      const descriptor = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools, tool_options: { [option]: { approval_mode: mode } } },
+        { rawMcpServerNames: ['db'] },
+      );
+      const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['safe_mcp_other'] };
+      const agents = [{ tools: ['safe_mcp_other'], lazySubagentConfigs: [descriptor] }];
+      expect(canAgentGraphPause({ policy, agents })).toBe(false);
+      const baseline = await createToolPolicyHook(mapToolApprovalPolicy(policy)!)(
+        {
+          hook_event_name: 'PreToolUse',
+          runId: 'test',
+          toolName: 'query_mcp_db',
+          toolUseId: 'call',
+          toolInput: {},
+        },
+        new AbortController().signal,
+      );
+      expect(baseline.decision).toBe('deny');
+      for (const exception of ['allow', 'ask'] as const) {
+        const allowed = { ...policy, [exception]: ['query*_mcp_db', 'db_query_mcp_db'] };
+        expect(canAgentGraphPause({ policy: allowed, agents })).toBe(true);
+        expect(canAgentGraphPause({ policy: { ...allowed, deny: ['*'] }, agents })).toBe(false);
+      }
+    },
+  );
+}
+
+test('verified alias and conversation allows are evaluated before fallback-denied review modes', () => {
+  const policy = {
+    enabled: true,
+    mode: 'dontAsk' as const,
+    allowAlways: true,
+    allow: ['safe_mcp_db'],
+  };
+  const agent = {
+    tools: ['query_mcp_db', 'safe_mcp_db'],
+    tool_options: { query_mcp_db: { approval_mode: 'chat' as const } },
+    mcpToolAliases: [{ name: 'query_mcp_db', aliasName: 'db_query_mcp_db' }],
+  };
+  expect(canAgentGraphPause({ policy, agents: [agent] })).toBe(false);
+  expect(
+    canAgentGraphPause({ policy: { ...policy, allow: ['db_query_mcp_db'] }, agents: [agent] }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({ policy, agents: [agent], toolApprovalAllows: ['query_mcp_db'] }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: [agent],
+      toolApprovalAllows: ['query_mcp_db'],
+    }),
+  ).toBe(false);
+});
+
+test('unbounded lazy hook predictions intersect literal dontAsk exceptions and static denial', () => {
+  const agents = [
+    { id: 'root', tools: ['read_file'], subagentGraphMemberMetadata: [{ id: 'child' }] },
+  ];
+  const hook = {
+    hook: askHook,
+    matcher: '^(?:bash_tool|create_file)$',
+    agentIds: new Set(['child']),
+  };
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['read_file'] };
+  expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'], deny: ['bash_tool'] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'dontAsk' },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['write_*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['write_*'], deny: ['*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ hook: askHook }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, toolNames: ['bash_tool', 'create_file'] }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['bash_*'] },
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, toolNames: ['bash_tool'] }],
+    }),
+  ).toBe(true);
+});
+
+test('lazy plugin prediction uses eligible literal exceptions instead of denied hook presence', () => {
+  const agents = [{ tools: ['read_file'], subagentGraphMemberMetadata: [{ id: 'child' }] }];
+  const source = pluginSource((names) => names == null || names.includes('bash_tool'));
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['read_file'] };
+  expect(canAgentGraphPause({ policy, agents, pluginHookSource: source })).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'] },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, allow: ['read_file', 'bash_tool'], deny: ['bash_tool'] },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { enabled: true, mode: 'dontAsk' },
+      agents,
+      pluginHookSource: source,
+    }),
+  ).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each([
+    {
+      selected: 'db_query_mcp_db',
+      permitted: 'query_mcp_db',
+      matched: 'db_query_mcp_db',
+      server: 'db',
+    },
+    {
+      selected: 'query_mcp_db',
+      permitted: 'query_mcp_db',
+      matched: 'db_query_mcp_db',
+      server: 'db',
+    },
+    {
+      selected: 'query_mcp_DB',
+      permitted: 'query_mcp_DB',
+      matched: 'db_query_mcp_DB',
+      server: 'DB',
+    },
+    {
+      selected: 'db_ops_query_mcp_db ops',
+      permitted: 'query_mcp_db_ops',
+      matched: 'db_ops_query_mcp_db_ops',
+      server: 'db ops',
+    },
+    {
+      selected: 'get_mcp_version_mcp_db',
+      permitted: 'get_mcp_version_mcp_db',
+      matched: 'db_get_mcp_version_mcp_db',
+      server: 'db',
+    },
+  ])(
+    `${placement} preserves possible lazy alias hook scope without assigning identity ($selected)`,
+    ({ selected, permitted, matched, server }) => {
+      const child = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools: [selected] },
+        { rawMcpServerNames: [server] },
+      );
+      const agents = [{ id: 'root', tools: ['subagent'], [placement]: [child] }];
+      const policy = { enabled: true, mode: 'dontAsk' as const, allow: [permitted, 'subagent'] };
+      const hook = { hook: askHook, matcher: `^${matched}$`, agentIds: new Set(['child']) };
+      expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          resolvedProgrammaticHooks: [{ ...hook, toolNames: [matched] }],
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          pluginHookSource: pluginSource((names) => names == null || names.includes(matched)),
+        }),
+      ).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: ['*_mcp_*'] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, allow: ['subagent'] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          resolvedProgrammaticHooks: [{ ...hook, agentIds: new Set(['other']) }],
+        }),
+      ).toBe(false);
+      expect(child).not.toHaveProperty('mcpToolAliases');
+      expect(child).not.toHaveProperty('tools');
+    },
+  );
+}
+
+test.each(['query_mcp_db', 'db_query_mcp_db', `${Constants.mcp_all}${Constants.mcp_delimiter}db`])(
+  'lazy hook admission matches the actual catalog alias for %s',
+  async (selected) => {
+    const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['query_mcp_db', 'subagent'] };
+    const hook = { hook: askHook, matcher: '^db_query_mcp_db$', agentIds: new Set(['child']) };
+    const catalog = formatMCPServerTools('db', [
+      { name: 'db_query', inputSchema: { type: 'object', properties: {} } },
+    ]);
+    const loaded = await loadToolDefinitions(
+      {
+        userId: 'user',
+        agentId: 'child',
+        tools: [selected],
+        rawServerNames: ['db'],
+        mcpServerNames: ['db'],
+      },
+      { getOrFetchMCPServerTools: async () => catalog, isBuiltInTool: () => false },
+    );
+    const resolved = {
+      id: 'child',
+      toolDefinitions: loaded.toolDefinitions,
+      mcpToolAliases: loaded.mcpToolAliases,
+    };
+    expect(
+      canAgentGraphPause({ policy, agents: [resolved], resolvedProgrammaticHooks: [hook] }),
+    ).toBe(true);
+    const descriptor = copyToolApprovalAdmissionMetadata(
+      { id: 'child' },
+      { tools: [selected] },
+      { rawMcpServerNames: ['db'] },
+    );
+    expect(
+      canAgentGraphPause({
+        policy,
+        agents: [{ tools: ['subagent'], lazySubagentConfigs: [descriptor] }],
+        resolvedProgrammaticHooks: [hook],
+      }),
+    ).toBe(true);
+  },
+);
+
+test('lazy alias predictions preserve direct-name denial, closed catalogs and wildcard exact-server boundaries', () => {
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['query_mcp_db', 'subagent'] };
+  const hook = { hook: askHook, matcher: '^db_query_mcp_db$', agentIds: new Set(['child']) };
+  const lazy = (source: ToolApprovalAdmissionAgent) => [
+    {
+      tools: ['subagent'],
+      lazySubagentConfigs: [
+        copyToolApprovalAdmissionMetadata({ id: 'child' }, source, {
+          rawMcpServerNames: ['db', 'other', 'other_mcp_db'],
+        }),
+      ],
+    },
+  ];
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: ['query_mcp_db'], toolDefinitions: [{ name: 'query_mcp_db' }] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: [`${Constants.mcp_all}${Constants.mcp_delimiter}other`] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents: lazy({ tools: ['read_mcp_other'] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: lazy({ tools: ['db_query_mcp_db'] }),
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  const currentHook = { ...hook, matcher: '^query_mcp_db$' };
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['db_query_mcp_db'] },
+      agents: lazy({ tools: ['query_mcp_db'] }),
+      resolvedProgrammaticHooks: [currentHook],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({ policy, agents: lazy({ tools: [] }), resolvedProgrammaticHooks: [hook] }),
+  ).toBe(false);
+});
+
+for (const placement of ['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const) {
+  test.each(['db', 'Db', 'dB', 'DB'])(
+    `${placement} case-variant hook admission matches actual catalog stripping (%s)`,
+    async (prefix) => {
+      const policy = {
+        enabled: true,
+        mode: 'dontAsk' as const,
+        allow: ['query_mcp_db', 'subagent'],
+      };
+      const upstream = `${prefix}_query`;
+      const legacy = `${upstream}_mcp_db`;
+      const hook = { hook: askHook, matcher: `^${legacy}$`, agentIds: new Set(['child']) };
+      const catalog = formatMCPServerTools('db', [
+        { name: upstream, inputSchema: { type: 'object', properties: {} } },
+      ]);
+      const loaded = await loadToolDefinitions(
+        {
+          userId: 'user',
+          agentId: 'child',
+          tools: ['query_mcp_db'],
+          rawServerNames: ['db'],
+          mcpServerNames: ['db'],
+        },
+        { getOrFetchMCPServerTools: async () => catalog, isBuiltInTool: () => false },
+      );
+      expect(loaded.mcpToolAliases).toContainEqual({ name: 'query_mcp_db', aliasName: legacy });
+      const resolved = {
+        id: 'child',
+        toolDefinitions: loaded.toolDefinitions,
+        mcpToolAliases: loaded.mcpToolAliases,
+      };
+      expect(
+        canAgentGraphPause({ policy, agents: [resolved], resolvedProgrammaticHooks: [hook] }),
+      ).toBe(true);
+      const descriptor = copyToolApprovalAdmissionMetadata(
+        { id: 'child' },
+        { tools: ['query_mcp_db'] },
+        { rawMcpServerNames: ['db', 'DB'] },
+      );
+      const agents = [{ tools: ['subagent'], [placement]: [descriptor] }];
+      expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(true);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, deny: [legacy] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy,
+          agents,
+          resolvedProgrammaticHooks: [{ ...hook, matcher: `^${upstream}_mcp_DB$` }],
+        }),
+      ).toBe(false);
+      expect(
+        canAgentGraphPause({
+          policy: { ...policy, allow: ['subagent'] },
+          agents,
+          resolvedProgrammaticHooks: [hook],
+        }),
+      ).toBe(false);
+      expect(descriptor).not.toHaveProperty('mcpToolAliases');
+      expect(hook.hook).not.toHaveProperty('mock');
+    },
+  );
+}
+
+test('nonliteral case-variant hook matchers remain conservative only on eligible unresolved MCP selections', () => {
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: ['query_mcp_db', 'subagent'] };
+  const hook = { hook: askHook, matcher: '^(?:D[Bb]_query_mcp_db)$', agentIds: new Set(['child']) };
+  const agents = [
+    {
+      tools: ['subagent'],
+      lazySubagentConfigs: [
+        copyToolApprovalAdmissionMetadata(
+          { id: 'child' },
+          { tools: ['query_mcp_db'] },
+          { rawMcpServerNames: ['db'] },
+        ),
+      ],
+    },
+  ];
+  expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: ['*_mcp_*'] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [{ ...hook, matcher: '[' }] }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, toolNames: ['D_query_mcp_other'] }],
+    }),
+  ).toBe(false);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents,
+      resolvedProgrammaticHooks: [{ ...hook, matcher: '^(?:DB_query_mcp_db|read_mcp_other)$' }],
+    }),
+  ).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy,
+      agents,
+      pluginHookSource: pluginSource((names) => names == null || names.includes('dB_query_mcp_db')),
+    }),
+  ).toBe(true);
+});
+
+test('long mixed-case upstream prefixes use actual literal matcher spellings without exponential enumeration', () => {
+  const server = 'long_server_name_with_many_letters';
+  const legacy = 'LoNg_SeRvEr_NaMe_WiTh_MaNy_LeTtErS_query_mcp_' + server;
+  const current = 'query_mcp_' + server;
+  const descriptor = copyToolApprovalAdmissionMetadata(
+    { id: 'child' },
+    { tools: [current] },
+    { rawMcpServerNames: [server] },
+  );
+  const agents = [{ tools: ['subagent'], lazySubagentConfigs: [descriptor] }];
+  const policy = { enabled: true, mode: 'dontAsk' as const, allow: [current, 'subagent'] };
+  const hook = { hook: askHook, matcher: `^${legacy}$`, agentIds: new Set(['child']) };
+  expect(canAgentGraphPause({ policy, agents, resolvedProgrammaticHooks: [hook] })).toBe(true);
+  expect(
+    canAgentGraphPause({
+      policy: { ...policy, deny: [legacy] },
+      agents,
+      resolvedProgrammaticHooks: [hook],
+    }),
+  ).toBe(false);
 });

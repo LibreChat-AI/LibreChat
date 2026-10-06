@@ -1,12 +1,12 @@
 const multer = require('multer');
 const express = require('express');
-const { sleep } = require('@librechat/agents');
 const {
   reportLocatorTraversalFailure,
   isEnabled,
   normalizeLimit,
   normalizeSortDirection,
   normalizeSortField,
+  resolveConversationListFilters,
   CONVERSATION_SORT_FIELDS,
   openCheckpointDeletion,
   waitForGenerationPersistence,
@@ -16,20 +16,27 @@ const {
   isValidSubagentControlRequest,
   exemptAgentTriggerFromIpLimiter,
   createParentSubagentIndexHandler,
+  createBackgroundTaskIndexHandler,
+  createBackgroundTaskCancelHandler,
+  createBackgroundTaskPolicyMiddleware,
+  backgroundTaskRegistry,
   createSubagentThreadViewHandler,
+  createGeneratedTitleHandler,
+  createRenameConversationHandler,
+  createMarkConvoSeenHandler,
+  createMarkConvoUnreadHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
   deleteConvoSharedLinksWithCleanup,
-  inspectContent,
   createContentFilter,
   isContentFilterError,
   isConversationImportError,
-  contentFilterBlockResponse,
   extractConversationTitleContent,
   extractStoredMessageContent,
   GenerationJobManager,
   isStopConfirmed,
+  withToolCallPreviews,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, EModelEndpoint } = require('librechat-data-provider');
@@ -46,7 +53,11 @@ const { forkConversation, duplicateConversation } = require('~/server/utils/impo
 const { storage, importFileFilter } = require('~/server/routes/files/multer');
 const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
 const { importConversations } = require('~/server/utils/import');
+const { getAppConfig } = require('~/server/services/Config');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
+const {
+  pendingBackgroundToolCompletions,
+} = require('~/server/services/Endpoints/agents/backgroundCompletion');
 const getLogStores = require('~/cache/getLogStores');
 const db = require('~/models');
 
@@ -144,6 +155,18 @@ const subagentControlHandler = createSubagentControlHandler({
   getSubagentTaskControlReceipt: db.getSubagentTaskControlReceipt,
   store: subagentThreadTaskStore,
 });
+const markConvoSeenHandler = createMarkConvoSeenHandler({ markConvoSeen: db.markConvoSeen });
+const markConvoUnreadHandler = createMarkConvoUnreadHandler({
+  markConvoUnread: db.markConvoUnread,
+});
+const backgroundTaskPolicy = createBackgroundTaskPolicyMiddleware({ getAppConfig });
+const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
+  registry: backgroundTaskRegistry,
+  pending: pendingBackgroundToolCompletions,
+});
+const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
+  registry: backgroundTaskRegistry,
+});
 router.use(requireJwtAuth);
 
 const isValidProjectFilter = (projectId) =>
@@ -175,6 +198,14 @@ router.get('/', async (req, res) => {
   }
 
   try {
+    const { filters, error: filterError } = await resolveConversationListFilters(
+      req.query,
+      getAppConfig,
+    );
+    if (filterError) {
+      return res.status(400).json({ error: filterError });
+    }
+
     const result = await db.getConvosByCursor(req.user.id, {
       cursor,
       limit,
@@ -185,6 +216,7 @@ router.get('/', async (req, res) => {
       sortBy,
       sortDirection,
       projectId,
+      ...filters,
     });
     res.status(200).json(result);
   } catch (error) {
@@ -207,6 +239,12 @@ router.post(
   subagentControlHandler,
 );
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
+router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
+router.post(
+  '/:conversationId/background-tasks/cancel',
+  backgroundTaskPolicy,
+  backgroundTaskCancelHandler,
+);
 router.get('/:parentConversationId/subagents/:threadId', subagentThreadViewHandler);
 
 router.get('/:conversationId', async (req, res) => {
@@ -220,33 +258,14 @@ router.get('/:conversationId', async (req, res) => {
   }
 });
 
-router.get('/gen_title/:conversationId', async (req, res) => {
-  const { conversationId } = req.params;
-  const titleCache = getLogStores(CacheKeys.GEN_TITLE);
-  const key = `${req.user.id}-${conversationId}`;
-  let title = await titleCache.get(key);
-
-  if (!title) {
-    // Exponential backoff: 500ms, 1s, 2s, 4s, 8s (total ~15.5s max wait)
-    const delays = [500, 1000, 2000, 4000, 8000];
-    for (const delay of delays) {
-      await sleep(delay);
-      title = await titleCache.get(key);
-      if (title) {
-        break;
-      }
-    }
-  }
-
-  if (title) {
-    await titleCache.delete(key);
-    res.status(200).json({ title });
-  } else {
-    res.status(404).json({
-      message: "Title not found or method not implemented for the conversation's endpoint",
-    });
-  }
-});
+router.get(
+  '/gen_title/:conversationId',
+  createGeneratedTitleHandler({
+    getConvoTitleState: db.getConvoTitleState,
+    getCache: () => getLogStores(CacheKeys.GEN_TITLE),
+    logger,
+  }),
+);
 
 const POST_DELETE_CANCEL_ATTEMPTS = 3;
 const POST_DELETE_CANCEL_BACKOFF_MS = 250;
@@ -623,6 +642,8 @@ router.post('/archive', validateConvoAccess, async (req, res) => {
         preserveUpdatedAt: true,
         /** Without timestamps, an upsert would insert a conversation that has none. */
         noUpsert: true,
+        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
+        appendMessageIds: [],
       },
     );
 
@@ -673,58 +694,22 @@ router.post('/pin', validateConvoAccess, async (req, res) => {
   }
 });
 
-/** Maximum allowed length for conversation titles */
-const MAX_CONVO_TITLE_LENGTH = 1024;
+router.post('/seen', validateConvoAccess, markConvoSeenHandler);
 
-/**
- * Updates a conversation's title.
- * @route POST /update
- * @param {string} req.body.arg.conversationId - The conversation ID to update.
- * @param {string} req.body.arg.title - The new title for the conversation.
- * @returns {object} 201 - The updated conversation object.
- */
-router.post('/update', validateConvoAccess, configMiddleware, async (req, res) => {
-  const { conversationId, title } = req.body?.arg ?? {};
+router.post('/unread', validateConvoAccess, markConvoUnreadHandler);
 
-  if (!conversationId) {
-    return res.status(400).json({ error: 'conversationId is required' });
-  }
-
-  if (title === undefined) {
-    return res.status(400).json({ error: 'title is required' });
-  }
-
-  if (typeof title !== 'string') {
-    return res.status(400).json({ error: 'title must be a string' });
-  }
-
-  const sanitizedTitle = title.trim().slice(0, MAX_CONVO_TITLE_LENGTH);
-  if (req.config?.filters != null) {
-    const finding = inspectContent(extractConversationTitleContent({ title: sanitizedTitle }), {
-      filters: req.config.filters,
-    });
-    if (finding != null) {
-      return res.status(400).json(contentFilterBlockResponse(finding));
-    }
-  }
-
-  try {
-    const dbResponse = await db.saveConvo(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      { conversationId, title: sanitizedTitle },
-      { context: `POST /api/convos/update ${conversationId}` },
-    );
-    res.status(201).json(dbResponse);
-  } catch (error) {
-    logger.error('Error updating conversation', error);
-    res.status(500).send('Error updating conversation');
-  }
-});
+router.post(
+  '/update',
+  validateConvoAccess,
+  configMiddleware,
+  createRenameConversationHandler({
+    saveConvo: db.saveConvo,
+    getConvo: db.getConvo,
+    getActiveRunIds:
+      GenerationJobManager.getCleanupBlockingJobIdsForConversations.bind(GenerationJobManager),
+    logger,
+  }),
+);
 
 const { importIpLimiter, importUserLimiter } = createImportLimiters();
 /** Fork and duplicate share one rate-limit budget (same "clone" operation class) */
@@ -809,13 +794,14 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
       records: true,
       splitAtTarget,
       option,
+      interfaceConfig: req.config?.interfaceConfig,
       filters: req.config?.filters,
       ...(req.config?.messageFilter?.pii == null
         ? {}
         : { legacyPii: req.config.messageFilter.pii }),
     });
 
-    res.json(result);
+    res.json(withToolCallPreviews(req, result));
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -842,12 +828,13 @@ router.post(
         userId: req.user.id,
         conversationId,
         title,
+        interfaceConfig: req.config?.interfaceConfig,
         filters: req.config?.filters,
         ...(req.config?.messageFilter?.pii == null
           ? {}
           : { legacyPii: req.config.messageFilter.pii }),
       });
-      res.status(201).json(result);
+      res.status(201).json(withToolCallPreviews(req, result));
     } catch (error) {
       if (isContentFilterError(error)) {
         return res.status(error.statusCode).json(error.body);

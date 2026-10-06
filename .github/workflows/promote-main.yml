@@ -1,0 +1,275 @@
+name: Promote Dev to Main
+run-name: Promote dev ${{ inputs.dev_sha }} to main
+
+on:
+  workflow_dispatch:
+    inputs:
+      dev_sha:
+        description: 'Approved current dev commit, full lowercase 40-character SHA'
+        type: string
+        required: true
+      expected_main_sha:
+        description: 'Current main commit reviewed as the promotion baseline, full SHA'
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: main-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: >-
+      github.repository == 'LibreChat-AI/LibreChat' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: main-promotion
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_HOST: github.com
+      GH_PROMPT_DISABLED: '1'
+      DEV_SHA: ${{ inputs.dev_sha }}
+      EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+      WORKFLOW_REF: ${{ github.workflow_ref }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      # Inline policy comes from the workflow on main. No candidate code, checkout,
+      # artifacts, caches, dependency installs, or repository-local actions run here.
+      - name: Verify protected approval, commit ancestry, and full dev CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/main-promotion.py" <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          REPO = 'LibreChat-AI/LibreChat'
+          REMOTE = 'https://github.com/LibreChat-AI/LibreChat.git'
+          WORKFLOW = REPO + '/.github/workflows/promote-main.yml@refs/heads/main'
+          SHA = re.compile(r'[0-9a-f]{40}')
+          LOGIN = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}')
+          CI = {
+              'backend-review.yml': (59857785, {
+                  'Build packages', 'Circular dependency checks', 'TypeScript type checks',
+                  'Tests: data-provider', 'Tests: data-schemas',
+                  *[f'Tests: api (shard {n}/3)' for n in range(1, 4)],
+                  *[f'Tests: @librechat/api (shard {n}/4)' for n in range(1, 5)],
+              }),
+              'frontend-review.yml': (59789527, {
+                  'Build packages', 'Client build recovery regression',
+                  'TypeScript type checks (client)', 'Vite build verification',
+                  'Tests: @librechat/client',
+                  *[f'Tests: Ubuntu (shard {n}/2)' for n in range(1, 3)],
+              }),
+          }
+
+          class Refused(Exception):
+              pass
+
+          def require(condition, message):
+              if not condition:
+                  raise Refused(message)
+
+          def api(path):
+              result = subprocess.run(
+                  ['gh', 'api', '--hostname', 'github.com', '--method', 'GET',
+                   '-H', 'Accept: application/vnd.github+json',
+                   '-H', 'X-GitHub-Api-Version: 2022-11-28', f'repos/{REPO}/{path}'],
+                  capture_output=True, text=True, check=False, timeout=30,
+              )
+              require(result.returncode == 0, 'GitHub policy read failed; refusing promotion')
+              try:
+                  return json.loads(result.stdout)
+              except ValueError:
+                  raise Refused('Invalid GitHub response; refusing promotion') from None
+
+          def complete_list(value, key):
+              items = value.get(key)
+              require(isinstance(items, list) and value.get('total_count') == len(items)
+                      and len(items) < 100, 'Incomplete or oversized policy response')
+              return items
+
+          def ref(branch):
+              value = api(f'git/ref/heads/{branch}')
+              obj = value.get('object', {})
+              require(value.get('ref') == f'refs/heads/{branch}' and obj.get('type') == 'commit'
+                      and SHA.fullmatch(obj.get('sha', '')), 'Invalid branch response')
+              return obj['sha']
+
+          def context():
+              dev = os.environ.get('DEV_SHA', '')
+              main = os.environ.get('EXPECTED_MAIN_SHA', '')
+              require(SHA.fullmatch(dev) and SHA.fullmatch(main), 'Supply two full lowercase commit SHAs')
+              require(os.environ.get('GITHUB_REPOSITORY') == REPO
+                      and os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch'
+                      and os.environ.get('GITHUB_REF') == 'refs/heads/main'
+                      and os.environ.get('GITHUB_SERVER_URL') == 'https://github.com'
+                      and os.environ.get('GITHUB_API_URL') == 'https://api.github.com'
+                      and os.environ.get('WORKFLOW_REF') == WORKFLOW
+                      and os.environ.get('WORKFLOW_SHA') == main
+                      and os.environ.get('GITHUB_SHA') == main,
+                      'Dispatch the trusted workflow from the current main branch')
+              actors = {os.environ.get('GITHUB_ACTOR', ''),
+                        os.environ.get('GITHUB_TRIGGERING_ACTOR', '')}
+              for actor in actors:
+                  require(LOGIN.fullmatch(actor), 'Invalid workflow actor')
+                  permission = api(f'collaborators/{actor}/permission')
+                  require(permission.get('role_name') in ('admin', 'maintain')
+                          and permission.get('permission') in ('admin', 'write'),
+                          'Both the initiator and rerun actor must be maintainers')
+              return dev, main
+
+          def approval():
+              value = api('environments/main-promotion')
+              require(value.get('can_admins_bypass') is False, 'Disable administrator approval bypass')
+              require(value.get('deployment_branch_policy') == {
+                  'protected_branches': False, 'custom_branch_policies': True,
+              }, 'Use a main-only environment branch policy')
+              rules = value.get('protection_rules', [])
+              require(any(rule.get('type') == 'required_reviewers'
+                          and rule.get('prevent_self_review') is True
+                          and bool(rule.get('reviewers')) for rule in rules),
+                      'Configure required reviewers and prevent self-review')
+              policies = complete_list(
+                  api('environments/main-promotion/deployment-branch-policies?per_page=100'),
+                  'branch_policies',
+              )
+              require(len(policies) == 1 and policies[0].get('name') == 'main'
+                      and policies[0].get('type') == 'branch',
+                      'Only the main branch may access promotion credentials')
+
+          def full_ci(dev):
+              for filename, (workflow_id, required) in CI.items():
+                  workflow = api(f'actions/workflows/{filename}')
+                  require(workflow.get('id') == workflow_id
+                          and workflow.get('path') == f'.github/workflows/{filename}'
+                          and workflow.get('state') == 'active', 'Unexpected CI workflow identity')
+                  runs = complete_list(api(
+                      f'actions/workflows/{workflow_id}/runs?head_sha={dev}&per_page=100'
+                  ), 'workflow_runs')
+                  eligible = [run for run in runs
+                              if run.get('event') in ('push', 'workflow_dispatch')
+                              and run.get('head_branch') == 'dev'
+                              and run.get('head_sha') == dev
+                              and run.get('repository', {}).get('full_name') == REPO]
+                  require(bool(eligible), f'Missing full dev CI: {filename}')
+                  run = max(eligible, key=lambda item: item['id'])
+                  require(run.get('workflow_id') == workflow_id
+                          and run.get('path') == f'.github/workflows/{filename}'
+                          and run.get('status') == 'completed' and run.get('conclusion') == 'success',
+                          f'Latest full dev CI is not successful: {filename}')
+                  run_id, attempt = run['id'], run['run_attempt']
+                  require(type(run_id) is int and type(attempt) is int and run_id > 0 and attempt > 0,
+                          'Invalid CI run identity')
+                  jobs = complete_list(api(
+                      f'actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100'
+                  ), 'jobs')
+                  names = [job.get('name') for job in jobs]
+                  require(len(names) == len(set(names)) and required.issubset(names),
+                          f'Missing or duplicate full-suite jobs: {filename}')
+                  require(all(job.get('status') == 'completed' and job.get('head_sha') == dev
+                              and (job.get('conclusion') == 'success'
+                                   or (job.get('name') == 'Codegraph select'
+                                       and job.get('conclusion') == 'skipped')) for job in jobs),
+                          f'Failed, skipped, or incomplete full-suite job: {filename}')
+                  latest = api(f'actions/runs/{run_id}')
+                  require(all(latest.get(key) == run.get(key) for key in (
+                      'id', 'run_attempt', 'head_sha', 'head_branch', 'event',
+                      'workflow_id', 'path', 'status', 'conclusion',
+                  )), 'CI changed during verification; wait and dispatch again')
+
+          def git(args, token):
+              # No token in arguments, remote config, files, or output. Ignore global
+              # git config and hooks; only a disposable bare object database is used.
+              header = base64.b64encode(f'x-access-token:{token}'.encode()).decode()
+              print(f'::add-mask::{header}', flush=True)
+              env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
+                         GIT_TERMINAL_PROMPT='0', GIT_CONFIG_COUNT='1',
+                         GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
+                         GIT_CONFIG_VALUE_0=f'AUTHORIZATION: basic {header}')
+              result = subprocess.run(
+                  ['git', '-c', 'core.hooksPath=/dev/null', *args],
+                  env=env, capture_output=True, text=True, check=False, timeout=90,
+              )
+              require(result.returncode == 0, 'Git operation refused; do not force or bypass protection')
+              return result.stdout.strip()
+
+          def verify():
+              dev, main = context()
+              approval()
+              require(ref('dev') == dev and ref('main') == main, 'Branch tips changed; dispatch again')
+              full_ci(dev)
+              directory = Path(os.environ['RUNNER_TEMP']) / 'main-promotion.git'
+              token = os.environ['GH_TOKEN']
+              git(['init', '--bare', str(directory)], token)
+              prefix = ['--git-dir', str(directory)]
+              git([*prefix, 'fetch', '--no-tags', REMOTE,
+                   '+refs/heads/main:refs/heads/main', '+refs/heads/dev:refs/heads/dev'], token)
+              require(git([*prefix, 'rev-parse', 'refs/heads/main'], token) == main
+                      and git([*prefix, 'rev-parse', 'refs/heads/dev'], token) == dev,
+                      'Branch tips changed during fetch; dispatch again')
+              git([*prefix, 'merge-base', '--is-ancestor', main, dev], token)
+              # The App deliberately has no Workflows permission. Updating the
+              # release control plane requires a separately reviewed manual FF.
+              changed = git([*prefix, 'diff', '--name-only', main, dev, '--',
+                             '.github/workflows', '.github/scripts', '.github/CODEOWNERS'], token)
+              require(not changed, 'Workflow/control-plane changes require a maintainer-reviewed manual fast-forward')
+              require(ref('dev') == dev and ref('main') == main, 'Branch tips changed after CI verification')
+              return dev, main, prefix
+
+          def run():
+              dev, main, prefix = verify()
+              if sys.argv[1] == 'promote':
+                  require(bool(os.environ.get('PROMOTION_TOKEN')), 'No promotion credential')
+                  # No force flag. A concurrent non-ancestor main update is rejected
+                  # by Git receive-pack; dev can never change the pinned target SHA.
+                  if dev != main:
+                      git([*prefix, 'push', '--porcelain', REMOTE, f'{dev}:refs/heads/main'],
+                          os.environ['PROMOTION_TOKEN'])
+                  require(ref('main') == dev, 'Post-push verification failed; inspect main before retrying')
+                  outcome = 'Promoted' if dev != main else 'Already current'
+              else:
+                  require(sys.argv[1] == 'verify', 'Invalid operation')
+                  outcome = 'Verified; main has not been changed'
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write(f'### {outcome}\n\nMain baseline: `{main}`\n\nApproved dev: `{dev}`\n')
+
+          if __name__ == '__main__':
+              try:
+                  run()
+              except Refused as error:
+                  print(f'::error::Promotion refused: {error}', file=sys.stderr)
+                  sys.exit(1)
+              except (KeyError, TypeError, ValueError, subprocess.TimeoutExpired):
+                  print('::error::Invalid or unavailable policy data; refusing promotion.', file=sys.stderr)
+                  sys.exit(1)
+          PY
+          python3 -I "$RUNNER_TEMP/main-promotion.py" verify
+
+      - name: Mint a repository-scoped short-lived promotion token
+        id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.MAIN_PROMOTION_APP_ID }}
+          private-key: ${{ secrets.MAIN_PROMOTION_APP_PRIVATE_KEY }}
+          owner: LibreChat-AI
+          repositories: LibreChat
+          permission-contents: write
+
+      - name: Revalidate and fast-forward only main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROMOTION_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -I "$RUNNER_TEMP/main-promotion.py" promote

@@ -1,4 +1,18 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+
+/** Quiet period before re-highlighting streaming code. */
+export const HIGHLIGHT_THROTTLE_MS = 300;
+export const CodeHighlightThrottleContext = React.createContext(HIGHLIGHT_THROTTLE_MS);
+
+export function normalizeCodeHighlightThrottleMs(value: unknown): number {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 60000
+    ? value
+    : HIGHLIGHT_THROTTLE_MS;
+}
 
 interface HastText {
   type: 'text';
@@ -63,63 +77,118 @@ function highlightCode(mod: LowlightModule, code: string, lang: string): React.R
  *  so a hook mounted without code still recognizes the first code it receives as new. */
 type HighlightState = { key: string; nodes: React.ReactNode[] | null };
 
-const NOTHING_HIGHLIGHTED: HighlightState = { key: '', nodes: null };
-
 const highlightKey = (code: string | undefined, lang: string): string =>
   code ? `${lang}\0${code}` : '';
 
 /**
  * Tokens for a block of code, once the grammars have loaded.
  *
- * Highlighting runs when the input changes, and once per input: the tokens carry the key they
- * were produced from, so a mount that could highlight immediately is not repeated by the effect
- * that follows it. Grammars load on first use, so a caller renders its own raw text until this
- * returns; passing `undefined` while a pane is closed keeps a collapsed card from tokenizing
- * output nobody is reading.
+ * Highlighting runs when the input changes, and once per input: the key the tokens were produced
+ * from is tracked, so a mount that could highlight immediately is not repeated by the effect that
+ * follows it. While the input keeps changing, highlights wait for a quiet
+ * `CodeHighlightThrottleContext` interval. The caller receives current raw text until then,
+ * avoiding repeated switches between raw and highlighted code during streaming. Grammars
+ * load on first use, so a caller renders its own raw text until this returns; passing `undefined`
+ * while a pane is closed keeps a collapsed card from tokenizing output nobody is reading.
  */
 export default function useLazyHighlight(
   code: string | undefined,
   lang: string,
 ): React.ReactNode[] | null {
-  const [state, setState] = useState<HighlightState>(() =>
-    code && lowlightModule
-      ? { key: highlightKey(code, lang), nodes: highlightCode(lowlightModule, code, lang) }
-      : NOTHING_HIGHLIGHTED,
+  const throttleMs = React.useContext(CodeHighlightThrottleContext);
+  const currentKey = highlightKey(code, lang);
+  const hasInitialHighlight = Boolean(code && lowlightModule);
+  const [highlighted, setHighlighted] = useState<HighlightState | null>(() =>
+    hasInitialHighlight
+      ? { key: currentKey, nodes: highlightCode(lowlightModule!, code!, lang) }
+      : null,
   );
-  const key = highlightKey(code, lang);
-  const currentKey = state.key;
+  /** The input the tokens held were produced from, or that a pending run will produce. */
+  const scheduledKey = useRef(hasInitialHighlight ? currentKey : '');
+  const prevThrottleMs = useRef<number | null>(hasInitialHighlight ? throttleMs : null);
+  const hasRun = useRef(hasInitialHighlight);
+  const generation = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (key === currentKey) {
+    const key = highlightKey(code, lang);
+    const keyChanged = key !== scheduledKey.current;
+    const throttleChanged = throttleMs !== prevThrottleMs.current;
+    if (!keyChanged && !throttleChanged) {
       return;
+    }
+    scheduledKey.current = key;
+    prevThrottleMs.current = throttleMs;
+    /** A new cadence only reschedules a waiting timer. Work already started
+     *  for this same input may finish, and completed tokens need no new pass. */
+    if (!keyChanged && timer.current === null) {
+      return;
+    }
+    generation.current += 1;
+    if (keyChanged) {
+      setHighlighted(null);
+    }
+
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
     }
 
     if (!code) {
-      setState(NOTHING_HIGHLIGHTED);
+      hasRun.current = false;
       return;
     }
 
-    if (lowlightModule) {
-      setState({ key, nodes: highlightCode(lowlightModule, code, lang) });
+    if (lang === 'plaintext') {
+      setHighlighted({ key, nodes: [code] });
       return;
     }
 
-    let cancelled = false;
-    loadLowlight()
-      .then((mod) => {
-        if (!cancelled) {
-          setState({ key, nodes: highlightCode(mod, code, lang) });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setState({ key, nodes: [code] });
-        }
-      });
-    return () => {
-      cancelled = true;
+    const run = () => {
+      timer.current = null;
+      hasRun.current = true;
+      const gen = ++generation.current;
+
+      if (lowlightModule) {
+        setHighlighted({ key, nodes: highlightCode(lowlightModule, code, lang) });
+        return;
+      }
+
+      loadLowlight()
+        .then((mod) => {
+          if (gen === generation.current) {
+            setHighlighted({ key, nodes: highlightCode(mod, code, lang) });
+          }
+        })
+        .catch(() => {
+          if (gen === generation.current) {
+            setHighlighted({ key, nodes: [code] });
+          }
+        });
     };
-  }, [key, currentKey, code, lang]);
 
-  return state.nodes;
+    const wait = hasRun.current ? throttleMs : 0;
+    if (wait <= 0) {
+      run();
+    } else {
+      timer.current = setTimeout(run, wait);
+    }
+  }, [code, lang, throttleMs]);
+
+  useEffect(
+    () => () => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+      }
+      scheduledKey.current = '';
+      prevThrottleMs.current = null;
+      generation.current += 1;
+    },
+    [],
+  );
+
+  if (highlighted && highlighted.key === currentKey) {
+    return highlighted.nodes;
+  }
+  return code ? [code] : null;
 }

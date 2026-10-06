@@ -4,9 +4,11 @@ import { matchSorter } from 'match-sorter';
 import * as Select from '@ariakit/react/select';
 import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
+import { cn, disabledFillClasses } from '~/utils';
 import { fieldControl } from './Field';
-import { cn } from '~/utils/';
 import './Dropdown.css';
+
+type DropdownShape = 'default' | 'theme' | 'round';
 
 interface DropdownProps {
   value?: string;
@@ -26,8 +28,15 @@ interface DropdownProps {
   ariaLabel?: string;
   'aria-labelledby'?: string;
   portal?: boolean;
-  /** `field` matches the `Input` primitive so this can sit in a form row. */
-  variant?: 'default' | 'field';
+  /** `field` matches Input; `compact` supplies the small toolbar-control recipe. */
+  variant?: 'default' | 'field' | 'compact';
+  /**
+   * The trigger's corner, in `Button`'s vocabulary: `default` is `Button`'s own
+   * `rounded-lg`, `theme` the theme's control radius, `round` its pill. Omitted,
+   * the trigger takes the control radius, which is what it drew before the prop
+   * existed in the default theme. A `field` trigger keeps the field's corner.
+   */
+  shape?: DropdownShape;
   /** Renders the popover into this element instead of document.body */
   portalElement?: ((element: HTMLElement) => HTMLElement | null) | HTMLElement | null;
   disabled?: boolean;
@@ -35,6 +44,12 @@ interface DropdownProps {
   searchPlaceholder?: string;
   searchEmptyText?: string;
 }
+
+const shapeClasses: Record<DropdownShape, string> = {
+  default: 'rounded-lg',
+  theme: 'rounded-theme-control',
+  round: 'rounded-theme-control-round',
+};
 
 const isDivider = (item: string | Option | { divider: true }): item is { divider: true } =>
   typeof item === 'object' && 'divider' in item;
@@ -61,6 +76,7 @@ const Dropdown: React.FC<DropdownProps> = ({
   'aria-labelledby': ariaLabelledBy,
   portal = true,
   variant = 'default',
+  shape = 'theme',
   portalElement,
   disabled = false,
   searchable = false,
@@ -145,16 +161,25 @@ const Dropdown: React.FC<DropdownProps> = ({
   );
 
   return (
-    <div className={cn('relative', variant === 'field' && 'w-full', className)}>
+    <div className={cn('relative max-w-full min-w-0', variant === 'field' && 'w-full', className)}>
       <Select.Select
         store={selectProps}
         disabled={disabled}
         className={cn(
-          'relative inline-flex items-center justify-between rounded-xl border border-border-light bg-transparent py-2 text-sm text-text-primary transition-all duration-200 ease-in-out hover:bg-surface-hover hover:text-text-primary',
-          'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-text-primary',
+          'border-border-control text-text-primary hover:bg-surface-hover relative inline-flex items-center justify-between border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
+          /** A field-variant trigger keeps the field ink from `fieldControl` in every state. */
+          variant !== 'field' && [
+            shapeClasses[shape],
+            'hover:text-text-primary disabled:hover:text-text-primary',
+          ],
+          'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
+          disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
-          iconOnly ? 'size-10 justify-center px-0' : 'w-fit gap-2 px-3',
+          iconOnly
+            ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
+            : 'w-fit max-w-full gap-2 px-3',
           variant === 'field' && fieldControl,
+          variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
         )}
         data-testid={testId}
@@ -168,7 +193,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
       >
-        <div className={cn('flex items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
+        <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
           {!iconOnly && (
             <span id={valueId} className="block truncate">
@@ -183,7 +208,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             </span>
           )}
         </div>
-        {!iconOnly && <Select.SelectArrow />}
+        {!iconOnly && <Select.SelectArrow className="shrink-0" />}
       </Select.Select>
       <Select.SelectPopover
         portal={portal}
@@ -191,7 +216,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         store={selectProps}
         className={cn(
           // `className` sizes the TRIGGER only (applied above on Select.Select).
-          // Forwarding it here too meant a caller's trigger height (e.g. `h-10`)
+          // Forwarding it here too meant a caller's trigger height (a fixed height utility)
           // became the popover's height as well, clipping every option below the
           // first out of view. `sizeClasses` is the popover's own sizing prop; the
           // shared `.popover-ui` class already caps height to the viewport via
@@ -203,10 +228,10 @@ const Dropdown: React.FC<DropdownProps> = ({
       >
         {searchable ? (
           <>
-            <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pb-1.5 pt-2">
+            <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pt-2 pb-1.5">
               <div className="relative">
                 <Search
-                  className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-text-tertiary"
+                  className="text-text-tertiary size-theme-icon pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
                   aria-hidden="true"
                 />
                 <Combobox.Combobox
@@ -214,7 +239,7 @@ const Dropdown: React.FC<DropdownProps> = ({
                   autoSelect
                   placeholder={searchPlaceholder}
                   aria-label={searchPlaceholder}
-                  className="w-full rounded-lg border border-border-light bg-inherit py-1.5 pl-8 pr-2 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none"
+                  className="border-border-control text-text-primary placeholder:text-text-secondary w-full rounded-lg border bg-inherit py-1.5 pr-2 pl-8 text-sm focus:outline-hidden"
                 />
               </div>
             </div>
@@ -238,7 +263,7 @@ const Dropdown: React.FC<DropdownProps> = ({
               ))}
             </Combobox.ComboboxList>
             {matches.length === 0 && (
-              <div className="px-2 py-6 text-center text-sm text-text-secondary" aria-hidden="true">
+              <div className="text-text-secondary px-2 py-6 text-center text-sm" aria-hidden="true">
                 {searchEmptyText}
               </div>
             )}
@@ -249,7 +274,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         ) : (
           options.map((item, index) => {
             if (isDivider(item)) {
-              return <div key={`divider-${index}`} className="my-1 border-t border-border-heavy" />;
+              return <div key={`divider-${index}`} className="border-border-heavy my-1 border-t" />;
             }
 
             const option = normalizeOption(item);

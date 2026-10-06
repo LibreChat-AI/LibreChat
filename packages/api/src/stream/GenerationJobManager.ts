@@ -4,11 +4,12 @@ import {
   Constants,
   ContentTypes,
   StepTypes,
+  StepEvents,
   UsageEvents,
   ApprovalEvents,
   SteerEvents,
   parseTextParts,
-  hasToolCallErrorPrefix,
+  isFailedToolOutput,
   reconcileContextUsageFromEvent,
 } from 'librechat-data-provider';
 import type {
@@ -20,6 +21,7 @@ import type {
 import type { StandardGraph } from '@librechat/agents';
 import type {
   SerializableJobData,
+  GenerationSettlementState,
   CreatedJobData,
   IEventTransport,
   UsageMetadata,
@@ -80,6 +82,7 @@ import { synthesizeReasoningLabelGapEvents } from '~/agents/reasoningLabels';
 import { InMemoryEventTransport } from './implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { attachAskUserQuestionAnswers, normalizeResumeRunStepIndices } from '~/agents/hitl/resume';
+import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
 import { emitChunkWithReceipt } from './internal/chunkPublication';
 import { resolveCoalesceWindowMs } from './internal/coalescing';
 import {
@@ -89,6 +92,7 @@ import {
 } from './internal/timing';
 import { filterPersistableAbortContent } from './abortContent';
 import { toClientPendingAction } from '~/agents/hitl/policy';
+import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
 import { sanitizeJobMetadata } from './metadata';
@@ -126,13 +130,7 @@ function completedToolExecutionStatus(call: Agents.ToolCall): ToolExecutionStatu
   if (call.inputValidationError === true) {
     return 'error';
   }
-  const output = call.output;
-  return typeof output === 'string' &&
-    (hasToolCallErrorPrefix(output) ||
-      /^Error processing tool(?::|$)/i.test(output) ||
-      /^Error:[\s\S]*\n Please fix your mistakes\.$/i.test(output))
-    ? 'error'
-    : 'success';
+  return typeof call.output === 'string' && isFailedToolOutput(call.output) ? 'error' : 'success';
 }
 
 /** Bounded completed-request replay horizon. It exceeds the default 24-hour
@@ -268,7 +266,8 @@ function claimsMirrorExactly(left: TokenIdempotencyClaim, right: TokenIdempotenc
     left.claimToken === right.claimToken &&
     left.previousClaimToken === right.previousClaimToken &&
     left.generationProtocolVersion === right.generationProtocolVersion &&
-    left.startedAt === right.startedAt
+    left.startedAt === right.startedAt &&
+    left.recoveryFence === right.recoveryFence
   );
 }
 
@@ -366,6 +365,93 @@ function getSteerUserSubmittedPaths(content: readonly TMessageContentParts[]): s
   return paths;
 }
 
+/** Rewrites `/content/N/...` paths recorded against the unfiltered content onto
+ * the filtered abort content, dropping paths whose part was filtered out. A
+ * path past the end of the content names no part and is left as recorded. */
+function remapContentPath(
+  path: string,
+  contentLength: number,
+  indexMap: ReadonlyMap<number, number>,
+): string | null {
+  const match = /^\/content\/(\d+)(\/.*)?$/.exec(path);
+  if (match == null || Number(match[1]) >= contentLength) {
+    return path;
+  }
+  const index = indexMap.get(Number(match[1]));
+  return index == null ? null : `/content/${index}${match[2] ?? ''}`;
+}
+
+/** A tool-call path the latest approval claim added is user-authored only once
+ * its decision reached this content: the resumed call completed (a string
+ * output, which may be empty for a void tool) or the abort route stamped the
+ * answer. An unanswered `ask_user_question` already holds an empty output, so
+ * only a non-empty one counts as its answer. Other claimed paths (steers already
+ * in the seed content) need no decision to apply and are kept. Paths are checked
+ * against the unfiltered content they were recorded on, then remapped onto the
+ * filtered abort content that the final event and the persisted row carry. */
+function getPublishedProvenance(
+  jobData: SerializableJobData,
+  content: readonly unknown[],
+  abortContent: readonly unknown[],
+): Pick<SerializableJobData, 'userSubmittedPaths' | 'userSubmittedMessageFieldPaths'> {
+  const claimedPaths = jobData.userSubmittedPaths ?? [];
+  const claimedFieldPaths = jobData.userSubmittedMessageFieldPaths ?? [];
+  const preResume = jobData.preResumeProvenance;
+  const prePaths = new Set(preResume?.userSubmittedPaths ?? []);
+  const preFieldPaths = new Set(
+    (preResume?.userSubmittedMessageFieldPaths ?? []).map(({ path, field }) => `${field}:${path}`),
+  );
+  const isAppliedPath = (path: string): boolean => {
+    if (preResume == null) {
+      return true;
+    }
+    const match = /^\/content\/(\d+)\/tool_call\//.exec(path);
+    if (match == null) {
+      return true;
+    }
+    const part = content[Number(match[1])] as TMessageContentParts | undefined;
+    if (part?.type !== 'tool_call') {
+      return false;
+    }
+    const toolCall = part.tool_call as { name?: unknown; output?: unknown } | undefined;
+    const output = toolCall?.output;
+    if (typeof output !== 'string') {
+      return false;
+    }
+    return output.length > 0 || toolCall?.name !== ASK_USER_QUESTION_TOOL_NAME;
+  };
+  /** The filter keeps part references in order, so a forward scan maps them. */
+  const indexMap = new Map<number, number>();
+  for (let index = 0, filtered = 0; index < content.length; index++) {
+    if (filtered < abortContent.length && content[index] === abortContent[filtered]) {
+      indexMap.set(index, filtered++);
+    }
+  }
+  const userSubmittedPaths: string[] = [];
+  for (const path of claimedPaths) {
+    const remapped =
+      prePaths.has(path) || isAppliedPath(path)
+        ? remapContentPath(path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedPaths.push(remapped);
+    }
+  }
+  const userSubmittedMessageFieldPaths: NonNullable<
+    SerializableJobData['userSubmittedMessageFieldPaths']
+  > = [];
+  for (const entry of claimedFieldPaths) {
+    const remapped =
+      preFieldPaths.has(`${entry.field}:${entry.path}`) || isAppliedPath(entry.path)
+        ? remapContentPath(entry.path, content.length, indexMap)
+        : null;
+    if (remapped != null) {
+      userSubmittedMessageFieldPaths.push({ ...entry, path: remapped });
+    }
+  }
+  return { userSubmittedPaths, userSubmittedMessageFieldPaths };
+}
+
 function getToolCallName(toolCall: unknown): unknown {
   return toolCall != null && typeof toolCall === 'object' && 'name' in toolCall
     ? toolCall.name
@@ -442,8 +528,42 @@ function getReplayStepId(event: t.ServerSentEvent): unknown {
     const result = 'result' in event.data ? event.data.result : undefined;
     return result != null && typeof result === 'object' && 'id' in result ? result.id : undefined;
   }
+  if (event.event === StepEvents.ON_TOOL_PREPARATION) {
+    const marker = event.data as { id?: unknown; toolCallId?: unknown; index?: unknown };
+    return typeof marker.id === 'string'
+      ? `${marker.id}:${typeof marker.toolCallId === 'string' ? marker.toolCallId : `#${marker.index}`}`
+      : undefined;
+  }
+  if (event.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+    const calls = (event.data as { toolCalls?: unknown }).toolCalls;
+    return Array.isArray(calls)
+      ? JSON.stringify(calls.map((call) => [call?.stepId, call?.id]))
+      : undefined;
+  }
 
   return undefined;
+}
+
+function isToolTimingReplayEvent(event: t.ServerSentEvent): boolean {
+  if (!('event' in event) || event.data == null || typeof event.data !== 'object') return false;
+  if (event.event === StepEvents.ON_TOOL_PREPARATION) {
+    const marker = event.data as { id?: unknown; observed_at?: unknown };
+    return (
+      typeof marker.id === 'string' &&
+      marker.id !== '' &&
+      typeof marker.observed_at === 'number' &&
+      Number.isFinite(marker.observed_at)
+    );
+  }
+  if (event.event === StepEvents.ON_TOOL_CALLS_DISPATCHED) {
+    const dispatch = event.data as { dispatched_at?: unknown; toolCalls?: unknown };
+    return (
+      typeof dispatch.dispatched_at === 'number' &&
+      Number.isFinite(dispatch.dispatched_at) &&
+      Array.isArray(dispatch.toolCalls)
+    );
+  }
+  return false;
 }
 
 function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
@@ -568,10 +688,22 @@ export interface CreateGenerationJobOptions {
  * receiving this claim, then pass the same object to {@link finishTerminalJob}
  * from a `finally` block.
  */
+/** A generation reached a terminal state and released its runtime. */
+export interface GenerationSettledEvent {
+  streamId: string;
+  conversationId: string;
+  userId: string;
+  status: TerminalJobClaim['status'];
+}
+
+export type GenerationSettledListener = (event: GenerationSettledEvent) => void;
+
 export interface TerminalJobClaim {
   readonly streamId: string;
   readonly createdAt: number;
   readonly conversationId?: string;
+  /** The generation's owner, so settlement can be announced to that principal's waiters. */
+  readonly userId?: string;
   readonly status: 'complete' | 'error' | 'aborted';
   readonly error?: string;
   /** The winner must durably publish either its normal FINAL or a
@@ -786,6 +918,7 @@ class GenerationJobManagerClass {
 
   /** Makes terminal cleanup idempotent while keeping claims opaque to callers. */
   private terminalFinishPromises = new WeakMap<TerminalJobClaim, Promise<void>>();
+  private generationSettledListeners = new Set<GenerationSettledListener>();
 
   /** Exact local runtime observed when a claim won; never clean a later runtime. */
   private terminalClaimRuntimes = new WeakMap<TerminalJobClaim, RuntimeJobState | null>();
@@ -849,6 +982,20 @@ class GenerationJobManagerClass {
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = options?.eventTransport ?? new InMemoryEventTransport();
     this._cleanupOnComplete = options?.cleanupOnComplete ?? true;
+    this.bindStaleGenerationHandler();
+  }
+
+  private bindStaleGenerationHandler(): void {
+    const store = this.jobStore;
+    store.setStaleGenerationHandler?.((streamId, createdAt) => {
+      if (this.jobStore !== store) return;
+      const runtime = this.runtimeState.get(streamId);
+      if (runtime?.createdAt !== createdAt) return;
+      this.releaseAbortSubscription(runtime);
+      runtime.abortController.abort();
+      this.releaseJobOwnership(streamId, createdAt);
+      // Keep buffers, subscribers and the open provider segment until its actual drain.
+    });
   }
 
   /**
@@ -942,7 +1089,9 @@ class GenerationJobManagerClass {
     this.releaseOpenProviderExecutions();
     setGenerationJobsInFlight(previousStore, 0);
 
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     this.jobStore = services.jobStore;
+    this.bindStaleGenerationHandler();
     this._approvals = this.createApprovalLifecycle(this.jobStore);
     this._steering = new SteeringLifecycle(this.jobStore);
     this.eventTransport = services.eventTransport;
@@ -1078,6 +1227,7 @@ class GenerationJobManagerClass {
       createdAt,
       ...(job?.createdAt === createdAt &&
         job.conversationId != null && { conversationId: job.conversationId }),
+      ...(job?.createdAt === createdAt && job.userId != null && { userId: job.userId }),
       status: 'error' as const,
       error,
       drainedSteers: Object.freeze([...drainedSteers]),
@@ -2256,7 +2406,7 @@ class GenerationJobManagerClass {
     streamId: string,
     job: Pick<
       SerializableJobData,
-      'createdAt' | 'conversationId' | 'providerExecutionId' | 'agentEventDeliveryKey'
+      'createdAt' | 'conversationId' | 'providerExecutionId' | 'agentEventDeliveryKey' | 'userId'
     >,
     message: string,
   ): Promise<boolean> {
@@ -2288,6 +2438,13 @@ class GenerationJobManagerClass {
               expectCreatedAt: job.createdAt,
             })
           ) {
+            /** A direct terminal transition builds no claim, so it announces itself. */
+            this.notifyGenerationSettled({
+              streamId,
+              conversationId: job.conversationId,
+              userId: job.userId,
+              status: 'error',
+            });
             return true;
           }
         } catch (error) {
@@ -2298,6 +2455,15 @@ class GenerationJobManagerClass {
 
         try {
           const current = await this.jobStore.getJob(streamId);
+          if (current?.createdAt === job.createdAt && current.status === 'error') {
+            this.notifyGenerationSettled({
+              streamId,
+              conversationId: current.conversationId,
+              userId: current.userId,
+              status: 'error',
+            });
+            return true;
+          }
           if (
             current == null ||
             current.createdAt !== job.createdAt ||
@@ -2396,7 +2562,7 @@ class GenerationJobManagerClass {
       (options.recoveredSteerPayload != null &&
         !isRecoveredSteerPayload(options.recoveredSteerPayload))
     ) {
-      throw new RecoveredSteerPayloadMismatchError();
+      throw new RecoveredSteerPayloadMismatchError('invalid_payload');
     }
     // Capture the active epoch before the store atomically replaces it. A
     // subscriber attached to that predecessor filters events by generation,
@@ -2918,8 +3084,10 @@ class GenerationJobManagerClass {
         scheduledFor: jobData.scheduledFor,
         scheduleConfigRevision: jobData.scheduleConfigRevision,
         scheduleManual: jobData.scheduleManual,
+        scheduleMCPCompletion: jobData.scheduleMCPCompletion,
         scheduleOutcome: jobData.scheduleOutcome,
         scheduleOutcomeError: jobData.scheduleOutcomeError,
+        scheduleMCPFailure: jobData.scheduleMCPFailure,
         preserveForScheduleReconcile: jobData.preserveForScheduleReconcile,
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).
@@ -3273,7 +3441,7 @@ class GenerationJobManagerClass {
       }
       const normalized = normalizeTokenClaim(claim, 'admission evidence');
       assertClaimMatchesRequest(normalized, streamId, conversationId);
-      if (normalized.startedAt == null) {
+      if (normalized.startedAt == null || normalized.recoveryFence === true) {
         return null;
       }
       return {
@@ -3314,14 +3482,14 @@ class GenerationJobManagerClass {
       return 'unavailable';
     }
     if (observed.existing.startedAt != null) {
-      return 'started';
+      return observed.existing.recoveryFence === true ? 'fenced' : 'started';
     }
 
     let owned = observed;
     if (!observed.claimed) {
       owned = await this.takeoverGeneration(userId, clientRequestId, streamId, observed.existing);
       if (owned.existing?.startedAt != null) {
-        return 'started';
+        return owned.existing.recoveryFence === true ? 'fenced' : 'started';
       }
       if (!owned.claimed || owned.existing == null) {
         return 'unavailable';
@@ -3330,7 +3498,7 @@ class GenerationJobManagerClass {
 
     const claim = normalizeTokenClaim(owned.existing, 'background completion recovery fence');
     if (claim.startedAt != null) {
-      return 'started';
+      return claim.recoveryFence === true ? 'fenced' : 'started';
     }
     await this.tombstoneObservedGenerationClaim(
       userId,
@@ -3339,6 +3507,7 @@ class GenerationJobManagerClass {
       claim,
       Date.now(),
       claim.generationProtocolVersion === 2 ? 2 : 1,
+      true,
     );
     return 'fenced';
   }
@@ -3411,11 +3580,13 @@ class GenerationJobManagerClass {
     claim: TokenIdempotencyClaim,
     createdAt: number,
     generationProtocolVersion: 1 | 2,
+    recoveryFence?: true,
   ): Promise<TokenIdempotencyClaim> {
     const tombstone: TokenIdempotencyClaim = {
       ...claim,
       startedAt: createdAt,
       generationProtocolVersion,
+      ...(recoveryFence === true && { recoveryFence }),
     };
     const primaryKey = this.generationClaimKey(userId, clientRequestId, streamId);
     let markError: unknown;
@@ -3742,9 +3913,21 @@ class GenerationJobManagerClass {
     await this.jobStore.releaseIdempotencyKey(legacyKey, expectedClaim);
   }
 
-  /**
-   * Get job status.
-   */
+  /** Observes identity and final-save ownership without attaching a runtime or
+   * promoting a slow terminal writer to stale-owner recovery. */
+  async getGenerationSettlementState(
+    streamId: string,
+  ): Promise<GenerationSettlementState | undefined> {
+    const job = await this.jobStore.getJob(streamId);
+    if (job == null) return undefined;
+    return {
+      createdAt: job.createdAt,
+      status: job.status,
+      terminalPersistencePending: job.terminalPersistencePending,
+    };
+  }
+
+  /** Get job status. */
   async getJobStatus(streamId: string): Promise<t.GenerationJobStatus | undefined> {
     const jobData = await this.jobStore.getJob(streamId);
     return jobData?.status as t.GenerationJobStatus | undefined;
@@ -3901,6 +4084,7 @@ class GenerationJobManagerClass {
       ...(jobData.conversationId != null && {
         conversationId: jobData.conversationId,
       }),
+      ...(jobData.userId != null && { userId: jobData.userId }),
       status,
       ...(terminalError != null && { error: terminalError }),
       ...(options.persistencePending === true && {
@@ -4071,6 +4255,40 @@ class GenerationJobManagerClass {
    * claim is idempotent, and every local mutation is pinned to the runtime
    * object and generation epoch captured when the CAS won.
    */
+  /**
+   * Calls `listener` after each generation owned by this process reaches a
+   * terminal state and its runtime is released — by completion, error, or
+   * abort. Listeners run synchronously and must not throw; failures are logged
+   * and never affect terminal cleanup. Returns an unsubscribe function.
+   */
+  onGenerationSettled(listener: GenerationSettledListener): () => void {
+    this.generationSettledListeners.add(listener);
+    return () => {
+      this.generationSettledListeners.delete(listener);
+    };
+  }
+
+  private notifyGenerationSettled(
+    target: Pick<TerminalJobClaim, 'streamId' | 'conversationId' | 'userId' | 'status'>,
+  ): void {
+    if (target.userId == null || this.generationSettledListeners.size === 0) {
+      return;
+    }
+    const event: GenerationSettledEvent = {
+      streamId: target.streamId,
+      conversationId: target.conversationId ?? target.streamId,
+      userId: target.userId,
+      status: target.status,
+    };
+    for (const listener of this.generationSettledListeners) {
+      try {
+        listener(event);
+      } catch (listenerError) {
+        logger.error('[GenerationJobManager] Generation settled listener failed', listenerError);
+      }
+    }
+  }
+
   finishTerminalJob(claim: TerminalJobClaim): Promise<void> {
     const inFlight = this.terminalFinishPromises.get(claim);
     if (inFlight) {
@@ -4260,6 +4478,7 @@ class GenerationJobManagerClass {
         metricStatus = 'error';
       }
       recordGenerationJob(this.storeLabel, metricStatus);
+      this.notifyGenerationSettled(claim);
     }
 
     if (cleanupError != null) {
@@ -4616,6 +4835,7 @@ class GenerationJobManagerClass {
       ...(jobData.conversationId != null && {
         conversationId: jobData.conversationId,
       }),
+      ...(jobData.userId != null && { userId: jobData.userId }),
       status: 'aborted',
       persistencePending: true,
       drainedSteers: Object.freeze([...drainedSteers]),
@@ -4684,6 +4904,13 @@ class GenerationJobManagerClass {
       // Filter only after the transform so sparse/empty/OAuth parts cannot
       // shift a retained ID-less ask answer onto a different tool call.
       abortContent = filterPersistableAbortContent(content);
+      // A stopped compaction is unfinished rather than failed, so the row keeps
+      // the abort shape, plus the marker that keeps it identifiable as the
+      // compaction's own turn instead of an answer to its parent.
+      abortContent = markAbortedCompactionContent(
+        abortContent as TMessageContentParts[],
+        jobData.compact === true,
+      );
       shouldPersistAbortContent = abortContent.length > 0;
       text = shouldPersistAbortContent
         ? parseTextParts(abortContent as TMessageContentParts[], false, {
@@ -4697,6 +4924,12 @@ class GenerationJobManagerClass {
 
       /** Final event for abort */
       const userMessageId = jobData.userMessage?.messageId;
+      /** The final event and the persisted row (`beforePublish` reads
+       * `jobData`) must label the same content, so both take this selection. */
+      jobData = {
+        ...jobData,
+        ...getPublishedProvenance(jobData, content, abortContent),
+      };
       const userSubmittedPaths = [
         ...new Set([
           ...(jobData.userSubmittedPaths ?? []),
@@ -4717,6 +4950,7 @@ class GenerationJobManagerClass {
               conversationId: jobData.conversationId,
               text: jobData.userMessage.text ?? '',
               quotes: jobData.userMessage.quotes,
+              privacyRevision: jobData.userMessage.privacyRevision,
               isCreatedByUser: true,
             }
           : null,
@@ -7388,6 +7622,9 @@ class GenerationJobManagerClass {
     if (event.event === UsageEvents.ON_TOKEN_USAGE) {
       return this.trackTokenUsage(streamId, event, expectedCreatedAt);
     }
+    if (isToolTimingReplayEvent(event)) {
+      return this.trackReplayEvent(streamId, event, expectedCreatedAt);
+    }
     if (
       (event.event === 'on_run_step' ||
         event.event === 'on_run_step_delta' ||
@@ -7678,7 +7915,7 @@ class GenerationJobManagerClass {
     event: t.ServerSentEvent,
     expectedCreatedAt: number,
   ): Promise<void> {
-    if (!isOAuthReplayEvent(event)) {
+    if (!isOAuthReplayEvent(event) && !isToolTimingReplayEvent(event)) {
       return;
     }
 
@@ -7836,6 +8073,7 @@ class GenerationJobManagerClass {
         conversationId: message.conversationId,
         text: message.text,
         quotes: message.quotes,
+        privacyRevision: message.privacyRevision,
         // Persist the turn's uploaded files so a HITL resume sources them from the job
         // (this authoritative writer), not a user DB row whose save can still be racing
         // the approval prompt.
@@ -8723,7 +8961,7 @@ class GenerationJobManagerClass {
       contextUsage,
       // Carry the live pending approval in the resume contract so a reloading /
       // cross-replica client can rebuild the prompt from resumeState. Client-safe
-      // projection: the stored record's resumeContext/requestFingerprint stay server-only.
+      // projection: projectContextKey, resumeContext, and requestFingerprint stay server-only.
       pendingAction:
         verifiedJob.status === 'requires_action' && !isPendingActionStale(verifiedJob)
           ? toClientPendingAction(verifiedJob.pendingAction)
@@ -8865,6 +9103,17 @@ class GenerationJobManagerClass {
 
     await this.runApprovalExpiredHandler(streamId, expiredJob);
     await this.notifyApprovalExpiredRuntime(streamId, expiredJob.createdAt, observedRuntime);
+    /** Expiry is a direct `requires_action -> aborted` transition that never builds a
+     * terminal claim, so it announces settlement itself. */
+    this.notifyGenerationSettled({
+      streamId,
+      conversationId: expiredJob.conversationId,
+      userId: expiredJob.userId,
+      status: 'aborted',
+    });
+    /** Terminal now; releasing ownership keeps the sweep's relay branch from
+     * announcing this generation a second time. */
+    this.releaseJobOwnership(streamId, expiredJob.createdAt);
     return true;
   }
 
@@ -9055,7 +9304,17 @@ class GenerationJobManagerClass {
           await this.runApprovalExpiredHandler(streamId, job);
         }
         await this.notifyApprovalExpiredRuntime(streamId, job.createdAt, runtime);
-        changed = this.releaseJobOwnership(streamId, job.createdAt) || changed;
+        const released = this.releaseJobOwnership(streamId, job.createdAt);
+        if (released) {
+          /** The store won the expiry CAS, so no local claim announced it. */
+          this.notifyGenerationSettled({
+            streamId,
+            conversationId: job.conversationId,
+            userId: job.userId,
+            status: 'aborted',
+          });
+        }
+        changed = released || changed;
         continue;
       }
       if (
@@ -9149,10 +9408,11 @@ class GenerationJobManagerClass {
         const currentJob = await this.jobStore.getJob(streamId);
         if (
           currentJob?.createdAt === observedRuntime.createdAt &&
-          currentJob.terminalHostActionPending === true
+          (currentJob.terminalHostActionPending === true ||
+            currentJob.terminalPersistencePending === true ||
+            currentJob.providerDrained === false)
         ) {
-          // The callback retry still owns this generation's evidence. Retain
-          // runtime buffers until it acknowledges and clears the durable marker.
+          // Persistence, provider drain and host acknowledgement still own this evidence.
           continue;
         }
         const isRetainedTerminal =
@@ -9501,6 +9761,7 @@ class GenerationJobManagerClass {
     await this.drainSubscriberCleanups();
     await this.awaitGenerationSettlements(Math.max(0, settlementDeadline - Date.now()));
     await this.finalizeOwnedJobsForShutdown();
+    this.jobStore.setStaleGenerationHandler?.(undefined);
     await this.jobStore.destroy();
     this.eventTransport.destroy();
     /** Whatever the bounded wait left behind must not outlive this store: a later

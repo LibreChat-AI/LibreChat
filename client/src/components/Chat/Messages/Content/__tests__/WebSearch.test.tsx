@@ -2,7 +2,14 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { TAttachment, SearchResultData, ValidSource } from 'librechat-data-provider';
+import type {
+  TAttachment,
+  SearchResultData,
+  ValidSource,
+  PartMetadata,
+} from 'librechat-data-provider';
+import { ToolContentRequestContext } from '../disclosure';
+import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
 import { ROW_GLYPH_SLOT } from '../rows';
 import WebSearch from '../WebSearch';
@@ -23,6 +30,7 @@ jest.mock('~/hooks', () => ({
     return translations[key] || key;
   },
   useLazyCollapseBody: jest.requireActual('~/hooks/Messages/useLazyCollapseBody').default,
+  useProgress: (progress: number) => progress,
   useExpandCollapse: (isExpanded: boolean) => ({
     style: {
       display: 'grid',
@@ -31,6 +39,11 @@ jest.mock('~/hooks', () => ({
     },
     ref: { current: null },
   }),
+}));
+
+jest.mock('~/hooks/MCP', () => ({
+  useMCPIconMap: () => new Map(),
+  useMCPServerNames: () => [],
 }));
 
 jest.mock('~/utils/cn', () => ({
@@ -96,6 +109,8 @@ function renderWebSearch({
   initialProgress = 1,
   args,
   output,
+  runStepStatus,
+  revealTick = 0,
 }: {
   searchResults?: Record<string, SearchResultData>;
   attachments?: TAttachment[];
@@ -104,21 +119,28 @@ function renderWebSearch({
   initialProgress?: number;
   args?: string | Record<string, unknown>;
   output?: string | null;
+  runStepStatus?: PartMetadata['runStepStatus'];
+  revealTick?: number;
 }) {
-  return render(
+  const tree = (tick: number) => (
     <RecoilRoot>
       <SearchContext.Provider value={{ searchResults }}>
-        <WebSearch
-          initialProgress={initialProgress}
-          isSubmitting={isSubmitting}
-          isLast={isLast}
-          args={args}
-          output={output}
-          attachments={attachments}
-        />
+        <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+          <WebSearch
+            initialProgress={initialProgress}
+            isSubmitting={isSubmitting}
+            isLast={isLast}
+            args={args}
+            output={output}
+            attachments={attachments}
+            runStepStatus={runStepStatus}
+          />
+        </FailedRevealContext.Provider>
       </SearchContext.Provider>
-    </RecoilRoot>,
+    </RecoilRoot>
   );
+  const result = render(tree(revealTick));
+  return { ...result, reveal: (tick: number) => result.rerender(tree(tick)) };
 }
 
 describe('WebSearch', () => {
@@ -298,6 +320,53 @@ describe('WebSearch', () => {
       expect(container.innerHTML).toBe('');
     });
 
+    it('reveals schema-validation feedback even if the step closed as completed', () => {
+      const output = 'Error: Invalid search arguments\n Please fix your mistakes.';
+      const { reveal } = renderWebSearch({
+        output,
+        args: '{"query":"x"}',
+        runStepStatus: 'completed',
+      });
+      const button = screen.getByTestId('tool-call').querySelector('button');
+      expect(button).toHaveAttribute('aria-expanded', 'false');
+      expect(button).toHaveTextContent('failed');
+      expect(screen.queryByText('Searched the web')).not.toBeInTheDocument();
+
+      reveal(1);
+
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+      expect(button).toHaveFocus();
+      expect(screen.getByText('Error: Invalid search arguments')).toBeInTheDocument();
+    });
+
+    it('keeps a status-failed search visible even with ordinary output', () => {
+      const { reveal } = renderWebSearch({
+        output: 'Partial data',
+        args: '{"query":"x"}',
+        runStepStatus: 'failed',
+      });
+      const button = screen.getByTestId('tool-call').querySelector('button');
+      expect(button).toHaveTextContent('failed');
+      reveal(1);
+      expect(button).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('honors a cancelled step over error-shaped output', () => {
+      const { container } = renderWebSearch({
+        output: 'Error: Invalid search arguments\n Please fix your mistakes.',
+        runStepStatus: 'cancelled',
+      });
+      expect(container.innerHTML).toBe('');
+    });
+
+    it('still hides unclassified legacy search errors on a completed step', () => {
+      const { container } = renderWebSearch({
+        output: 'Error processing search results',
+        runStepStatus: 'completed',
+      });
+      expect(container.innerHTML).toBe('');
+    });
+
     it('renders completed state with source count', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
@@ -364,6 +433,28 @@ describe('WebSearch', () => {
       ).toBeInTheDocument();
       expect(screen.getByText('largest context window LLM 2026')).toBeInTheDocument();
       expect(screen.getByText('1 source')).toBeInTheDocument();
+    });
+
+    it('asks for the stored call when the details card opens', async () => {
+      const request = jest.fn();
+      render(
+        <RecoilRoot>
+          <SearchContext.Provider value={{ searchResults: undefined }}>
+            <ToolContentRequestContext.Provider value={request}>
+              <WebSearch
+                initialProgress={1}
+                isSubmitting={false}
+                args={{ query: 'shortened quer…' }}
+                output="done"
+              />
+            </ToolContentRequestContext.Provider>
+          </SearchContext.Provider>
+        </RecoilRoot>,
+      );
+      expect(request).not.toHaveBeenCalled();
+      fireEvent.focus(screen.getByLabelText('Search details'));
+      await screen.findByText('shortened quer…');
+      expect(request).toHaveBeenCalled();
     });
 
     it('renders shopping, image, and place verticals in the expanded panel', () => {

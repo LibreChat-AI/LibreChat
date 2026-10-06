@@ -144,6 +144,27 @@ export async function dropSupersededTenantIndexes(
   return result;
 }
 
+/** Suggest the offline migration only for index conflicts in collections it covers. */
+export function getTenantIndexMigrationHint(
+  collectionName: string,
+  error: Error,
+): string | undefined {
+  if (
+    !Object.prototype.hasOwnProperty.call(SUPERSEDED_INDEXES, collectionName) ||
+    !('code' in error) ||
+    (error.code !== 85 && error.code !== 86)
+  ) {
+    return;
+  }
+
+  return (
+    'This may be a legacy tenant-index conflict. See UPGRADING.md: back up MongoDB, ' +
+    'stop all API replicas and other database writers, then run ' +
+    '`npm run migrate:tenant-indexes:dry-run` and `npm run migrate:tenant-indexes` ' +
+    'from the updated application root. Keep writers stopped until the migration succeeds.'
+  );
+}
+
 /** Exported for testing — the raw index map */
 export { SUPERSEDED_INDEXES };
 

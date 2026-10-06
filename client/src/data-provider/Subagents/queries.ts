@@ -10,20 +10,53 @@ import type {
 } from 'librechat-data-provider';
 import type { UseQueryOptions, QueryObserverResult } from '@tanstack/react-query';
 
+const responseStatus = (error: unknown): number | undefined => {
+  if (error == null || typeof error !== 'object') return undefined;
+  const candidate = error as { status?: number; response?: { status?: number } };
+  return candidate.response?.status ?? candidate.status;
+};
+
 export const ACTIVE_THREAD_REFRESH_MS = 2_000;
 const IDLE_PARENT_REFRESH_MS = 10_000;
+const QUIET_PARENT_REFRESH_MS = 60_000;
 const CHILD_READY_POLL_WINDOW_MS = 60_000;
 
-export const parentSubagentsRefetchInterval = (index: ParentSubagentIndex | undefined): number =>
-  index?.children.some((child) => child.status === 'running') === true
-    ? ACTIVE_THREAD_REFRESH_MS
-    : IDLE_PARENT_REFRESH_MS;
+/** Streamed child lifecycle events wake local discovery; the capped fallback finds
+ * children published elsewhere when this tab has no active parent stream. */
+export const parentSubagentsRefetchInterval = (
+  index: ParentSubagentIndex | undefined,
+  isSubmitting = false,
+  error?: unknown,
+  dataUpdateCount = 0,
+  readinessDeadline = 0,
+): number | false => {
+  if (responseStatus(error) === 404) {
+    return isSubmitting && Date.now() < readinessDeadline ? IDLE_PARENT_REFRESH_MS : false;
+  }
+  if (index?.children.some((child) => child.status === 'running') === true) {
+    return ACTIVE_THREAD_REFRESH_MS;
+  }
+  if (isSubmitting || index?.children.some((child) => child.status === 'dispatched')) {
+    return IDLE_PARENT_REFRESH_MS;
+  }
+  if (index == null && error == null) {
+    return IDLE_PARENT_REFRESH_MS;
+  }
+  // Recheck the first empty result soon: publication may still be committing.
+  return dataUpdateCount <= 1 && error == null ? IDLE_PARENT_REFRESH_MS : QUIET_PARENT_REFRESH_MS;
+};
 
 export const useParentSubagentsQuery = (
   parentConversationId: string,
   config?: UseQueryOptions<ParentSubagentIndex>,
-) =>
-  useQuery<ParentSubagentIndex>(
+  isSubmitting = false,
+) => {
+  const readinessKey = `${parentConversationId}\u0000${isSubmitting}`;
+  const readiness = useMemo(
+    () => ({ key: readinessKey, deadline: Date.now() + CHILD_READY_POLL_WINDOW_MS }),
+    [readinessKey],
+  );
+  return useQuery<ParentSubagentIndex>(
     [QueryKeys.parentSubagents, parentConversationId],
     () => dataService.getParentSubagents(parentConversationId),
     {
@@ -33,11 +66,20 @@ export const useParentSubagentsQuery = (
         parentConversationId !== Constants.PENDING_CONVO,
       staleTime: 5_000,
       refetchOnWindowFocus: true,
-      refetchInterval: parentSubagentsRefetchInterval,
+      retry: (failureCount, error) => responseStatus(error) !== 404 && failureCount < 3,
+      refetchInterval: (index, query) =>
+        parentSubagentsRefetchInterval(
+          index,
+          isSubmitting,
+          query.state.error,
+          query.state.dataUpdateCount,
+          readiness.deadline,
+        ),
       refetchIntervalInBackground: false,
       ...config,
     },
   );
+};
 
 const isTerminal = (status: SubagentThreadView['status']): boolean =>
   status === 'completed' ||
@@ -78,12 +120,6 @@ export const subagentThreadRefetchInterval = (
     return now < readinessDeadline ? ACTIVE_THREAD_REFRESH_MS : false;
   }
   return isTerminal(view.status) ? false : ACTIVE_THREAD_REFRESH_MS;
-};
-
-const responseStatus = (error: unknown): number | undefined => {
-  if (error == null || typeof error !== 'object') return undefined;
-  const candidate = error as { status?: number; response?: { status?: number } };
-  return candidate.response?.status ?? candidate.status;
 };
 
 export const isSubagentReadinessPending = (
