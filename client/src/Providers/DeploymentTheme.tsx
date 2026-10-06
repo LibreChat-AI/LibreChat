@@ -35,8 +35,8 @@ import {
   writeThemeCache,
   reconcileThemeCache,
 } from './themeCache';
-import { useGetStartupConfig, startupConfigKey } from '~/data-provider';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
+import { useGetStartupConfig } from '~/data-provider';
 import store from '~/store';
 
 type DeploymentThemeValue = TInterfaceConfig['theme'];
@@ -241,9 +241,17 @@ export function useDeploymentThemeOverride(ready: boolean, theme: DeploymentThem
 export default function DeploymentTheme({ children }: { children: React.ReactNode }) {
   const envTheme = useMemo(() => getThemeFromEnv(), []);
   useRebindOnStartupConfigRebuild();
-  const queryClient = useQueryClient();
   const { data: startupConfig, isPreviousData } = useGetStartupConfig({ keepPreviousData: true });
   const owner = themeOwner(useRecoilValue(store.user));
+  /**
+   * The signed-out answer by identity, kept apart from the query cache: login removes the
+   * queries, yet the observer keeps showing that answer as previous data until the signed-in
+   * one arrives, and it must still read as the signed-out one.
+   */
+  const signedOutAnswer = useRef<typeof startupConfig>(undefined);
+  if (startupConfig && !isPreviousData && !owner) {
+    signedOutAnswer.current = startupConfig;
+  }
   const [cached, setCached] = useThemeCache(owner);
   const [override, setOverride] = useState<ThemeOverride>(undefined);
   /** A route override is another tenant's theme: it neither reads nor writes the cache. */
@@ -255,7 +263,7 @@ export default function DeploymentTheme({ children }: { children: React.ReactNod
         answer: startupConfig && {
           theme: startupConfig.interface?.theme,
           current: !isPreviousData,
-          signedOut: startupConfig === queryClient.getQueryData(startupConfigKey(false)),
+          signedOut: startupConfig === signedOutAnswer.current,
         },
       });
   const configTheme = decision.theme;

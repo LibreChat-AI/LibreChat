@@ -557,7 +557,10 @@ describe('DeploymentTheme cache', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
 
     getStartupConfig.mockReturnValue(new Promise(() => undefined));
-    act(() => signIn());
+    act(() => {
+      queryClient.removeQueries();
+      signIn();
+    });
     expect(root().dataset.theme).toBe('clickhouse');
   });
 

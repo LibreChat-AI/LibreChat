@@ -210,16 +210,8 @@
   --color-syntax-string: rgb(var(--syntax-string));
   --color-syntax-attr: rgb(var(--syntax-attr));
   --color-syntax-title: rgb(var(--syntax-title));
-  --color-shimmer-base: rgb(var(--shimmer-base));
-  --color-shimmer-dip: rgb(var(--shimmer-dip));
-  /* Brand colors are CSS values rather than channels; the Azure one is a gradient, so read it with `var()`. */
-  --color-provider-openai: var(--provider-openai);
-  --color-provider-openai-gpt4: var(--provider-openai-gpt4);
-  --color-provider-openai-reasoning: var(--provider-openai-reasoning);
-  --color-provider-anthropic: var(--provider-anthropic);
-  --color-provider-azure: var(--provider-azure);
-  --color-provider-bedrock: var(--provider-bedrock);
-  --color-provider-foreground: var(--provider-foreground);
+  --color-shimmer-base: rgb(var(--shimmer-base) / var(--shimmer-base-alpha, 1));
+  --color-shimmer-dip: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme

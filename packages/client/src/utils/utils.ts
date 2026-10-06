@@ -57,7 +57,7 @@ const twMerge = extendTailwindMerge({
           ],
         },
       ],
-      px: [{ px: ['theme-control-x', 'theme-dialog-x'] }],
+      px: [{ px: ['theme-button-x', 'theme-control-x', 'theme-dialog-x'] }],
       gap: [{ gap: ['theme-control-gap'] }],
       'space-y': [{ 'space-y': ['theme-dialog-header'] }],
       'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight', 'theme-label'] }],

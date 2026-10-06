@@ -8,7 +8,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
-import { injectThemeCacheVersion } from './src/Providers/bootVersion';
+import { injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 
 const require = createRequire(import.meta.url);
 

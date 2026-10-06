@@ -526,6 +526,12 @@ export const themeAppearanceTokens = Object.freeze(
 );
 
 /**
+ * Bumped by hand when a release changes what resolving a theme emits without changing its roles
+ * (a palette value, a fallback derivation, an emitted attribute), so cached entries are rebuilt.
+ */
+export const THEME_CACHE_EPOCH = 1 as const;
+
+/**
  * Names the role set a stored resolved theme was built against: any color, brand or appearance
  * role added or removed changes it. A cache that replays resolved variables keys itself on this,
  * so an entry that predates a role is dropped instead of painting that role's stylesheet default.
@@ -538,7 +544,7 @@ export function themeRoleFingerprint(): string {
   for (let i = 0; i < roles.length; i++) {
     hash = ((hash * 33) ^ roles.charCodeAt(i)) >>> 0;
   }
-  return `${THEME_VERSION}.${hash.toString(36)}`;
+  return `${THEME_VERSION}.${THEME_CACHE_EPOCH}.${hash.toString(36)}`;
 }
 
 export const isThemeAppearanceToken = (key: string): key is ThemeAppearanceToken =>

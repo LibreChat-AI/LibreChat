@@ -3,11 +3,7 @@ import path from 'path';
 import fsp from 'fs/promises';
 import { compile } from 'tailwindcss';
 import { deserialize, serialize } from 'v8';
-import {
-  themeColorTokens,
-  themeBrandTokens,
-  themeDerivedColorTokens,
-} from 'librechat-data-provider';
+import { themeColorTokens, themeDerivedColorTokens } from 'librechat-data-provider';
 import { defaultTheme } from './themes/default';
 
 /** Tailwind's compiler clones its theme with `structuredClone`, which jsdom does not provide.
@@ -65,7 +61,6 @@ describe('theme color tokens', () => {
   it('declares exactly the colors the registry names, in either direction', () => {
     const registry = new Set<string>([
       ...themeColorTokens.map((property) => property.replace(/^rgb-/, '')),
-      ...themeBrandTokens,
       ...themeDerivedColorTokens,
     ]);
 
@@ -74,10 +69,7 @@ describe('theme color tokens', () => {
   });
 
   it('lets a theme set every color token the stylesheet declares', () => {
-    const registered = new Set<string>([
-      ...Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')),
-      ...themeBrandTokens,
-    ]);
+    const registered = new Set(Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')));
     const unowned = [...declarations]
       .filter(([token]) => !(themeDerivedColorTokens as readonly string[]).includes(token))
       .filter(([, reads]) => !reads.some((property) => registered.has(property)))

@@ -24,4 +24,11 @@ describe('cn', () => {
     expect(cn('text-2xs', 'text-sm')).toBe('text-sm');
     expect(cn('text-sm', 'text-1xs')).toBe('text-1xs');
   });
+
+  it.each(['px-0', 'px-3', 'px-theme-control-x'])(
+    'lets %s replace the Button padding role',
+    (caller) => {
+      expect(cn('px-theme-button-x', caller)).toBe(caller);
+    },
+  );
 });
