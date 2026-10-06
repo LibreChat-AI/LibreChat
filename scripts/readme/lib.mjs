@@ -42,12 +42,15 @@ export function splitChunks(markdown) {
     current = [];
   };
   for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (FENCE.test(line)) inFence = !inFence;
+    const isFence = FENCE.test(line);
+    if (isFence && !inFence) flush();
+    if (isFence) inFence = !inFence;
     if (!inFence && line.trim() === '') {
       flush();
       continue;
     }
     current.push(line);
+    if (isFence && !inFence) flush();
   }
   flush();
   return chunks;
@@ -108,7 +111,7 @@ function facts(chunk) {
     ...chunk.matchAll(/\]\(([^)\s]+)/g),
   ].map((match) => match[1] ?? match[0]);
   return {
-    targets: targets.sort(),
+    targets,
     code: [...chunk.matchAll(/`[^`\n]+`/g)].map((match) => match[0]).sort(),
     tags: [...chunk.matchAll(/<\/?[a-zA-Z][^>]*>/g)].map((match) => normalizeTag(match[0])),
     fences: chunk.split('\n').filter((line) => FENCE.test(line)).length,
@@ -125,6 +128,7 @@ export function validate(source, translated, code) {
   const a = facts(source);
   const b = facts(translated);
   const problems = [];
+  if (translated.trim() === '') problems.push('output is empty');
   if (a.targets.join('\n') !== b.targets.join('\n')) problems.push('links or paths differ');
   if (a.code.join('\n') !== b.code.join('\n')) problems.push('inline code differs');
   if (a.tags.join('\n') !== b.tags.join('\n')) problems.push('HTML tags or attributes differ');
@@ -152,7 +156,7 @@ export function buildMessages(language, chunk) {
     'Keep Markdown and HTML structure, tags, attribute names, URLs, file paths, badges and emoji exactly as given.',
     'Translate human-readable prose, headings, link text, and alt, title and aria-label values.',
     `Keep these terms in English: ${GLOSSARY.join(', ')}, plus product and brand names.`,
-    'Keep the same number of lines and list items as the input.',
+    'Keep the same number of lines and list items as the input, and keep links in the same order.',
   ].join('\n');
   return [
     { role: 'system', content: system },
