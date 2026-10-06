@@ -33,8 +33,8 @@ export interface ReasoningCapabilityDeps {
 /** Applies when an endpoint does not set `customParams.reasoningCatalogTimeoutMs`. */
 const DEFAULT_CATALOG_TIMEOUT_MS = 5000;
 
-/** A catalog this long is treated as unreadable rather than walked indefinitely. */
-const MAX_CATALOG_PAGES = 20;
+/** Applies when an endpoint does not set `customParams.reasoningCatalogMaxPages`. */
+const DEFAULT_CATALOG_MAX_PAGES = 20;
 
 const pageSchema = z.object({
   data: z.array(
@@ -54,6 +54,17 @@ const pageSchema = z.object({
 
 type CatalogModels = Record<string, TModelReasoning>;
 
+/**
+ * What was read and what could not be: an endpoint in `unavailable` is eligible but its
+ * catalog failed, which callers must not confuse with an endpoint whose models report no
+ * reasoning. Endpoints that were never eligible (not OpenRouter, user-provided, direct)
+ * appear in neither.
+ */
+export interface ReasoningCapabilityResult {
+  capabilities: TReasoningCapabilityMap;
+  unavailable: string[];
+}
+
 function isOpenRouterHost(baseURL: string): boolean {
   try {
     const host = new URL(baseURL).hostname.toLowerCase();
@@ -72,22 +83,21 @@ function cacheKey(baseURL: string, apiKey: string): string {
 /**
  * Reads every page of a model catalog, following `links.next` on the provider's own host.
  * A page that cannot be read, a link that leaves the host or revisits a page, or a catalog
- * longer than {@link MAX_CATALOG_PAGES} makes the whole catalog unavailable: serving part of
+ * longer than the endpoint's page limit makes the whole catalog unavailable: serving part of
  * it would hide the controls of every model on the pages not read.
  */
 async function readCatalog(
-  baseURL: string,
-  apiKey: string,
-  timeoutMs: number,
+  target: ResolvedTarget,
   deps: ReasoningCapabilityDeps,
 ): Promise<CatalogModels | undefined> {
+  const { baseURL, apiKey, timeoutMs, maxPages } = target;
   const models: CatalogModels = {};
   const origin = new URL(baseURL).origin;
   const seen = new Set<string>();
   let url: string | null = `${baseURL.replace(/\/+$/, '')}/models`;
 
   while (url != null) {
-    if (seen.has(url) || seen.size >= MAX_CATALOG_PAGES) {
+    if (seen.has(url) || seen.size >= maxPages) {
       return undefined;
     }
     seen.add(url);
@@ -114,10 +124,23 @@ async function readCatalog(
   return models;
 }
 
-type ResolvedTarget = { name: string; baseURL: string; apiKey: string; timeoutMs: number };
+type ResolvedTarget = {
+  name: string;
+  baseURL: string;
+  apiKey: string;
+  timeoutMs: number;
+  maxPages: number;
+};
 
-/** The endpoint's catalog target, or nothing when it is not an OpenRouter endpoint with admin credentials. */
+/**
+ * The endpoint's catalog target, or nothing when it is not an OpenRouter endpoint with
+ * administrator credentials. A `directEndpoint` is skipped: its base URL is the exact
+ * inference URL, so `/models` cannot be derived from it.
+ */
 function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
+  if (endpoint.directEndpoint === true) {
+    return undefined;
+  }
   const name = normalizeEndpointName(endpoint.name);
   const baseURL = resolveConfigSecret(endpoint.baseURL) ?? '';
   const apiKey = resolveConfigSecret(endpoint.apiKey) ?? '';
@@ -129,40 +152,49 @@ function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
     baseURL,
     apiKey,
     timeoutMs: endpoint.customParams?.reasoningCatalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS,
+    maxPages: endpoint.customParams?.reasoningCatalogMaxPages ?? DEFAULT_CATALOG_MAX_PAGES,
   };
 }
 
-/** One lookup per base URL and key, cached and shared; `undefined` when the catalog is unavailable. */
-function createCatalogResolver(deps: ReasoningCapabilityDeps) {
-  const pending = new Map<string, Promise<CatalogModels | undefined>>();
-  return (target: ResolvedTarget): Promise<CatalogModels | undefined> => {
-    const key = cacheKey(target.baseURL, target.apiKey);
-    const existing = pending.get(key);
-    if (existing != null) {
-      return existing;
+/**
+ * Lookups in progress, by base URL and key. Held at module scope so concurrent requests,
+ * from any caller and any user, share one catalog walk instead of each issuing their own
+ * when the cache is cold or has just expired. An entry is removed once it settles, so a
+ * failure is retried by the next request.
+ */
+const inFlight = new Map<string, Promise<CatalogModels | undefined>>();
+
+/** One cached, shared lookup per base URL and key; `undefined` when the catalog is unavailable. */
+function resolveCatalog(
+  target: ResolvedTarget,
+  deps: ReasoningCapabilityDeps,
+): Promise<CatalogModels | undefined> {
+  const key = cacheKey(target.baseURL, target.apiKey);
+  const existing = inFlight.get(key);
+  if (existing != null) {
+    return existing;
+  }
+  const lookup = (async () => {
+    const cached = (await deps.cache.get(key)) as CatalogModels | undefined;
+    if (cached != null) {
+      return cached;
     }
-    const lookup = (async () => {
-      const cached = (await deps.cache.get(key)) as CatalogModels | undefined;
-      if (cached != null) {
-        return cached;
+    try {
+      const models = await readCatalog(target, deps);
+      if (models != null) {
+        await deps.cache.set(key, models, Time.ONE_HOUR);
       }
-      try {
-        const models = await readCatalog(target.baseURL, target.apiKey, target.timeoutMs, deps);
-        if (models != null) {
-          await deps.cache.set(key, models, Time.ONE_HOUR);
-        }
-        return models;
-      } catch (error) {
-        logger.warn('[reasoning] Failed to load the OpenRouter model catalog', {
-          baseURL: target.baseURL,
-          error: error instanceof Error ? error.name : 'unknown',
-        });
-        return undefined;
-      }
-    })();
-    pending.set(key, lookup);
-    return lookup;
-  };
+      return models;
+    } catch (error) {
+      logger.warn('[reasoning] Failed to load the OpenRouter model catalog', {
+        baseURL: target.baseURL,
+        error: error instanceof Error ? error.name : 'unknown',
+      });
+      return undefined;
+    }
+  })().finally(() => inFlight.delete(key));
+  inFlight.set(key, lookup);
+  return lookup;
 }
 
 /**
@@ -170,26 +202,25 @@ function createCatalogResolver(deps: ReasoningCapabilityDeps) {
  * endpoints configured against OpenRouter. The catalog is fetched with the
  * administrator's key, never a user's, and is the same for every caller, so it
  * is cached by base URL and key and shared across users. A catalog that cannot
- * be fetched or read leaves its endpoints out of the result and is not cached,
- * so the next request retries; callers then keep the generic effort list.
+ * be fetched or read is reported in `unavailable`, never as an endpoint without
+ * reasoning, and is not cached, so the next request retries.
  */
 export async function loadReasoningCapabilities(
   customEndpoints: TEndpoint[] | undefined,
   deps: ReasoningCapabilityDeps,
-): Promise<TReasoningCapabilityMap> {
-  const result: TReasoningCapabilityMap = {};
-  const resolveCatalog = createCatalogResolver(deps);
+): Promise<ReasoningCapabilityResult> {
   const targets = (customEndpoints ?? []).flatMap((endpoint) => resolveTarget(endpoint) ?? []);
+  const catalogs = await Promise.all(targets.map((target) => resolveCatalog(target, deps)));
 
-  await Promise.all(
-    targets.map(async (target) => {
-      const models = await resolveCatalog(target);
-      if (models != null) {
-        result[target.name] = models;
-      }
-    }),
-  );
-
+  const result: ReasoningCapabilityResult = { capabilities: {}, unavailable: [] };
+  targets.forEach(({ name }, index) => {
+    const models = catalogs[index];
+    if (models == null) {
+      result.unavailable.push(name);
+    } else {
+      result.capabilities[name] = models;
+    }
+  });
   return result;
 }
 
@@ -216,7 +247,7 @@ export async function withSupportedEffort<T extends object>(
   if (target == null) {
     return modelOptions;
   }
-  const models = await createCatalogResolver(deps)(target);
+  const models = await resolveCatalog(target, deps);
   const modelReasoning = effectiveModelReasoning(
     getModelReasoning(models == null ? undefined : { [target.name]: models }, target.name, model),
     endpoint.customParams?.paramDefinitions,
@@ -257,7 +288,9 @@ export function getReasoningCapabilityDeps(): ReasoningCapabilityDeps {
  * Per-model reasoning efforts for the OpenRouter endpoints in an app config,
  * wired to the real catalog fetch and cache.
  */
-export function getReasoningCapabilities(appConfig?: AppConfig): Promise<TReasoningCapabilityMap> {
+export function getReasoningCapabilities(
+  appConfig?: AppConfig,
+): Promise<ReasoningCapabilityResult> {
   return loadReasoningCapabilities(
     (appConfig?.endpoints?.[EModelEndpoint.custom] ?? []) as TEndpoint[],
     getReasoningCapabilityDeps(),

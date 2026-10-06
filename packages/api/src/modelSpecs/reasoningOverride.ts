@@ -11,6 +11,7 @@ import {
   type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
+import type { ReasoningCapabilityResult } from '~/endpoints/reasoning';
 
 export type ReasoningOverrideRequest =
   | { ok: true; reasoningOverride?: TReasoningOverride }
@@ -176,7 +177,7 @@ async function loadCapabilitiesFor(
   override: TReasoningOverride,
   endpointOption: EndpointOption,
   input: Omit<RequestReasoningOverrideInput, 'reasoningOverride' | 'loadReasoningCapabilities'>,
-  load?: () => Promise<TReasoningCapabilityMap>,
+  load?: () => Promise<ReasoningCapabilityResult>,
 ): Promise<TReasoningCapabilityMap | undefined> {
   if (load == null || override.key !== 'reasoning_effort') {
     return undefined;
@@ -188,7 +189,7 @@ async function loadCapabilitiesFor(
   const paramsEndpoint =
     input.endpointsConfig?.[endpointKey]?.customParams?.defaultParamsEndpoint ??
     input.defaultParamsEndpoint;
-  return paramsEndpoint === Providers.OPENROUTER ? load() : undefined;
+  return paramsEndpoint === Providers.OPENROUTER ? (await load()).capabilities : undefined;
 }
 
 export type RequestReasoningOverrideInput = Omit<
@@ -196,7 +197,7 @@ export type RequestReasoningOverrideInput = Omit<
   'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase' | 'reasoningCapabilities'
 > & {
   /** Loads per-model efforts; called only for a request that carries an override. */
-  loadReasoningCapabilities?: () => Promise<TReasoningCapabilityMap>;
+  loadReasoningCapabilities?: () => Promise<ReasoningCapabilityResult>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
 };

@@ -736,6 +736,7 @@ export type TConfig = {
     includeReasoningHistory?: boolean;
     paramDefinitions?: Partial<SettingDefinition>[];
     reasoningCatalogTimeoutMs?: number;
+    reasoningCatalogMaxPages?: number;
   };
 };
 

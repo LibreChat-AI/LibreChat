@@ -617,7 +617,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
   const effort = { key: 'reasoning_effort', value: ReasoningEffort.high };
 
   it('does not load capabilities for a request without an override', async () => {
-    const load = jest.fn(async () => ({}));
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 
     await applyRequestReasoningOverride(makeReq(), {
       ...openRouter,
@@ -628,7 +628,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
   });
 
   it('loads capabilities once for an OpenRouter effort override', async () => {
-    const load = jest.fn(async () => ({}));
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 
     const applied = await applyRequestReasoningOverride(makeReq(), {
       ...openRouter,
@@ -641,7 +641,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
   });
 
   it('does not load capabilities when the target is not OpenRouter', async () => {
-    const load = jest.fn(async () => ({}));
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 
     const applied = await applyRequestReasoningOverride(makeReq('gpt-5.1'), {
       endpoint: EModelEndpoint.openAI,
@@ -656,7 +656,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
   });
 
   it('does not load capabilities for an override that is not an effort', async () => {
-    const load = jest.fn(async () => ({}));
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 
     await applyRequestReasoningOverride(makeReq(), {
       ...openRouter,
@@ -668,7 +668,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
   });
 
   it('does not load capabilities for a malformed override', async () => {
-    const load = jest.fn(async () => ({}));
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 
     const applied = await applyRequestReasoningOverride(makeReq(), {
       ...openRouter,

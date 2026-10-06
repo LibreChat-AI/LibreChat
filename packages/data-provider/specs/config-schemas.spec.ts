@@ -404,6 +404,27 @@ describe('endpointSchema addParams validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a reasoning catalog page limit within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: 50 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogMaxPages).toBe(50);
+    }
+  });
+
+  it.each([0, 201, 1.5])('rejects reasoning catalog page limit %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts custom reasoning response key config', () => {
     const result = endpointSchema.safeParse({
       ...validEndpoint,

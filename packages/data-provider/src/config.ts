@@ -2076,6 +2076,11 @@ export const endpointSchema = baseEndpointSchema.merge(
          * per-model reasoning efforts. Omission keeps 5000.
          */
         reasoningCatalogTimeoutMs: z.number().int().min(500).max(30000).optional(),
+        /**
+         * Most pages of an OpenRouter endpoint's model catalog to read before treating it as
+         * unavailable. Omission keeps 20.
+         */
+        reasoningCatalogMaxPages: z.number().int().min(1).max(200).optional(),
       })
       .strict()
       .optional(),
