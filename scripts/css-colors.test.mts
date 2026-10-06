@@ -150,3 +150,8 @@ test('reads fixed channels in relative colours but not pure relative forms', () 
   assert.equal(literals('a { color: rgb(from var(--base) 255 g b); }').length, 1);
   assert.deepEqual(literals('a { color: rgb(from var(--base) r g b / 0.5); }'), []);
 });
+
+test('reads numeric fallbacks inside a colour function var()', () => {
+  assert.equal(literals('a { color: rgb(var(--brand, 255 0 0)); }').length, 1);
+  assert.deepEqual(literals('a { color: rgb(var(--c) / var(--a, 1)); }'), []);
+});

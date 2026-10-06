@@ -44,7 +44,7 @@ const NAMED_COLORS =
 
 const HEX = /#[0-9a-fA-F]{3,8}(?![\w-])/g;
 const FUNCTION =
-  /(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*from\s+(?:var\([^)]*\)|[^\s)]+)\s+[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp)\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))/gi;
+  /(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*var\(\s*--[\w-]+\s*,\s*[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*from\s+(?:var\([^)]*\)|[^\s)]+)\s+[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp)\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))/gi;
 const NAMED = new RegExp(`(?<![\\w.-])(?:${NAMED_COLORS.join('|')})(?![\\w.-])`, 'gi');
 /** Properties whose values are identifiers or names, where a colour keyword is not a colour. */
 const NON_COLOR_PROPERTY =
