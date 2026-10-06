@@ -44,7 +44,7 @@ export const useTokenConfigQuery = (
 
 /**
  * Per-model reasoning efforts of one OpenRouter endpoint. The server caches the catalog for
- * an hour and the data changes rarely, so one fetch serves the session. Scoped to the endpoint,
+ * an hour; the client revalidates sooner so the two stay close. Scoped to the endpoint,
  * so another endpoint's outage cannot hide this one's data. Pass `enabled: false` unless the
  * endpoint is an OpenRouter one, so other users never pay for the request.
  */
@@ -57,12 +57,14 @@ export const useReasoningCapabilitiesQuery = (
     [QueryKeys.reasoningCapabilities, endpoint],
     () => dataService.getReasoningCapabilities(endpoint),
     {
-      staleTime: Time.ONE_HOUR,
-      /** Loaded data lives for an hour, so focus and reconnect do not refetch it. A failed
-       *  request is different: the editors fall back to the generic list while the server may
-       *  have recovered and start refusing it, so only an errored query retries on those events. */
-      refetchOnWindowFocus: (query) => query.state.status === 'error',
-      refetchOnReconnect: (query) => query.state.status === 'error',
+      /** The server holds the catalog for an hour from when it first read it, and the response
+       *  carries no age, so a long client window could outlive the server's entry. Revalidating
+       *  after five minutes, on focus or reconnect, bounds how far the two can drift. */
+      staleTime: Time.FIVE_MINUTES,
+      /** While the request keeps failing the editors offer nothing, so it retries on its own and
+       *  does not wait for a focus or reconnect event. */
+      refetchInterval: (_data, query) =>
+        query.state.status === 'error' ? Time.THIRTY_SECONDS : false,
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,
     },

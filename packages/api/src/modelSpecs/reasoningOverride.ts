@@ -3,6 +3,7 @@ import {
   getModelReasoning,
   effectiveModelReasoning,
   hasExplicitReasoningEffort,
+  ReasoningEffort,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
@@ -120,6 +121,21 @@ export async function resolveReasoningOverride({
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 
+  const modelReasoning =
+    effectiveModel == null
+      ? undefined
+      : effectiveModelReasoning(
+          getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
+          customParams?.paramDefinitions,
+        );
+  /** Auto sends no effort. For a model the provider lists without effort selection it is the one
+   *  valid override: it lets a caller clear an effort saved on another model. The disabled and
+   *  locked refusals above have already run. */
+  const clearsEffort =
+    modelReasoning === null &&
+    reasoningOverride.key === 'reasoning_effort' &&
+    reasoningOverride.value === ReasoningEffort.unset;
+
   const supportedSetting = resolveReasoningSettingForTarget({
     endpoint: effectiveEndpoint,
     model: effectiveModel,
@@ -128,16 +144,10 @@ export async function resolveReasoningOverride({
     paramDefinitions: customParams?.paramDefinitions,
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
-    modelReasoning:
-      effectiveModel == null
-        ? undefined
-        : effectiveModelReasoning(
-            getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
-            customParams?.paramDefinitions,
-          ),
+    modelReasoning,
   });
 
-  if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
+  if (!clearsEffort && !isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
     return { ok: false, reason: 'invalid-reasoning-override' };
   }
 

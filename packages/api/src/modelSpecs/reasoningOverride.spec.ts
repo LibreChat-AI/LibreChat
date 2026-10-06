@@ -581,12 +581,28 @@ describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
     expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
   });
 
-  it('rejects any effort for a model the provider lists without reasoning', async () => {
+  it('rejects an effort for a model the provider lists without reasoning', async () => {
     const result = await resolve(
-      openRouterInput(ReasoningEffort.low, { OpenRouter: { 'meta/other': { efforts: ['low'] } } }),
+      openRouterInput(ReasoningEffort.low, { OpenRouter: { [model]: { efforts: [] } } }),
     );
 
     expect(result).toEqual({ ok: false, reason: 'invalid-reasoning-override' });
+  });
+
+  it('accepts Auto for a model the provider lists without reasoning, so a stale effort can be cleared', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.unset, { OpenRouter: { [model]: { efforts: [] } } }),
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts an effort for a model the catalog does not list, such as an alias', async () => {
+    const result = await resolve(
+      openRouterInput(ReasoningEffort.max, { OpenRouter: { 'meta/other': { efforts: ['low'] } } }),
+    );
+
+    expect(result.ok).toBe(true);
   });
 
   it('keeps the generic list while the endpoint capabilities are unknown', async () => {

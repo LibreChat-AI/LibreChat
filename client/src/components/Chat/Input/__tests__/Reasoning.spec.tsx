@@ -862,8 +862,11 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
     expect(render().result.current?.setting.key).toBe('reasoning_effort');
   });
 
-  it('falls back to the generic efforts when the capabilities could not be read', () => {
-    expect(render().result.current?.setting.options).toContain(ReasoningEffort.max);
+  it('offers no control when the capabilities could not be read', () => {
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = false;
+
+    expect(render().result.current).toBeNull();
   });
 
   it('offers only the efforts the selected model supports', () => {
@@ -877,9 +880,15 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
   });
 
   it('hides the control for a model the provider lists without reasoning', () => {
-    mockCapabilities = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
+    mockCapabilities = { OpenRouter: { [model]: { efforts: [] } } };
 
     expect(render().result.current).toBeNull();
+  });
+
+  it('keeps the generic efforts for a model the catalog does not list', () => {
+    mockCapabilities = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
+
+    expect(render().result.current?.setting.options).toContain(ReasoningEffort.max);
   });
 });
 
@@ -926,6 +935,16 @@ describe('useComposerReasoning: restored override while OpenRouter capabilities 
 
   it('keeps a staged override while the capabilities are loading', async () => {
     mockCapabilitiesLoading = true;
+
+    const { store } = setup();
+    await act(async () => {});
+
+    expect(stagedValue(store)).toEqual(staged);
+  });
+
+  it('keeps a staged override while the capabilities request has failed', async () => {
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = false;
 
     const { store } = setup();
     await act(async () => {});

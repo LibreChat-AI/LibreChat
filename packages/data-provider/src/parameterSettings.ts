@@ -1608,46 +1608,46 @@ export function effectiveModelReasoning(
 }
 
 /**
- * The efforts to offer for one OpenRouter model, from the state of its endpoint's capability
- * lookup. `settled` is false until the first request finishes: nothing is offered then
- * (`null`), because a choice made from the generic list could be refused by the server. A
- * lookup that settled without data (it failed) keeps the generic list (`undefined`), which
- * the server accepts in the same situation. An administrator-defined `reasoning_effort` is
- * never narrowed or hidden.
+ * The efforts to offer for one OpenRouter model. Without the endpoint's capabilities, because
+ * the request is still loading or failed, nothing is offered (`null`): a choice made from the
+ * generic list could be refused by the server. Once they are known the model's own efforts
+ * apply, and a model the provider does not list keeps the generic list (`undefined`). An
+ * administrator-defined `reasoning_effort` is never narrowed or hidden.
  */
 export function resolveModelReasoning({
   capabilities,
-  settled,
   endpoint,
   model,
   paramDefinitions,
 }: {
   capabilities: TReasoningCapabilityMap | undefined;
-  settled: boolean;
   endpoint: string;
   model: string;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
 }): TModelReasoning | null | undefined {
-  const reported = settled ? getModelReasoning(capabilities, endpoint, model) : null;
+  const reported = capabilities == null ? null : getModelReasoning(capabilities, endpoint, model);
   return effectiveModelReasoning(reported, paramDefinitions);
 }
 
 /**
  * Looks one model up in an endpoint's provider-reported reasoning efforts, for
- * {@link applyModelAwareDefaults}: `undefined` while the endpoint has not been
- * resolved, `null` when it was and the provider reports no reasoning for the
- * model. A routing variant (`model:nitro`) is matched to its base model.
+ * {@link applyModelAwareDefaults}. `undefined` means unknown: the endpoint was not resolved,
+ * or the provider does not list the model (an alias such as `~openai/gpt-latest`, or a model
+ * released since the catalog was read), so the generic efforts stay. `null` means the provider
+ * lists the model and exposes no effort selection for it. A routing variant (`model:nitro`) is
+ * matched to its base model.
  */
 export function getModelReasoning(
   capabilities: TReasoningCapabilityMap | undefined,
   endpoint: string,
   model: string,
-): TModelReasoning | null | undefined {
+): TModelReasoning | undefined | null {
   const models = capabilities?.[endpoint];
-  if (models == null) {
+  const listed = models?.[model] ?? models?.[model.split(':')[0]];
+  if (listed == null) {
     return undefined;
   }
-  return models[model] ?? models[model.split(':')[0]] ?? null;
+  return listed.efforts.length === 0 ? null : listed;
 }
 
 /**

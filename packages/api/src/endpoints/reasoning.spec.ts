@@ -17,6 +17,8 @@ const catalog = {
     },
     { id: 'google/gemini-3.5-flash', reasoning: { supported_efforts: ['low'], mandatory: true } },
     { id: 'meta/no-reasoning' },
+    { id: 'openrouter/auto' },
+    { id: 'openrouter/free' },
     { id: 'meta/empty-efforts', reasoning: { supported_efforts: [] } },
     { id: 'meta/malformed', reasoning: 'yes' },
     { id: 'meta/no-efforts', reasoning: { mandatory: true } },
@@ -74,19 +76,31 @@ describe('loadReasoningCapabilities', () => {
     expect(capabilities.OpenRouter['meta/unrestricted-mandatory'].mandatory).toBe(true);
   });
 
-  it('omits models that report no usable reasoning', async () => {
+  it('records a model that exposes no effort selection as listed without reasoning', async () => {
     const { deps } = makeDeps();
 
     const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
 
-    for (const id of [
-      'meta/no-reasoning',
-      'meta/empty-efforts',
-      'meta/malformed',
-      'meta/no-efforts',
-    ]) {
-      expect(map.OpenRouter).not.toHaveProperty([id]);
+    for (const id of ['meta/no-reasoning', 'meta/empty-efforts', 'meta/no-efforts']) {
+      expect(map.OpenRouter[id]).toEqual({ efforts: [] });
     }
+  });
+
+  it('leaves a model with a malformed reasoning object unknown', async () => {
+    const { deps } = makeDeps();
+
+    const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(map.OpenRouter).not.toHaveProperty(['meta/malformed']);
+  });
+
+  it('leaves the dynamic router models unknown, as their reasoning depends on the route', async () => {
+    const { deps } = makeDeps();
+
+    const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(map.OpenRouter).not.toHaveProperty(['openrouter/auto']);
+    expect(map.OpenRouter).not.toHaveProperty(['openrouter/free']);
   });
 
   it('keys the result by the normalized endpoint name', async () => {
@@ -325,6 +339,13 @@ describe('withSupportedEffort', () => {
     const result = await withSupportedEffort(options('low', 'meta/no-reasoning'), endpoint(), deps);
 
     expect(result).toEqual({ model: 'meta/no-reasoning' });
+  });
+
+  it('keeps the effort for a model the catalog does not list, such as an alias', async () => {
+    const { deps } = makeDeps();
+    const stored = options('max', '~openai/gpt-latest');
+
+    await expect(withSupportedEffort(stored, endpoint(), deps)).resolves.toBe(stored);
   });
 
   it('keeps the effort while the catalog cannot be read', async () => {

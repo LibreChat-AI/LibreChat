@@ -737,8 +737,14 @@ describe('useChatFunctions ask', () => {
       expect(replay()).toBeUndefined();
     });
 
-    it('keeps the override when the capabilities request failed, as the server then accepts it', () => {
+    it('omits the override when the capabilities request failed, as its efforts are unknown', () => {
       mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps an override for a model the loaded catalog does not list', () => {
+      mockCapabilitiesData.current = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
 
       expect(replay()).toEqual(override);
     });

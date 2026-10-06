@@ -766,7 +766,11 @@ export type TModelReasoning = {
   mandatory?: boolean;
 };
 
-/** endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities */
+/**
+ * endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities. A model
+ * with an empty `efforts` list is listed by the provider and exposes no effort selection; a
+ * model absent from the map is unknown.
+ */
 export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
 
 /** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */

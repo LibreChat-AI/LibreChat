@@ -621,8 +621,12 @@ describe('per-model OpenRouter reasoning efforts', () => {
 
 describe('getModelReasoning', () => {
   const capabilities: TReasoningCapabilityMap = {
-    OpenRouter: { 'openai/gpt-6.1-sol': { efforts: ['low', 'high'] } },
+    OpenRouter: {
+      'openai/gpt-6.1-sol': { efforts: ['low', 'high'] },
+      'meta/plain': { efforts: [] },
+    },
   };
+  const lookup = (model: string) => getModelReasoning(capabilities, 'OpenRouter', model);
 
   it('is unknown when the endpoint was never resolved', () => {
     expect(getModelReasoning(undefined, 'OpenRouter', 'openai/gpt-6.1-sol')).toBeUndefined();
@@ -630,19 +634,21 @@ describe('getModelReasoning', () => {
   });
 
   it('returns the efforts of a listed model', () => {
-    expect(getModelReasoning(capabilities, 'OpenRouter', 'openai/gpt-6.1-sol')).toEqual({
-      efforts: ['low', 'high'],
-    });
+    expect(lookup('openai/gpt-6.1-sol')).toEqual({ efforts: ['low', 'high'] });
   });
 
   it('matches a model variant to its base model', () => {
-    expect(getModelReasoning(capabilities, 'OpenRouter', 'openai/gpt-6.1-sol:nitro')).toEqual({
-      efforts: ['low', 'high'],
-    });
+    expect(lookup('openai/gpt-6.1-sol:nitro')).toEqual({ efforts: ['low', 'high'] });
   });
 
-  it('reports no reasoning for a model the provider does not list', () => {
-    expect(getModelReasoning(capabilities, 'OpenRouter', 'meta/unlisted')).toBeNull();
+  it('reports no reasoning for a model the provider lists without effort selection', () => {
+    expect(lookup('meta/plain')).toBeNull();
+    expect(lookup('meta/plain:free')).toBeNull();
+  });
+
+  it('keeps a model the provider does not list unknown, such as an alias', () => {
+    expect(lookup('meta/unlisted')).toBeUndefined();
+    expect(lookup('~openai/gpt-latest')).toBeUndefined();
   });
 });
 
@@ -696,36 +702,30 @@ describe('hasExplicitReasoningEffort', () => {
 });
 
 describe('resolveModelReasoning', () => {
-  const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] } } };
+  const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] }, 'c/d': { efforts: [] } } };
   const resolve = (overrides: Partial<Parameters<typeof resolveModelReasoning>[0]> = {}) =>
-    resolveModelReasoning({
-      capabilities,
-      settled: true,
-      endpoint: 'OpenRouter',
-      model: 'a/b',
-      ...overrides,
-    });
+    resolveModelReasoning({ capabilities, endpoint: 'OpenRouter', model: 'a/b', ...overrides });
 
-  it('returns the reported efforts once the lookup has settled', () => {
+  it('returns the reported efforts once the capabilities are known', () => {
     expect(resolve()).toEqual({ efforts: ['low'] });
   });
 
-  it('reports no reasoning for a model the settled catalog does not list', () => {
-    expect(resolve({ model: 'meta/other' })).toBeNull();
+  it('reports no reasoning for a model the catalog lists without it', () => {
+    expect(resolve({ model: 'c/d' })).toBeNull();
   });
 
-  it('hides the efforts until the lookup has settled', () => {
-    expect(resolve({ capabilities: undefined, settled: false })).toBeNull();
+  it('keeps the generic efforts for a model the catalog does not list', () => {
+    expect(resolve({ model: '~openai/gpt-latest' })).toBeUndefined();
   });
 
-  it('falls back to the generic efforts when the lookup settled without data', () => {
-    expect(resolve({ capabilities: undefined, settled: true })).toBeUndefined();
+  it('hides the efforts while the capabilities are unknown, loading or failed', () => {
+    expect(resolve({ capabilities: undefined })).toBeNull();
   });
 
   it('never narrows or hides an administrator-defined reasoning_effort', () => {
     const paramDefinitions = [{ key: 'reasoning_effort' }];
 
     expect(resolve({ paramDefinitions })).toBeUndefined();
-    expect(resolve({ capabilities: undefined, settled: false, paramDefinitions })).toBeUndefined();
+    expect(resolve({ capabilities: undefined, paramDefinitions })).toBeUndefined();
   });
 });

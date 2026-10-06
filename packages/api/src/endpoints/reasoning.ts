@@ -34,27 +34,26 @@ const DEFAULT_CATALOG_FAILURE_TTL_MS = 30000;
 /** Applies when an endpoint does not set `customParams.reasoningCatalogMaxPages`. */
 const DEFAULT_CATALOG_MAX_PAGES = 20;
 
+const reasoningSchema = z.object({
+  supported_efforts: z.array(z.string()).nullable().optional(),
+  mandatory: z.boolean().optional(),
+});
+
 const pageSchema = z.object({
-  data: z.array(
-    z.object({
-      id: z.string(),
-      reasoning: z
-        .object({
-          supported_efforts: z.array(z.string()).nullable().optional(),
-          mandatory: z.boolean().optional(),
-        })
-        .optional()
-        .catch(undefined),
-    }),
-  ),
+  data: z.array(z.object({ id: z.string(), reasoning: z.unknown().optional() })),
   links: z.object({ next: z.string().nullable().optional() }).optional().catch(undefined),
 });
+
+/** Models whose reasoning depends on the route a request takes, so no fixed efforts exist. */
+const isDynamicRouterModel = (id: string): boolean => id.startsWith('openrouter/');
 
 type CatalogModels = Record<string, TModelReasoning>;
 
 /**
  * OpenRouter's `supported_efforts: null` means no allowlist applies and every gateway effort
- * is accepted; an omitted field means the model exposes no effort selection at all.
+ * is accepted; an omitted field, or an omitted `reasoning` object, means the model exposes no
+ * effort selection at all, which is recorded as an empty list. A `reasoning` object that does not
+ * parse leaves the model unknown instead.
  */
 const UNRESTRICTED_EFFORTS: string[] = Object.values(ReasoningEffort).filter(
   (effort) => effort !== ReasoningEffort.unset,
@@ -115,11 +114,23 @@ async function readCatalog(
       return undefined;
     }
     for (const { id, reasoning } of parsed.data.data) {
-      const reported = reasoning?.supported_efforts;
-      const efforts = reported === null ? UNRESTRICTED_EFFORTS : reported;
-      if (efforts != null && efforts.length > 0) {
-        models[id] = { efforts, mandatory: reasoning?.mandatory === true };
+      if (isDynamicRouterModel(id)) {
+        continue;
       }
+      if (reasoning == null) {
+        models[id] = { efforts: [] };
+        continue;
+      }
+      const details = reasoningSchema.safeParse(reasoning);
+      if (!details.success) {
+        continue;
+      }
+      const reported = details.data.supported_efforts;
+      const efforts = reported === null ? UNRESTRICTED_EFFORTS : (reported ?? []);
+      models[id] =
+        efforts.length === 0
+          ? { efforts: [] }
+          : { efforts, mandatory: details.data.mandatory === true };
     }
     const next: string | null | undefined = parsed.data.links?.next;
     if (next == null || next === '') {

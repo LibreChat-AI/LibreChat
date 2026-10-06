@@ -31,6 +31,7 @@ const setup = () => {
   );
   return renderHook(() => useReasoningCapabilitiesQuery('OpenRouter'), { wrapper });
 };
+const MINUTE = 60_000;
 
 const refocus = async () => {
   await act(async () => {
@@ -80,6 +81,65 @@ describe('useReasoningCapabilitiesQuery recovery', () => {
 
     await refocus();
     await reconnect();
+
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useReasoningCapabilitiesQuery freshness and retry', () => {
+  beforeEach(() => {
+    mockGet.mockReset();
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const advance = (ms: number) =>
+    act(async () => {
+      jest.advanceTimersByTime(ms);
+    });
+
+  it('revalidates loaded data on focus once it is older than five minutes', async () => {
+    mockGet.mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+
+    await advance(6 * MINUTE);
+    await refocus();
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not revalidate loaded data on focus within five minutes', async () => {
+    mockGet.mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+
+    await advance(4 * MINUTE);
+    await refocus();
+
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed request on its own while the page stays focused', async () => {
+    mockGet.mockRejectedValueOnce(new Error('503')).mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    await advance(30_000);
+
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+    expect(mockGet).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not poll once the capabilities have loaded', async () => {
+    mockGet.mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+
+    await advance(4 * MINUTE);
 
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
