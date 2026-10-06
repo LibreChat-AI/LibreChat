@@ -1478,14 +1478,11 @@ describe('theme registry', () => {
     });
   });
 
-  it('keeps every bundled theme’s largest themed step below the unthemed text-3xl', () => {
-    const rem = (value: string) => parseFloat(value);
-    [
-      defaultAppearance,
-      { ...defaultAppearance, ...clickHouseTheme.modes.light?.appearance },
-    ].forEach((appearance) => {
-      expect(rem(appearance.text2xl)).toBeLessThan(1.875);
-    });
+  /** ClickHouse is the exception: it takes Click UI's `font.sizes.6` (2rem) for `2xl` by owner
+   *  decision, which passes the unthemed `text-3xl`. */
+  it('keeps the default theme’s largest themed step below the unthemed text-3xl', () => {
+    expect(parseFloat(defaultAppearance.text2xl)).toBeLessThan(1.875);
+    expect(clickHouseTheme.modes.light?.appearance?.text2xl).toBe('2rem');
   });
 
   it('accepts ratio and length line heights and rejects anything else', () => {

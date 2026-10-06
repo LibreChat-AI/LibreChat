@@ -173,18 +173,112 @@ function below(
   );
 }
 
+/**
+ * Pairs below their WCAG floor because the theme holds the Click UI value, by owner decision:
+ * ClickHouse matches Click UI exactly, and where Click UI misses a floor the theme misses it too.
+ * The default and high-contrast themes keep their contrast. Each entry is pinned with its measured
+ * ratio, so a change to either side of a pair, or a new miss, fails here.
+ */
+const clickUiBelowFloor: Record<ThemeMode, string[]> = {
+  light: [
+    'rgb-text-secondary on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
+    'rgb-text-secondary on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
+    'rgb-text-secondary on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
+    'rgb-text-secondary-alt on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
+    'rgb-text-secondary-alt on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
+    'rgb-text-secondary-alt on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
+    'rgb-text-tertiary on rgb-status-info-subtle: 4.42:1 (needs 4.5:1)',
+    'rgb-text-tertiary on rgb-status-warning-subtle: 4.15:1 (needs 4.5:1)',
+    'rgb-text-tertiary on rgb-status-error-subtle: 4.05:1 (needs 4.5:1)',
+    'rgb-status-success on rgb-status-success-subtle: 4.27:1 (needs 4.5:1)',
+    'rgb-status-info on rgb-status-info-subtle: 3.32:1 (needs 4.5:1)',
+    'rgb-link on rgb-surface-primary: 3.84:1 (needs 4.5:1)',
+    'rgb-link on rgb-surface-secondary: 3.58:1 (needs 4.5:1)',
+    'rgb-link-prose on rgb-surface-primary: 3.84:1 (needs 4.5:1)',
+    'rgb-link-prose on rgb-surface-secondary: 3.58:1 (needs 4.5:1)',
+    'rgb-border-xheavy on rgb-surface-primary: 2.03:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-secondary: 1.90:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-tertiary: 1.90:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-dialog: 2.03:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-chat: 2.03:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-primary: 2.03:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-presentation: 2.03:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-user-message: 1.64:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-chat: 2.03:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-primary: 2.03:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-presentation: 2.03:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-user-message: 1.64:1 (needs 3:1)',
+    'rgb-series-2 on rgb-surface-primary: 2.65:1 (needs 3:1)',
+    'rgb-series-2 on rgb-surface-secondary: 2.47:1 (needs 3:1)',
+    'rgb-series-2 on rgb-surface-tertiary: 2.47:1 (needs 3:1)',
+    'rgb-series-2 on rgb-surface-chat: 2.65:1 (needs 3:1)',
+    'rgb-series-2 on rgb-surface-dialog: 2.65:1 (needs 3:1)',
+    'rgb-series-2 on rgb-text-on-status: 2.65:1 (needs 3:1)',
+    'rgb-series-3 on rgb-surface-primary: 1.72:1 (needs 3:1)',
+    'rgb-series-3 on rgb-surface-secondary: 1.60:1 (needs 3:1)',
+    'rgb-series-3 on rgb-surface-tertiary: 1.60:1 (needs 3:1)',
+    'rgb-series-3 on rgb-surface-chat: 1.72:1 (needs 3:1)',
+    'rgb-series-3 on rgb-surface-dialog: 1.72:1 (needs 3:1)',
+    'rgb-series-3 on rgb-text-on-status: 1.72:1 (needs 3:1)',
+    'rgb-series-5 on rgb-surface-primary: 1.19:1 (needs 3:1)',
+    'rgb-series-5 on rgb-surface-secondary: 1.12:1 (needs 3:1)',
+    'rgb-series-5 on rgb-surface-tertiary: 1.12:1 (needs 3:1)',
+    'rgb-series-5 on rgb-surface-chat: 1.19:1 (needs 3:1)',
+    'rgb-series-5 on rgb-surface-dialog: 1.19:1 (needs 3:1)',
+    'rgb-series-5 on rgb-text-on-status: 1.19:1 (needs 3:1)',
+    'rgb-series-7 on rgb-surface-primary: 1.95:1 (needs 3:1)',
+    'rgb-series-7 on rgb-surface-secondary: 1.82:1 (needs 3:1)',
+    'rgb-series-7 on rgb-surface-tertiary: 1.82:1 (needs 3:1)',
+    'rgb-series-7 on rgb-surface-chat: 1.95:1 (needs 3:1)',
+    'rgb-series-7 on rgb-surface-dialog: 1.95:1 (needs 3:1)',
+    'rgb-series-7 on rgb-text-on-status: 1.95:1 (needs 3:1)',
+  ],
+  dark: [
+    'rgb-border-xheavy on rgb-surface-primary: 1.62:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-secondary: 1.44:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-tertiary: 1.44:1 (needs 3:1)',
+    'rgb-border-xheavy on rgb-surface-dialog: 1.62:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-chat: 1.62:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-primary: 1.62:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-presentation: 1.62:1 (needs 3:1)',
+    'rgb-prose-bullet on rgb-surface-user-message: 1.26:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-chat: 1.62:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-primary: 1.62:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-presentation: 1.62:1 (needs 3:1)',
+    'rgb-prose-quote-bar on rgb-surface-user-message: 1.26:1 (needs 3:1)',
+  ],
+};
+
+/** `rgb-series-1` is Click UI's chart blue, which is also its info foreground. */
+const clickUiSharedSeries: Record<ThemeMode, string[]> = { light: ['rgb-series-1'], dark: [] };
+
+const measuredBelow: Record<ThemeMode, Set<string>> = { light: new Set(), dark: new Set() };
+
+/** The pairs `below` reports that are not pinned in `clickUiBelowFloor`. */
+function belowPinned(
+  mode: ThemeMode,
+  theme: IThemeRGB,
+  minimum: number,
+  foregrounds: Array<keyof IThemeRGB>,
+  backgrounds: Array<keyof IThemeRGB>,
+): string[] {
+  const failures = below(theme, minimum, foregrounds, backgrounds);
+  failures.forEach((failure) => measuredBelow[mode].add(failure));
+  return failures.filter((failure) => !clickUiBelowFloor[mode].includes(failure));
+}
+
 const modes: Array<[ThemeMode, IThemeRGB]> = [
   ['light', clickHouseLightTheme],
   ['dark', clickHouseDarkTheme],
 ];
 
-describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
+describe.each(modes)('clickhouse %s palette', (mode, theme) => {
   it('declares every registry token, so nothing falls back to the LibreChat palette', () => {
     expect(Object.keys(theme).sort()).toEqual([...themeColorTokens].sort());
   });
 
   it('keeps neutral text at WCAG AA on every canvas surface', () => {
-    expect(below(theme, WCAG_AA_NORMAL, neutralTextTokens, canvasSurfaces)).toEqual([]);
+    expect(belowPinned(mode, theme, WCAG_AA_NORMAL, neutralTextTokens, canvasSurfaces)).toEqual([]);
   });
 
   it('steps each layer off the one it sits on, so hover and selection stay apart', () => {
@@ -201,7 +295,9 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
   });
 
   it('keeps primary text at WCAG AA on hover, selected and header fills', () => {
-    expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-primary'], interactiveFills)).toEqual([]);
+    expect(
+      belowPinned(mode, theme, WCAG_AA_NORMAL, ['rgb-text-primary'], interactiveFills),
+    ).toEqual([]);
   });
 
   /** The chat error box, the route error boundary, the sign-in notices and the
@@ -216,12 +312,13 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
       'rgb-text-tertiary',
       'rgb-text-destructive',
     ];
-    expect(below(theme, WCAG_AA_NORMAL, onStatusFills, fills)).toEqual([]);
+    expect(belowPinned(mode, theme, WCAG_AA_NORMAL, onStatusFills, fills)).toEqual([]);
   });
 
   it('keeps the primary button label at WCAG AA on its fill, hovered and pressed', () => {
     expect(
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_AA_NORMAL,
         ['rgb-text-inverted'],
@@ -232,13 +329,20 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
 
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {
     expect(
-      below(theme, WCAG_AA_NORMAL, ['rgb-text-warning', 'rgb-text-destructive'], canvasSurfaces),
+      belowPinned(
+        mode,
+        theme,
+        WCAG_AA_NORMAL,
+        ['rgb-text-warning', 'rgb-text-destructive'],
+        canvasSurfaces,
+      ),
     ).toEqual([]);
   });
 
   it('keeps every status hue at WCAG AA against its own subtle fill', () => {
     const failures = statusHues.flatMap((hue) =>
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_AA_NORMAL,
         [`rgb-status-${hue}` as keyof IThemeRGB],
@@ -250,19 +354,26 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
 
   it('keeps accents and links at WCAG AA on the page', () => {
     expect(
-      below(theme, WCAG_AA_NORMAL, accentTokens, ['rgb-surface-primary', 'rgb-surface-secondary']),
+      belowPinned(mode, theme, WCAG_AA_NORMAL, accentTokens, [
+        'rgb-surface-primary',
+        'rgb-surface-secondary',
+      ]),
     ).toEqual([]);
   });
 
   it('keeps every syntax colour at WCAG AA on the code surface', () => {
     expect(
-      below(theme, WCAG_AA_NORMAL, syntaxTokens, ['rgb-surface-code', 'rgb-surface-code-body']),
+      belowPinned(mode, theme, WCAG_AA_NORMAL, syntaxTokens, [
+        'rgb-surface-code',
+        'rgb-surface-code-body',
+      ]),
     ).toEqual([]);
   });
 
   it('keeps inverted and fixed pairs at WCAG AA', () => {
     expect(
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_AA_NORMAL,
         ['rgb-text-inverted'],
@@ -270,7 +381,8 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
       ),
     ).toEqual([]);
     expect(
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_AA_NORMAL,
         ['rgb-text-fixed'],
@@ -280,26 +392,29 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
   });
 
   it('carries the status label at WCAG AA on every solid fill', () => {
-    expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-on-status'], solidFills)).toEqual([]);
+    expect(belowPinned(mode, theme, WCAG_AA_NORMAL, ['rgb-text-on-status'], solidFills)).toEqual(
+      [],
+    );
   });
 
   it('keeps solid fills and the verified mark at the 3:1 floor against the page', () => {
     expect(
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_NON_TEXT,
         [...solidFills, 'rgb-status-verified'],
         ['rgb-surface-primary', 'rgb-surface-secondary', 'rgb-surface-dialog'],
       ),
     ).toEqual([]);
-    expect(below(theme, WCAG_NON_TEXT, ['rgb-text-on-status'], ['rgb-status-verified'])).toEqual(
-      [],
-    );
+    expect(
+      belowPinned(mode, theme, WCAG_NON_TEXT, ['rgb-text-on-status'], ['rgb-status-verified']),
+    ).toEqual([]);
   });
 
   it('keeps control boundaries and rings at the 3:1 floor on every canvas', () => {
     expect(
-      below(theme, WCAG_NON_TEXT, boundaryTokens, [
+      belowPinned(mode, theme, WCAG_NON_TEXT, boundaryTokens, [
         'rgb-surface-primary',
         'rgb-surface-secondary',
         'rgb-surface-tertiary',
@@ -310,7 +425,8 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
 
   it('keeps the list marker and the quote bar at the 3:1 floor on the page and the user bubble', () => {
     expect(
-      below(
+      belowPinned(
+        mode,
         theme,
         WCAG_NON_TEXT,
         ['rgb-prose-bullet', 'rgb-prose-quote-bar'],
@@ -324,14 +440,14 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
   });
 
   it('keeps primary text at WCAG AA on the inline code chip', () => {
-    expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-primary'], ['rgb-surface-code-inline'])).toEqual(
-      [],
-    );
+    expect(
+      belowPinned(mode, theme, WCAG_AA_NORMAL, ['rgb-text-primary'], ['rgb-surface-code-inline']),
+    ).toEqual([]);
   });
 
   it('keeps every series mark at the 3:1 floor on the page and under the status label', () => {
     expect(
-      below(theme, WCAG_NON_TEXT, seriesTokens, [
+      belowPinned(mode, theme, WCAG_NON_TEXT, seriesTokens, [
         'rgb-surface-primary',
         'rgb-surface-secondary',
         'rgb-surface-tertiary',
@@ -346,7 +462,15 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     const reserved = new Set(
       statusHues.map((hue) => theme[`rgb-status-${hue}` as keyof IThemeRGB]),
     );
-    expect(seriesTokens.filter((token) => reserved.has(theme[token]))).toEqual([]);
+    expect(
+      seriesTokens.filter(
+        (token) => reserved.has(theme[token]) && !clickUiSharedSeries[mode].includes(token),
+      ),
+    ).toEqual([]);
+  });
+
+  it('pins every pair that sits below its floor because it holds the Click UI value', () => {
+    expect([...measuredBelow[mode]].sort()).toEqual([...clickUiBelowFloor[mode]].sort());
   });
 });
 

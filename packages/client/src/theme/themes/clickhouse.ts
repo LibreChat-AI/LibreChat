@@ -12,10 +12,10 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
  * without a prefix are under `global.color` (or `click.global.color` for `text.warning` and
  * `text.danger`), `palette.*` is Click UI's ramp, and component paths are under `click`.
  *
- * Both maps are complete, so nothing falls back to the LibreChat palette. Where
- * a verbatim Click UI value missed a contrast floor in `clickhouse.spec.ts` or
- * `semanticTokens.spec.ts`, the value moves along the same Click UI ramp and the
- * comment records the step and the ratio it replaced.
+ * Both maps are complete, so nothing falls back to the LibreChat palette. Every role Click UI
+ * names a value for holds it exactly, by owner decision, including where that value
+ * misses a WCAG floor; `clickhouse.spec.tsx` pins each pair that does. A token Click UI
+ * draws with alpha is held as its composite on the surface it sits on.
  *
  * `text-on-status` is one label per mode over every solid fill. Dark mode keeps
  * the brand yellow on `surface-submit`, which forces a near-black label, so the
@@ -32,9 +32,9 @@ export const clickHouseLightTheme: IThemeRGB = {
    *  feedback.danger.background. One step down the slate ramp is Click UI's own
    *  feedback.neutral.foreground. `text-muted` never meets a status fill, so it
    *  keeps text.muted. */
-  'rgb-text-secondary': '83 87 95', // #53575f (palette.slate.700)
-  'rgb-text-secondary-alt': '83 87 95', // #53575f (palette.slate.700)
-  'rgb-text-tertiary': '83 87 95', // #53575f (palette.slate.700)
+  'rgb-text-secondary': '105 110 121', // #696e79 (text.muted)
+  'rgb-text-secondary-alt': '105 110 121', // #696e79 (text.muted)
+  'rgb-text-tertiary': '105 110 121', // #696e79 (text.muted)
   'rgb-text-muted': '105 110 121', // #696e79 (text.muted)
   'rgb-badge-label': '105 110 121', // #696e79 (badge.opaque.color.text.default)
   'rgb-text-warning': '163 60 0', // #a33c00 (text.warning)
@@ -43,10 +43,10 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-shimmer-dip': '128 134 145', // #808691 (palette.slate.500)
 
   // Link and accent colors
-  'rgb-link': '29 100 236', // #1d64ec (palette.info.500, one step past text.link.default #437eef (3.84:1 on white))
+  'rgb-link': '67 126 239', // #437eef (text.link.default)
   'rgb-link-hover': '16 78 198', // #104ec6 (text.link.hover)
   'rgb-link-visited': '136 0 204', // #8800cc (palette.violet.600)
-  'rgb-link-prose': '29 100 236', // #1d64ec (palette.info.500, matching link)
+  'rgb-link-prose': '67 126 239', // #437eef (text.link.default)
   'rgb-accent-primary': '21 21 21', // #151515 (accent.default)
   'rgb-accent-primary-hover': '50 50 50', // #323232 (palette.neutral.712)
 
@@ -79,7 +79,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-dialog': '255 255 255', // #ffffff (background.default)
   'rgb-dialog-title': '30 29 31', // #1e1d1f (dialog.color.title.default, lch(11.126 1.374 305.43))
   'rgb-surface-overlay': '21 21 21', // #151515 (dialog.color.opaqueBackground, lch(6.7738 0 none))
-  'rgb-surface-media-overlay': '0 0 0', // #000000 (no Click UI media scrim)
+  'rgb-surface-media-overlay': '21 21 21', // #151515 (dialog.color.opaqueBackground, the nearest Click UI scrim; it has no media scrim)
   'rgb-text-on-media': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-submit': '21 21 21', // #151515 (accent.default)
   'rgb-surface-submit-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -89,8 +89,8 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-inline': '204 207 211', // #cccfd3 (palette.slate.200, distinct from the page and from the user message bubble, slate.100)
-  'rgb-prose-bullet': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble; stroke.default is 1.24:1)
-  'rgb-prose-quote-bar': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble)
+  'rgb-prose-bullet': '179 182 189', // #b3b6bd (stroke.intense)
+  'rgb-prose-quote-bar': '179 182 189', // #b3b6bd (stroke.intense)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -109,9 +109,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-medium-alt': '230 231 233', // #e6e7e9 (stroke.default)
   'rgb-border-heavy': '179 182 189', // #b3b6bd (stroke.intense)
   'rgb-drawer-edge': '246 247 250', // #f6f7fa (background.split, the drawer's own fill)
-  'rgb-border-xheavy': '128 134 145', // #808691 (palette.slate.500, two steps past stroke.intense #b3b6bd (2.03:1 on white))
+  'rgb-border-xheavy': '179 182 189', // #b3b6bd (stroke.intense)
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
-  'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
+  'rgb-border-control': '230 231 233', // #e6e7e9 (field.color.stroke.default)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
   'rgb-focus-subtle': '67 126 239', // #437eef (outline.default, 3.84:1 on white)
   'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
@@ -138,11 +138,11 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
 
   // Status colors
-  'rgb-status-success': '0 97 8', // #006108 (palette.success.800, one step past feedback.success.foreground #008a0b (4.27:1 on its fill))
+  'rgb-status-success': '0 138 11', // #008a0b (feedback.success.foreground)
   'rgb-status-success-subtle': '229 255 232', // #e5ffe8 (feedback.success.background)
   'rgb-status-success-border': '153 255 161', // #99ffa1 (palette.success.200)
   'rgb-status-success-strong': '0 138 11', // #008a0b (feedback.success.foreground)
-  'rgb-status-info': '16 78 198', // #104ec6 (palette.info.600, two steps past feedback.info.foreground #437eef (3.32:1 on its fill))
+  'rgb-status-info': '67 126 239', // #437eef (feedback.info.foreground)
   'rgb-status-info-subtle': '231 239 253', // #e7effd (feedback.info.background)
   'rgb-status-info-border': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-status-info-strong': '16 78 198', // #104ec6 (palette.info.600)
@@ -165,7 +165,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-avatar-fill': '105 110 121', // #696e79 (avatar.color.background.default)
   'rgb-avatar-text': '255 255 255', // #ffffff (avatar.color.text.default)
   'rgb-avatar-placeholder': '246 247 250', // #f6f7fa (background.muted)
-  'rgb-avatar-edge': '240 246 252', // #f0f6fc (Click UI avatars draw no edge)
+  'rgb-avatar-edge': '230 231 233', // #e6e7e9 (stroke.default; Click UI avatars draw no edge)
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
@@ -190,16 +190,16 @@ export const clickHouseLightTheme: IThemeRGB = {
 
   // Series
   'rgb-series-1': '67 126 239', // #437eef (chart.default.blue)
-  'rgb-series-2': '245 90 0', // #f55a00 (palette.warning.500, one step past chart.default.orange #ff7729 (2.65:1 on white))
-  'rgb-series-3': '0 138 11', // #008a0b (palette.success.700, in place of chart.default.green #00e513 (1.72:1 on white))
+  'rgb-series-2': '255 119 41', // #ff7729 (chart.default.orange)
+  'rgb-series-3': '0 229 19', // #00e513 (chart.default.green)
   'rgb-series-4': '251 50 201', // #fb32c9 (chart.default.fuchsia)
-  'rgb-series-5': '178 136 0', // #b28800 (palette.sunrise.600, in place of chart.default.yellow #eef400 (1.19:1 on white))
+  'rgb-series-5': '238 244 0', // #eef400 (chart.default.yellow)
   'rgb-series-6': '187 51 255', // #bb33ff (chart.default.violet)
-  'rgb-series-7': '0 133 153', // #008599 (palette.babyblue.600, in place of chart.default.babyblue #00cbeb (1.95:1 on white))
+  'rgb-series-7': '0 203 235', // #00cbeb (chart.default.babyblue)
   'rgb-series-8': '8 155 131', // #089b83 (chart.default.teal)
 
   // Switch
-  'rgb-switch-unchecked': '128 134 145', // #808691 (palette.slate.500)
+  'rgb-switch-unchecked': '204 207 211', // #cccfd3 (switch.color.background.default)
   'rgb-switch-thumb': '255 255 255', // #ffffff (switch.color.indicator.default)
 
   // Table
@@ -259,11 +259,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-tertiary-alt': '50 50 50', // #323232 (palette.neutral.712)
   'rgb-surface-dialog': '31 31 28', // #1f1f1c (background.default)
   'rgb-dialog-title': '249 249 249', // #f9f9f9 (dialog.color.title.default, rgb(97.5% 97.5% 97.5%))
-  /** Not a Click UI value. Its dark scrim, dialog.color.opaqueBackground lch(40.731 0 none), is a
-   *  #606060 gray that lifts the page instead of dimming it. A bundled scrim never lifts the page
-   *  (`semanticTokens.spec.ts`), so black keeps the dark scrim; the 0.75 alpha is Click UI's. */
-  'rgb-surface-overlay': '0 0 0', // #000000
-  'rgb-surface-media-overlay': '0 0 0', // #000000 (no Click UI media scrim)
+  'rgb-surface-overlay': '96 96 96', // #606060 (dialog.color.opaqueBackground, lch(40.731 0 none), drawn at the 0.75 scrimOpacity)
+  'rgb-surface-media-overlay': '96 96 96', // #606060 (dialog.color.opaqueBackground, the nearest Click UI scrim; it has no media scrim)
   'rgb-text-on-media': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-submit': '250 255 105', // #faff69 (accent.default)
   'rgb-surface-submit-hover': '253 255 163', // #fdffa3 (palette.brand.200)
@@ -273,8 +270,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-inline': '65 65 65', // #414141 (palette.neutral.700, distinct from the user message bubble, neutral.712)
-  'rgb-prose-bullet': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas; stroke.default is 1.29:1)
-  'rgb-prose-quote-bar': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas)
+  'rgb-prose-bullet': '65 65 65', // #414141 (stroke.intense)
+  'rgb-prose-quote-bar': '65 65 65', // #414141 (stroke.intense)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
@@ -292,14 +289,14 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-medium-alt': '50 50 50', // #323232 (stroke.default)
   'rgb-border-heavy': '65 65 65', // #414141 (stroke.intense)
   'rgb-drawer-edge': '128 128 128', // #808080 (palette.neutral.500, matching border-xheavy)
-  'rgb-border-xheavy': '128 128 128', // #808080 (palette.neutral.500, three steps past stroke.intense #414141 (1.62:1 on the canvas))
+  'rgb-border-xheavy': '65 65 65', // #414141 (stroke.intense)
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
-  'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
+  'rgb-border-control': '60 60 60', // #3c3c3c (field.color.stroke.default, rgb(23.627% 23.627% 23.627%))
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
   'rgb-focus-subtle': '250 255 105', // #faff69 (outline.default)
   'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
   'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
-  'rgb-surface-tooltip': '50 50 50', // #323232 (palette.neutral.712; tooltip.color.background.default #282828 would vanish on the #282828 canvas)
+  'rgb-surface-tooltip': '40 40 40', // #282828 (tooltip.color.background.default, lch(16.114 0 none / 0.95) taken opaque)
   'rgb-text-tooltip': '255 255 255', // #ffffff (tooltip.color.label.default)
   'rgb-alert-error-fill': '76 32 29', // #4c201d (alert.color.background.danger, danger at 20% over background.default)
   'rgb-alert-error-border': '76 32 29', // #4c201d (Click UI alerts draw no edge, so it matches the fill)
@@ -348,7 +345,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-avatar-fill': '128 134 145', // #808691 (avatar.color.background.default)
   'rgb-avatar-text': '31 31 28', // #1f1f1c (avatar.color.text.default)
   'rgb-avatar-placeholder': '40 40 40', // #282828 (background.muted)
-  'rgb-avatar-edge': '240 246 252', // #f0f6fc (Click UI avatars draw no edge)
+  'rgb-avatar-edge': '50 50 50', // #323232 (stroke.default; Click UI avatars draw no edge)
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
@@ -382,7 +379,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-series-8': '109 248 225', // #6df8e1 (chart.default.teal)
 
   // Switch
-  'rgb-switch-unchecked': '128 128 128', // #808080 (palette.neutral.500)
+  'rgb-switch-unchecked': '96 96 96', // #606060 (switch.color.background.default)
   'rgb-switch-thumb': '21 21 21', // #151515 (switch.color.indicator.default)
 
   // Table
@@ -408,9 +405,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
  * headings in it, and every other one falls through to the same Inter stack as the body. The
- * `text-*` scale takes Click UI's `font.sizes` 1 to 5 at its product line height of 1.5. Click UI
- * has no step between 1.25rem and 2rem, and 2rem would overtake Tailwind's unthemed `text-3xl`
- * (1.875rem), so `2xl` keeps LibreChat's 1.5rem at Click UI's line height.
+ * `text-*` scale takes Click UI's `font.sizes` 1 to 5 at its product line height of 1.5. `2xl`
+ * takes `font.sizes.6` (2rem), which passes Tailwind's unthemed `text-3xl` (1.875rem), at Click
+ * UI's line height.
  *
  * Click UI raises every elevated surface (card, dialog, menu, panel, popover, toast) with
  * `shadow.1`, and its only lighter step is the hairline `shadow.5`. Steps 2 to 4 are the flyout's
@@ -457,7 +454,7 @@ const clickHouseShape = {
   textBase: '1rem', // typography.font.sizes.3
   textLg: '1.125rem', // typography.font.sizes.4
   textXl: '1.25rem', // typography.font.sizes.5
-  text2xl: '1.5rem', // LibreChat's: Click UI's next step (sizes.6, 2rem) passes the unthemed text-3xl
+  text2xl: '2rem', // typography.font.sizes.6
   leadingXs: '1.5', // typography.font.line-height.1
   leadingSm: '1.5', // typography.font.line-height.1
   leadingBase: '1.5', // typography.font.line-height.1
