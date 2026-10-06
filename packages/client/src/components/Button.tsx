@@ -20,6 +20,11 @@ type ButtonVariantOptions =
         | 'destructive'
         | 'secondary'
         | 'ghost'
+        | 'quiet'
+        | 'message-action'
+        | 'inline-link'
+        | 'carousel-nav'
+        | 'toolbar'
         | 'media'
         | 'row-action'
         | 'row-action-reveal'
@@ -87,6 +92,23 @@ const buttonVariantRecipe = cva(
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
         ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** A ghost that rests in the secondary ink and rises to the primary one under the pointer,
+         *  for a control that should not compete with the content it sits beside. */
+        quiet:
+          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
+        'message-action':
+          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:text-text-primary',
+        /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
+         *  and a ring flush against the control. */
+        'inline-link':
+          'h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:ring-offset-0',
+        /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
+        'carousel-nav':
+          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
+        /** A compact text action in a toolbar, quiet until hovered. */
+        toolbar:
+          'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',
         /**
          * A control drawn over the user's own media (a lightbox toolbar, an image preview's close):
          * ghost-shaped, with the media ink and a tint of it on hover, so it stays legible on the
@@ -248,6 +270,11 @@ const buttonVariantRecipe = cva(
         size: 'default',
         class: 'h-auto px-1 py-2',
       },
+      /* These carry their own box, which the default size's height and padding would otherwise win. */
+      { variant: 'message-action', size: 'default', class: 'size-auto p-1.5' },
+      { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
+      { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
+      { variant: 'toolbar', size: 'default', class: 'h-auto px-2 py-1' },
       /* Sized by its own label, so a long option wraps instead of clipping. */
       {
         variant: 'option',

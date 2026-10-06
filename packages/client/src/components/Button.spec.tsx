@@ -22,6 +22,38 @@ describe('Button', () => {
     expect(destructive).toContain('theme-destructive-soft:hover:active:bg-surface-destructive/17');
   });
 
+  it('rests a quiet button in the secondary ink and raises it to the primary one on hover', () => {
+    const quiet = cn(buttonVariants({ variant: 'quiet' }));
+    const ghost = cn(buttonVariants({ variant: 'ghost' }));
+
+    expect(quiet).toContain('text-text-secondary');
+    expect(quiet).toContain('hover:text-text-primary');
+    expect(quiet).toContain('hover:bg-surface-hover');
+    expect(ghost).not.toContain('text-text-secondary');
+  });
+
+  it('offers the message, link, carousel and toolbar roles as variants', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('text-text-secondary-alt');
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('p-1.5');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).toContain('hover:bg-transparent');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).toContain('focus-visible:ring-offset-0');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain('bg-surface-fixed');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain(
+      'hover:bg-surface-fixed-hover',
+    );
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('text-xs');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('hover:bg-surface-hover');
+  });
+
+  it('lets the message, link, carousel and toolbar roles keep their own box at the default size', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).not.toContain('px-4');
+    expect(cn(buttonVariants({ variant: 'inline-link' }))).not.toContain('h-theme-button');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).toContain('p-2');
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('px-4');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('py-1');
+    expect(cn(buttonVariants({ variant: 'toolbar' }))).not.toContain('py-2');
+  });
+
   it('outlines a toggle in the control border', () => {
     expect(cn(buttonVariants({ variant: 'outline-toggle' }))).toContain('border-border-control');
   });
