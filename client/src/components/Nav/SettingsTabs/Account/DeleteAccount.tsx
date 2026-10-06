@@ -70,7 +70,7 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
           <OGDialogTrigger asChild>
             <Button
               aria-labelledby="delete-account-label"
-              variant="destructive"
+              variant="destructive-soft"
               onClick={() => setDialogOpen(true)}
               disabled={disabled}
             >
