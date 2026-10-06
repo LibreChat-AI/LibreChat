@@ -49,3 +49,21 @@ test('cleanOutput unwraps a fenced answer', () => {
   assert.equal(cleanOutput('```markdown\n# Hi\n```'), '# Hi');
   assert.equal(cleanOutput('  plain  '), 'plain');
 });
+
+test('needsTranslation keeps alt and aria-label values and ignores glossary-only text', () => {
+  assert.equal(
+    needsTranslation('<a aria-label="Sponsors" href="https://x.y"><img src="a.svg"></a>'),
+    true,
+  );
+  assert.equal(needsTranslation('<img alt="Translation Progress" src="a.svg">'), true);
+  assert.equal(needsTranslation('# LibreChat'), false);
+});
+
+test('validate rejects echoed, refused and truncated output for a target language', () => {
+  const source = 'This sentence should become Russian for sure.';
+  assert.ok(validate(source, source, 'ru').includes('output is not in the target language'));
+  assert.ok(validate(source, 'Sorry, I cannot translate that.', 'ru').length > 0);
+  assert.deepEqual(validate(source, 'Это предложение обязательно станет русским.', 'ru'), []);
+  assert.ok(validate(source, 'Это', 'ru').includes('output is truncated'));
+  assert.deepEqual(validate('Features', 'Features', 'ru'), []);
+});
