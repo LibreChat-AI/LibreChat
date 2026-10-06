@@ -43,18 +43,19 @@ export const useTokenConfigQuery = (
 };
 
 /**
- * Per-model reasoning efforts of the OpenRouter endpoints. The server caches the
- * catalog for an hour and the data changes rarely, so one fetch serves the session.
- * Pass `enabled: false` unless the selected endpoint is an OpenRouter one, so other
- * users never pay for the request.
+ * Per-model reasoning efforts of one OpenRouter endpoint. The server caches the catalog for
+ * an hour and the data changes rarely, so one fetch serves the session. Scoped to the endpoint,
+ * so another endpoint's outage cannot hide this one's data. Pass `enabled: false` unless the
+ * endpoint is an OpenRouter one, so other users never pay for the request.
  */
 export const useReasoningCapabilitiesQuery = (
+  endpoint: string,
   config?: UseQueryOptions<t.TReasoningCapabilityMap>,
 ): QueryObserverResult<t.TReasoningCapabilityMap> => {
   const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
   return useQuery<t.TReasoningCapabilityMap>(
-    [QueryKeys.reasoningCapabilities],
-    () => dataService.getReasoningCapabilities(),
+    [QueryKeys.reasoningCapabilities, endpoint],
+    () => dataService.getReasoningCapabilities(endpoint),
     {
       staleTime: Time.ONE_HOUR,
       refetchOnWindowFocus: false,

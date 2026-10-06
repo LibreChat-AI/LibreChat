@@ -28,7 +28,7 @@ let mockCapabilitiesLoading = false;
 jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
-  useReasoningCapabilitiesQuery: (config?: { enabled?: boolean }) => ({
+  useReasoningCapabilitiesQuery: (_endpoint: string, config?: { enabled?: boolean }) => ({
     data: config?.enabled === false ? undefined : mockCapabilities,
     isInitialLoading: config?.enabled !== false && mockCapabilitiesLoading,
   }),
@@ -845,6 +845,21 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
     mockCapabilitiesLoading = true;
 
     expect(render().result.current).toBeNull();
+  });
+
+  it('keeps an administrator-defined effort control while the capabilities load', () => {
+    mockCapabilitiesLoading = true;
+    mockEndpointsConfig = {
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [enumSetting],
+        },
+      },
+    };
+
+    expect(render().result.current?.setting.key).toBe('reasoning_effort');
   });
 
   it('falls back to the generic efforts when the capabilities could not be read', () => {

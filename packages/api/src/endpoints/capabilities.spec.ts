@@ -14,37 +14,53 @@ const makeRes = () => {
   return res;
 };
 
-const req = { config: { endpoints: {} } } as unknown as ServerRequest;
+const makeReq = (query: Record<string, unknown> = { endpoint: 'OpenRouter' }) =>
+  ({ config: { endpoints: {} }, query }) as unknown as ServerRequest;
 
 describe('createReasoningCapabilitiesHandler', () => {
-  it('returns the capabilities when every catalog was read', async () => {
+  it('returns the capabilities when the catalog was read', async () => {
     const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] } } };
     const handler = createReasoningCapabilitiesHandler({
       getReasoningCapabilities: async () => ({ capabilities, unavailable: [] }),
     });
     const res = makeRes();
 
-    await handler(req, res);
+    await handler(makeReq(), res);
 
     expect(res.status).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(capabilities);
   });
 
-  it('passes the request config to the resolver', async () => {
+  it('scopes the lookup to the requested endpoint and the request config', async () => {
     const getReasoningCapabilities = jest.fn(async () => ({ capabilities: {}, unavailable: [] }));
+    const req = makeReq({ endpoint: 'My Gateway' });
 
     await createReasoningCapabilitiesHandler({ getReasoningCapabilities })(req, makeRes());
 
-    expect(getReasoningCapabilities).toHaveBeenCalledWith(req.config);
+    expect(getReasoningCapabilities).toHaveBeenCalledWith(req.config, 'My Gateway');
   });
 
-  it('answers 503 with a stable code when a catalog is unavailable', async () => {
+  it.each([{}, { endpoint: '' }, { endpoint: ['a', 'b'] }, { endpoint: 42 }])(
+    'answers 400 when the endpoint query is %j',
+    async (query) => {
+      const getReasoningCapabilities = jest.fn();
+      const res = makeRes();
+
+      await createReasoningCapabilitiesHandler({ getReasoningCapabilities })(makeReq(query), res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ error: 'endpoint_required' });
+      expect(getReasoningCapabilities).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers 503 with a stable code when the catalog is unavailable', async () => {
     const handler = createReasoningCapabilitiesHandler({
       getReasoningCapabilities: async () => ({ capabilities: {}, unavailable: ['OpenRouter'] }),
     });
     const res = makeRes();
 
-    await handler(req, res);
+    await handler(makeReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith({ error: 'reasoning_catalog_unavailable' });
@@ -59,7 +75,7 @@ describe('createReasoningCapabilitiesHandler', () => {
     });
     const res = makeRes();
 
-    await handler(req, res);
+    await handler(makeReq(), res);
 
     expect(JSON.stringify(res.json.mock.calls)).not.toContain('Internal Gateway');
   });
@@ -72,7 +88,7 @@ describe('createReasoningCapabilitiesHandler', () => {
     });
     const res = makeRes();
 
-    await handler(req, res);
+    await handler(makeReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(JSON.stringify(res.json.mock.calls)).not.toContain('secret detail');

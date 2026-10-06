@@ -149,7 +149,7 @@ describe('OpenRouter custom endpoint effort list', () => {
       },
     });
     if (capabilities != null) {
-      queryClient.setQueryData([QueryKeys.reasoningCapabilities], capabilities);
+      queryClient.setQueryData([QueryKeys.reasoningCapabilities, 'OpenRouter'], capabilities);
     }
     const conversation = {
       endpoint: 'OpenRouter',
@@ -167,7 +167,7 @@ describe('OpenRouter custom endpoint effort list', () => {
         </ChatContext.Provider>
       </QueryClientProvider>,
     );
-    return screen.getByRole('slider', { name: 'Reasoning Effort' });
+    return screen.queryByRole('slider', { name: 'Reasoning Effort' });
   };
 
   it('offers only the efforts the selected model supports', () => {
@@ -176,9 +176,7 @@ describe('OpenRouter custom endpoint effort list', () => {
     expect(slider).toHaveAttribute('aria-valuemax', '2');
   });
 
-  it('keeps the generic efforts while the capabilities are unknown', () => {
-    const slider = renderSettings();
-
-    expect(slider).toHaveAttribute('aria-valuemax', '7');
+  it('hides the effort control while the capabilities are still loading', () => {
+    expect(renderSettings()).not.toBeInTheDocument();
   });
 });

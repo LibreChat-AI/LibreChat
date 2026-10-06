@@ -1,5 +1,5 @@
 import type { TEndpoint } from 'librechat-data-provider';
-import type { ReasoningCapabilityDeps } from './reasoning';
+import type { ReasoningCapabilityDeps } from '~/types';
 import { loadReasoningCapabilities, withSupportedEffort } from './reasoning';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -19,6 +19,9 @@ const catalog = {
     { id: 'meta/no-reasoning' },
     { id: 'meta/empty-efforts', reasoning: { supported_efforts: [] } },
     { id: 'meta/malformed', reasoning: 'yes' },
+    { id: 'meta/no-efforts', reasoning: { mandatory: true } },
+    { id: 'meta/unrestricted', reasoning: { supported_efforts: null, mandatory: false } },
+    { id: 'meta/unrestricted-mandatory', reasoning: { supported_efforts: null, mandatory: true } },
   ],
 };
 
@@ -47,10 +50,26 @@ describe('loadReasoningCapabilities', () => {
 
     const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
 
-    expect(map.OpenRouter).toEqual({
-      'openai/gpt-6.1-sol': { efforts: ['high', 'low', 'none'], mandatory: false },
-      'google/gemini-3.5-flash': { efforts: ['low'], mandatory: true },
+    expect(map.OpenRouter['openai/gpt-6.1-sol']).toEqual({
+      efforts: ['high', 'low', 'none'],
+      mandatory: false,
     });
+    expect(map.OpenRouter['google/gemini-3.5-flash']).toEqual({
+      efforts: ['low'],
+      mandatory: true,
+    });
+  });
+
+  it('treats a null supported_efforts as every known effort being accepted', async () => {
+    const { deps } = makeDeps();
+
+    const { capabilities } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(capabilities.OpenRouter['meta/unrestricted'].efforts).toEqual(
+      expect.arrayContaining(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+    );
+    expect(capabilities.OpenRouter['meta/unrestricted'].efforts).not.toContain('');
+    expect(capabilities.OpenRouter['meta/unrestricted-mandatory'].mandatory).toBe(true);
   });
 
   it('omits models that report no usable reasoning', async () => {
@@ -58,9 +77,14 @@ describe('loadReasoningCapabilities', () => {
 
     const { capabilities: map } = await loadReasoningCapabilities([endpoint()], deps);
 
-    expect(Object.keys(map.OpenRouter)).not.toEqual(
-      expect.arrayContaining(['meta/no-reasoning', 'meta/empty-efforts', 'meta/malformed']),
-    );
+    for (const id of [
+      'meta/no-reasoning',
+      'meta/empty-efforts',
+      'meta/malformed',
+      'meta/no-efforts',
+    ]) {
+      expect(map.OpenRouter).not.toHaveProperty([id]);
+    }
   });
 
   it('keys the result by the normalized endpoint name', async () => {
@@ -405,6 +429,84 @@ describe('loadReasoningCapabilities: availability', () => {
   });
 });
 
+describe('loadReasoningCapabilities: pinned model', () => {
+  it('skips an endpoint that pins its model through addParams', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities(
+      [endpoint({ addParams: { model: 'google/gemini-3.5-flash' } })],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ capabilities: {}, unavailable: [] });
+  });
+
+  it('still reads an endpoint whose addParams do not pin a model', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities([endpoint({ addParams: { temperature: 0.2 } })], deps);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('loadReasoningCapabilities: scoped to one endpoint', () => {
+  const down = async ({ apiKey }: { apiKey: string }) => {
+    if (apiKey === 'sk-bad') {
+      throw new Error('rejected');
+    }
+    return catalog;
+  };
+
+  it('reads only the requested endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities(
+      [endpoint({ name: 'A' }), endpoint({ name: 'B', apiKey: 'sk-b' })],
+      deps,
+      'B',
+    );
+
+    expect(Object.keys(result.capabilities)).toEqual(['B']);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not affected by another endpoint whose catalog is unavailable', async () => {
+    const { deps } = makeDeps(down);
+
+    const result = await loadReasoningCapabilities(
+      [endpoint({ name: 'Bad', apiKey: 'sk-bad' }), endpoint({ name: 'Good' })],
+      deps,
+      'Good',
+    );
+
+    expect(result.unavailable).toEqual([]);
+    expect(Object.keys(result.capabilities)).toEqual(['Good']);
+  });
+
+  it('reports the requested endpoint when its own catalog is unavailable', async () => {
+    const { deps } = makeDeps(down);
+
+    const result = await loadReasoningCapabilities(
+      [endpoint({ name: 'Bad', apiKey: 'sk-bad' }), endpoint({ name: 'Good' })],
+      deps,
+      'Bad',
+    );
+
+    expect(result.unavailable).toEqual(['Bad']);
+  });
+
+  it('returns nothing for a name that matches no endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities([endpoint()], deps, 'Missing');
+
+    expect(result).toEqual({ capabilities: {}, unavailable: [] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('loadReasoningCapabilities: direct endpoints', () => {
   it('skips catalog discovery because the base URL is the exact inference URL', async () => {
     const { deps, fetchSpy } = makeDeps();
@@ -579,16 +681,18 @@ describe('failure logging', () => {
 describe('withSupportedEffort: addParams', () => {
   const sol = 'openai/gpt-6.1-sol';
 
-  it('checks the model an addParams override sends the request to', async () => {
-    const { deps } = makeDeps();
+  it('does not check an endpoint that pins its model through addParams', async () => {
+    const { deps, fetchSpy } = makeDeps();
+    const stored = { model: sol, reasoning_effort: 'max' };
 
     const result = await withSupportedEffort(
-      { model: sol, reasoning_effort: 'high' },
+      stored,
       endpoint({ addParams: { model: 'google/gemini-3.5-flash' } }),
       deps,
     );
 
-    expect(result).toEqual({ model: sol });
+    expect(result).toBe(stored);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('leaves an effort alone when addParams replaces it', async () => {

@@ -638,6 +638,7 @@ describe('applyRequestReasoningOverride: capability loading', () => {
 
     expect(applied).toBe(true);
     expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith('OpenRouter');
   });
 
   it('does not load capabilities when the target is not OpenRouter', async () => {

@@ -227,7 +227,8 @@ export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
 export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
 
-export const reasoningCapabilities = () => `${BASE_URL}/api/endpoints/reasoning-capabilities`;
+export const reasoningCapabilities = (endpoint: string) =>
+  `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
 export const models = () => `${BASE_URL}/api/models`;
 

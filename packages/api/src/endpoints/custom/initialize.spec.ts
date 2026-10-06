@@ -784,26 +784,16 @@ describe('initializeCustom: stored reasoning effort', () => {
     expect(sent.reasoning_effort).toBe('low');
   });
 
-  it('checks the model an addParams override sends the request to', async () => {
-    const { deps } = makeDeps();
+  it('does not check an endpoint that pins its model through addParams', async () => {
+    const { deps, fetchPage } = makeDeps();
 
     const sent = await run(
-      { model: sol, reasoning_effort: 'high' },
-      { deps, addParams: { model: 'google/gemini-3.5-flash' } },
-    );
-
-    expect(sent).not.toHaveProperty('reasoning_effort');
-  });
-
-  it('keeps an effort the override model accepts although the selected model does not', async () => {
-    const { deps } = makeDeps();
-
-    const sent = await run(
-      { model: 'meta/unlisted', reasoning_effort: 'max' },
+      { model: sol, reasoning_effort: 'max' },
       { deps, addParams: { model: 'google/gemini-3.5-flash' } },
     );
 
     expect(sent.reasoning_effort).toBe('max');
+    expect(fetchPage).not.toHaveBeenCalled();
   });
 
   it('leaves the stored effort alone when addParams sets one', async () => {

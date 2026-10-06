@@ -194,7 +194,8 @@ async function buildEndpointOption(req, res, next) {
       defaultParamsEndpoint,
       appliedModelSpecPrivateFields,
       enforcedModelSpecFields,
-      loadReasoningCapabilities: () => getReasoningCapabilities(appConfig),
+      loadReasoningCapabilities: (endpointName) =>
+        getReasoningCapabilities(appConfig, endpointName),
     });
     if (!reasoningApplied) {
       return handleError(res, { text: 'Invalid reasoning override' });

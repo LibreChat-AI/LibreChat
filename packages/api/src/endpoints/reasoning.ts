@@ -5,6 +5,7 @@ import { logger } from '@librechat/data-schemas';
 import {
   Time,
   CacheKeys,
+  ReasoningEffort,
   EModelEndpoint,
   KnownEndpoints,
   normalizeEndpointName,
@@ -12,23 +13,16 @@ import {
   effectiveModelReasoning,
   isOpenRouterEffortSupported,
 } from 'librechat-data-provider';
-import type { TEndpoint, TModelReasoning, TReasoningCapabilityMap } from 'librechat-data-provider';
+import type { TEndpoint, TModelReasoning } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type {
+  ReasoningCapabilityDeps,
+  ReasoningCapabilityCache,
+  ReasoningCapabilityResult,
+} from '~/types';
 import { isUserProvided, applyAxiosProxyConfig } from '~/utils';
 import { resolveConfigSecret } from '~/admin/secrets';
 import { standardCache } from '~/cache';
-
-/** The slice of a keyed cache this module needs. */
-export interface ReasoningCapabilityCache {
-  get: (key: string) => Promise<unknown>;
-  set: (key: string, value: unknown, ttl?: number) => Promise<unknown>;
-}
-
-export interface ReasoningCapabilityDeps {
-  /** Returns one page of the provider's model catalog as parsed JSON. */
-  fetchPage: (params: { url: string; apiKey: string; timeoutMs: number }) => Promise<unknown>;
-  cache: ReasoningCapabilityCache;
-}
 
 /** Applies when an endpoint does not set `customParams.reasoningCatalogTimeoutMs`. */
 const DEFAULT_CATALOG_TIMEOUT_MS = 5000;
@@ -42,7 +36,7 @@ const pageSchema = z.object({
       id: z.string(),
       reasoning: z
         .object({
-          supported_efforts: z.array(z.string()).optional(),
+          supported_efforts: z.array(z.string()).nullable().optional(),
           mandatory: z.boolean().optional(),
         })
         .optional()
@@ -55,15 +49,12 @@ const pageSchema = z.object({
 type CatalogModels = Record<string, TModelReasoning>;
 
 /**
- * What was read and what could not be: an endpoint in `unavailable` is eligible but its
- * catalog failed, which callers must not confuse with an endpoint whose models report no
- * reasoning. Endpoints that were never eligible (not OpenRouter, user-provided, direct)
- * appear in neither.
+ * OpenRouter's `supported_efforts: null` means no allowlist applies and every gateway effort
+ * is accepted; an omitted field means the model exposes no effort selection at all.
  */
-export interface ReasoningCapabilityResult {
-  capabilities: TReasoningCapabilityMap;
-  unavailable: string[];
-}
+const UNRESTRICTED_EFFORTS: string[] = Object.values(ReasoningEffort).filter(
+  (effort) => effort !== ReasoningEffort.unset,
+);
 
 function isOpenRouterHost(baseURL: string): boolean {
   try {
@@ -120,7 +111,8 @@ async function readCatalog(
       return undefined;
     }
     for (const { id, reasoning } of parsed.data.data) {
-      const efforts = reasoning?.supported_efforts;
+      const reported = reasoning?.supported_efforts;
+      const efforts = reported === null ? UNRESTRICTED_EFFORTS : reported;
       if (efforts != null && efforts.length > 0) {
         models[id] = { efforts, mandatory: reasoning?.mandatory === true };
       }
@@ -149,10 +141,12 @@ type ResolvedTarget = {
 /**
  * The endpoint's catalog target, or nothing when it is not an OpenRouter endpoint with
  * administrator credentials. A `directEndpoint` is skipped: its base URL is the exact
- * inference URL, so `/models` cannot be derived from it.
+ * inference URL, so `/models` cannot be derived from it. So is an endpoint that pins its model
+ * through `addParams.model`: every request goes to that one model, so the efforts of the model
+ * a user selected say nothing about what is sent, and narrowing by them would be wrong.
  */
 function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
-  if (endpoint.directEndpoint === true) {
+  if (endpoint.directEndpoint === true || typeof endpoint.addParams?.model === 'string') {
     return undefined;
   }
   const name = normalizeEndpointName(endpoint.name);
@@ -217,13 +211,19 @@ function resolveCatalog(
  * administrator's key, never a user's, and is the same for every caller, so it
  * is cached by base URL and key and shared across users. A catalog that cannot
  * be fetched or read is reported in `unavailable`, never as an endpoint without
- * reasoning, and is not cached, so the next request retries.
+ * reasoning, and is not cached, so the next request retries. `only` limits the result to one
+ * endpoint, so one endpoint's outage does not hide another's data.
  */
 export async function loadReasoningCapabilities(
   customEndpoints: TEndpoint[] | undefined,
   deps: ReasoningCapabilityDeps,
+  only?: string,
 ): Promise<ReasoningCapabilityResult> {
-  const targets = (customEndpoints ?? []).flatMap((endpoint) => resolveTarget(endpoint) ?? []);
+  const wanted = only == null ? undefined : normalizeEndpointName(only);
+  const targets = (customEndpoints ?? []).flatMap((endpoint) => {
+    const target = resolveTarget(endpoint);
+    return target != null && (wanted == null || target.name === wanted) ? [target] : [];
+  });
   const catalogs = await Promise.all(targets.map((target) => resolveCatalog(target, deps)));
 
   const result: ReasoningCapabilityResult = { capabilities: {}, unavailable: [] };
@@ -243,26 +243,24 @@ export async function loadReasoningCapabilities(
  * conversation or agent saved on another model cannot send a request the provider rejects.
  * Auto sends no effort and is kept, as is everything while the catalog is unavailable, and
  * an effort the administrator defined for the endpoint, including one set through
- * `addParams`, which replaces the stored value outright. The model checked is the one the
- * request is sent to, so an `addParams.model` override wins over the stored selection. Only
- * a request that stores an effort on an OpenRouter endpoint reads the catalog.
+ * `addParams`, which replaces the stored value outright. An endpoint that pins its model
+ * through `addParams.model` is not checked (see {@link resolveTarget}). Only a request that
+ * stores an effort on an eligible OpenRouter endpoint reads the catalog.
  */
 export async function withSupportedEffort<T extends object>(
   modelOptions: T,
   endpoint: TEndpoint,
   deps: ReasoningCapabilityDeps,
 ): Promise<T> {
-  const { model: storedModel, reasoning_effort: effort } = modelOptions as {
+  const { model, reasoning_effort: effort } = modelOptions as {
     model?: unknown;
     reasoning_effort?: unknown;
   };
-  const addParams = endpoint.addParams;
-  const model = typeof addParams?.model === 'string' ? addParams.model : storedModel;
   if (
     typeof effort !== 'string' ||
     effort === '' ||
     typeof model !== 'string' ||
-    addParams?.reasoning_effort !== undefined
+    endpoint.addParams?.reasoning_effort !== undefined
   ) {
     return modelOptions;
   }
@@ -308,14 +306,16 @@ export function getReasoningCapabilityDeps(): ReasoningCapabilityDeps {
 }
 
 /**
- * Per-model reasoning efforts for the OpenRouter endpoints in an app config,
- * wired to the real catalog fetch and cache.
+ * Per-model reasoning efforts for the OpenRouter endpoints in an app config, or for the one
+ * named by `endpoint`, wired to the real catalog fetch and cache.
  */
 export function getReasoningCapabilities(
   appConfig?: AppConfig,
+  endpoint?: string,
 ): Promise<ReasoningCapabilityResult> {
   return loadReasoningCapabilities(
     (appConfig?.endpoints?.[EModelEndpoint.custom] ?? []) as TEndpoint[],
     getReasoningCapabilityDeps(),
+    endpoint,
   );
 }

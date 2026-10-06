@@ -6,8 +6,8 @@ let mockCapabilities: TReasoningCapabilityMap | undefined;
 let mockLoading = false;
 const mockQuery = jest.fn();
 jest.mock('~/data-provider', () => ({
-  useReasoningCapabilitiesQuery: (config: { enabled?: boolean }) => {
-    mockQuery(config);
+  useReasoningCapabilitiesQuery: (endpoint: string, config: { enabled?: boolean }) => {
+    mockQuery(endpoint, config);
     const enabled = config?.enabled !== false;
     return {
       data: enabled ? mockCapabilities : undefined,
@@ -72,30 +72,56 @@ describe('useModelReasoning', () => {
     expect(result.current.modelReasoning).toBeUndefined();
   });
 
-  it('reports pending while the first capabilities request is in flight', () => {
+  it('hides the efforts while the first capabilities request is in flight', () => {
     mockLoading = true;
 
     const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
 
-    expect(result.current.pending).toBe(true);
+    expect(result.current.modelReasoning).toBeNull();
+  });
+
+  it('keeps an administrator-defined reasoning_effort available while loading', () => {
+    mockLoading = true;
+    const endpoints = {
+      OpenRouter: {
+        order: 0,
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+        },
+      },
+    } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
+
     expect(result.current.modelReasoning).toBeUndefined();
   });
 
-  it('is not pending once the capabilities have loaded', () => {
+  it('shows the efforts once loaded', () => {
     mockCapabilities = { OpenRouter: { [model]: { efforts: ['low'] } } };
 
     const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
 
-    expect(result.current.pending).toBe(false);
+    expect(result.current.modelReasoning).toEqual({ efforts: ['low'] });
   });
 
-  it('is never pending for an endpoint that does not use capabilities', () => {
+  it('falls back to the generic efforts when the request failed', () => {
+    mockCapabilities = undefined;
+    mockLoading = false;
+
+    const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+
+    expect(result.current.modelReasoning).toBeUndefined();
+  });
+
+  it('is never hidden for an endpoint that does not use capabilities', () => {
     mockLoading = true;
     const endpoints = { openAI: { order: 0, type: 'openAI' } } as TEndpointsConfig;
 
     const { result } = renderHook(() => useModelReasoning(endpoints, 'openAI', model));
 
-    expect(result.current.pending).toBe(false);
+    expect(result.current.modelReasoning).toBeUndefined();
   });
 
   it('does not request capabilities for an endpoint that is not OpenRouter', () => {
@@ -105,7 +131,10 @@ describe('useModelReasoning', () => {
 
     const { result } = renderHook(() => useModelReasoning(endpoints, 'Local', model));
 
-    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: false }),
+    );
     expect(result.current.modelReasoning).toBeUndefined();
   });
 
@@ -114,12 +143,18 @@ describe('useModelReasoning', () => {
 
     renderHook(() => useModelReasoning(endpoints, 'openAI', model));
 
-    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ enabled: false }),
+    );
   });
 
   it('requests capabilities for an OpenRouter endpoint', () => {
     renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
 
-    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }));
+    expect(mockQuery).toHaveBeenCalledWith(
+      'OpenRouter',
+      expect.objectContaining({ enabled: true }),
+    );
   });
 });

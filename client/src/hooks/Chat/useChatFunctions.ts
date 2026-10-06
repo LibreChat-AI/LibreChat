@@ -552,6 +552,7 @@ export default function useChatFunctions({
                       getModelReasoning(
                         queryClient.getQueryData<TReasoningCapabilityMap>([
                           QueryKeys.reasoningCapabilities,
+                          effectiveEndpoint,
                         ]),
                         effectiveEndpoint,
                         effectiveModel,

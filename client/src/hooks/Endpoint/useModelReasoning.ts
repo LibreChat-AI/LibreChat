@@ -12,33 +12,31 @@ export function isOpenRouterEndpoint(
 }
 
 /**
- * The reasoning efforts the selected OpenRouter model accepts, for
- * `applyModelAwareDefaults` and `resolveReasoningSettingForTarget`: `undefined`
- * while unknown (loading, failed, or not an OpenRouter endpoint), so the
- * generic list stays, and `null` once loaded when the model reports none.
- * The request is made only for an OpenRouter endpoint. `pending` is true while that
- * first request is in flight, when the list of efforts is not yet known: a one-shot
- * choice made from the generic list could be refused by the server, so the composer
- * waits. A request that failed is not pending and falls back to the generic list, which
- * the server accepts in the same situation.
+ * The reasoning efforts the selected OpenRouter model accepts, for `applyModelAwareDefaults`
+ * and `resolveReasoningSettingForTarget`: `undefined` when unknown (the request failed, or
+ * this is not an OpenRouter endpoint), so the generic list stays; `null` once loaded when the
+ * model reports none, and also while the first request is in flight. Hiding the control then
+ * is deliberate: a choice made from the generic list could be refused by the server, and a
+ * saved value is kept regardless of what the control shows. An administrator-defined
+ * `reasoning_effort` is never narrowed or hidden. The request is made only for an OpenRouter
+ * endpoint.
  */
 export function useModelReasoning(
   endpointsConfig: TEndpointsConfig | undefined,
   endpoint: string,
   model: string,
-): { modelReasoning: TModelReasoning | null | undefined; pending: boolean } {
+): { modelReasoning: TModelReasoning | null | undefined } {
   const enabled = isOpenRouterEndpoint(endpointsConfig, endpoint);
-  const { data: capabilities, isInitialLoading } = useReasoningCapabilitiesQuery({ enabled });
+  const { data: capabilities, isInitialLoading } = useReasoningCapabilitiesQuery(endpoint, {
+    enabled,
+  });
   const paramDefinitions = endpointsConfig?.[endpoint]?.customParams?.paramDefinitions;
-  const modelReasoning = useMemo(
-    () =>
-      enabled && model
-        ? effectiveModelReasoning(
-            getModelReasoning(capabilities, endpoint, model),
-            paramDefinitions,
-          )
-        : undefined,
-    [capabilities, enabled, endpoint, model, paramDefinitions],
-  );
-  return { modelReasoning, pending: enabled && isInitialLoading };
+  const modelReasoning = useMemo(() => {
+    if (!enabled || !model) {
+      return undefined;
+    }
+    const reported = isInitialLoading ? null : getModelReasoning(capabilities, endpoint, model);
+    return effectiveModelReasoning(reported, paramDefinitions);
+  }, [capabilities, enabled, endpoint, isInitialLoading, model, paramDefinitions]);
+  return { modelReasoning };
 }
