@@ -337,7 +337,11 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
-  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model);
+  const { modelReasoning, pending: capabilitiesPending } = useModelReasoning(
+    endpointsConfig,
+    provider,
+    model,
+  );
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -379,6 +383,7 @@ export function useComposerReasoning({
   const available =
     enabled === true &&
     !explicitlyUnavailable &&
+    !capabilitiesPending &&
     (!isAgent || agentTarget != null) &&
     setting != null;
 

@@ -23,12 +23,14 @@ type MockEndpointConfig = {
 };
 let mockEndpointsConfig: Record<string, MockEndpointConfig> | undefined = {};
 let mockCapabilities: TReasoningCapabilityMap | undefined;
+let mockCapabilitiesLoading = false;
 
 jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
   useReasoningCapabilitiesQuery: (config?: { enabled?: boolean }) => ({
     data: config?.enabled === false ? undefined : mockCapabilities,
+    isInitialLoading: config?.enabled !== false && mockCapabilitiesLoading,
   }),
 }));
 
@@ -43,6 +45,7 @@ jest.mock('~/hooks', () => ({
 beforeEach(() => {
   mockEndpointsConfig = {};
   mockCapabilities = undefined;
+  mockCapabilitiesLoading = false;
 });
 
 const enumSetting: SettingDefinition = {
@@ -838,7 +841,13 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
     };
   });
 
-  it('keeps the generic efforts while the capabilities are still loading', () => {
+  it('offers no control while the capabilities are still loading', () => {
+    mockCapabilitiesLoading = true;
+
+    expect(render().result.current).toBeNull();
+  });
+
+  it('falls back to the generic efforts when the capabilities could not be read', () => {
     expect(render().result.current?.setting.options).toContain(ReasoningEffort.max);
   });
 

@@ -14,11 +14,11 @@ import type {
   AnthropicModelOptions,
   ProviderInitializeParams,
 } from '~/types';
-import { withSupportedEffort, getReasoningCapabilityDeps } from '~/endpoints/reasoning';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { resolveModelTransportTimeouts } from '~/agents/config';
 import { extractDefaultParams } from '~/endpoints/openai/llm';
 import { isUserProvided, checkUserKeyExpiry } from '~/utils';
+import { withSupportedEffort } from '~/endpoints/reasoning';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getScopedTokenConfigKey } from '~/endpoints/keys';
 import { getCustomEndpointConfig } from '~/app/config';
@@ -318,11 +318,15 @@ export async function initializeCustom(
     ...customOptions,
   };
 
-  const modelOptions = await withSupportedEffort(
-    { ...(model_parameters ?? {}), user: userId },
-    endpointConfig as TEndpoint,
-    getReasoningCapabilityDeps(),
-  );
+  const requestedOptions = { ...(model_parameters ?? {}), user: userId };
+  const modelOptions =
+    params.reasoningCapabilityDeps == null
+      ? requestedOptions
+      : await withSupportedEffort(
+          requestedOptions,
+          endpointConfig as TEndpoint,
+          params.reasoningCapabilityDeps,
+        );
 
   let options: InitializeResultBase;
   if (endpointConfig.provider === EModelEndpoint.anthropic) {

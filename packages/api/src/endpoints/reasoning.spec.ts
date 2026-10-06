@@ -2,6 +2,11 @@ import type { TEndpoint } from 'librechat-data-provider';
 import type { ReasoningCapabilityDeps } from './reasoning';
 import { loadReasoningCapabilities, withSupportedEffort } from './reasoning';
 
+jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
+  logger: { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() },
+}));
+
 const OPENROUTER = 'https://openrouter.ai/api/v1';
 
 const catalog = {
@@ -506,5 +511,97 @@ describe('catalog lookups are shared across callers', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(second.unavailable).toEqual([]);
+  });
+});
+
+describe('lookup identity includes the configured policy', () => {
+  const pages = (count: number) => {
+    let read = 0;
+    return async () => {
+      read += 1;
+      return {
+        data: [{ id: `m/${read}`, reasoning: { supported_efforts: ['low'] } }],
+        links: { next: read < count ? `/api/v1/models?offset=${read}` : null },
+      };
+    };
+  };
+
+  it('does not let a one-page endpoint decide the result of a five-page endpoint', async () => {
+    const { deps } = makeDeps(pages(3));
+
+    const result = await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'Short', customParams: { reasoningCatalogMaxPages: 1 } }),
+        endpoint({ name: 'Long', customParams: { reasoningCatalogMaxPages: 5 } }),
+      ],
+      deps,
+    );
+
+    expect(result.unavailable).toEqual(['Short']);
+    expect(Object.keys(result.capabilities)).toEqual(['Long']);
+  });
+
+  it('still shares one walk between endpoints with the same policy', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'A', customParams: { reasoningCatalogMaxPages: 5 } }),
+        endpoint({ name: 'B', customParams: { reasoningCatalogMaxPages: 5 } }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('failure logging', () => {
+  it('logs the origin of a failed catalog and never the configured URL or credentials', async () => {
+    const { logger } = jest.requireMock('@librechat/data-schemas');
+    const { deps } = makeDeps(async () => {
+      throw new Error('upstream down');
+    });
+
+    await loadReasoningCapabilities(
+      [endpoint({ baseURL: 'https://user:s3cret@openrouter.ai/api/v1?key=abc123' })],
+      deps,
+    );
+
+    const logged = JSON.stringify(logger.warn.mock.calls);
+    expect(logged).toContain('https://openrouter.ai');
+    expect(logged).not.toContain('s3cret');
+    expect(logged).not.toContain('abc123');
+    expect(logged).not.toContain('user:');
+  });
+});
+
+describe('withSupportedEffort: addParams', () => {
+  const sol = 'openai/gpt-6.1-sol';
+
+  it('checks the model an addParams override sends the request to', async () => {
+    const { deps } = makeDeps();
+
+    const result = await withSupportedEffort(
+      { model: sol, reasoning_effort: 'high' },
+      endpoint({ addParams: { model: 'google/gemini-3.5-flash' } }),
+      deps,
+    );
+
+    expect(result).toEqual({ model: sol });
+  });
+
+  it('leaves an effort alone when addParams replaces it', async () => {
+    const { deps, fetchSpy } = makeDeps();
+    const stored = { model: sol, reasoning_effort: 'max' };
+
+    const result = await withSupportedEffort(
+      stored,
+      endpoint({ addParams: { reasoning_effort: 'low' } }),
+      deps,
+    );
+
+    expect(result).toBe(stored);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

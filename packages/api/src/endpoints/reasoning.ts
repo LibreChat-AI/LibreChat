@@ -75,9 +75,23 @@ function isOpenRouterHost(baseURL: string): boolean {
   }
 }
 
-function cacheKey(baseURL: string, apiKey: string): string {
-  const digest = crypto.createHash('sha256').update(`${baseURL}:${apiKey}`).digest('hex');
-  return digest.slice(0, 32);
+/**
+ * Identity of a catalog lookup: the endpoint and the limits that decide its outcome. Two
+ * endpoints sharing a base URL and key but configuring different page or time limits must
+ * not share a result, or the first one's limits would govern both.
+ */
+function cacheKey({ baseURL, apiKey, timeoutMs, maxPages }: ResolvedTarget): string {
+  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages]);
+  return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32);
+}
+
+/** The scheme and host of a configured URL: never its credentials, path or query. */
+function safeOrigin(baseURL: string): string {
+  try {
+    return new URL(baseURL).origin;
+  } catch {
+    return 'invalid-url';
+  }
 }
 
 /**
@@ -169,7 +183,7 @@ function resolveCatalog(
   target: ResolvedTarget,
   deps: ReasoningCapabilityDeps,
 ): Promise<CatalogModels | undefined> {
-  const key = cacheKey(target.baseURL, target.apiKey);
+  const key = cacheKey(target);
   const existing = inFlight.get(key);
   if (existing != null) {
     return existing;
@@ -187,7 +201,7 @@ function resolveCatalog(
       return models;
     } catch (error) {
       logger.warn('[reasoning] Failed to load the OpenRouter model catalog', {
-        baseURL: target.baseURL,
+        origin: safeOrigin(target.baseURL),
         error: error instanceof Error ? error.name : 'unknown',
       });
       return undefined;
@@ -228,19 +242,28 @@ export async function loadReasoningCapabilities(
  * Drops a stored `reasoning_effort` the selected OpenRouter model does not accept, so a
  * conversation or agent saved on another model cannot send a request the provider rejects.
  * Auto sends no effort and is kept, as is everything while the catalog is unavailable, and
- * an effort the administrator defined for the endpoint. Only a request that stores an effort
- * on an OpenRouter endpoint reads the catalog.
+ * an effort the administrator defined for the endpoint, including one set through
+ * `addParams`, which replaces the stored value outright. The model checked is the one the
+ * request is sent to, so an `addParams.model` override wins over the stored selection. Only
+ * a request that stores an effort on an OpenRouter endpoint reads the catalog.
  */
 export async function withSupportedEffort<T extends object>(
   modelOptions: T,
   endpoint: TEndpoint,
   deps: ReasoningCapabilityDeps,
 ): Promise<T> {
-  const { model, reasoning_effort: effort } = modelOptions as {
+  const { model: storedModel, reasoning_effort: effort } = modelOptions as {
     model?: unknown;
     reasoning_effort?: unknown;
   };
-  if (typeof effort !== 'string' || effort === '' || typeof model !== 'string') {
+  const addParams = endpoint.addParams;
+  const model = typeof addParams?.model === 'string' ? addParams.model : storedModel;
+  if (
+    typeof effort !== 'string' ||
+    effort === '' ||
+    typeof model !== 'string' ||
+    addParams?.reasoning_effort !== undefined
+  ) {
     return modelOptions;
   }
   const target = resolveTarget(endpoint);

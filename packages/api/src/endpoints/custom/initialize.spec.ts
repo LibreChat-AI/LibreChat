@@ -26,16 +26,6 @@ jest.mock('~/endpoints/models', () => ({
   fetchModels: jest.fn(),
 }));
 
-const mockWithSupportedEffort = jest.fn(
-  async (modelOptions: Record<string, unknown>, _endpoint?: unknown, _deps?: unknown) =>
-    modelOptions,
-);
-jest.mock('~/endpoints/reasoning', () => ({
-  withSupportedEffort: (modelOptions: Record<string, unknown>, endpoint: unknown, deps: unknown) =>
-    mockWithSupportedEffort(modelOptions, endpoint, deps),
-  getReasoningCapabilityDeps: () => ({}),
-}));
-
 jest.mock('~/cache', () => ({
   standardCache: jest.fn(() => ({ get: jest.fn().mockResolvedValue(null) })),
   tokenConfigCache: jest.fn(() => ({ get: jest.fn().mockResolvedValue(null) })),
@@ -737,24 +727,100 @@ describe('initializeCustom – native Anthropic provider', () => {
 });
 
 describe('initializeCustom: stored reasoning effort', () => {
+  const OPENROUTER = 'https://openrouter.ai/api/v1';
+  const sol = 'openai/gpt-6.1-sol';
+  const catalog = {
+    data: [
+      { id: sol, reasoning: { supported_efforts: ['low', 'high'], mandatory: false } },
+      { id: 'google/gemini-3.5-flash', reasoning: { supported_efforts: ['max'] } },
+    ],
+  };
+  const makeDeps = (fetchPage: jest.Mock = jest.fn(async () => catalog)) => ({
+    deps: {
+      fetchPage,
+      cache: { get: jest.fn(async () => undefined), set: jest.fn(async () => true) },
+    },
+    fetchPage,
+  });
+  const run = async (
+    modelParameters: Record<string, unknown>,
+    options: {
+      deps?: ReturnType<typeof makeDeps>['deps'];
+      addParams?: Record<string, unknown>;
+    } = {},
+  ) => {
+    const params = createParams({ baseURL: OPENROUTER });
+    mockGetCustomEndpointConfig.mockReturnValue({
+      name: 'OpenRouter',
+      apiKey: 'sk-test-key',
+      baseURL: OPENROUTER,
+      models: {},
+      ...(options.addParams && { addParams: options.addParams }),
+    });
+    params.model_parameters = modelParameters;
+    params.reasoningCapabilityDeps = options.deps;
+    await initializeCustom(params);
+    return mockGetOpenAIConfig.mock.calls[0][1].modelOptions as Record<string, unknown>;
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
-    mockWithSupportedEffort.mockImplementation(async (modelOptions) => modelOptions);
   });
 
-  it('builds the client from the model options the effort check returns', async () => {
-    const params = createParams({ baseURL: 'https://openrouter.ai/api/v1' });
-    params.model_parameters = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
-    mockWithSupportedEffort.mockResolvedValueOnce({ model: 'openai/gpt-6.1-sol', user: 'user-1' });
+  it('drops a stored effort the selected model does not accept', async () => {
+    const { deps } = makeDeps();
 
-    await initializeCustom(params);
+    const sent = await run({ model: sol, reasoning_effort: 'max' }, { deps });
 
-    expect(mockWithSupportedEffort).toHaveBeenCalledWith(
-      expect.objectContaining({ model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' }),
-      expect.objectContaining({ baseURL: 'https://openrouter.ai/api/v1' }),
-      expect.anything(),
+    expect(sent).not.toHaveProperty('reasoning_effort');
+    expect(sent.model).toBe(sol);
+  });
+
+  it('keeps a stored effort the selected model accepts', async () => {
+    const { deps } = makeDeps();
+
+    const sent = await run({ model: sol, reasoning_effort: 'low' }, { deps });
+
+    expect(sent.reasoning_effort).toBe('low');
+  });
+
+  it('checks the model an addParams override sends the request to', async () => {
+    const { deps } = makeDeps();
+
+    const sent = await run(
+      { model: sol, reasoning_effort: 'high' },
+      { deps, addParams: { model: 'google/gemini-3.5-flash' } },
     );
-    const finalOptions = mockGetOpenAIConfig.mock.calls[0][1];
-    expect(finalOptions.modelOptions).not.toHaveProperty('reasoning_effort');
+
+    expect(sent).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('keeps an effort the override model accepts although the selected model does not', async () => {
+    const { deps } = makeDeps();
+
+    const sent = await run(
+      { model: 'meta/unlisted', reasoning_effort: 'max' },
+      { deps, addParams: { model: 'google/gemini-3.5-flash' } },
+    );
+
+    expect(sent.reasoning_effort).toBe('max');
+  });
+
+  it('leaves the stored effort alone when addParams sets one', async () => {
+    const { deps, fetchPage } = makeDeps();
+
+    const sent = await run(
+      { model: sol, reasoning_effort: 'max' },
+      { deps, addParams: { reasoning_effort: 'low' } },
+    );
+
+    expect(sent.reasoning_effort).toBe('max');
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it('sends the stored effort as saved when no capability dependencies are supplied', async () => {
+    const sent = await run({ model: sol, reasoning_effort: 'max' });
+
+    expect(sent.reasoning_effort).toBe('max');
   });
 });

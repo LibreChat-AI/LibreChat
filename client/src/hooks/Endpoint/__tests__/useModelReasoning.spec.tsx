@@ -3,11 +3,16 @@ import type { TEndpointsConfig, TReasoningCapabilityMap } from 'librechat-data-p
 import { useModelReasoning } from '../useModelReasoning';
 
 let mockCapabilities: TReasoningCapabilityMap | undefined;
+let mockLoading = false;
 const mockQuery = jest.fn();
 jest.mock('~/data-provider', () => ({
   useReasoningCapabilitiesQuery: (config: { enabled?: boolean }) => {
     mockQuery(config);
-    return { data: config?.enabled === false ? undefined : mockCapabilities };
+    const enabled = config?.enabled !== false;
+    return {
+      data: enabled ? mockCapabilities : undefined,
+      isInitialLoading: enabled && mockLoading,
+    };
   },
 }));
 
@@ -22,6 +27,7 @@ const openRouter = {
 
 beforeEach(() => {
   mockCapabilities = undefined;
+  mockLoading = false;
   mockQuery.mockClear();
 });
 
@@ -64,6 +70,32 @@ describe('useModelReasoning', () => {
     const { result } = renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
 
     expect(result.current.modelReasoning).toBeUndefined();
+  });
+
+  it('reports pending while the first capabilities request is in flight', () => {
+    mockLoading = true;
+
+    const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+
+    expect(result.current.pending).toBe(true);
+    expect(result.current.modelReasoning).toBeUndefined();
+  });
+
+  it('is not pending once the capabilities have loaded', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low'] } } };
+
+    const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+
+    expect(result.current.pending).toBe(false);
+  });
+
+  it('is never pending for an endpoint that does not use capabilities', () => {
+    mockLoading = true;
+    const endpoints = { openAI: { order: 0, type: 'openAI' } } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'openAI', model));
+
+    expect(result.current.pending).toBe(false);
   });
 
   it('does not request capabilities for an endpoint that is not OpenRouter', () => {
