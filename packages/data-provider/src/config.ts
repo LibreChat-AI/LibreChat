@@ -2081,6 +2081,11 @@ export const endpointSchema = baseEndpointSchema.merge(
          * unavailable. Omission keeps 20.
          */
         reasoningCatalogMaxPages: z.number().int().min(1).max(200).optional(),
+        /**
+         * Milliseconds a failed or unreadable OpenRouter catalog is remembered before it is
+         * requested again; 0 retries on every request. Omission keeps 30000.
+         */
+        reasoningCatalogFailureTtlMs: z.number().int().min(0).max(600000).optional(),
       })
       .strict()
       .optional(),

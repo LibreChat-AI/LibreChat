@@ -189,7 +189,15 @@ async function loadCapabilitiesFor(
     : input.endpoint;
   const customParams = input.endpointsConfig?.[endpointKey]?.customParams;
   const paramsEndpoint = customParams?.defaultParamsEndpoint ?? input.defaultParamsEndpoint;
-  if (hasExplicitReasoningEffort(customParams?.paramDefinitions)) {
+  /** Requests `resolveReasoningOverride` refuses regardless of the catalog fail without it. */
+  const locked =
+    input.appliedModelSpecPrivateFields?.has(override.key) === true ||
+    input.enforcedModelSpecFields?.has(override.key) === true;
+  if (
+    locked ||
+    customParams?.reasoningFormat === ReasoningParameterFormat.disabled ||
+    hasExplicitReasoningEffort(customParams?.paramDefinitions)
+  ) {
     return undefined;
   }
   return paramsEndpoint === Providers.OPENROUTER

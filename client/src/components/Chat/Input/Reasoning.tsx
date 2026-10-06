@@ -371,9 +371,12 @@ export function useComposerReasoning({
     endpoint !== '' &&
     (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
-  const targetFingerprint = targetResolved
-    ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
-    : null;
+  /* Not compared while the first capability request is in flight: the setting is hidden then,
+     so the fingerprint would change when it resolves and read as the user switching targets. */
+  const targetFingerprint =
+    targetResolved && !capabilitiesPending
+      ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
+      : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
     enabled === false ||

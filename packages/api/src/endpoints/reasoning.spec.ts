@@ -30,18 +30,20 @@ const endpoint = (overrides: Record<string, unknown> = {}): TEndpoint =>
 
 function makeDeps(fetchPage?: ReasoningCapabilityDeps['fetchPage']) {
   const store = new Map<string, unknown>();
+  const ttls = new Map<string, number | undefined>();
   const fetchSpy = jest.fn(fetchPage ?? (async () => catalog));
   const deps: ReasoningCapabilityDeps = {
     fetchPage: fetchSpy,
     cache: {
       get: async (key) => store.get(key),
-      set: async (key, value) => {
+      set: async (key, value, ttl) => {
         store.set(key, value);
+        ttls.set(key, ttl);
         return true;
       },
     },
   };
-  return { deps, fetchSpy, store };
+  return { deps, fetchSpy, store, ttls };
 }
 
 describe('loadReasoningCapabilities', () => {
@@ -165,8 +167,10 @@ describe('loadReasoningCapabilities', () => {
       throw new Error('upstream down');
     });
 
-    await loadReasoningCapabilities([endpoint()], deps);
-    await loadReasoningCapabilities([endpoint()], deps);
+    const noWindow = endpoint({ customParams: { reasoningCatalogFailureTtlMs: 0 } });
+
+    await loadReasoningCapabilities([noWindow], deps);
+    await loadReasoningCapabilities([noWindow], deps);
 
     expect(store.size).toBe(0);
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -222,7 +226,8 @@ describe('loadReasoningCapabilities: pagination', () => {
     await expect(loadReasoningCapabilities([endpoint()], deps)).resolves.toMatchObject({
       capabilities: {},
     });
-    expect(store.size).toBe(0);
+    /* Only the failure marker is stored: no partial catalog is ever cached. */
+    expect([...store.keys()].every((key) => key.endsWith(':failed'))).toBe(true);
   });
 
   it('refuses a next link that leaves the provider host', async () => {
@@ -644,8 +649,10 @@ describe('catalog lookups are shared across callers', () => {
       return catalog;
     });
 
-    await loadReasoningCapabilities([endpoint()], deps);
-    const second = await loadReasoningCapabilities([endpoint()], deps);
+    const noWindow = endpoint({ customParams: { reasoningCatalogFailureTtlMs: 0 } });
+
+    await loadReasoningCapabilities([noWindow], deps);
+    const second = await loadReasoningCapabilities([noWindow], deps);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(second.unavailable).toEqual([]);
@@ -743,5 +750,81 @@ describe('withSupportedEffort: addParams', () => {
 
     expect(result).toBe(stored);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('failed catalog lookups are remembered briefly', () => {
+  const down = async () => {
+    throw new Error('upstream down');
+  };
+
+  it('does not walk a failed catalog again within the failure window', async () => {
+    const { deps, fetchSpy } = makeDeps(down);
+
+    await loadReasoningCapabilities([endpoint()], deps);
+    const second = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(second.unavailable).toEqual(['OpenRouter']);
+  });
+
+  it('shares the failure with the stored-effort check of the same request', async () => {
+    const { deps, fetchSpy } = makeDeps(down);
+    const stored = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
+
+    await loadReasoningCapabilities([endpoint()], deps, 'OpenRouter');
+    const result = await withSupportedEffort(stored, endpoint(), deps);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result).toBe(stored);
+  });
+
+  it('remembers the failure for 30 seconds by default', async () => {
+    const { deps, ttls } = makeDeps(down);
+
+    await loadReasoningCapabilities([endpoint()], deps);
+
+    expect([...ttls.values()]).toContain(30000);
+  });
+
+  it('remembers it for the window the endpoint configures', async () => {
+    const { deps, ttls } = makeDeps(down);
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { reasoningCatalogFailureTtlMs: 5000 } })],
+      deps,
+    );
+
+    expect([...ttls.values()]).toContain(5000);
+  });
+
+  it('remembers nothing when the window is 0', async () => {
+    const { deps, store } = makeDeps(down);
+
+    await loadReasoningCapabilities(
+      [endpoint({ customParams: { reasoningCatalogFailureTtlMs: 0 } })],
+      deps,
+    );
+
+    expect(store.size).toBe(0);
+  });
+
+  it('remembers an unreadable catalog the same way', async () => {
+    const { deps, fetchSpy } = makeDeps(async () => ({ error: 'nope' }));
+
+    await loadReasoningCapabilities([endpoint()], deps);
+    await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not remember a successful lookup as a failure', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities([endpoint()], deps);
+    const second = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(second.unavailable).toEqual([]);
   });
 });

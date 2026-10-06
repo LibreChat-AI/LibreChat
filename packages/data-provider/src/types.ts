@@ -737,6 +737,7 @@ export type TConfig = {
     paramDefinitions?: Partial<SettingDefinition>[];
     reasoningCatalogTimeoutMs?: number;
     reasoningCatalogMaxPages?: number;
+    reasoningCatalogFailureTtlMs?: number;
   };
 };
 

@@ -681,6 +681,48 @@ describe('applyRequestReasoningOverride: capability loading', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
+  it('rejects a disabled endpoint without loading the catalog', async () => {
+    const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+    const disabled = {
+      ...openRouter,
+      endpointsConfig: {
+        OpenRouter: {
+          order: 0,
+          customParams: {
+            defaultParamsEndpoint: 'openrouter',
+            reasoningFormat: ReasoningParameterFormat.disabled,
+          },
+        },
+      },
+    };
+
+    const applied = await applyRequestReasoningOverride(makeReq(), {
+      ...disabled,
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(false);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each(['appliedModelSpecPrivateFields', 'enforcedModelSpecFields'])(
+    'rejects an effort a model spec locks through %s without loading the catalog',
+    async (field) => {
+      const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
+
+      const applied = await applyRequestReasoningOverride(makeReq(), {
+        ...openRouter,
+        [field]: new Set(['reasoning_effort']),
+        reasoningOverride: effort,
+        loadReasoningCapabilities: load,
+      });
+
+      expect(applied).toBe(false);
+      expect(load).not.toHaveBeenCalled();
+    },
+  );
+
   it('does not load capabilities for an override that is not an effort', async () => {
     const load = jest.fn(async () => ({ capabilities: {}, unavailable: [] as string[] }));
 

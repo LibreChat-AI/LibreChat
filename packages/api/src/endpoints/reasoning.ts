@@ -28,6 +28,9 @@ import { standardCache } from '~/cache';
 /** Applies when an endpoint does not set `customParams.reasoningCatalogTimeoutMs`. */
 const DEFAULT_CATALOG_TIMEOUT_MS = 5000;
 
+/** Applies when an endpoint does not set `customParams.reasoningCatalogFailureTtlMs`. */
+const DEFAULT_CATALOG_FAILURE_TTL_MS = 30000;
+
 /** Applies when an endpoint does not set `customParams.reasoningCatalogMaxPages`. */
 const DEFAULT_CATALOG_MAX_PAGES = 20;
 
@@ -72,8 +75,8 @@ function isOpenRouterHost(baseURL: string): boolean {
  * endpoints sharing a base URL and key but configuring different page or time limits must
  * not share a result, or the first one's limits would govern both.
  */
-function cacheKey({ baseURL, apiKey, timeoutMs, maxPages }: ResolvedTarget): string {
-  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages]);
+function cacheKey({ baseURL, apiKey, timeoutMs, maxPages, failureTtlMs }: ResolvedTarget): string {
+  const identity = JSON.stringify([baseURL, apiKey, timeoutMs, maxPages, failureTtlMs]);
   return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32);
 }
 
@@ -137,6 +140,7 @@ type ResolvedTarget = {
   apiKey: string;
   timeoutMs: number;
   maxPages: number;
+  failureTtlMs: number;
 };
 
 /**
@@ -168,14 +172,19 @@ function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
     apiKey,
     timeoutMs: endpoint.customParams?.reasoningCatalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS,
     maxPages: endpoint.customParams?.reasoningCatalogMaxPages ?? DEFAULT_CATALOG_MAX_PAGES,
+    failureTtlMs:
+      endpoint.customParams?.reasoningCatalogFailureTtlMs ?? DEFAULT_CATALOG_FAILURE_TTL_MS,
   };
 }
+
+/** Where a recent failed lookup is remembered, beside the entry a successful one fills. */
+const failureKey = (key: string): string => `${key}:failed`;
 
 /**
  * Lookups in progress, by base URL and key. Held at module scope so concurrent requests,
  * from any caller and any user, share one catalog walk instead of each issuing their own
- * when the cache is cold or has just expired. An entry is removed once it settles, so a
- * failure is retried by the next request.
+ * when the cache is cold or has just expired. An entry is removed once it settles; a failure is
+ * then remembered for `reasoningCatalogFailureTtlMs` so it is retried after that, not per call.
  */
 const inFlight = new Map<string, Promise<CatalogModels | undefined>>();
 
@@ -194,19 +203,26 @@ function resolveCatalog(
     if (cached != null) {
       return cached;
     }
+    /** A recent failure is not retried: the middleware and the endpoint initializer of one
+     *  request, and the requests that follow it, would otherwise each wait out the timeout. */
+    if (target.failureTtlMs > 0 && (await deps.cache.get(failureKey(key))) != null) {
+      return undefined;
+    }
+    let models: CatalogModels | undefined;
     try {
-      const models = await readCatalog(target, deps);
-      if (models != null) {
-        await deps.cache.set(key, models, Time.ONE_HOUR);
-      }
-      return models;
+      models = await readCatalog(target, deps);
     } catch (error) {
       logger.warn('[reasoning] Failed to load the OpenRouter model catalog', {
         origin: safeOrigin(target.baseURL),
         error: error instanceof Error ? error.name : 'unknown',
       });
-      return undefined;
     }
+    if (models != null) {
+      await deps.cache.set(key, models, Time.ONE_HOUR);
+    } else if (target.failureTtlMs > 0) {
+      await deps.cache.set(failureKey(key), true, target.failureTtlMs);
+    }
+    return models;
   })().finally(() => inFlight.delete(key));
   inFlight.set(key, lookup);
   return lookup;
