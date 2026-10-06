@@ -117,7 +117,7 @@ test.describe('mid-run steering and queuing', () => {
    * SURVIVES inside the response after run end, with no degradation to a
    * queued follow-up turn.
    */
-  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary', async ({
+  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary @scenario:steer-renders-in-thread', async ({
     page,
   }) => {
     test.setTimeout(150000);
