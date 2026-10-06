@@ -19,7 +19,7 @@ import {
 
 const original = 'E2E_PRIVATE_TEXT: alice@example.com';
 
-test('owner sees original after reload while provider, sharing, and canonical reads stay filtered', async ({
+test('owner sees original after reload while provider, sharing, and canonical reads stay filtered @scenario:message-text-container-direction', async ({
   page,
   request,
 }, testInfo) => {
