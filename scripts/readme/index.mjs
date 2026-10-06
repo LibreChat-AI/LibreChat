@@ -96,6 +96,11 @@ const chunks = splitChunks(source);
 const stored = JSON.parse((await readIfExists(CACHE)) ?? '{}');
 const cache = { version: 1 };
 const outputs = {};
+const available = await Promise.all(
+  Object.entries(LANGUAGES).map(async ([code, { file }]) =>
+    langs.includes(code) || (await readIfExists(file)) !== null ? code : null,
+  ),
+).then((codes) => codes.filter(Boolean));
 
 for (const code of langs) {
   const { file } = LANGUAGES[code];
@@ -116,7 +121,7 @@ for (const code of langs) {
   });
   const body = chunks
     .map((chunk) => {
-      if (isSwitcher(chunk)) return renderSwitcher(code);
+      if (isSwitcher(chunk)) return renderSwitcher(code, available);
       return needsTranslation(chunk) ? next[hash(chunk)] : chunk;
     })
     .join('\n\n');
@@ -135,8 +140,8 @@ for (const code of Object.keys(LANGUAGES)) {
 }
 
 const switcher = chunks.find(isSwitcher);
-if (switcher && switcher !== renderSwitcher('en')) {
-  outputs[SOURCE] = source.replace(switcher, () => renderSwitcher('en'));
+if (switcher && switcher !== renderSwitcher('en', available)) {
+  outputs[SOURCE] = source.replace(switcher, () => renderSwitcher('en', available));
 }
 
 for (const [file, content] of Object.entries(outputs)) await writeFile(file, content);

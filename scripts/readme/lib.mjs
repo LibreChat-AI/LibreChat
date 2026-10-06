@@ -30,6 +30,7 @@ export const GLOSSARY = [
 export const hash = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
 const FENCE = /^\s*(```|~~~)/;
+const INDENTED_CODE = /^(?:(?: {4}|\t)[^\n]*(?:\n|$))+$/;
 
 /** Splits Markdown on blank lines, keeping fenced code blocks whole. */
 export function splitChunks(markdown) {
@@ -54,10 +55,13 @@ export function splitChunks(markdown) {
 
 export const isSwitcher = (chunk) => /^<p align="center">\s*<strong>English<\/strong>/.test(chunk);
 
-export function renderSwitcher(current) {
+/** `available` lists the language codes whose README exists or is being generated. */
+export function renderSwitcher(current, available = Object.keys(LANGUAGES)) {
   const entries = [
     { code: 'en', label: 'English', file: 'README.md' },
-    ...Object.entries(LANGUAGES).map(([code, { label, file }]) => ({ code, label, file })),
+    ...Object.entries(LANGUAGES)
+      .filter(([code]) => available.includes(code))
+      .map(([code, { label, file }]) => ({ code, label, file })),
   ];
   const items = entries.map((entry) =>
     entry.code === current
@@ -90,7 +94,7 @@ function proseWords(chunk) {
 
 /** True when a chunk holds prose worth sending to the model. */
 export function needsTranslation(chunk) {
-  if (FENCE.test(chunk)) return false;
+  if (FENCE.test(chunk) || INDENTED_CODE.test(chunk)) return false;
   return proseWords(chunk).length > 0;
 }
 
@@ -101,11 +105,11 @@ function facts(chunk) {
     ...chunk.matchAll(/\]\(([^)\s]+)/g),
   ].map((match) => match[1] ?? match[0]);
   return {
-    targets: [...new Set(targets)].sort(),
+    targets: targets.sort(),
     tags: [...chunk.matchAll(/<\/?([a-zA-Z][\w-]*)/g)].map((match) => match[1].toLowerCase()),
     fences: chunk.split('\n').filter((line) => FENCE.test(line)).length,
     heading: /^(#{1,6})\s/.exec(chunk)?.[1] ?? '',
-    bullets: chunk.split('\n').filter((line) => /^\s*[-*]\s/.test(line)).length,
+    bullets: chunk.split('\n').filter((line) => /^\s*(?:[-*]|\d+[.)])\s/.test(line)).length,
   };
 }
 

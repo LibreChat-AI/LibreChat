@@ -67,3 +67,16 @@ test('validate rejects echoed, refused and truncated output for a target languag
   assert.ok(validate(source, 'Это', 'ru').includes('output is truncated'));
   assert.deepEqual(validate('Features', 'Features', 'ru'), []);
 });
+
+test('renderSwitcher links only available languages', () => {
+  const en = renderSwitcher('en', ['zh']);
+  assert.match(en, /README\.zh\.md/);
+  assert.doesNotMatch(en, /README\.ru\.md/);
+});
+
+test('validate checks ordered lists and repeated links, and skips indented code', () => {
+  assert.ok(validate('1. One\n2. Two', '1. Один', 'ru').length > 0);
+  const twice = '[a](https://x.y) and [b](https://x.y)';
+  assert.ok(validate(twice, '[а](https://x.y)', 'ru').length > 0);
+  assert.equal(needsTranslation('    npm run build\n    npm test'), false);
+});
