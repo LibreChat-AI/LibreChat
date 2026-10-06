@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
 
 export const LANGUAGES = {
-  zh: { name: 'Simplified Chinese', label: '中文', file: 'README.zh.md' },
-  ru: { name: 'Russian', label: 'Русский', file: 'README.ru.md' },
+  zh: {
+    name: 'Simplified Chinese',
+    label: '中文',
+    file: 'README.zh.md',
+    script: /\p{Script=Han}/u,
+  },
+  ru: { name: 'Russian', label: 'Русский', file: 'README.ru.md', script: /\p{Script=Cyrillic}/u },
 };
 
 export const GLOSSARY = [
@@ -62,11 +67,31 @@ export function renderSwitcher(current) {
   return `<p align="center">\n  ${items.join(' ·\n  ')}\n</p>`;
 }
 
+const GLOSSARY_PATTERN = new RegExp(
+  GLOSSARY.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+  'gi',
+);
+const MIN_WORDS_FOR_CONTENT_CHECK = 3;
+const MIN_LENGTH_RATIO = 0.2;
+
+/** Words a reader sees: text and alt, title and aria-label values, minus markup, URLs and glossary terms. */
+function proseWords(chunk) {
+  const attributes = [...chunk.matchAll(/\b(?:alt|title|aria-label)="([^"]*)"/g)].map(
+    (match) => match[1],
+  );
+  const text = chunk.replace(/<[^>]*>/g, ' ').replace(/https?:\/\/\S+/g, ' ');
+  return (
+    [...attributes, text]
+      .join(' ')
+      .replace(GLOSSARY_PATTERN, ' ')
+      .match(/\p{L}[\p{L}'’-]*/gu) ?? []
+  );
+}
+
 /** True when a chunk holds prose worth sending to the model. */
 export function needsTranslation(chunk) {
   if (FENCE.test(chunk)) return false;
-  const prose = chunk.replace(/<[^>]*>/g, ' ').replace(/https?:\/\/\S+/g, ' ');
-  return /\p{L}/u.test(prose);
+  return proseWords(chunk).length > 0;
 }
 
 function facts(chunk) {
@@ -84,8 +109,11 @@ function facts(chunk) {
   };
 }
 
-/** Returns a list of structural differences between a source chunk and its translation. */
-export function validate(source, translated) {
+/**
+ * Returns a list of problems with a translation: structural differences from its source, and
+ * output that is not in the target language or is far shorter than the source.
+ */
+export function validate(source, translated, code) {
   const a = facts(source);
   const b = facts(translated);
   const problems = [];
@@ -94,6 +122,11 @@ export function validate(source, translated) {
   if (a.fences !== b.fences) problems.push('code fence count differs');
   if (a.heading !== b.heading) problems.push('heading level differs');
   if (a.bullets !== b.bullets) problems.push('list item count differs');
+  const script = LANGUAGES[code]?.script;
+  if (script && proseWords(source).length >= MIN_WORDS_FOR_CONTENT_CHECK) {
+    if (!script.test(translated)) problems.push('output is not in the target language');
+    if (translated.length < source.length * MIN_LENGTH_RATIO) problems.push('output is truncated');
+  }
   return problems;
 }
 

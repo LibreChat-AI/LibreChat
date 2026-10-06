@@ -49,11 +49,11 @@ for (const code of langs) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function complete(language, chunk) {
+async function complete(code, chunk) {
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages: buildMessages(language, chunk) }),
+    body: JSON.stringify({ model, messages: buildMessages(LANGUAGES[code].name, chunk) }),
     signal: AbortSignal.timeout(120_000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -63,12 +63,12 @@ async function complete(language, chunk) {
   return cleanOutput(content);
 }
 
-async function translate(language, chunk) {
+async function translate(code, chunk) {
   let reason = '';
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     try {
-      const output = await complete(language, chunk);
-      const problems = validate(chunk, output);
+      const output = await complete(code, chunk);
+      const problems = validate(chunk, output, code);
       if (problems.length === 0) return output;
       reason = problems.join('; ');
     } catch (error) {
@@ -77,7 +77,7 @@ async function translate(language, chunk) {
     if (attempt < ATTEMPTS) await sleep(1000 * 2 ** (attempt - 1));
   }
   const preview = chunk.slice(0, 80).replace(/\s+/g, ' ');
-  throw new Error(`${language} translation failed (${reason}) for: ${preview}`);
+  throw new Error(`${code} translation failed (${reason}) for: ${preview}`);
 }
 
 async function pool(items, worker) {
@@ -98,7 +98,7 @@ const cache = { version: 1 };
 const outputs = {};
 
 for (const code of langs) {
-  const { name, file } = LANGUAGES[code];
+  const { file } = LANGUAGES[code];
   const previous = force ? {} : (stored[code] ?? {});
   const next = {};
   const pending = [];
@@ -112,7 +112,7 @@ for (const code of langs) {
     `${code}: ${pending.length} chunk(s) to translate, ${Object.keys(next).length} cached`,
   );
   await pool(pending, async ({ key, chunk }) => {
-    next[key] = await translate(name, chunk);
+    next[key] = await translate(code, chunk);
   });
   const body = chunks
     .map((chunk) => {
