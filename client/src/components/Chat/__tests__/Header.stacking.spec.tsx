@@ -4,6 +4,7 @@ import { render, screen } from '@testing-library/react';
 import Header from '../Header';
 
 const mockEndpoint = { current: 'agents' };
+const mockSmallScreen = { current: false };
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'convo-1' }),
@@ -23,7 +24,7 @@ jest.mock('librechat-data-provider', () => ({
 }));
 jest.mock('~/data-provider', () => ({ useGetStartupConfig: () => ({ data: undefined }) }));
 jest.mock('~/hooks', () => ({ useHasAccess: () => false }));
-jest.mock('~/hooks/Nav/useDrawerViewport', () => () => false);
+jest.mock('~/hooks/Nav/useDrawerViewport', () => () => mockSmallScreen.current);
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
@@ -39,7 +40,7 @@ jest.mock('../Menus', () => ({
   OpenSidebar: () => null,
   PresetsMenu: () => null,
   NewChat: () => null,
-  HeaderMenu: () => null,
+  HeaderMenu: jest.fn(() => null),
 }));
 jest.mock('../TemporaryChat', () => ({
   TemporaryChat: () => null,
@@ -62,10 +63,14 @@ describe('Header stacking', () => {
   const backgroundTasks = jest.requireMock('../BackgroundTasks').BackgroundTasksButton as jest.Mock;
   const pullRequestChip = jest.requireMock('../PullRequest').PullRequestChip as jest.Mock;
 
+  const headerMenu = jest.requireMock('../Menus').HeaderMenu as jest.Mock;
+
   beforeEach(() => {
     backgroundTasks.mockClear();
     pullRequestChip.mockClear();
+    headerMenu.mockClear();
     mockEndpoint.current = 'agents';
+    mockSmallScreen.current = false;
   });
 
   test('keeps header controls above the z-10 composer approval review', () => {
@@ -95,5 +100,25 @@ describe('Header stacking', () => {
   test('does not mount the pull request chip on child threads', () => {
     render(<Header parentConversationId="parent" />);
     expect(pullRequestChip).not.toHaveBeenCalled();
+  });
+
+  test('places the pull request chip with the left controls, not beside the right ones', () => {
+    render(<Header />);
+    const chip = screen.getByTestId('conversation-pull-request');
+    const tasks = screen.getByTestId('conversation-tasks');
+    expect(chip.parentElement).not.toBe(tasks.parentElement);
+  });
+
+  test('leaves the chip to the overflow menu on small screens', () => {
+    mockSmallScreen.current = true;
+    render(<Header />);
+    expect(pullRequestChip).not.toHaveBeenCalled();
+    expect(headerMenu.mock.calls[0][0]).toMatchObject({ pullRequestConversationId: 'convo-1' });
+  });
+
+  test('offers the overflow menu no pull request for a child thread', () => {
+    mockSmallScreen.current = true;
+    render(<Header parentConversationId="parent" />);
+    expect(headerMenu.mock.calls[0][0].pullRequestConversationId).toBeUndefined();
   });
 });

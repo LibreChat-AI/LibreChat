@@ -1,15 +1,23 @@
-import { memo, useRef } from 'react';
+import { memo } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { TooltipAnchor } from '@librechat/client';
-import type { TConversationPullRequest } from 'librechat-data-provider';
 import { useConversationPullRequestQuery } from '~/data-provider';
 import { useAgentsMapContext, useChatContext } from '~/Providers';
 import { TONE_DOT_CLASS, presentPullRequest } from './status';
 import { URLIcon } from '~/components/Endpoints/URLIcon';
+import { summarizePullRequest } from './summary';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
 import PullRequestCard from './Card';
 import { cn } from '~/utils';
+
+/** Slides in from the chip's side, left to right, and fades; reduced motion only fades. */
+const cardClass = cn(
+  'border-border-light bg-surface-secondary text-text-primary z-[200] w-80 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg focus:outline-none',
+  'origin-left -translate-x-3 opacity-0 transition duration-200 ease-out',
+  'data-[enter]:translate-x-0 data-[enter]:opacity-100',
+  'data-[leave]:-translate-x-3 data-[leave]:opacity-0',
+  'motion-reduce:translate-x-0 motion-reduce:transition-opacity',
+);
 
 function CiDot({ dotClass }: { dotClass: string }) {
   return (
@@ -46,36 +54,31 @@ function AgentAvatar({
   );
 }
 
-function summaryLabel(
-  pr: TConversationPullRequest,
-  localize: ReturnType<typeof useLocalize>,
-): string {
-  const view = presentPullRequest(pr);
-  return [
-    `${localize('com_ui_pull_request')} ${localize('com_ui_pr_label', { 0: pr.number })}: ${pr.title}`,
-    localize('com_ui_pr_state', { 0: localize(view.stateKey) }),
-    localize('com_ui_pr_checks', { 0: localize(view.checksKey) }),
-  ].join(', ');
-}
-
 /**
- * Header control for the pull request a code conversation opened. It renders nothing until a
- * pull request is known: a conversation without one, a disabled feature and a failed first
- * lookup all leave the header exactly as it was, so the row never shifts.
+ * Desktop header control for the pull request a code conversation opened. It renders nothing
+ * until a pull request is known: a conversation without one, a disabled feature and a failed
+ * first lookup all leave the header exactly as it was, so the row never shifts. The details
+ * open to the right of the chip on hover or keyboard focus and slide in from the left. The card
+ * holds a link, so it is an Ariakit hovercard: it stays open while the pointer or focus is
+ * inside it, and Tab moves from the chip into it.
  */
 function PullRequestChip({ conversationId }: { conversationId: string }) {
   const localize = useLocalize();
   const { conversation } = useChatContext();
   const agentsMap = useAgentsMapContext();
-  const popover = Ariakit.usePopoverStore({ placement: 'bottom-end' });
-  const disclosureRef = useRef<HTMLButtonElement>(null);
+  const hovercard = Ariakit.useHovercardStore({
+    placement: 'right-start',
+    showTimeout: 100,
+    hideTimeout: 150,
+  });
+  const open = Ariakit.useStoreState(hovercard, 'open');
   const { data, isError, refetch } = useConversationPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
 
   if (pullRequest == null) return null;
 
   const view = presentPullRequest(pullRequest);
-  const label = summaryLabel(pullRequest, localize);
+  const label = summarizePullRequest(pullRequest, localize);
   const dotClass = view.dotTone == null ? null : TONE_DOT_CLASS[view.dotTone];
   const agentId = conversation?.agent_id;
   const agent = agentId == null ? undefined : agentsMap?.[agentId];
@@ -83,42 +86,40 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
   const hasAvatar = avatar !== '';
 
   return (
-    <>
-      <TooltipAnchor
-        description={label}
+    <Ariakit.HovercardProvider store={hovercard}>
+      <Ariakit.HovercardAnchor
         render={
-          <Ariakit.PopoverDisclosure
-            ref={disclosureRef}
-            store={popover}
+          <Ariakit.Button
             aria-label={label}
+            aria-expanded={open}
             data-testid="header-pull-request-button"
-            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary inline-flex h-9 max-w-[14rem] min-w-0 flex-shrink items-center gap-1.5 rounded-xl border px-2 text-sm transition-all ease-in-out max-md:max-w-none max-md:px-2.5"
+            onFocus={() => hovercard.show()}
+            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary inline-flex h-9 max-w-[14rem] min-w-0 flex-shrink items-center gap-1.5 rounded-xl border px-2 text-sm transition-all ease-in-out"
           >
             {hasAvatar && <AgentAvatar avatar={avatar} name={agent?.name} dotClass={dotClass} />}
             <span className="relative flex shrink-0 items-center">
               <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />
               {!hasAvatar && dotClass != null && <CiDot dotClass={dotClass} />}
             </span>
-            <span className="truncate max-md:hidden">{pullRequest.title}</span>
-          </Ariakit.PopoverDisclosure>
+            <span className="truncate">{pullRequest.title}</span>
+          </Ariakit.Button>
         }
       />
-      <Ariakit.Popover
-        store={popover}
+      <Ariakit.Hovercard
         gutter={8}
         portal
         unmountOnHide
-        finalFocus={disclosureRef}
+        autoFocusOnShow={false}
         aria-label={localize('com_ui_pull_request')}
-        className="border-border-medium bg-surface-secondary text-text-primary z-[200] w-80 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg focus:outline-none"
+        className={cardClass}
       >
         <PullRequestCard
           pullRequest={pullRequest}
           refreshFailed={isError}
           onRetry={() => void refetch()}
         />
-      </Ariakit.Popover>
-    </>
+      </Ariakit.Hovercard>
+    </Ariakit.HovercardProvider>
   );
 }
 

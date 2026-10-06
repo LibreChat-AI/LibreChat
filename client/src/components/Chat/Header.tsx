@@ -113,14 +113,16 @@ function Header({
             <AddMultiConvo />
           </div>
         )}
+        {/* Desktop only: its details open to the right, into the room this cluster leaves free.
+            Small screens reach the same card from the overflow menu. */}
+        {!isSmallScreen && !isNewChat && parentConversationId == null && (
+          <PullRequestChip key={`pr-${routeConversationId}`} conversationId={routeConversationId} />
+        )}
       </div>
 
       <div className={cn('flex shrink-0 items-center gap-2', hiddenBehindNav)}>
         {showTemporaryChat && <TemporaryChatIndicator />}
         {!isNewChat && <NewChat className={isSmallScreen ? undefined : 'hidden'} />}
-        {!isNewChat && parentConversationId == null && (
-          <PullRequestChip key={`pr-${routeConversationId}`} conversationId={routeConversationId} />
-        )}
         {!isNewChat && parentConversationId == null && (
           <BackgroundTasksButton
             key={routeConversationId}
@@ -132,6 +134,9 @@ function Header({
           startupConfig={startupConfig}
           trace={trace}
           readOnly={readOnly}
+          pullRequestConversationId={
+            isNewChat || parentConversationId != null ? undefined : routeConversationId
+          }
           className={isSmallScreen ? undefined : 'hidden'}
         />
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>

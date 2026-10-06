@@ -126,6 +126,44 @@ describe('PullRequestChip', () => {
     expect(screen.queryByTestId('pull-request-ci-dot')).not.toBeInTheDocument();
   });
 
+  it('keeps the card closed until the chip is hovered or focused', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    const button = await screen.findByTestId('header-pull-request-button');
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens the card on hover and says so on the chip', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    const button = await screen.findByTestId('header-pull-request-button');
+    await userEvent.hover(button);
+    const card = await screen.findByTestId('pull-request-card');
+    expect(card.closest('[role="dialog"]')).toHaveAccessibleName('com_ui_pull_request');
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('closes the card when the pointer leaves', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    const button = await screen.findByTestId('header-pull-request-button');
+    await userEvent.hover(button);
+    await screen.findByTestId('pull-request-card');
+    await userEvent.unhover(button);
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens the card for keyboard focus', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    await screen.findByTestId('header-pull-request-button');
+    await userEvent.tab();
+    expect(screen.getByTestId('header-pull-request-button')).toHaveFocus();
+    expect(await screen.findByTestId('pull-request-card')).toBeInTheDocument();
+  });
+
   it('opens a card with the number, line counts, badges and a safe GitHub link', async () => {
     mockGet.mockResolvedValue({ pullRequest: pr });
     renderChip();
