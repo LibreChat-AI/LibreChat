@@ -307,6 +307,7 @@ export default [
             'scroll-animation',
             'hover-button-active',
             'open',
+            'split-parent',
           ],
         },
       ],
