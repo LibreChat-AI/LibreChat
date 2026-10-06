@@ -4,9 +4,9 @@ import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/cl
 import { NEW_CHAT_PATH } from '../helpers';
 
 /**
- * The 10, 11, 13 and 15px steps of the type scale. They size text and leave the line height to
- * the surrounding block, exactly like the `text-[Npx]` classes they replace, so a probe inside a
- * block with a fixed line height must keep it.
+ * The 10, 11, 13 and 15px steps of the type scale. Tailwind emits a `text-*` utility only for a
+ * class some source file uses, and no call site uses these yet, so the probes read the theme role
+ * variables the utilities are wired to (`--text-3xs: var(--theme-text-3xs)`) through a font size.
  */
 
 type Mode = 'light' | 'dark';
@@ -51,24 +51,20 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
   });
 }
 
-/** Renders each step inside a block that fixes its line height, and reads what the browser computed. */
+/** Sizes a probe with each step's role variable and reads what the browser computed. */
 async function measure(page: Page) {
   return page.evaluate((steps) => {
-    const block = document.createElement('div');
-    block.style.lineHeight = '37px';
-    document.body.append(block);
-    const result = Object.fromEntries(
+    return Object.fromEntries(
       steps.map((step) => {
         const node = document.createElement('p');
-        node.className = `text-${step}`;
+        node.style.fontSize = `var(--theme-text-${step})`;
         node.textContent = 'Type probe';
-        block.append(node);
-        const style = getComputedStyle(node);
-        return [step, { size: style.fontSize, leading: style.lineHeight }];
+        document.body.append(node);
+        const size = getComputedStyle(node).fontSize;
+        node.remove();
+        return [step, size];
       }),
     );
-    block.remove();
-    return result;
   }, Object.keys(DEFAULT_SIZES));
 }
 
@@ -80,7 +76,7 @@ const CASES: Array<{
 }> = [
   {
     title:
-      'the default theme sizes the 10, 11, 13 and 15px steps exactly and leaves line height alone @scenario:type-steps-default-exact',
+      'the default theme sizes the 10, 11, 13 and 15px steps exactly @scenario:type-steps-default-exact',
     mode: 'light',
     sizes: DEFAULT_SIZES,
   },
@@ -107,7 +103,7 @@ test.describe('off-scale type steps', () => {
       const metrics = await measure(page);
 
       for (const [step, size] of Object.entries(sizes)) {
-        expect(metrics[step]).toEqual({ size, leading: '37px' });
+        expect(metrics[step]).toBe(size);
       }
     });
   }
