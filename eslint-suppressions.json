@@ -146,11 +146,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/AddedConvo.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
     "shadcn/no-restyle": {
       "count": 7
@@ -882,17 +877,9 @@
       "count": 2
     }
   },
-  "client/src/components/Endpoints/ConvoIconURL.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
   "client/src/components/Endpoints/MessageEndpointIcon.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-raw-colors": {
-      "count": 4
     },
     "shadcn/no-restyle": {
       "count": 3
@@ -1454,9 +1441,6 @@
     "shadcn/no-arbitrary-values": {
       "count": 3
     },
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 9
     }
@@ -2016,19 +2000,9 @@
       "count": 2
     }
   },
-  "packages/client/src/components/AnimatedSearchInput.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/Avatar.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    }
-  },
-  "packages/client/src/components/Badge.tsx": {
-    "shadcn/no-unknown-classes": {
-      "count": 6
     }
   },
   "packages/client/src/components/Combobox.tsx": {
@@ -2079,9 +2053,6 @@
   "packages/client/src/components/SplitText.tsx": {
     "shadcn/no-inline-styles": {
       "count": 7
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "packages/client/src/components/Toast.tsx": {
@@ -2092,36 +2063,6 @@
   "packages/client/src/icons/provider/Avatar.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
-    }
-  },
-  "packages/client/src/svgs/BirthdayIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 10
-    }
-  },
-  "packages/client/src/svgs/DiscordIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 2
-    }
-  },
-  "packages/client/src/svgs/FacebookIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 3
-    }
-  },
-  "packages/client/src/svgs/GeminiIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 2
-    }
-  },
-  "packages/client/src/svgs/GoogleIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 4
-    }
-  },
-  "packages/client/src/svgs/PaLMIcon.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 7
     }
   },
   "packages/client/src/svgs/SendMessageIcon.tsx": {
