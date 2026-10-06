@@ -26,6 +26,10 @@ export type TConversationPullRequest = {
  *  request; the lookups themselves stay governed by the configured limits and cache. */
 export const PULL_REQUEST_BATCH_MAX = 50;
 
+/** The most a deployment may set `batchTimeoutSeconds` to. The server answers by its own deadline,
+ *  so a client that waits just past this never gives up before the server does. */
+export const PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS = 120;
+
 export type TConversationPullRequestsRequest = { conversationIds: string[] };
 
 /** One conversation's answer: its pull request (null when it has none), or a stable failure code. */

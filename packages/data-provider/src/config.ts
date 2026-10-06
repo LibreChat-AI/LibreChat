@@ -62,6 +62,7 @@ import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { fileConfigSchema } from './file-config';
+import { PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS } from './types/pullRequest';
 import { isActionTool } from './types/tools';
 import { apiBaseUrl } from './api-endpoints';
 import { FileSources } from './types/files';
@@ -1880,7 +1881,13 @@ export const agentsEndpointSchema = baseEndpointSchema
            *  GitHub requests, so this bounds how hard one request leans on the token. */
           maxConcurrentLookups: z.number().int().min(1).max(16).optional().default(4),
           /** Seconds one sidebar request may stay open in total, whatever its lookups are doing. */
-          batchTimeoutSeconds: z.number().int().min(1).max(120).optional().default(20),
+          batchTimeoutSeconds: z
+            .number()
+            .int()
+            .min(1)
+            .max(PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS)
+            .optional()
+            .default(20),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */
           requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),
           /** Longest a whole lookup, every request together, may hold the header request. */

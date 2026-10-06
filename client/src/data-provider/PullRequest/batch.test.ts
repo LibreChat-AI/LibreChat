@@ -141,6 +141,33 @@ describe('createPullRequestBatcher', () => {
       await expect(later).resolves.toEqual({ pullRequest: null });
     });
 
+    it('waits longer than the longest server deadline a deployment can configure by default', async () => {
+      const fetchMany = jest
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) =>
+              setTimeout(
+                () => resolve({ results: [{ conversationId: 'a', pullRequest: null }] }),
+                125_000,
+              ),
+            ),
+        )
+        .mockResolvedValue({ results: [{ conversationId: 'b', pullRequest: null }] });
+      const { load } = createPullRequestBatcher({ fetchMany });
+      const slow = load('a');
+      await jest.advanceTimersByTimeAsync(50);
+      const queued = load('b');
+      await jest.advanceTimersByTimeAsync(124_000);
+      /** A 120 s server batch has not finished at 124 s of waiting, and the next must not have started. */
+      expect(fetchMany).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(2_000);
+      await expect(slow).resolves.toEqual({ pullRequest: null });
+      await jest.advanceTimersByTimeAsync(50);
+      await expect(queued).resolves.toEqual({ pullRequest: null });
+      expect(fetchMany).toHaveBeenCalledTimes(2);
+    });
+
     it('does not time out a request that answers in time', async () => {
       const fetchMany = jest
         .fn()

@@ -1,4 +1,7 @@
-import { PULL_REQUEST_BATCH_MAX } from 'librechat-data-provider';
+import {
+  PULL_REQUEST_BATCH_MAX,
+  PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS,
+} from 'librechat-data-provider';
 import type {
   TConversationPullRequestResponse,
   TConversationPullRequestsResponse,
@@ -25,14 +28,15 @@ type BatcherOptions = {
   maxBatch?: number;
   /**
    * Longest a request may hold the queue. Requests go out one at a time, so one that never
-   * answers would otherwise stop every later one; past this its callers fail and the queue moves
-   * on. The server ends its own batch at 20 s by default, so this sits just above that.
+   * answers would otherwise stop every later one. It defaults to just past the longest deadline a
+   * deployment may configure for the server's own batch, so the server always answers first and
+   * the next request never starts while the previous one's lookups are still running.
    */
   requestTimeoutMs?: number;
 };
 
 const DEFAULT_DELAY_MS = 30;
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = (PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS + 10) * 1000;
 
 /**
  * Collects the conversation ids asked for within a short window and fetches them in one request.
