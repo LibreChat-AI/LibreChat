@@ -390,11 +390,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Container.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/DialogImage.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 2
@@ -485,9 +480,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/EmptyText.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-unknown-classes": {
       "count": 1
     }
