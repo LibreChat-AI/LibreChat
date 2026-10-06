@@ -302,6 +302,31 @@ describe('useChatOptions', () => {
     expect(find(subItems, 'com_ui_retry').hideOnClick).toBe(false);
   });
 
+  it('retries with a refetch when an automatic refresh failed after a failed Load more', async () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    mockState.hasNextPage = true;
+    const { result, rerender } = setup(false, true);
+    const rows = () => find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    mockFetchNextPage.mockResolvedValueOnce({ isError: true });
+    await act(async () => {
+      find(rows(), 'com_ui_load_more').onClick?.({} as never);
+    });
+
+    /** A remount or a window focus refetches the held pages without anyone clicking: that, not
+     *  the earlier page request, is what failed when the error shows up now. */
+    mockState.fetching = true;
+    rerender();
+    mockState.fetching = false;
+    mockState.projectsError = true;
+    rerender();
+    await act(async () => {
+      find(rows(), 'com_ui_retry').onClick?.({} as never);
+    });
+
+    expect(mockFetchNextPage).toHaveBeenCalledTimes(1);
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
+  });
+
   it('offers a retry when the first page fails', async () => {
     mockState.projectsError = true;
     const { result } = setup(false, true);

@@ -1,8 +1,20 @@
 import React, { useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import userEvent from '@testing-library/user-event';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import DropdownPopup from './DropdownPopup';
+
+/** `user-event` resolves its own copy of `@testing-library/dom`, so the wrapper React Testing
+ *  Library installs around events never reaches it: Ariakit's animation-frame updates then land
+ *  outside `act`. Wrapping each interaction here keeps them inside it. */
+const press = (user: ReturnType<typeof userEvent.setup>, keys: string) =>
+  act(async () => {
+    await user.keyboard(keys);
+  });
+const click = (user: ReturnType<typeof userEvent.setup>, element: HTMLElement) =>
+  act(async () => {
+    await user.click(element);
+  });
 
 describe('DropdownPopup', () => {
   it('restores pointer events on portaled menus so they stay clickable inside modal dialogs', () => {
@@ -63,10 +75,10 @@ describe('DropdownPopup', () => {
         );
       }
       render(<Example />);
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}{ArrowDown}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}{ArrowDown}');
       expect(await screen.findByRole('menuitem', { name: /Change project/ })).toHaveFocus();
-      await user.keyboard('{ArrowRight}');
+      await press(user, '{ArrowRight}');
       const item = await screen.findByRole('menuitem', { name: 'Alpha' });
       await waitFor(() => expect(item).toHaveFocus());
       return { user, item, onOpenChange };
@@ -76,7 +88,7 @@ describe('DropdownPopup', () => {
       const onPick = jest.fn();
       const { user, onOpenChange } = await openSubmenu(onPick);
 
-      await user.keyboard('{Enter}');
+      await press(user, '{Enter}');
 
       expect(onPick).toHaveBeenCalledTimes(1);
       await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(false));
@@ -104,13 +116,13 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}');
       expect(await screen.findByRole('menuitem', { name: 'Rename' })).toHaveFocus();
-      await user.keyboard('{ArrowDown}');
+      await press(user, '{ArrowDown}');
       expect(screen.getByRole('menuitem', { name: /Change project/ })).toHaveFocus();
 
-      await user.keyboard('{ArrowRight}');
+      await press(user, '{ArrowRight}');
       expect(await screen.findByRole('menuitem', { name: 'Alpha' })).toBeInTheDocument();
     });
 
@@ -134,10 +146,10 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}{ArrowDown}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}{ArrowDown}');
       expect(await screen.findByRole('menuitem', { name: /Change project/ })).toHaveFocus();
-      await user.keyboard('{ArrowRight}');
+      await press(user, '{ArrowRight}');
 
       expect(await screen.findByRole('menuitem', { name: 'Alpha' })).toBeInTheDocument();
       expect(screen.queryByRole('menuitem', { name: 'Work' })).not.toBeInTheDocument();
@@ -167,13 +179,13 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}{ArrowDown}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}{ArrowDown}');
       const trigger = await screen.findByRole('menuitem', { name: /Change project/ });
       expect(trigger.tagName).toBe('BUTTON');
       expect(trigger).toHaveFocus();
 
-      await user.keyboard('{ArrowRight}');
+      await press(user, '{ArrowRight}');
       expect(await screen.findByRole('menuitem', { name: 'Alpha' })).toBeInTheDocument();
     });
 
@@ -196,12 +208,14 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}{ArrowDown}{ArrowRight}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}{ArrowDown}');
+      expect(await screen.findByRole('menuitem', { name: /Change project/ })).toHaveFocus();
+      await press(user, '{ArrowRight}');
       const alpha = await screen.findByRole('menuitem', { name: 'Alpha' });
       await waitFor(() => expect(alpha).toHaveFocus());
 
-      await user.keyboard('{Enter}');
+      await press(user, '{Enter}');
 
       await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull());
       expect(screen.queryByRole('menuitem', { name: 'Alpha' })).toBeNull();
@@ -228,7 +242,7 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
+      await click(user, screen.getByRole('button', { name: 'Options' }));
 
       expect(await screen.findByRole('menuitemradio', { name: 'Alpha' })).toHaveAttribute(
         'aria-checked',
@@ -272,12 +286,12 @@ describe('DropdownPopup', () => {
       }
       render(<Example />);
 
-      await user.click(screen.getByRole('button', { name: 'Options' }));
-      await user.keyboard('{ArrowDown}{ArrowDown}');
+      await click(user, screen.getByRole('button', { name: 'Options' }));
+      await press(user, '{ArrowDown}{ArrowDown}');
       const loadMore = await screen.findByRole('menuitem', { name: 'Load more' });
       expect(loadMore).toHaveFocus();
 
-      await user.keyboard('{Enter}');
+      await press(user, '{Enter}');
 
       expect(await screen.findByRole('menuitem', { name: 'Project 2' })).toBeInTheDocument();
       /** Keyed by position, the appended project took over this element and the user's next Enter
@@ -290,7 +304,7 @@ describe('DropdownPopup', () => {
       const onPick = jest.fn();
       const { user, onOpenChange } = await openSubmenu(onPick, false);
 
-      await user.keyboard('{Enter}');
+      await press(user, '{Enter}');
 
       expect(onPick).toHaveBeenCalledTimes(1);
       expect(onOpenChange).not.toHaveBeenCalledWith(false);

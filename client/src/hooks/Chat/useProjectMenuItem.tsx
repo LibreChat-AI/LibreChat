@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { Spinner, useToastContext } from '@librechat/client';
 import { Check, Folder, FolderInput, FolderX } from 'lucide-react';
 import type * as t from '~/common';
@@ -36,6 +36,14 @@ export default function useProjectMenuItem({
   /** `isError` alone cannot say whether a page request or a refresh of the loaded pages failed,
    *  and Retry has to repeat the one that did. */
   const failedPageRequest = useRef(false);
+  const requestInFlight = useRef(false);
+  /** A refetch nobody asked for here (a remount, a window focus) replaces whatever the last request
+   *  left behind: when it fails, it is the refresh that Retry has to repeat. */
+  useEffect(() => {
+    if (isFetching && !requestInFlight.current) {
+      failedPageRequest.current = false;
+    }
+  }, [isFetching]);
 
   const pending = assignMutation.isLoading;
   const pendingProjectId = assignMutation.variables?.projectId;
@@ -70,8 +78,13 @@ export default function useProjectMenuItem({
   };
 
   const request = async (nextPage: boolean) => {
-    const result = await (nextPage ? fetchNextPage() : refetch());
-    failedPageRequest.current = nextPage && result.isError;
+    requestInFlight.current = true;
+    try {
+      const result = await (nextPage ? fetchNextPage() : refetch());
+      failedPageRequest.current = nextPage && result.isError;
+    } finally {
+      requestInFlight.current = false;
+    }
   };
 
   const trigger: t.MenuItemProps = {
