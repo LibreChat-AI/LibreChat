@@ -14,6 +14,7 @@ import type { AgentForm, AgentModelPanelProps, StringOption } from '~/common';
 import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
 import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
 import { Panel } from '~/common';
@@ -64,6 +65,7 @@ export default function ModelPanel({
 
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
   const { data: startupConfig } = useGetStartupConfig();
+  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model ?? '');
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[provider]?.availableRegions ?? [];
@@ -82,8 +84,9 @@ export default function ModelPanel({
         provider,
         startupConfig,
         webSearchAllowed,
+        modelReasoning,
       }),
-    [endpointsConfig, model, provider, startupConfig, webSearchAllowed],
+    [endpointsConfig, model, modelReasoning, provider, startupConfig, webSearchAllowed],
   );
   /** The rendered set omits role-gated controls; `parameterSettings.parameters`
    *  stays complete so the pruning effect below still recognises them. */

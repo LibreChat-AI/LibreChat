@@ -24,6 +24,7 @@ import type {
 import type { TranslationKeys } from '~/hooks';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -336,6 +337,7 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
+  const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model);
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -346,8 +348,17 @@ export function useComposerReasoning({
       reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
       blockedReasoningKeys,
+      modelReasoning,
     });
-  }, [blockedReasoningKeys, endpointType, endpointsConfig, isAgent, model, provider]);
+  }, [
+    blockedReasoningKeys,
+    endpointType,
+    endpointsConfig,
+    isAgent,
+    model,
+    modelReasoning,
+    provider,
+  ]);
   const settingFingerprint =
     setting == null
       ? ''

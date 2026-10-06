@@ -68,6 +68,7 @@ jest.mock('~/components/SidePanel/Parameters/components', () => ({
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: () => ({ data: {} }),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
+  useReasoningCapabilitiesQuery: () => ({ data: undefined }),
 }));
 
 jest.mock('~/Providers', () => ({

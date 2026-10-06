@@ -753,6 +753,19 @@ export type TModelTokenomics = {
   cacheRead?: number;
 };
 
+/**
+ * The reasoning efforts one model accepts, as the provider reports them
+ * (OpenRouter's per-model `reasoning.supported_efforts` and `reasoning.mandatory`).
+ */
+export type TModelReasoning = {
+  efforts: string[];
+  /** Reasoning cannot be turned off, so `none` is not a valid choice. */
+  mandatory?: boolean;
+};
+
+/** endpoint → model → reasoning efforts, from GET /api/endpoints/reasoning-capabilities */
+export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
+
 /** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
 export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
 

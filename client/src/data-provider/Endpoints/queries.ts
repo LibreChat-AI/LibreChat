@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
 import { useQuery } from '@tanstack/react-query';
-import { QueryKeys, dataService } from 'librechat-data-provider';
+import { Time, QueryKeys, dataService } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import { normalizeStartupConfigModelSpecs } from '~/utils';
@@ -40,6 +40,29 @@ export const useTokenConfigQuery = (
     ...config,
     enabled: (config?.enabled ?? true) === true && queriesEnabled,
   });
+};
+
+/**
+ * Per-model reasoning efforts of the OpenRouter endpoints. The server caches the
+ * catalog for an hour and the data changes rarely, so one fetch serves the session.
+ * Pass `enabled: false` unless the selected endpoint is an OpenRouter one, so other
+ * users never pay for the request.
+ */
+export const useReasoningCapabilitiesQuery = (
+  config?: UseQueryOptions<t.TReasoningCapabilityMap>,
+): QueryObserverResult<t.TReasoningCapabilityMap> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  return useQuery<t.TReasoningCapabilityMap>(
+    [QueryKeys.reasoningCapabilities],
+    () => dataService.getReasoningCapabilities(),
+    {
+      staleTime: Time.ONE_HOUR,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      ...config,
+      enabled: (config?.enabled ?? true) === true && queriesEnabled,
+    },
+  );
 };
 
 /**

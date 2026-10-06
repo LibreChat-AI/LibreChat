@@ -1,6 +1,6 @@
 import type { SettingDefinition, SettingsConfiguration } from './generate';
 import type { TReasoningOverride } from './schemas';
-import type { ResponsesApiRouting } from './types';
+import type { ResponsesApiRouting, TModelReasoning, TReasoningCapabilityMap } from './types';
 import {
   Verbosity,
   ImageDetail,
@@ -1451,6 +1451,7 @@ export function resolveReasoningSettingForTarget({
   reasoningFormat,
   paramDefinitions,
   blockedReasoningKeys,
+  modelReasoning,
 }: {
   endpoint: string;
   model?: string | null;
@@ -1459,6 +1460,8 @@ export function resolveReasoningSettingForTarget({
   reasoningFormat?: ReasoningParameterFormat | null;
   paramDefinitions?: Partial<SettingDefinition>[] | null;
   blockedReasoningKeys?: ReadonlySet<string>;
+  /** Provider-reported efforts for `model`; see {@link applyModelAwareDefaults}. */
+  modelReasoning?: TModelReasoning | null;
 }): SettingDefinition | undefined {
   if (!model || reasoningFormat === ReasoningParameterFormat.disabled) {
     return undefined;
@@ -1498,12 +1501,16 @@ export function resolveReasoningSettingForTarget({
       setting.key == null ? [] : ([[setting.key, setting]] as const),
     ),
   );
-  const settings = applyModelAwareDefaults(baseSettings, effectiveDefaultParamsEndpoint, model).map(
-    (setting) => {
-      const override = customSettingsByKey.get(setting.key);
-      return override == null ? setting : { ...setting, ...override };
-    },
-  );
+  const settings = applyModelAwareDefaults(
+    baseSettings,
+    effectiveDefaultParamsEndpoint,
+    model,
+    undefined,
+    modelReasoning,
+  ).map((setting) => {
+    const override = customSettingsByKey.get(setting.key);
+    return override == null ? setting : { ...setting, ...override };
+  });
   const declaredReasoningSettings = (paramDefinitions ?? [])
     .filter((setting) => reasoningSettingKeys.includes(setting.key as ReasoningSettingKey))
     .filter((setting) => !settings.some((baseSetting) => baseSetting.key === setting.key))
@@ -1557,13 +1564,81 @@ export function isReasoningOverrideSupported(
   return setting.options == null || setting.options.includes(reasoningOverride.value);
 }
 
+const knownReasoningEfforts: ReadonlySet<string> = new Set(Object.values(ReasoningEffort));
+
+/**
+ * Looks one model up in an endpoint's provider-reported reasoning efforts, for
+ * {@link applyModelAwareDefaults}: `undefined` while the endpoint has not been
+ * resolved, `null` when it was and the provider reports no reasoning for the
+ * model. A routing variant (`model:nitro`) is matched to its base model.
+ */
+export function getModelReasoning(
+  capabilities: TReasoningCapabilityMap | undefined,
+  endpoint: string,
+  model: string,
+): TModelReasoning | null | undefined {
+  const models = capabilities?.[endpoint];
+  if (models == null) {
+    return undefined;
+  }
+  return models[model] ?? models[model.split(':')[0]] ?? null;
+}
+
+/**
+ * Narrows the effort setting to what one OpenRouter model accepts. A model with
+ * no reasoning metadata, or none this client knows, has no effort control: the
+ * provider says to omit effort selection then, and sending one is rejected.
+ * `none` is dropped when the model's reasoning is mandatory. Auto stays because
+ * it sends no effort at all.
+ */
+function narrowOpenRouterEfforts(
+  settings: SettingsConfiguration,
+  modelReasoning: TModelReasoning | null,
+): SettingsConfiguration {
+  const supported = (modelReasoning?.efforts ?? []).filter(
+    (effort) =>
+      knownReasoningEfforts.has(effort) &&
+      !(modelReasoning?.mandatory === true && effort === ReasoningEffort.none),
+  );
+  return settings.flatMap((setting) => {
+    if (setting.key !== 'reasoning_effort') {
+      return [setting];
+    }
+    if (supported.length === 0) {
+      return [];
+    }
+    const options = setting.options?.filter(
+      (option) => option === ReasoningEffort.unset || supported.includes(String(option)),
+    );
+    return [{ ...setting, options }];
+  });
+}
+
 /**
  * Resolves model-aware defaults for a settings configuration before rendering.
  * Google's `maxOutputTokens` default depends on the selected Gemini model so that
  * current models (2.5 and 3+) surface their 64K output limit instead of the legacy 8K value.
  * Anthropic prompt-cache controls are only surfaced for models that support them.
+ *
+ * `modelReasoning` is the provider-reported effort set for the model on an OpenRouter
+ * endpoint: `undefined` while it is unknown (the generic list is kept), `null` when the
+ * provider reports no reasoning for the model, otherwise the efforts to offer.
  */
 export function applyModelAwareDefaults(
+  settings: SettingsConfiguration,
+  endpoint: string,
+  model?: string,
+  responsesApiRouting?: ResponsesApiRouting,
+  modelReasoning?: TModelReasoning | null,
+): SettingsConfiguration {
+  const scoped =
+    model && endpoint === Providers.OPENROUTER && modelReasoning !== undefined
+      ? narrowOpenRouterEfforts(settings, modelReasoning)
+      : settings;
+  return applyModelFamilyDefaults(scoped, endpoint, model, responsesApiRouting);
+}
+
+function applyModelFamilyDefaults(
   settings: SettingsConfiguration,
   endpoint: string,
   model?: string,

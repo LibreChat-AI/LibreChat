@@ -11,6 +11,7 @@ import {
   ContentTypes,
   EModelEndpoint,
   getEndpointField,
+  getModelReasoning,
   isAgentsEndpoint,
   parseCompactConvo,
   replaceSpecialVars,
@@ -28,6 +29,7 @@ import type {
   TEndpointOption,
   TEndpointsConfig,
   EndpointSchemaKey,
+  TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
@@ -542,6 +544,16 @@ export default function useChatFunctions({
               defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
               reasoningFormat: customParams?.reasoningFormat,
               paramDefinitions: customParams?.paramDefinitions,
+              modelReasoning:
+                effectiveModel == null
+                  ? undefined
+                  : getModelReasoning(
+                      queryClient.getQueryData<TReasoningCapabilityMap>([
+                        QueryKeys.reasoningCapabilities,
+                      ]),
+                      effectiveEndpoint,
+                      effectiveModel,
+                    ),
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
         reasoningOverride = undefined;

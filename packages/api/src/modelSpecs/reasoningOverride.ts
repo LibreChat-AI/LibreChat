@@ -1,10 +1,12 @@
 import {
+  getModelReasoning,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
   resolveReasoningSettingForTarget,
   type TEndpointsConfig,
   type TReasoningOverride,
+  type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { AgentContinuationAdmissionSource } from '~/agents/triggers/host';
 
@@ -56,6 +58,8 @@ export type ReasoningOverrideInput = {
   parsedModel?: string | null;
   isAgent: boolean;
   endpointsConfig?: TEndpointsConfig;
+  /** Provider-reported efforts per OpenRouter model; absent while unknown. */
+  reasoningCapabilities?: TReasoningCapabilityMap;
   defaultParamsEndpoint?: string | null;
   appliedModelSpecPrivateFields?: ReadonlySet<string>;
   enforcedModelSpecFields?: ReadonlySet<string>;
@@ -87,6 +91,7 @@ export async function resolveReasoningOverride({
   parsedModel,
   isAgent,
   endpointsConfig,
+  reasoningCapabilities,
   defaultParamsEndpoint,
   appliedModelSpecPrivateFields = new Set(),
   enforcedModelSpecFields = new Set(),
@@ -119,6 +124,10 @@ export async function resolveReasoningOverride({
     paramDefinitions: customParams?.paramDefinitions,
     reasoningFormat: customParams?.reasoningFormat,
     blockedReasoningKeys: new Set([...appliedModelSpecPrivateFields, ...enforcedModelSpecFields]),
+    modelReasoning:
+      effectiveModel == null
+        ? undefined
+        : getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
   });
 
   if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
@@ -155,8 +164,10 @@ export async function resolveReasoningOverride({
 
 export type RequestReasoningOverrideInput = Omit<
   ReasoningOverrideInput,
-  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase'
+  'reasoningOverride' | 'endpointOption' | 'reasoningOverrideBase' | 'reasoningCapabilities'
 > & {
+  /** Loads per-model efforts; called only for a request that carries an override. */
+  loadReasoningCapabilities?: () => Promise<TReasoningCapabilityMap>;
   /** The raw request field; validated here, so the caller passes it unparsed. */
   reasoningOverride?: unknown;
 };
@@ -185,7 +196,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
       agentContinuationAdmission?: AgentContinuationAdmissionSource;
     };
   },
-  { reasoningOverride: raw, ...input }: RequestReasoningOverrideInput,
+  { reasoningOverride: raw, loadReasoningCapabilities, ...input }: RequestReasoningOverrideInput,
 ): Promise<boolean> {
   const stripReplayedOverride = (): boolean => {
     delete req.body.reasoningOverride;
@@ -231,6 +242,7 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   }
   const resolution = await resolveReasoningOverride({
     ...input,
+    reasoningCapabilities: await loadReasoningCapabilities?.(),
     reasoningOverride: request.reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,

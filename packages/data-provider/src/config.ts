@@ -4608,6 +4608,10 @@ export enum CacheKeys {
    */
   TOKEN_CONFIG = 'TOKEN_CONFIG',
   /**
+   * Key for the per-model reasoning effort cache of OpenRouter endpoints.
+   */
+  REASONING_CAPABILITIES = 'REASONING_CAPABILITIES',
+  /**
    * Key for the app config namespace.
    */
   APP_CONFIG = 'APP_CONFIG',

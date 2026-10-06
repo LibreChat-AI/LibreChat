@@ -7,6 +7,7 @@ import type {
   TConversation,
   TReasoningOverride,
   TSubmission,
+  TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
@@ -21,10 +22,14 @@ type MockEndpointConfig = {
   };
 };
 let mockEndpointsConfig: Record<string, MockEndpointConfig> | undefined = {};
+let mockCapabilities: TReasoningCapabilityMap | undefined;
 
 jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
+  useReasoningCapabilitiesQuery: (config?: { enabled?: boolean }) => ({
+    data: config?.enabled === false ? undefined : mockCapabilities,
+  }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -37,6 +42,7 @@ jest.mock('~/hooks', () => ({
 
 beforeEach(() => {
   mockEndpointsConfig = {};
+  mockCapabilities = undefined;
 });
 
 const enumSetting: SettingDefinition = {
@@ -798,5 +804,57 @@ describe('useComposerReasoning', () => {
       ).toBeUndefined(),
     );
     expect(rendered.result.current?.setting.key).toBe('reasoning_effort');
+  });
+});
+
+describe('useComposerReasoning: OpenRouter per-model efforts', () => {
+  const model = 'openai/gpt-6.1-sol';
+  const conversation = {
+    title: null,
+    conversationId: 'openrouter-conversation',
+    endpoint: 'OpenRouter',
+    endpointType: 'custom',
+    model,
+    createdAt: '',
+    updatedAt: '',
+  } as unknown as TConversation;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <RecoilRoot>
+      <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+    </RecoilRoot>
+  );
+  const render = () =>
+    renderHook(() => useComposerReasoning({ conversation, index: 0, enabled: true }), { wrapper });
+
+  beforeEach(() => {
+    mockEndpointsConfig = {
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+        },
+      } as MockEndpointConfig,
+    };
+  });
+
+  it('keeps the generic efforts while the capabilities are still loading', () => {
+    expect(render().result.current?.setting.options).toContain(ReasoningEffort.max);
+  });
+
+  it('offers only the efforts the selected model supports', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+
+    expect(render().result.current?.setting.options).toEqual([
+      ReasoningEffort.unset,
+      ReasoningEffort.low,
+      ReasoningEffort.high,
+    ]);
+  });
+
+  it('hides the control for a model the provider lists without reasoning', () => {
+    mockCapabilities = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
+
+    expect(render().result.current).toBeNull();
   });
 });
