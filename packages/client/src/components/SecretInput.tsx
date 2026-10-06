@@ -100,6 +100,7 @@ const SecretInput: React.ForwardRefExoticComponent<
           disabled={disabled}
           value={value}
           autoComplete="off"
+          placeholder={isFloating ? ' ' : undefined}
           spellCheck={false}
           {...props}
         />

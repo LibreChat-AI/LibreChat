@@ -34,6 +34,7 @@ const Input: React.ForwardRefExoticComponent<InputProps & React.RefAttributes<HT
             className ?? '',
           )}
           ref={ref}
+          placeholder={variant === 'floating' ? ' ' : undefined}
           {...props}
         />
       );
