@@ -47,7 +47,8 @@ test('validate flags dropped links, tags and list items', () => {
 
 test('cleanOutput unwraps a fenced answer', () => {
   assert.equal(cleanOutput('```markdown\n# Hi\n```'), '# Hi');
-  assert.equal(cleanOutput('  plain  '), 'plain');
+  assert.equal(cleanOutput('\n  plain  \n'), '  plain');
+  assert.equal(cleanOutput('  - Child\n  - Two'), '  - Child\n  - Two');
 });
 
 test('needsTranslation keeps alt and aria-label values and ignores glossary-only text', () => {
@@ -79,4 +80,22 @@ test('validate checks ordered lists and repeated links, and skips indented code'
   const twice = '[a](https://x.y) and [b](https://x.y)';
   assert.ok(validate(twice, '[а](https://x.y)', 'ru').length > 0);
   assert.equal(needsTranslation('    npm run build\n    npm test'), false);
+});
+
+test('validate protects inline code and non-text HTML attributes', () => {
+  assert.ok(
+    validate('Run `npm install` now to begin.', 'Запустите `npm установка` сейчас.', 'ru').length >
+      0,
+  );
+  assert.deepEqual(
+    validate(
+      'Run `npm install` now to begin.',
+      'Запустите `npm install` сейчас, чтобы начать.',
+      'ru',
+    ),
+    [],
+  );
+  const img = '<img src="logo.svg" width="400" alt="Logo">';
+  assert.ok(validate(img, '<img src="logo.svg" width="200" alt="Логотип">', 'ru').length > 0);
+  assert.deepEqual(validate(img, '<img src="logo.svg" width="400" alt="Логотип">', 'ru'), []);
 });

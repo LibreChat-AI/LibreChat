@@ -98,15 +98,19 @@ export function needsTranslation(chunk) {
   return proseWords(chunk).length > 0;
 }
 
+const normalizeTag = (tag) =>
+  tag.replace(/\b(alt|title|aria-label)="[^"]*"/g, '$1=""').replace(/\s+/g, ' ');
+
+/** Tokens a translation must reproduce exactly: only prose, alt, title and aria-label text may change. */
 function facts(chunk) {
   const targets = [
     ...chunk.matchAll(/https?:\/\/[^\s)"'<>\]]+/g),
-    ...chunk.matchAll(/(?:href|src)="([^"]+)"/g),
     ...chunk.matchAll(/\]\(([^)\s]+)/g),
   ].map((match) => match[1] ?? match[0]);
   return {
     targets: targets.sort(),
-    tags: [...chunk.matchAll(/<\/?([a-zA-Z][\w-]*)/g)].map((match) => match[1].toLowerCase()),
+    code: [...chunk.matchAll(/`[^`\n]+`/g)].map((match) => match[0]).sort(),
+    tags: [...chunk.matchAll(/<\/?[a-zA-Z][^>]*>/g)].map((match) => normalizeTag(match[0])),
     fences: chunk.split('\n').filter((line) => FENCE.test(line)).length,
     heading: /^(#{1,6})\s/.exec(chunk)?.[1] ?? '',
     bullets: chunk.split('\n').filter((line) => /^\s*(?:[-*]|\d+[.)])\s/.test(line)).length,
@@ -122,7 +126,8 @@ export function validate(source, translated, code) {
   const b = facts(translated);
   const problems = [];
   if (a.targets.join('\n') !== b.targets.join('\n')) problems.push('links or paths differ');
-  if (a.tags.join(',') !== b.tags.join(',')) problems.push('HTML tags differ');
+  if (a.code.join('\n') !== b.code.join('\n')) problems.push('inline code differs');
+  if (a.tags.join('\n') !== b.tags.join('\n')) problems.push('HTML tags or attributes differ');
   if (a.fences !== b.fences) problems.push('code fence count differs');
   if (a.heading !== b.heading) problems.push('heading level differs');
   if (a.bullets !== b.bullets) problems.push('list item count differs');
@@ -136,9 +141,8 @@ export function validate(source, translated, code) {
 
 /** Drops a code fence the model sometimes wraps around its answer. */
 export function cleanOutput(text) {
-  const trimmed = text.trim();
-  const wrapped = /^```(?:markdown|md|html)?\n([\s\S]*)\n```$/.exec(trimmed);
-  return wrapped ? wrapped[1] : trimmed;
+  const wrapped = /^\s*```(?:markdown|md|html)?\n([\s\S]*)\n```\s*$/.exec(text);
+  return (wrapped ? wrapped[1] : text).replace(/^(?:[ \t]*\n)+/, '').trimEnd();
 }
 
 export function buildMessages(language, chunk) {
