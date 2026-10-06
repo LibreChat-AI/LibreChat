@@ -181,7 +181,7 @@ describe('PullRequestRowMark', () => {
     mockGetOne.mockResolvedValue({ pullRequest: pr });
     renderMark();
     expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
-    expect(mockGetOne).toHaveBeenCalledWith('convo-1');
+    expect(mockGetOne).toHaveBeenCalledWith('convo-1', { signal: expect.any(AbortSignal) });
     expect(screen.queryByTestId('convo-pull-request-failed')).toBeNull();
   });
 

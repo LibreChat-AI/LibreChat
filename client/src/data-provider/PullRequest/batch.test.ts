@@ -29,7 +29,7 @@ describe('createPullRequestBatcher', () => {
     const second = load('b');
     await jest.advanceTimersByTimeAsync(50);
     expect(fetchMany).toHaveBeenCalledTimes(1);
-    expect(fetchMany).toHaveBeenCalledWith(['a', 'b']);
+    expect(fetchMany).toHaveBeenCalledWith(['a', 'b'], expect.any(AbortSignal));
     await expect(first).resolves.toEqual({ pullRequest: pr });
     await expect(second).resolves.toEqual({ pullRequest: null });
   });
@@ -41,7 +41,7 @@ describe('createPullRequestBatcher', () => {
     const { load } = createPullRequestBatcher({ fetchMany });
     const calls = [load('a'), load('a')];
     await jest.advanceTimersByTimeAsync(50);
-    expect(fetchMany).toHaveBeenCalledWith(['a']);
+    expect(fetchMany).toHaveBeenCalledWith(['a'], expect.any(AbortSignal));
     await expect(Promise.all(calls)).resolves.toEqual([{ pullRequest: pr }, { pullRequest: pr }]);
   });
 
@@ -319,7 +319,9 @@ describe('createBatchFetcher', () => {
   it('uses the batch route when the server has it', async () => {
     const fetchMany = jest.fn().mockResolvedValue({ results: [entry('a')] });
     const fetchOne = jest.fn();
-    await expect(createBatchFetcher({ fetchMany, fetchOne })(['a'])).resolves.toEqual({
+    await expect(
+      createBatchFetcher({ fetchMany, fetchOne })(['a'], new AbortController().signal),
+    ).resolves.toEqual({
       results: [entry('a')],
     });
     expect(fetchOne).not.toHaveBeenCalled();
@@ -328,7 +330,10 @@ describe('createBatchFetcher', () => {
   it('asks the single route for each conversation when the replica has no batch route', async () => {
     const fetchMany = jest.fn().mockRejectedValue(notFound());
     const fetchOne = jest.fn(async (id: string) => ({ pullRequest: id === 'a' ? pr : null }));
-    const results = await createBatchFetcher({ fetchMany, fetchOne })(['a', 'b']);
+    const results = await createBatchFetcher({ fetchMany, fetchOne })(
+      ['a', 'b'],
+      new AbortController().signal,
+    );
     expect(results).toEqual({
       results: [
         { conversationId: 'a', pullRequest: pr },
@@ -348,7 +353,10 @@ describe('createBatchFetcher', () => {
       }
       return { pullRequest: pr };
     });
-    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(['a', 'b']);
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(
+      ['a', 'b'],
+      new AbortController().signal,
+    );
     expect(results).toEqual([
       { conversationId: 'a', error: { code: 'RATE_LIMITED' } },
       { conversationId: 'b', pullRequest: pr },
@@ -358,7 +366,10 @@ describe('createBatchFetcher', () => {
   it('answers a failure with no code as an upstream error, never with its text', async () => {
     const fetchMany = jest.fn().mockRejectedValue(notFound());
     const fetchOne = jest.fn().mockRejectedValue(new Error('secret host name'));
-    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(['a']);
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(
+      ['a'],
+      new AbortController().signal,
+    );
     expect(results).toEqual([{ conversationId: 'a', error: { code: 'UPSTREAM_ERROR' } }]);
     expect(JSON.stringify(results)).not.toContain('secret');
   });
@@ -374,7 +385,9 @@ describe('createBatchFetcher', () => {
       const error = failure instanceof Error ? failure : Object.assign(new Error('x'), failure);
       const fetchMany = jest.fn().mockRejectedValue(error);
       const fetchOne = jest.fn();
-      await expect(createBatchFetcher({ fetchMany, fetchOne })(['a'])).rejects.toBe(error);
+      await expect(
+        createBatchFetcher({ fetchMany, fetchOne })(['a'], new AbortController().signal),
+      ).rejects.toBe(error);
       expect(fetchOne).not.toHaveBeenCalled();
     },
   );
@@ -392,8 +405,141 @@ describe('createBatchFetcher', () => {
     });
     jest.useRealTimers();
     const ids = Array.from({ length: 12 }, (_, i) => `c${i}`);
-    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(ids);
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(
+      ids,
+      new AbortController().signal,
+    );
     expect(results.map((r) => r.conversationId)).toEqual(ids);
     expect(peak).toBe(4);
+  });
+});
+
+describe('the single-route fallback and the queue', () => {
+  const notFound = () => Object.assign(new Error('Not Found'), { response: { status: 404 } });
+
+  /** A single-route call that ends only when released or aborted, like a stalled GET. */
+  const stalledSingleRoute = () => {
+    const calls: string[] = [];
+    const aborted: string[] = [];
+    const fetchOne = jest.fn(
+      (id: string, signal: AbortSignal) =>
+        new Promise<{ pullRequest: null }>((_, reject) => {
+          calls.push(id);
+          signal.addEventListener('abort', () => {
+            aborted.push(id);
+            reject(new Error('aborted'));
+          });
+        }),
+    );
+    return { fetchOne, calls, aborted };
+  };
+
+  it('stops its calls when the signal aborts, and starts no more', async () => {
+    const { fetchOne, calls, aborted } = stalledSingleRoute();
+    const controller = new AbortController();
+    const ids = Array.from({ length: 12 }, (_, i) => `c${i}`);
+    const fetcher = createBatchFetcher({
+      fetchMany: jest.fn().mockRejectedValue(notFound()),
+      fetchOne,
+    });
+    const settled = fetcher(ids, controller.signal).catch((error) => error);
+    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(calls).toHaveLength(4);
+    controller.abort();
+    const error = await settled;
+    expect(error).toBeInstanceOf(PullRequestBatchError);
+    expect(error.code).toBe('ABORTED');
+    expect(aborted).toHaveLength(4);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toHaveLength(4);
+  });
+
+  it('starts nothing when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchOne = jest.fn();
+    const fetcher = createBatchFetcher({
+      fetchMany: jest.fn().mockRejectedValue(notFound()),
+      fetchOne,
+    });
+    await expect(fetcher(['a', 'b'], controller.signal)).rejects.toMatchObject({ code: 'ABORTED' });
+    expect(fetchOne).not.toHaveBeenCalled();
+  });
+
+  it("does not report an aborted call as one conversation's failure", async () => {
+    const controller = new AbortController();
+    const fetchOne = jest.fn(
+      (_id: string, signal: AbortSignal) =>
+        new Promise<never>((_, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('x'))),
+        ),
+    );
+    const fetcher = createBatchFetcher({
+      fetchMany: jest.fn().mockRejectedValue(notFound()),
+      fetchOne,
+    });
+    const settled = fetcher(['a'], controller.signal).catch((error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    controller.abort();
+    expect(await settled).toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('aborts a request that runs past its timeout, so its fallback stops before the next request starts', async () => {
+    jest.useFakeTimers();
+    try {
+      const { fetchOne, calls, aborted } = stalledSingleRoute();
+      const fetchMany = jest
+        .fn()
+        .mockRejectedValueOnce(notFound())
+        .mockResolvedValue({ results: [{ conversationId: 'z', pullRequest: null }] });
+      const fetcher = createBatchFetcher({ fetchMany, fetchOne });
+      const batcher = createPullRequestBatcher({
+        fetchMany: fetcher,
+        maxBatch: 1,
+        requestTimeoutMs: 1000,
+      });
+      const first = batcher.load('a').catch((error) => error.code);
+      const second = batcher.load('z');
+      await jest.advanceTimersByTimeAsync(50);
+      expect(calls).toEqual(['a']);
+      expect(fetchMany).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await first).toBe('TIMEOUT');
+      /** The stalled call was aborted before the queue handed the next request its turn. */
+      expect(aborted).toEqual(['a']);
+      await jest.advanceTimersByTimeAsync(50);
+      await expect(second).resolves.toEqual({ pullRequest: null });
+      expect(fetchMany).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('aborts the request on the wire when the batcher is disposed', async () => {
+    const { fetchOne, calls, aborted } = stalledSingleRoute();
+    const fetcher = createBatchFetcher({
+      fetchMany: jest.fn().mockRejectedValue(notFound()),
+      fetchOne,
+    });
+    const batcher = createPullRequestBatcher({ fetchMany: fetcher, delayMs: 1 });
+    const outcome = batcher.load('a').catch((error) => error.code);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toEqual(['a']);
+    batcher.dispose();
+    expect(aborted).toEqual(['a']);
+    expect(await outcome).toBe('ABORTED');
+  });
+
+  it("hands the batcher's own signal to the fetcher, live while the request runs", async () => {
+    let seen: AbortSignal | undefined;
+    const fetchMany = jest.fn(async (_ids: string[], signal: AbortSignal) => {
+      seen = signal;
+      return { results: [{ conversationId: 'a', pullRequest: null }] };
+    });
+    const batcher = createPullRequestBatcher({ fetchMany, delayMs: 1 });
+    await batcher.load('a');
+    expect(seen).toBeDefined();
+    expect(seen?.aborted).toBe(false);
   });
 });

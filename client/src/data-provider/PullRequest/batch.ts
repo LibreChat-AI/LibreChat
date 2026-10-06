@@ -21,7 +21,15 @@ type Waiter = {
 };
 
 type BatcherOptions = {
-  fetchMany: (conversationIds: string[]) => Promise<TConversationPullRequestsResponse>;
+  /**
+   * `signal` aborts when the request has run out of time or the batcher was disposed. A fetcher
+   * that starts work of its own must stop it on abort: the queue moves on the moment the request
+   * is settled, so work left running would overlap the next request.
+   */
+  fetchMany: (
+    conversationIds: string[],
+    signal: AbortSignal,
+  ) => Promise<TConversationPullRequestsResponse>;
   /** How long to gather more ids before asking, so rows mounted together share one request. */
   delayMs?: number;
   /** Ids per request; the server refuses more than its own bound. */
@@ -61,6 +69,8 @@ export function createPullRequestBatcher({
    * the ones queued behind it.
    */
   let tail: Promise<void> = Promise.resolve();
+  /** Aborts whatever request is on the wire, so disposal does not leave its work running. */
+  let active: AbortController | undefined;
 
   const send = (ids: string[], waiters: Map<string, Waiter[]>): Promise<void> => {
     /** Work that was still waiting its turn when the batcher was disposed never goes out. */
@@ -86,9 +96,14 @@ export function createPullRequestBatcher({
     const fail = (error: unknown) => {
       for (const list of waiters.values()) list.forEach((waiter) => waiter.reject(error));
     };
+    const controller = new AbortController();
+    active = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new PullRequestBatchError('TIMEOUT')), requestTimeoutMs);
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new PullRequestBatchError('TIMEOUT'));
+      }, requestTimeoutMs);
     });
     /**
      * `settle` is inside the guarded chain: a response that is not the shape it should be would
@@ -96,10 +111,13 @@ export function createPullRequestBatcher({
      * on this promise, stop every later request. Anything that goes wrong here fails the callers
      * this request carried and nothing else.
      */
-    return Promise.race([fetchMany(ids), timedOut])
+    return Promise.race([fetchMany(ids, controller.signal), timedOut])
       .then(settle)
       .catch(fail)
-      .finally(() => clearTimeout(timer));
+      .finally(() => {
+        clearTimeout(timer);
+        if (active === controller) active = undefined;
+      });
   };
 
   const flush = () => {
@@ -125,6 +143,7 @@ export function createPullRequestBatcher({
      */
     dispose(): void {
       disposed = true;
+      active?.abort();
       clearTimeout(timer);
       timer = undefined;
       for (const list of pending.values()) {
@@ -168,9 +187,15 @@ export function createBatchFetcher({
   fetchOne,
 }: {
   fetchMany: (conversationIds: string[]) => Promise<TConversationPullRequestsResponse>;
-  fetchOne: (conversationId: string) => Promise<TConversationPullRequestResponse>;
+  fetchOne: (
+    conversationId: string,
+    signal: AbortSignal,
+  ) => Promise<TConversationPullRequestResponse>;
 }) {
-  return async (conversationIds: string[]): Promise<TConversationPullRequestsResponse> => {
+  return async (
+    conversationIds: string[],
+    signal: AbortSignal,
+  ): Promise<TConversationPullRequestsResponse> => {
     try {
       return await fetchMany(conversationIds);
     } catch (error) {
@@ -178,13 +203,20 @@ export function createBatchFetcher({
     }
     const results: TConversationPullRequestsResponse['results'] = new Array(conversationIds.length);
     let next = 0;
+    /**
+     * The fallback is many requests, and the batcher moves on the moment this one is settled, so
+     * it stops itself: once the signal aborts no worker starts another call, and the call each
+     * has in flight is aborted with it, so nothing carries on beside the next request.
+     */
     const worker = async (): Promise<void> => {
       for (let index = next++; index < conversationIds.length; index = next++) {
+        if (signal.aborted) return;
         const conversationId = conversationIds[index];
         try {
-          const { pullRequest } = await fetchOne(conversationId);
+          const { pullRequest } = await fetchOne(conversationId, signal);
           results[index] = { conversationId, pullRequest };
         } catch (error) {
+          /** After an abort the whole fetch throws below, so a result written here is never read. */
           results[index] = { conversationId, error: { code: codeOf(error) } };
         }
       }
@@ -192,6 +224,7 @@ export function createBatchFetcher({
     await Promise.all(
       Array.from({ length: Math.min(FALLBACK_CONCURRENCY, conversationIds.length) }, worker),
     );
+    if (signal.aborted) throw new PullRequestBatchError('ABORTED');
     return { results };
   };
 }

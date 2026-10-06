@@ -1229,8 +1229,9 @@ export function cancelBackgroundTasks(
 
 export function getConversationPullRequest(
   conversationId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<t.TConversationPullRequestResponse> {
-  return request.get(endpoints.conversationPullRequest(conversationId));
+  return request.get(endpoints.conversationPullRequest(conversationId), options);
 }
 
 export function getConversationPullRequests(
