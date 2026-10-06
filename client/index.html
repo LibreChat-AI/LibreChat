@@ -105,9 +105,15 @@
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
             const boot =
-              cached && cached.v === 1 && cached.modes && cached.modes[dark ? 'dark' : 'light'];
+              cached && cached.v === 2 && cached.modes && cached.modes[dark ? 'dark' : 'light'];
             if (boot && Array.isArray(boot.properties)) {
               let surface;
+              let canvas;
+              /* Only the conversation paints the canvas, and the redirects that land on it; other routes keep the split surface. */
+              const chatRoute =
+                path === '' ||
+                /^(?:c(?:\/|$)|prompts(?:\/new)?\/?$)/i.test(path) ||
+                (/^d(?:\/|$)/i.test(path) && !/^d\/prompts\/(?!new\/?$)[^/]/i.test(path));
               boot.properties.forEach(function (entry) {
                 if (typeof entry[0] === 'string' && entry[0].indexOf('--') === 0) {
                   root.style.setProperty(entry[0], String(entry[1]));
@@ -115,13 +121,19 @@
                    * whitespace between channels is accepted, as the theme validator does. */
                   const channels = String(entry[1]).trim().split(/\s+/);
                   if (
-                    entry[0] === '--surface-primary-alt' &&
+                    (entry[0] === '--surface-primary-alt' || entry[0] === '--surface-canvas') &&
                     channels.length === 3 &&
                     channels.every(function (channel) {
                       return /^\d{1,3}$/.test(channel);
                     })
                   ) {
-                    surface = channels.join(', ');
+                    /* The conversation paints `surface-canvas`; a cache from before that role
+                     * existed carries only the split surface it followed. */
+                    if (entry[0] === '--surface-canvas') {
+                      canvas = channels.join(', ');
+                    } else {
+                      surface = channels.join(', ');
+                    }
                   }
                 }
               });
@@ -134,8 +146,8 @@
                 },
               );
               root.setAttribute('data-theme-boot', '');
-              if (surface) {
-                backgroundColor = 'rgb(' + surface + ')';
+              if ((chatRoute && canvas) || surface) {
+                backgroundColor = 'rgb(' + ((chatRoute && canvas) || surface) + ')';
               }
             }
           } catch (e) {

@@ -1,6 +1,6 @@
 import { Fragment, useId, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { CheckboxGlyph, TooltipAnchor, useToastContext } from '@librechat/client';
+import { TooltipAnchor, useToastContext } from '@librechat/client';
 import {
   isCodeWorkspaceCheckoutAvailable,
   isLinkedWorktreeRoutingAllowed,
@@ -15,8 +15,12 @@ import {
   Monitor,
   GitBranch,
   GitFork,
+  FolderGit2,
+  WandSparkles,
+  GitBranchPlus,
 } from 'lucide-react';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
+import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type {
   CodeWorkspaceEnvironmentResult,
@@ -31,12 +35,18 @@ import {
   useCodeEnvironmentStatusQueries,
 } from '~/data-provider';
 import {
+  chipClasses,
+  infoChipClasses,
+  chipMenuClasses as menuClasses,
+  chipMenuItemClasses as menuItemClasses,
+  chipMenuHeadingClasses as headingClasses,
+} from './chip';
+import {
   cn,
   codeWorkspaceErrorKeys,
   getCodeWorkspaceErrorReason,
   getResponseStatus,
 } from '~/utils';
-import { chipClasses, infoChipClasses } from './chip';
 import { useLocalize } from '~/hooks';
 
 const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>> = {
@@ -49,22 +59,38 @@ const stateLabels: Partial<Record<CodeWorkspaceResult['state'], TranslationKeys>
   without_attached: 'com_ui_code_workspace_without_attached',
 };
 
-const headingClasses = 'px-2.5 pt-2 pb-1 text-xs font-semibold text-text-secondary';
-const menuClasses = cn(
-  'z-50 flex max-w-[min(360px,calc(100vw-2rem))] min-w-[260px] flex-col rounded-2xl',
-  'border-border-light bg-presentation max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
-  'origin-bottom opacity-0 transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none',
-  'data-[enter]:scale-100 data-[enter]:opacity-100',
-  'scale-95 data-[leave]:scale-95 data-[leave]:opacity-0',
-);
+type CheckoutChoice = 'auto' | NonNullable<CodeWorkspaceSelection['checkout']>;
 
-const menuItemClasses = (selected = false) =>
-  cn(
-    'group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-1.5',
-    'outline-hidden transition-colors duration-theme-fast',
-    'hover:bg-surface-hover data-[active-item]:bg-surface-hover',
-    selected && 'bg-surface-active-alt',
-  );
+/** `auto` leaves the checkout to the worker's policy, so it is a choice the reader can return to. */
+const checkoutModes: {
+  value: CheckoutChoice;
+  icon: LucideIcon;
+  label: TranslationKeys;
+  info: TranslationKeys;
+  chip: TranslationKeys;
+}[] = [
+  {
+    value: 'auto',
+    icon: WandSparkles,
+    label: 'com_ui_code_checkout_automatic',
+    info: 'com_ui_code_checkout_automatic_info',
+    chip: 'com_ui_code_checkout_automatic_chip',
+  },
+  {
+    value: 'isolated',
+    icon: GitBranchPlus,
+    label: 'com_ui_code_checkout_isolated',
+    info: 'com_ui_code_checkout_isolated_info',
+    chip: 'com_ui_code_worktree',
+  },
+  {
+    value: 'source',
+    icon: FolderGit2,
+    label: 'com_ui_code_checkout_source',
+    info: 'com_ui_code_checkout_source_info',
+    chip: 'com_ui_code_checkout_source',
+  },
+];
 
 /** Conflicts refresh the decision; definitive rejections keep their specific explanation. */
 function transitionErrorKey(error: unknown): TranslationKeys {
@@ -143,6 +169,7 @@ function EnvironmentWorkspaces({
   onSelect,
   checkout,
   allowCheckoutSelection = false,
+  allowAutoCheckout = false,
 }: {
   environment: CodeWorkspaceEnvironmentResult['environment'];
   requiredBy?: CodeWorkspaceEnvironmentResult['requiredBy'];
@@ -150,32 +177,48 @@ function EnvironmentWorkspaces({
   emptyLabel: string;
   hideOnClick: boolean;
   isSelected: (workspaceId: string) => boolean;
-  onSelect: (selection: CodeWorkspaceSelection) => void;
+  onSelect: (selection: CodeWorkspaceSelection, inheritCheckout?: boolean) => void;
   checkout?: CodeWorkspaceSelection['checkout'];
   allowCheckoutSelection?: boolean;
+  /** Offers Auto, which clears an override back to the worker's policy. */
+  allowAutoCheckout?: boolean;
 }) {
   const localize = useLocalize();
+  const owners = requiredBy?.map(({ id, name }) => name || id).join(', ');
+  const currentCheckout: CheckoutChoice | undefined = allowAutoCheckout
+    ? (checkout ?? 'auto')
+    : checkout;
+  const names = workspaces.map(({ id, name }) => name ?? id);
+  const sharedNames = new Set(names.filter((name, index) => names.indexOf(name) !== index));
   return (
     <div data-code-environment-id={environment.id}>
-      <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-        {environment.name ?? environment.id}
+      <Ariakit.MenuHeading
+        render={<div />}
+        className={cn(headingClasses, 'flex min-w-0 items-baseline gap-1.5')}
+      >
+        <span className="shrink-0">{environment.name ?? environment.id}</span>
+        {owners && (
+          <span className="text-text-tertiary min-w-0 truncate font-normal">
+            {localize('com_ui_code_workspace_used_by', { 0: owners })}
+          </span>
+        )}
       </Ariakit.MenuHeading>
-      {requiredBy != null && requiredBy.length > 0 && (
-        <p className="text-text-secondary px-2.5 pb-2 text-xs">
-          {localize('com_ui_code_workspace_used_by', {
-            0: requiredBy.map(({ id, name }) => name || id).join(', '),
-          })}
-        </p>
-      )}
       {workspaces.length === 0 && (
-        <div className="text-text-secondary px-2.5 py-2 text-sm">{emptyLabel}</div>
+        <div className="text-text-secondary px-2.5 py-1.5 text-sm">{emptyLabel}</div>
       )}
       {workspaces.map((descriptor) => {
         const selected = isSelected(descriptor.id);
+        /** A sibling with the same name keeps its id visible, so the two rows never read alike. */
+        const source = [
+          descriptor.environment?.repo,
+          descriptor.environment?.ref,
+          sharedNames.has(descriptor.name ?? descriptor.id) ? descriptor.id : undefined,
+        ]
+          .filter(Boolean)
+          .join(' · ');
         return (
           <Fragment key={descriptor.id}>
             <Ariakit.MenuItemRadio
-              key={descriptor.id}
               name={`codeWorkspace:${environment.id}`}
               value={descriptor.id}
               checked={selected}
@@ -185,93 +228,56 @@ function EnvironmentWorkspaces({
               }
               className={menuItemClasses(selected)}
             >
-              <Folder className="text-text-secondary mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              <div className="min-w-0 flex-1 text-left">
-                <div className="text-text-primary truncate text-sm font-medium">
-                  {descriptor.name ?? descriptor.id}
-                </div>
-                {descriptor.name && (
-                  <p className="text-text-secondary truncate text-xs">{descriptor.id}</p>
-                )}
-                {descriptor.instructions !== undefined && (
-                  <p className="text-text-secondary truncate text-xs">
-                    {descriptor.instructions.length === 0
-                      ? localize('com_ui_repository_instructions_none')
-                      : descriptor.instructions
-                          .map(
-                            (file) =>
-                              `${file.path} · ${(file.bytes / 1024).toFixed(1)} KB${file.truncated ? ` · ${localize('com_ui_repository_instructions_truncated')}` : ''}`,
-                          )
-                          .join(', ')}
-                  </p>
-                )}
-                {(descriptor.environment?.repo || descriptor.environment?.ref) && (
-                  <p className="text-text-secondary truncate text-xs">
-                    {[descriptor.environment.repo, descriptor.environment.ref]
-                      .filter(Boolean)
-                      .join(' · ')}
-                  </p>
-                )}
-              </div>
+              <Folder className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+              <span className="text-text-primary min-w-0 truncate text-sm font-medium">
+                {descriptor.name ?? descriptor.id}
+              </span>
+              <span className="text-text-tertiary min-w-0 flex-1 truncate text-xs">{source}</span>
               {selected && (
-                <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
               )}
             </Ariakit.MenuItemRadio>
             {selected &&
               allowCheckoutSelection &&
-              environment.configSchema?.workspaces?.allowCheckoutSelection === true && (
-                <>
-                  <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-                    {localize('com_ui_code_checkout_mode')}
-                  </Ariakit.MenuHeading>
-                  {(['isolated', 'source'] as const)
-                    .filter(
-                      (mode) =>
-                        mode === 'source' ||
-                        descriptor.workspaceInstances?.includes('git_worktree'),
-                    )
-                    .map((mode) => (
-                      <Ariakit.MenuItemRadio
-                        key={mode}
-                        name={`codeCheckout:${environment.id}`}
-                        value={mode}
-                        checked={checkout === mode}
-                        hideOnClick={hideOnClick}
-                        className={menuItemClasses(checkout === mode)}
-                        onChange={() =>
-                          onSelect({
+              environment.configSchema?.workspaces?.allowCheckoutSelection === true &&
+              checkoutModes
+                .filter(
+                  ({ value }) =>
+                    value === 'source' ||
+                    (value === 'auto' && allowAutoCheckout) ||
+                    (value === 'isolated' &&
+                      descriptor.workspaceInstances?.includes('git_worktree')),
+                )
+                .map(({ value, icon: ModeIcon, label }) => (
+                  <Ariakit.MenuItemRadio
+                    key={value}
+                    name={`codeCheckout:${environment.id}`}
+                    value={value}
+                    checked={currentCheckout === value}
+                    hideOnClick={hideOnClick}
+                    className={cn(menuItemClasses(currentCheckout === value), 'pl-8')}
+                    onChange={() =>
+                      value === 'auto'
+                        ? onSelect(
+                            { environmentId: environment.id, workspaceId: descriptor.id },
+                            false,
+                          )
+                        : onSelect({
                             environmentId: environment.id,
                             workspaceId: descriptor.id,
-                            checkout: mode,
+                            checkout: value,
                           })
-                        }
-                      >
-                        <div className="min-w-0 flex-1 text-left">
-                          <div className="text-text-primary text-sm font-medium">
-                            {localize(
-                              mode === 'isolated'
-                                ? 'com_ui_code_checkout_isolated'
-                                : 'com_ui_code_checkout_source',
-                            )}
-                          </div>
-                          <p className="text-text-secondary text-xs">
-                            {localize(
-                              mode === 'isolated'
-                                ? 'com_ui_code_checkout_isolated_info'
-                                : 'com_ui_code_checkout_source_info',
-                            )}
-                          </p>
-                        </div>
-                        {checkout === mode && (
-                          <Check
-                            className="text-text-primary mt-0.5 size-4 shrink-0"
-                            aria-hidden="true"
-                          />
-                        )}
-                      </Ariakit.MenuItemRadio>
-                    ))}
-                </>
-              )}
+                    }
+                  >
+                    <ModeIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+                    <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
+                      {localize(label)}
+                    </span>
+                    {currentCheckout === value && (
+                      <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
+                    )}
+                  </Ariakit.MenuItemRadio>
+                ))}
           </Fragment>
         );
       })}
@@ -288,30 +294,34 @@ function GitContext({
   target: CodeWorkspaceEnvironmentResult;
   disabled: boolean;
   locked: boolean;
-  onSelect?: (selection: CodeWorkspaceSelection) => void;
+  onSelect?: (selection: CodeWorkspaceSelection, inheritCheckout?: boolean) => void;
 }) {
   const localize = useLocalize();
+  const checkoutStore = Ariakit.useMenuStore({ focusLoop: true, placement: 'top-start' });
+  const checkoutOpen = checkoutStore.useState('open');
   const descriptor = target.workspaces.find(({ id }) => id === target.selected?.workspaceId);
   if (descriptor == null) return null;
   const supportsWorktree = descriptor.workspaceInstances?.includes('git_worktree') === true;
   const checkout = target.selected?.checkout;
   const checkoutSelectionAllowed =
     target.environment.configSchema?.workspaces?.allowCheckoutSelection === true;
-  const checkoutEditable = !locked && supportsWorktree && checkoutSelectionAllowed;
+  /** The registered checkout needs no worker capability, so a workspace without worktrees still
+   *  lets the reader override Auto with it; only the isolated option depends on support. */
+  const checkoutEditable = !locked && checkoutSelectionAllowed;
   const usesIsolation = checkout !== 'source' && supportsWorktree;
   const showLinkedWorktrees =
     !usesIsolation &&
     descriptor.workspaceScopes?.includes('git_linked_worktree') &&
     isLinkedWorktreeRoutingAllowed(target.environment.configSchema?.workspaces?.linkedWorktrees) &&
     isCodeWorkspaceCheckoutAvailable({ checkout }, descriptor, checkoutSelectionAllowed);
-  const worktreeInfo =
-    checkout == null
-      ? localize('com_ui_code_checkout_automatic_info')
-      : localize(
-          checkout === 'isolated'
-            ? 'com_ui_code_checkout_isolated_info'
-            : 'com_ui_code_checkout_source_info',
-        );
+  const current = checkoutModes.find(({ value }) => value === (checkout ?? 'auto'));
+  const options = checkoutModes.filter(({ value }) => value !== 'isolated' || supportsWorktree);
+  const chooseCheckout = (choice: CheckoutChoice) => {
+    if (target.selected == null || !checkoutEditable || disabled) return;
+    const { checkout: _previous, ...selection } = target.selected;
+    onSelect?.(choice === 'auto' ? selection : { ...selection, checkout: choice }, false);
+  };
+  const CurrentIcon = current?.icon ?? WandSparkles;
   return (
     <>
       {descriptor.environment?.ref && (
@@ -329,36 +339,75 @@ function GitContext({
           </span>
         </TooltipAnchor>
       )}
-      {(supportsWorktree || checkout != null) && (
-        <TooltipAnchor
-          description={worktreeInfo}
-          render={
-            <button
-              type="button"
-              role="checkbox"
-              data-testid="code-worktree"
-              aria-label={localize('com_ui_code_worktree')}
-              aria-checked={checkout == null ? 'mixed' : checkout === 'isolated'}
-              disabled={disabled || !checkoutEditable}
-              className={cn(chipClasses, 'disabled:cursor-not-allowed disabled:opacity-50')}
-              onClick={() => {
-                if (target.selected == null || !checkoutEditable) return;
-                onSelect?.({
-                  ...target.selected,
-                  checkout: checkout === 'isolated' ? 'source' : 'isolated',
-                });
-              }}
-            />
-          }
-        >
-          <CheckboxGlyph checked={checkout === 'isolated'} />
-          <span>{localize('com_ui_code_worktree')}</span>
-          {checkout == null && (
-            <span className="text-text-secondary text-xs">
-              {localize('com_ui_code_checkout_automatic')}
-            </span>
-          )}
-        </TooltipAnchor>
+      {(supportsWorktree || checkout != null || checkoutEditable) && current != null && (
+        <Ariakit.MenuProvider store={checkoutStore}>
+          <TooltipAnchor
+            description={localize(current.info)}
+            showOnHover={!checkoutOpen}
+            render={
+              <Ariakit.MenuButton
+                data-testid="code-checkout"
+                disabled={disabled || !checkoutEditable}
+                accessibleWhenDisabled={true}
+                aria-label={`${localize('com_ui_code_checkout_mode')}: ${localize(current.label)}`}
+                className={cn(
+                  chipClasses,
+                  checkoutOpen && 'bg-surface-hover',
+                  'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
+                )}
+              />
+            }
+          >
+            <CurrentIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-[12rem] min-w-0 truncate">{localize(current.chip)}</span>
+            {checkoutEditable && (
+              <ChevronDown
+                className={cn(
+                  'text-text-secondary size-3 shrink-0 transition-transform',
+                  checkoutOpen && 'rotate-180',
+                )}
+                aria-hidden="true"
+              />
+            )}
+          </TooltipAnchor>
+          <Ariakit.Menu portal={true} gutter={8} unmountOnHide={true} className={menuClasses}>
+            <Ariakit.MenuHeading render={<div />} className={headingClasses}>
+              {localize('com_ui_code_checkout_mode')}
+            </Ariakit.MenuHeading>
+            {options.map(({ value, icon: ModeIcon, label, info }) => {
+              const selected = value === current.value;
+              return (
+                <Ariakit.MenuItemRadio
+                  key={value}
+                  name="codeCheckout"
+                  value={value}
+                  checked={selected}
+                  disabled={disabled}
+                  hideOnClick={true}
+                  onChange={() => chooseCheckout(value)}
+                  className={cn(menuItemClasses(selected), 'items-start')}
+                >
+                  <ModeIcon
+                    className="text-text-secondary mt-0.5 size-4 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="text-text-primary block text-sm font-medium">
+                      {localize(label)}
+                    </span>
+                    <span className="text-text-secondary block text-xs">{localize(info)}</span>
+                  </span>
+                  {selected && (
+                    <Check
+                      className="text-text-primary mt-0.5 size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                  )}
+                </Ariakit.MenuItemRadio>
+              );
+            })}
+          </Ariakit.Menu>
+        </Ariakit.MenuProvider>
       )}
       {showLinkedWorktrees && (
         <TooltipAnchor
@@ -466,12 +515,12 @@ export default function CodeWorkspaceMenu({
 
   const { transition } = workspace;
   const environmentIds = new Set(workspace.environments.map(({ environment }) => environment.id));
-  const selectWorkspace = (selection: CodeWorkspaceSelection) => {
+  const selectWorkspace = (selection: CodeWorkspaceSelection, inheritCheckout = true) => {
     if (disabled || workspace.locked) return;
     const previous = workspace.environments.find(
       ({ environment }) => environment.id === selection.environmentId,
     )?.selected;
-    if (selection.checkout == null && previous?.checkout != null) {
+    if (inheritCheckout && selection.checkout == null && previous?.checkout != null) {
       selection = { ...selection, checkout: previous.checkout };
     }
     workspace.rememberSelection(selection);
@@ -792,15 +841,12 @@ export default function CodeWorkspaceMenu({
                   menuStore.show();
                 }}
               >
-                <Monitor
-                  className="text-text-secondary mt-0.5 size-4 shrink-0"
-                  aria-hidden="true"
-                />
+                <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
                 <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
                   {candidate.name ?? candidate.id}
                 </span>
                 {workspace.mode === 'attached' && environmentIds.has(candidate.id) && (
-                  <Check className="text-text-primary mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                  <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                 )}
               </Ariakit.MenuItem>
             ))}
@@ -850,7 +896,13 @@ export default function CodeWorkspaceMenu({
           </TooltipAnchor>
           <WorkspaceRequirements id={requirementsId} requirements={requirements} />
         </div>
-        <Ariakit.Menu portal={true} gutter={8} unmountOnHide={true} className={menuClasses}>
+        <Ariakit.Menu
+          portal={true}
+          gutter={8}
+          unmountOnHide={true}
+          aria-label={localize('com_ui_code_workspace')}
+          className={menuClasses}
+        >
           {transition != null && transitionText != null ? (
             <>
               <Ariakit.MenuHeading render={<div />} className={headingClasses}>
@@ -898,10 +950,7 @@ export default function CodeWorkspaceMenu({
                   disabled={disabled || !moveReady || moveMutation.isLoading}
                   hideOnClick={true}
                   onClick={confirmMove}
-                  className={cn(
-                    menuItemClasses(),
-                    'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-                  )}
+                  className={menuItemClasses()}
                 >
                   <ConfirmIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
                   <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm font-medium">
@@ -915,10 +964,7 @@ export default function CodeWorkspaceMenu({
                   disabled={disabled || moveMutation.isLoading}
                   hideOnClick={true}
                   onClick={confirmDetach}
-                  className={cn(
-                    menuItemClasses(),
-                    'aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-                  )}
+                  className={cn(menuItemClasses(), 'items-start')}
                 >
                   <FolderX
                     className="text-text-secondary mt-0.5 size-4 shrink-0"
@@ -937,9 +983,6 @@ export default function CodeWorkspaceMenu({
             </>
           ) : (
             <>
-              <Ariakit.MenuHeading render={<div />} className={headingClasses}>
-                {localize('com_ui_code_workspace')}
-              </Ariakit.MenuHeading>
               {workspace.supportsEnvironmentDecisions && (
                 <Ariakit.MenuItemRadio
                   name="codeEnvironmentMode"
@@ -949,23 +992,15 @@ export default function CodeWorkspaceMenu({
                   onChange={selectWithoutAttached}
                   className={menuItemClasses(workspace.mode === 'without_attached')}
                 >
-                  <FolderX
-                    className="text-text-secondary mt-0.5 size-4 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <div className="min-w-0 flex-1 text-left">
-                    <div className="text-text-primary truncate text-sm font-medium">
-                      {localize('com_ui_code_workspace_without_attached')}
-                    </div>
-                    <p className="text-text-secondary text-xs">
-                      {localize('com_ui_code_workspace_without_attached_info')}
-                    </p>
-                  </div>
+                  <FolderX className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
+                  <span className="text-text-primary min-w-0 truncate text-sm font-medium">
+                    {localize('com_ui_code_workspace_without_attached')}
+                  </span>
+                  <span className="text-text-tertiary min-w-0 flex-1 truncate text-xs">
+                    {localize('com_ui_code_workspace_without_attached_info')}
+                  </span>
                   {workspace.mode === 'without_attached' && (
-                    <Check
-                      className="text-text-primary mt-0.5 size-4 shrink-0"
-                      aria-hidden="true"
-                    />
+                    <Check className="text-text-primary size-4 shrink-0" aria-hidden="true" />
                   )}
                 </Ariakit.MenuItemRadio>
               )}
@@ -984,7 +1019,10 @@ export default function CodeWorkspaceMenu({
                     }
                     onSelect={selectWorkspace}
                     checkout={selected?.checkout}
-                    allowCheckoutSelection={!workspace.locked}
+                    /** One environment gets the checkout chip in the rail; several share it here,
+                     *  one set of choices under each environment's selected workspace. */
+                    allowCheckoutSelection={!workspace.locked && workspace.environments.length > 1}
+                    allowAutoCheckout={true}
                   />
                 ))}
               {machine != null &&
@@ -1005,10 +1043,7 @@ export default function CodeWorkspaceMenu({
                     aria-busy={machineQuery?.isLoading}
                     onClick={() => void machineQuery?.refetch()}
                   >
-                    <RefreshCw
-                      className="text-text-secondary mt-0.5 size-4 shrink-0"
-                      aria-hidden="true"
-                    />
+                    <RefreshCw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
                     <span role="status" className="text-text-secondary text-sm">
                       {localize(
                         machineQuery?.isLoading
@@ -1027,10 +1062,7 @@ export default function CodeWorkspaceMenu({
             hideOnClick={false}
             onClick={() => void refresh()}
             aria-busy={isRefreshing}
-            className={cn(
-              menuItemClasses(),
-              'items-center aria-disabled:cursor-not-allowed aria-disabled:opacity-50',
-            )}
+            className={menuItemClasses()}
           >
             <RefreshCw className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <span className="text-text-primary text-sm font-medium">

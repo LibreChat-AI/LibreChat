@@ -34,6 +34,7 @@ import {
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
+import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
 import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
@@ -239,20 +240,28 @@ const PartWithContext = memo(function PartWithContext({
         ])
       : undefined;
 
+  const renderPart = (renderedPart: TMessageContentParts) => (
+    <Part
+      part={renderedPart}
+      attachments={partAttachments}
+      isSubmitting={isSubmitting}
+      key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
+      isCreatedByUser={isCreatedByUser}
+      isLast={holdsCursor}
+      showCursor={holdsCursor}
+      hideAttachments={hideAttachments}
+      onToolExpand={onToolExpand}
+    />
+  );
+
   return (
     <MessageContext.Provider value={contextValue}>
       <ToolDisclosureKeyContext.Provider value={toolDisclosureKey}>
-        <Part
-          part={part}
-          attachments={partAttachments}
-          isSubmitting={isSubmitting}
-          key={`part-${messageId}-${getPartKeyIndex(part, idx)}`}
-          isCreatedByUser={isCreatedByUser}
-          isLast={holdsCursor}
-          showCursor={holdsCursor}
-          hideAttachments={hideAttachments}
-          onToolExpand={onToolExpand}
-        />
+        {isPreviewedToolCallPart(part) ? (
+          <PreviewedToolCallPart part={part}>{renderPart}</PreviewedToolCallPart>
+        ) : (
+          renderPart(part)
+        )}
       </ToolDisclosureKeyContext.Provider>
     </MessageContext.Provider>
   );

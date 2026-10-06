@@ -304,10 +304,11 @@ const ProjectItem = memo(
       <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
           className={cn(
-            'group text-text-primary hover:bg-surface-active-alt relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
-            isActive && 'bg-surface-active-alt hover:bg-surface-active-alt',
-            !isActive && isMenuOpen && 'bg-surface-active-alt',
-            isDropOver && canDrop && 'bg-surface-active-alt ring-border-medium ring-1 ring-inset',
+            'group text-text-primary relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
+            isActive || isMenuOpen || (isDropOver && canDrop)
+              ? 'bg-surface-nav-selected'
+              : 'hover:bg-surface-nav-hover',
+            isDropOver && canDrop && 'ring-border-medium ring-1 ring-inset',
           )}
         >
           <button
@@ -478,7 +479,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     }
 
     return (
-      <ul className="m-0 list-none p-0">
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {projects.map((project) => (
           <ProjectItem
             key={project._id}

@@ -444,6 +444,7 @@ const ChatForm = memo(function ChatForm({
     index,
     conversationId,
     conversation,
+    codeEnvironmentMode: codeWorkspace.mode,
     isSubmitting,
     answerModeActive: composerReserved,
     composerDisabled: isPreparingFromUrl,
@@ -873,7 +874,10 @@ const ChatForm = memo(function ChatForm({
                    a warning rather than a quiet mode hint. The contrast modes take
                    it opaque, because that is the only way it clears the 3:1
                    non-text floor there. */
-                isTemporary && 'border-series-6/50 bg-series-6/10 high-contrast:border-series-6',
+                /** The tint layers over the opaque chat surface instead of replacing it, so the
+                 *  context rail tucked under the composer never shows through. */
+                isTemporary &&
+                  'border-series-6/50 from-series-6/10 to-series-6/10 high-contrast:border-series-6 bg-linear-to-b',
               )}
             >
               <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
@@ -1040,6 +1044,7 @@ const ChatForm = memo(function ChatForm({
                       <CodeApprovalMenu
                         conversation={conversation}
                         addedConversation={addedConvo}
+                        codeEnvironmentMode={codeWorkspace.mode}
                         setConversation={setConversation}
                         disabled={disableInputs}
                       />

@@ -2,7 +2,7 @@ import { useId, useRef, useMemo, useState, useEffect, useCallback, useDeferredVa
 import axios from 'axios';
 import { useAtom } from 'jotai';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { QueryKeys, dataService, resolveTraceViewerConfig } from 'librechat-data-provider';
+import { QueryKeys, resolveTraceViewerConfig } from 'librechat-data-provider';
 import { Button, Spinner, EmptyState, FilterInput, buttonVariants } from '@librechat/client';
 import {
   X,
@@ -29,6 +29,7 @@ import type { TranslationKeys } from '~/hooks';
 import {
   keepNewestTracePage,
   useGetStartupConfig,
+  fetchConversationMessages,
   useGetLangfuseSessionLinkQuery,
   useConversationTraceRecordsQuery,
 } from '~/data-provider';
@@ -112,7 +113,7 @@ export default function Viewer({
   /** The chat's own messages, already loaded underneath the trace; they are only read, never fetched here. */
   const { data: messages } = useQuery<TMessage[]>(
     [QueryKeys.messages, conversationId],
-    () => dataService.getMessagesByConvoId(conversationId),
+    () => fetchConversationMessages(conversationId),
     { enabled: false },
   );
 

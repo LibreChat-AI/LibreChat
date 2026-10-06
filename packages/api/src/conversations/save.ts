@@ -36,6 +36,9 @@ export interface TurnConversationFields {
   endpointOptions?: Partial<TConversation>;
   /** The agent running the turn, recorded as the conversation's initial agent when persisted. */
   agentId?: string;
+  /** Stored fields this write leaves as they are when `endpointOptions` omits them, instead of
+   *  unsetting them: the turn made no decision about them. */
+  preservedFields?: ReadonlyArray<keyof TConversation>;
   /** Logged by `saveConvo` to name the write. */
   context: string;
 }
@@ -105,14 +108,16 @@ function getUnsetFields(
   existing: Partial<IConversation>,
   endpointOptions: Partial<TConversation>,
   agentOwned: boolean,
+  preservedFields: ReadonlyArray<keyof TConversation> = [],
 ): Record<string, number> {
   const kept = new Set(['spec', 'iconURL']);
   if (agentOwned) {
     kept.add('model');
   }
+  const preserved = new Set<string>(preservedFields);
   const unsetFields: Record<string, number> = {};
   for (const key of Object.keys(existing)) {
-    if (excludedKeys.has(key) && !kept.has(key)) {
+    if ((excludedKeys.has(key) && !kept.has(key)) || preserved.has(key)) {
       continue;
     }
     if (endpointOptions[key as keyof TConversation] === undefined) {
@@ -182,7 +187,10 @@ async function writeConversation(
     },
     {
       context: write.context,
-      unsetFields: existing != null ? getUnsetFields(existing, endpointOptions, agentOwned) : {},
+      unsetFields:
+        existing != null
+          ? getUnsetFields(existing, endpointOptions, agentOwned, write.preservedFields)
+          : {},
       noUpsert: req?._agentEventBindingParentConversationId != null,
       initialAgentId: agentOwned ? (write.agentId ?? null) : null,
       createdAtOnInsert: inserting ? getCreatedAtOnInsert(req) : undefined,

@@ -416,6 +416,40 @@ export function parseTextParts(
   return result;
 }
 
+const thinkingBlockPattern = /:::thinking([\s\S]*?):::/;
+
+/**
+ * Splits legacy plain-text reasoning from the answer exactly as the message view renders it:
+ * the first `:::thinking ... :::` block becomes the collapsible Thoughts, the rest is the answer.
+ */
+export function parseThinkingContent(text: string): {
+  thinkingContent: string;
+  regularContent: string;
+} {
+  const thinkingMatch = text.match(thinkingBlockPattern);
+  return {
+    thinkingContent: thinkingMatch ? thinkingMatch[1].trim() : '',
+    regularContent: thinkingMatch ? text.replace(thinkingBlockPattern, '').trim() : text,
+  };
+}
+
+/**
+ * The text Read Aloud speaks for a message: the answer the message view shows, never its
+ * reasoning. Covers both reasoning shapes the UI collapses into Thoughts: `think` content parts
+ * and the legacy `:::thinking ... :::` block in plain text.
+ */
+export function getSpeechText(message: {
+  content?: Array<a.TMessageContentParts | undefined> | string | null;
+  text?: string | null;
+}): string {
+  if (Array.isArray(message.content) && message.content.length > 0) {
+    return parseTextParts(message.content, true).trim();
+  }
+  const text =
+    typeof message.content === 'string' && message.content ? message.content : message.text;
+  return parseThinkingContent(text ?? '').regularContent.trim();
+}
+
 export const SEPARATORS = ['.', '?', '!', '۔', '。', '‥', ';', '¡', '¿', '\n', '```'];
 
 export function findLastSeparatorIndex(text: string, separators = SEPARATORS): number {

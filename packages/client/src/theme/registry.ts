@@ -118,6 +118,37 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
+/**
+ * Layering roles split out of the surface a component painted before each had a name: the role,
+ * and the surface it followed in light and in dark. A theme that repaints the surface keeps the
+ * layer on it, unless it names the role.
+ */
+export const layerRoleSources: ReadonlyArray<
+  readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
+> = [
+  ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-nav-hover', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-nav-selected', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-tab-selected', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-menu', 'rgb-presentation', 'rgb-presentation'],
+  ['rgb-surface-popover', 'rgb-surface-primary', 'rgb-surface-secondary'],
+  ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
+  ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
+  ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+];
+
+export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {
+  return Object.fromEntries(
+    layerRoleSources.flatMap(([role, light, dark]) => {
+      const source = colors[mode === 'dark' ? dark : light];
+      return colors[role] === undefined && source !== undefined ? [[role, source]] : [];
+    }),
+  );
+}
+
 /** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
  *  a field's typed value were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
@@ -134,6 +165,25 @@ export function primaryInkFallbacks(colors: IThemeRGB): IThemeRGB {
     primaryInkRoles.flatMap((role) => {
       const ink = colors[role] ?? primary;
       return ink === undefined ? [] : [[role, ink]];
+    }),
+  );
+}
+
+/** Roles that were painted in another role before they had their own. */
+export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, keyof IThemeRGB]> = [
+  ['rgb-surface-tooltip', 'rgb-surface-primary'],
+  ['rgb-text-tooltip', 'rgb-text-primary'],
+  ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
+  ['rgb-alert-error-border', 'rgb-status-error-border'],
+];
+
+/** A theme that repaints a source role keeps the tooltip and the error alert on it, unless it
+ *  names them. */
+export function overlayFallbacks(colors: IThemeRGB): IThemeRGB {
+  return Object.fromEntries(
+    overlayFallbackSources.flatMap(([role, source]) => {
+      const value = colors[source];
+      return colors[role] === undefined && value !== undefined ? [[role, value]] : [];
     }),
   );
 }
@@ -165,6 +215,9 @@ export const themeAppearanceProperties: Readonly<
   largeSurfaceRadius: '--theme-large-surface-radius',
   menuRadius: '--theme-menu-radius',
   tooltipRadius: '--theme-tooltip-radius',
+  tooltipPaddingX: '--theme-tooltip-padding-x',
+  tooltipPaddingY: '--theme-tooltip-padding-y',
+  tooltipTextSize: '--theme-tooltip-text-size',
   tabRadius: '--theme-tab-radius',
   tabMinWidth: '--theme-tab-min-width',
   listMinWidth: '--theme-list-min-width',
@@ -244,6 +297,9 @@ export const themeAppearanceProperties: Readonly<
   tooltipShadow: '--theme-tooltip-shadow',
   motionFast: '--theme-motion-fast',
   motionNormal: '--theme-motion-normal',
+  chromeBorderAlpha: '--theme-border-chrome-alpha',
+  insetBorderAlpha: '--theme-border-inset-alpha',
+  destructiveStyle: '--theme-destructive-style',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -253,6 +309,9 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   largeSurfaceRadius: '1.5rem',
   menuRadius: '0.7rem',
   tooltipRadius: '0.275rem',
+  tooltipPaddingX: '0.5rem',
+  tooltipPaddingY: '0.25rem',
+  tooltipTextSize: '1rem',
   tabRadius: '0.185rem',
   tabMinWidth: '100px',
   listMinWidth: '8rem',
@@ -332,6 +391,9 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   tooltipShadow: '0 2px 4px 0 rgb(0 0 0 / 0.25)',
   motionFast: '150ms',
   motionNormal: '200ms',
+  chromeBorderAlpha: '1',
+  insetBorderAlpha: '1',
+  destructiveStyle: 'fill',
 });
 
 /**
@@ -659,15 +721,23 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     customColors?.['rgb-border-light'] !== undefined
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
+  const focusSubtleFallback: IThemeRGB =
+    customColors?.['rgb-focus-subtle'] === undefined &&
+    customColors?.['rgb-border-heavy'] !== undefined
+      ? { 'rgb-focus-subtle': customColors['rgb-border-heavy'] }
+      : {};
   const borderControlSource =
     customColors != null ? controlBorderFallback(customColors) : undefined;
   const borderControlFallback: IThemeRGB =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
+  const layerFallback: IThemeRGB =
+    customColors != null ? layerRoleFallbacks(customColors, mode) : {};
   const focusFallback: IThemeRGB = customColors != null ? focusFallbacks(customColors) : {};
   const pressedFallback: IThemeRGB = customColors != null ? pressedFallbacks(customColors) : {};
   const primaryButtonFallback: IThemeRGB =
     customColors != null ? primaryButtonFallbacks(customColors) : {};
   const primaryInks: IThemeRGB = customColors != null ? primaryInkFallbacks(customColors) : {};
+  const overlayFallback: IThemeRGB = customColors != null ? overlayFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -730,8 +800,11 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
+      ...focusSubtleFallback,
       ...switchThumbFallback,
       ...fieldFillFallback,
+      ...overlayFallback,
+      ...layerFallback,
       ...tableHeaderTextFallback,
       ...tableHeaderFillFallback,
       ...borderControlFallback,

@@ -137,6 +137,12 @@
 /* Content elements */
 .sp-preview-iframe {
   @apply h-full w-full grow;
+  /* An unstyled artifact document inks in the browser's black over a transparent frame, which is
+   * unreadable on a dark theme. Canvas gives the frame an opaque page in the scheme the system
+   * prefers, and the document's own color-scheme decides whether it adapts to it or the browser
+   * paints it a light backdrop. */
+  color-scheme: light dark;
+  background-color: Canvas;
 }
 
 .sp-cm {

@@ -17,7 +17,7 @@ const alertVariants: (
       info: 'border-status-info-border bg-status-info-subtle text-status-info',
       success: 'border-status-success-border bg-status-success-subtle text-status-success',
       warning: 'border-status-warning-border bg-status-warning-subtle text-status-warning',
-      error: 'border-status-error-border bg-status-error-subtle text-status-error',
+      error: 'border-alert-error-border bg-alert-error-fill text-status-error',
       neutral: 'border-status-neutral-border bg-status-neutral-subtle text-status-neutral',
     },
     /** `raised` lifts a notice off the surface it sits on with the lightest shadow. */

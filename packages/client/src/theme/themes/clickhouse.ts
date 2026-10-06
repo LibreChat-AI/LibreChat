@@ -110,8 +110,26 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
+  'rgb-focus-subtle': '67 126 239', // #437eef (outline.default, 3.84:1 on white)
   'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
   'rgb-field-text': '48 46 50', // #302e32 (field.color.text.default)
+  'rgb-surface-tooltip': '29 29 29', // #1d1d1d (tooltip.color.background.default, lch(10.767 0 0 / 0.85) taken opaque)
+  'rgb-text-tooltip': '255 255 255', // #ffffff (tooltip.color.label.default)
+  'rgb-alert-error-fill': '255 233 233', // #ffe9e9 (alert.color.background.danger, danger at 10% over background.default)
+  'rgb-alert-error-border': '255 233 233', // #ffe9e9 (Click UI alerts draw no edge, so it matches the fill)
+  // Layering roles
+  'rgb-surface-canvas': '255 255 255', // #ffffff (background.default)
+  'rgb-surface-user-message': '230 231 233', // #e6e7e9 (palette.slate.100, the sidebar.main.navigation.item active step; Click UI has no chat bubble)
+  'rgb-surface-card': '255 255 255', // #ffffff (card.secondary.color.background.default)
+  'rgb-surface-card-hover': '246 247 250', // #f6f7fa (card.secondary.color.background.hover)
+  'rgb-surface-nav-hover': '236 237 240', // #ecedf0 (sidebar.main.navigation.item.color.background.hover, lch(91.609 1.1023 265.86 / 0.6) composited on background.split)
+  'rgb-surface-nav-selected': '230 231 233', // #e6e7e9 (sidebar.main.navigation.item.color.background.active)
+  'rgb-surface-tab-selected': '230 231 233', // #e6e7e9 (sidebar.main.navigation.item.color.background.active)
+  'rgb-surface-menu': '255 255 255', // #ffffff (genericMenu.panel.color.background.default)
+  'rgb-surface-popover': '255 255 255', // #ffffff (genericMenu.panel.color.background.default)
+  'rgb-border-menu': '230 231 233', // #e6e7e9 (genericMenu.panel.color.stroke.default)
+  'rgb-surface-composer': '255 255 255', // #ffffff (background.default)
+  'rgb-surface-search': '255 255 255', // #ffffff (background.default)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -148,7 +166,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
-  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-document': '13 62 155', // #0d3e9b (palette.info.700)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
   'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
@@ -272,8 +290,26 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
+  'rgb-focus-subtle': '250 255 105', // #faff69 (outline.default)
   'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
   'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
+  'rgb-surface-tooltip': '50 50 50', // #323232 (palette.neutral.712; tooltip.color.background.default #282828 would vanish on the #282828 canvas)
+  'rgb-text-tooltip': '255 255 255', // #ffffff (tooltip.color.label.default)
+  'rgb-alert-error-fill': '76 32 29', // #4c201d (alert.color.background.danger, danger at 20% over background.default)
+  'rgb-alert-error-border': '76 32 29', // #4c201d (Click UI alerts draw no edge, so it matches the fill)
+  // Layering roles
+  'rgb-surface-canvas': '31 31 28', // #1f1f1c (background.default)
+  'rgb-surface-user-message': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-surface-card': '31 31 28', // #1f1f1c (card.secondary.color.background.default)
+  'rgb-surface-card-hover': '40 40 40', // #282828 (card.secondary.color.background.hover)
+  'rgb-surface-nav-hover': '46 46 46', // #2e2e2e (sidebar.main.navigation.item.color.background.hover, lch(19.05 0 none))
+  'rgb-surface-nav-selected': '55 55 55', // #373737 (sidebar.main.navigation.item.color.background.active, lch(27.535 0 none / 0.6) composited on background.split)
+  'rgb-surface-tab-selected': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-surface-menu': '40 40 40', // #282828 (genericMenu.panel.color.background.default)
+  'rgb-surface-popover': '40 40 40', // #282828 (genericMenu.panel.color.background.default)
+  'rgb-border-menu': '65 65 65', // #414141 (genericMenu.panel.color.stroke.default)
+  'rgb-surface-composer': '45 45 45', // #2d2d2d (field.color.background.default)
+  'rgb-surface-search': '45 45 45', // #2d2d2d (field.color.background.default)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -310,7 +346,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
-  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-document': '67 126 239', // #437eef (palette.info.400)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
   'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
@@ -383,6 +419,9 @@ const clickHouseShape = {
   roundControlRadius: '9999px',
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
   tooltipRadius: '0.25rem', // tooltip.radii.all
+  tooltipPaddingX: '0.75rem', // tooltip.space.x
+  tooltipPaddingY: '0.5rem', // tooltip.space.y
+  tooltipTextSize: '0.75rem', // tooltip.typography.label.default
   tabRadius: '0.25rem', // tabs.radii.all
   /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
   tabMinWidth: '0',
@@ -480,6 +519,13 @@ const clickHouseShape = {
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
+  /** Click UI strokes cards, panels, dialogs, fields and tables in stroke.default, but not the
+   *  controls and chat chrome LibreChat outlines (iconButton.*.stroke.default and tabs.basic are
+   *  transparent), and it separates a card's inner regions by fill. */
+  chromeBorderAlpha: '0', // iconButton.primary.stroke.default
+  insetBorderAlpha: '0', // separation by fill, not a nested stroke
+  /** Click UI's danger button: a 10% tint of danger under the danger text (button.*.danger). */
+  destructiveStyle: 'soft' as const,
 };
 
 const elevation = (alpha: number): string =>
