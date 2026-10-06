@@ -35,7 +35,7 @@
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
  * --list. Check ids: eslint, prettier, imports, eslint-config, json,
- * suppressions, circular-deps, typecheck, config-tests, i18n, depcheck.
+ * suppressions, css-colors, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,7 @@ import {
 } from 'node:fs';
 
 import type { Dirent } from 'node:fs';
+import { CSS_COLOR_ALLOWED_FILES, CSS_COLOR_ALLOWED_RULES, scanCssColors } from './css-colors.mts';
 import { isTranslationReferenced } from './i18n.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -107,6 +108,18 @@ const FILTERS = {
     'scripts/static-checks.mts',
     '.github/workflows/static-checks.yml',
     '!**.md',
+  ],
+  // Stylesheets are outside the design lint, which reads JSX.
+  css_colors: [
+    'client/src/*.css',
+    'packages/client/src/*.css',
+    'client/src/**/*.css',
+    'packages/client/src/**/*.css',
+    'packages/client/src/theme/allowlist.md',
+    'scripts/css-colors.test.mts',
+    'scripts/css-colors.mts',
+    'scripts/static-checks.mts',
+    '.github/workflows/static-checks.yml',
   ],
   config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
   i18n: [
@@ -1813,6 +1826,28 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
   };
 }
 
+// --------------------------------------------------------------- CSS colours
+
+function checkCssColors(): CheckOutcome {
+  const findings = scanCssColors(ROOT);
+  const scannerTests = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/css-colors.test.mts')] },
+    [],
+  );
+  return {
+    ok: findings.length === 0 && scannerTests.status === 0,
+    output: [...findings, ...(scannerTests.status === 0 ? [] : [scannerTests.output])].join('\n'),
+    hints: [
+      'Use a theme variable, for example rgb(var(--black) / 0.1), instead of a colour literal.',
+      `Only ${CSS_COLOR_ALLOWED_FILES.join(', ')} and the ${Object.entries(CSS_COLOR_ALLOWED_RULES)
+        .map(
+          ([file, rules]) => `${rules.map(({ selector }) => selector).join(', ')} rule in ${file}`,
+        )
+        .join(', ')} may hold one; see packages/client/src/theme/allowlist.md.`,
+    ],
+  };
+}
+
 // --------------------------------------------------------------- circular dependencies
 
 function findCircularDependencies(): CheckOutcome {
@@ -2131,6 +2166,13 @@ const CHECKS: Check[] = [
     tier: 'fast',
     group: 'suppressions',
     run: validateSuppressions,
+  },
+  {
+    id: 'css-colors',
+    title: 'CSS colour literals',
+    tier: 'fast',
+    group: 'css_colors',
+    run: checkCssColors,
   },
   {
     id: 'circular-deps',
