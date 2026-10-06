@@ -964,6 +964,41 @@ describe('useComposerReasoning: restored override while OpenRouter capabilities 
     expect(stagedValue(store)).toEqual(staged);
   });
 
+  it('drops a staged override at once when the target changes while the capabilities load', async () => {
+    mockCapabilitiesLoading = true;
+    const store = createStore();
+    store.set(pendingReasoningOverrideFamily('restored-conversation'), staged);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={store}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ activeModel }: { activeModel: string }) =>
+        useComposerReasoning({
+          conversation: { ...conversation, model: activeModel } as TConversation,
+          index: 0,
+          enabled: true,
+        }),
+      { wrapper, initialProps: { activeModel: model } },
+    );
+    await act(async () => {});
+    expect(stagedValue(store)).toEqual(staged);
+
+    rendered.rerender({ activeModel: 'google/gemini-3.5-flash' });
+    await act(async () => {});
+    expect(stagedValue(store)).toBeUndefined();
+
+    mockCapabilitiesLoading = false;
+    mockCapabilities = {
+      OpenRouter: { 'google/gemini-3.5-flash': { efforts: ['low', 'high'] } },
+    };
+    rendered.rerender({ activeModel: 'google/gemini-3.5-flash' });
+    await act(async () => {});
+
+    expect(stagedValue(store)).toBeUndefined();
+  });
+
   it('keeps a supported override across the loading to loaded transition', async () => {
     mockCapabilitiesLoading = true;
     const { store, rendered } = setup();

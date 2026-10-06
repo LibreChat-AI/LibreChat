@@ -369,12 +369,12 @@ export function useComposerReasoning({
     (setting != null || endpointsQuery.data != null);
   /* The target is the endpoint or agent and the model. The efforts a catalog advertises for it
      are not part of the identity: a refresh that changes them is not the user switching targets,
-     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below.
-     Not compared while the first capability request is in flight, when the setting is hidden. */
-  const targetFingerprint =
-    targetResolved && !capabilitiesPending
-      ? `${isAgent ? conversation?.agent_id : provider}:${model}`
-      : null;
+     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below. It
+     is recorded even while the capabilities load, so a switch made then is not mistaken for the
+     first target once they arrive. */
+  const targetFingerprint = targetResolved
+    ? `${isAgent ? conversation?.agent_id : provider}:${model}`
+    : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
     enabled === false ||
@@ -402,12 +402,14 @@ export function useComposerReasoning({
        key may survive while its enum value or number no longer does. */
     const mismatchedSetting =
       setting != null && value != null && !isReasoningOverrideSupported(value, setting);
-    /* While the first capability request is in flight the setting is hidden, which says
-       nothing about the staged choice: keep it until the catalog confirms or refutes it. */
+    /* While the capabilities are unknown the setting is hidden, which says nothing about the
+       staged choice: keep it until the catalog confirms or refutes it. A switch of target is
+       different, because the choice belonged to the old one, so it clears at once. */
     if (
-      !capabilitiesPending &&
-      (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
-      value != null
+      value != null &&
+      (targetChanged ||
+        (!capabilitiesPending &&
+          (explicitlyUnavailable || unsupportedResolved || mismatchedSetting)))
     ) {
       setValue(undefined);
     }

@@ -249,11 +249,15 @@ function exposedModelNames(endpoint: TEndpoint): Set<string> | undefined {
   if (endpoint.models?.fetch === true) {
     return undefined;
   }
-  return new Set(
-    (endpoint.models?.default ?? []).map((model) =>
-      baseModelName(typeof model === 'string' ? model : model.name),
-    ),
-  );
+  const names = new Set<string>();
+  for (const model of endpoint.models?.default ?? []) {
+    const configured = typeof model === 'string' ? model : model.name;
+    names.add(configured);
+    /** A variant (`vendor/model:free`) is catalogued under its base, so the base entry is exposed as
+     *  a fallback for it. Sibling variants (`vendor/model:nitro`) are not: they are not configured. */
+    names.add(baseModelName(configured));
+  }
+  return names;
 }
 
 /** The catalog's models narrowed to those the endpoint exposes. */
@@ -264,25 +268,22 @@ function exposedCapabilities(
   if (exposed == null) {
     return models;
   }
-  return Object.fromEntries(
-    Object.entries(models).filter(([id]) => exposed.has(baseModelName(id))),
-  );
+  return Object.fromEntries(Object.entries(models).filter(([id]) => exposed.has(id)));
 }
 
 /**
- * Whether the models a user is offered for this endpoint depend on who is asking: the model list
- * is fetched with `models.userIdQuery`, or with configured headers that resolve to the user's
- * identity or credentials. Headers that only carry request ids do not count.
+ * Whether this endpoint's requests depend on who is asking: its model list is fetched with
+ * `models.userIdQuery`, or a configured header resolves to the user's identity or credentials. The
+ * shared catalog is read with the administrator's key and no user, so for such an endpoint it could
+ * be refused, or describe a different user's models, whether or not the list is fetched. Headers
+ * that only carry request ids do not count.
  */
 function hasUserScopedModelList(endpoint: TEndpoint): boolean {
   if (endpoint.models?.userIdQuery === true) {
     return true;
   }
-  return (
-    endpoint.models?.fetch === true &&
-    Object.values(endpoint.headers ?? {}).some((value) =>
-      PER_REQUEST_PLACEHOLDER.test(value.replace(REQUEST_METADATA_PLACEHOLDER, '')),
-    )
+  return Object.values(endpoint.headers ?? {}).some((value) =>
+    PER_REQUEST_PLACEHOLDER.test(value.replace(REQUEST_METADATA_PLACEHOLDER, '')),
   );
 }
 

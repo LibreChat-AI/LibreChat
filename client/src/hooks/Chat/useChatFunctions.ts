@@ -520,9 +520,13 @@ export default function useChatFunctions({
       }
     }
     let reasoningOverride = overrideReasoning ?? undefined;
-    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
-      reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
+    const reasoningStateKey = getReasoningStateKey(conversationId, index);
+    const drainedReasoning =
+      overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited;
+    if (drainedReasoning) {
+      reasoningOverride = drainPendingReasoning(reasoningStateKey);
     }
+    const stagedReasoning = reasoningOverride;
     if (reasoningOverride != null) {
       const isAgent = isAgentsEndpoint(endpoint);
       const agentId = isAgent ? conversation?.agent_id : undefined;
@@ -582,6 +586,16 @@ export default function useChatFunctions({
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
         reasoningOverride = undefined;
+        /* Refused only because the catalog is not known yet, not because it said no: the user's
+           one-shot choice is put back instead of being lost, and applies once it can be checked. */
+        if (
+          drainedReasoning &&
+          stagedReasoning != null &&
+          capabilitiesData == null &&
+          usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '')
+        ) {
+          reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
+        }
       }
     }
     const isEditOrContinue = isEdited || isContinued;

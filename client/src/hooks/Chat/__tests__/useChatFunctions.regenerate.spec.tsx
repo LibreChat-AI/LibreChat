@@ -802,6 +802,64 @@ describe('useChatFunctions ask', () => {
       expect(replay()).toEqual(override);
     });
 
+    describe('a staged effort submitted while the capabilities are unknown', () => {
+      const submitStaged = () => {
+        const { result, setSubmission, reasoningStore } = renderAsk([], 'openrouter-conversation', {
+          endpoint: 'OpenRouter' as TConversation['endpoint'],
+          model,
+          reasoningOverride: override,
+        });
+        act(() => {
+          result.current.ask({ text: 'Think' });
+        });
+        const sent = (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage
+          .reasoningOverride;
+        return {
+          sent,
+          left: reasoningStore.get(pendingReasoningOverrideFamily('openrouter-conversation')),
+        };
+      };
+
+      it('leaves it staged for the next message instead of losing it', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toEqual(override);
+      });
+
+      it('leaves it staged while the capabilities are loading', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(submitStaged().left).toEqual(override);
+      });
+
+      it('consumes it once it is sent', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toEqual(override);
+        expect(left).toBeUndefined();
+      });
+
+      it('consumes it when the loaded catalog refuses it', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toBeUndefined();
+      });
+    });
+
     describe('an Auto override, which sends no effort', () => {
       const auto = { key: 'reasoning_effort', value: '' } as TReasoningOverride;
 

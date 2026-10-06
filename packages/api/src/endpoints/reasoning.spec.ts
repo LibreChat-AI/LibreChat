@@ -983,20 +983,49 @@ describe('catalog request headers', () => {
     });
   });
 
-  it('never forwards a header that resolves per user, as the catalog is shared by every user', async () => {
+  it('drops a request-metadata header, which has no value outside a request', async () => {
     const sent = await headersSent({
-      'X-User': '{{LIBRECHAT_USER_EMAIL}}',
-      Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}',
+      'x-librechat-body-parentmessageid': '{{LIBRECHAT_BODY_PARENTMESSAGEID}}',
       'X-Static': 'kept',
     });
 
     expect(sent).toEqual({ 'X-Static': 'kept' });
   });
 
-  it('drops a header that mixes text with a per-user placeholder instead of sending the remainder', async () => {
-    const sent = await headersSent({ 'X-Mixed': 'prefix-{{LIBRECHAT_USER_ID}}-suffix' });
+  it.each([
+    ['a user field', { 'X-User': '{{LIBRECHAT_USER_EMAIL}}' }],
+    ['an OpenID token', { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' }],
+    ['text mixed with a user placeholder', { 'X-Mixed': 'prefix-{{LIBRECHAT_USER_ID}}-suffix' }],
+  ])(
+    'skips an endpoint with %s in a header, even with a fixed model list',
+    async (_label, headers) => {
+      const { deps, fetchSpy } = makeDeps();
 
-    expect(sent).toEqual({});
+      const result = await loadReasoningCapabilities(
+        [endpoint({ headers, models: { default: ['seed/model'] } })],
+        deps,
+      );
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result).toEqual({ capabilities: {}, unavailable: [] });
+    },
+  );
+
+  it('does not check a stored effort on a fixed-list endpoint that authenticates per user', async () => {
+    const { deps, fetchSpy } = makeDeps();
+    const stored = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
+
+    const result = await withSupportedEffort(
+      stored,
+      endpoint({
+        headers: { Authorization: 'Bearer {{LIBRECHAT_USER_OPENID_ID_TOKEN}}' },
+        models: { default: ['openai/gpt-6.1-sol'] },
+      }),
+      deps,
+    );
+
+    expect(result).toBe(stored);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('drops a header whose environment variable is not set', async () => {
@@ -1110,6 +1139,36 @@ describe('models an endpoint exposes', () => {
 
   it('matches a configured routing variant to its base model', async () => {
     expect(await load({ default: ['openai/gpt-6.1-sol:nitro'] })).toEqual(['openai/gpt-6.1-sol']);
+  });
+
+  describe('routing variants', () => {
+    const siblings = {
+      data: ['a/m', 'a/m:nitro', 'a/m:free', 'a/other'].map((id) => ({
+        id,
+        reasoning: { supported_efforts: ['low'] },
+      })),
+    };
+    const loadSiblings = async (models: Record<string, unknown>) => {
+      const { deps } = makeDeps(async () => siblings);
+      const { capabilities } = await loadReasoningCapabilities([endpoint({ models })], deps);
+      return Object.keys(capabilities.OpenRouter ?? {}).sort();
+    };
+
+    it('exposes a configured variant and its base model, not its sibling variants', async () => {
+      expect(await loadSiblings({ default: ['a/m:free'] })).toEqual(['a/m', 'a/m:free']);
+    });
+
+    it('exposes only the exact model when no variant is configured', async () => {
+      expect(await loadSiblings({ default: ['a/m'] })).toEqual(['a/m']);
+    });
+
+    it('exposes each configured variant and nothing else of the family', async () => {
+      expect(await loadSiblings({ default: ['a/m:free', 'a/m:nitro'] })).toEqual([
+        'a/m',
+        'a/m:free',
+        'a/m:nitro',
+      ]);
+    });
   });
 
   it('returns nothing for a configured model the catalog does not list', async () => {
