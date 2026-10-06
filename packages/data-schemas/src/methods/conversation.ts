@@ -63,13 +63,28 @@ const ACTOR_CHECKPOINT_FIELDS = [
   'agentEventActorSuspension',
 ] as const;
 
-function stripActorCheckpointFields(record: Record<string, unknown>): void {
+/** Removes each field and every dotted path beneath it, which Mongo reads as a write to the field. */
+function stripFields(record: Record<string, unknown>, fields: readonly string[]): void {
   for (const key of Object.keys(record)) {
-    if (ACTOR_CHECKPOINT_FIELDS.some((field) => key === field || key.startsWith(`${field}.`))) {
+    if (fields.some((field) => key === field || key.startsWith(`${field}.`))) {
       delete record[key];
     }
   }
 }
+
+function stripActorCheckpointFields(record: Record<string, unknown>): void {
+  stripFields(record, ACTOR_CHECKPOINT_FIELDS);
+}
+
+/** Written only by the lane methods, so no save, unset or import may reach them. */
+const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as const;
+
+/** What a lane recorder needs to place and fence its writes, read once when its tool is created. */
+export type ConvoLaneContext = {
+  subagentThread?: IConversation['subagentThread'] | null;
+  /** Counts the owner's moves and detaches of the conversation's workspace; 0 until the first. */
+  codeAttachmentEpoch: number;
+};
 
 const AGENT_EVENT_ACTOR_RECEIPT_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MAX_AGENT_EVENT_ACTOR_SUSPENSION_BYTES = 64 * 1_024;
@@ -330,6 +345,7 @@ export interface ConversationMethods {
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
   reserveConvoLaneGitSeq(user: string, conversationId: string): Promise<number | null>;
+  getConvoLaneContext(user: string, conversationId: string): Promise<ConvoLaneContext | null>;
   setConvoLaneGit(input: {
     user: string;
     conversationId: string;
@@ -338,7 +354,13 @@ export interface ConversationMethods {
     /** Reserved with `reserveConvoLaneGitSeq` when the command settled. */
     seq: number;
     /** The workspace the command ran in; the write applies only while the chat is still on it. */
-    workspace?: { environmentId: string; workspaceId: string; required?: boolean };
+    workspace?: {
+      environmentId: string;
+      workspaceId: string;
+      required?: boolean;
+      /** The attachment epoch read when the tool was created; see `getConvoLaneContext`. */
+      epoch?: number;
+    };
   }): Promise<boolean>;
   getConvoLaneGit(
     user: string,
@@ -2467,8 +2489,7 @@ export function createConversationMethods(
       }
       /* Remembered tool approvals are granted only by a validated resume. */
       delete update.toolApprovalAllows;
-      delete update.laneGit;
-      delete update.laneGitSeq;
+      stripFields(update, LANE_PRIVATE_FIELDS);
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2494,8 +2515,7 @@ export function createConversationMethods(
       delete unsetFields.titleSetByUser;
       delete unsetFields.titleRevision;
       delete unsetFields.toolApprovalAllows;
-      delete unsetFields.laneGit;
-      delete unsetFields.laneGitSeq;
+      stripFields(unsetFields, LANE_PRIVATE_FIELDS);
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -3046,6 +3066,29 @@ export function createConversationMethods(
   }
 
   /**
+   * The route and attachment epoch a lane recorder needs, in one owner-scoped read. A subagent
+   * thread's route names the visible conversation its lane belongs to. The epoch advances only
+   * when the owner moves or detaches the workspace (never when a generation is admitted), so a
+   * report captured before a move away and back to the same workspace still reads as stale.
+   * Resolves to null for a conversation that does not exist yet, or is not this owner's.
+   */
+  async function getConvoLaneContext(
+    user: string,
+    conversationId: string,
+  ): Promise<ConvoLaneContext | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.findOne(
+      { user, conversationId, ...activeExpirationFilter<IConversation>() },
+      'subagentThread +codeAttachmentEpoch',
+    ).lean<Pick<IConversation, 'subagentThread' | 'codeAttachmentEpoch'>>();
+    if (stored == null) return null;
+    return {
+      subagentThread: stored.subagentThread ?? null,
+      codeAttachmentEpoch: stored.codeAttachmentEpoch ?? 0,
+    };
+  }
+
+  /**
    * Record the branch and head a conversation's code lane last reported. Owner-scoped and fenced
    * by the sequence number reserved when the command settled: the write matches only while the
    * stored report carries a lower one, so a delayed older report, from this process or another
@@ -3072,7 +3115,7 @@ export function createConversationMethods(
     laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
     repo?: string;
     seq: number;
-    workspace?: { environmentId: string; workspaceId: string; required?: boolean };
+    workspace?: { environmentId: string; workspaceId: string; required?: boolean; epoch?: number };
   }): Promise<boolean> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const next = {
@@ -3081,10 +3124,19 @@ export function createConversationMethods(
       ...(repo ? { repo } : {}),
       seq,
     };
+    const epochFence =
+      workspace?.epoch == null
+        ? []
+        : [
+            {
+              codeAttachmentEpoch: workspace.epoch === 0 ? { $in: [null, 0] } : workspace.epoch,
+            },
+          ];
     const workspaceFence =
       workspace == null
         ? []
         : [
+            ...epochFence,
             {
               $or: [
                 {
@@ -3208,12 +3260,12 @@ export function createConversationMethods(
           ? {
               $set: { codeEnvironmentMode, codeWorkspaces },
               $unset: { laneGit: 1 },
-              $inc: { codeEnvironmentRevision: 1 },
+              $inc: { codeEnvironmentRevision: 1, codeAttachmentEpoch: 1 },
             }
           : {
               $set: { codeEnvironmentMode },
               $unset: { codeWorkspaces: 1, laneGit: 1 },
-              $inc: { codeEnvironmentRevision: 1 },
+              $inc: { codeEnvironmentRevision: 1, codeAttachmentEpoch: 1 },
             },
         { new: true, timestamps: false },
       ).lean<IConversation>();
@@ -3304,8 +3356,7 @@ export function createConversationMethods(
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
         delete sanitized.toolApprovalAllows;
-        delete sanitized.laneGit;
-        delete sanitized.laneGitSeq;
+        stripFields(sanitized, LANE_PRIVATE_FIELDS);
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -4391,6 +4442,7 @@ export function createConversationMethods(
     reserveConvoLaneGitSeq,
     setConvoLaneGit,
     getConvoLaneGit,
+    getConvoLaneContext,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,

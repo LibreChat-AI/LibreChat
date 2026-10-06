@@ -326,3 +326,29 @@ describe('cache capacity from the caller', () => {
     expect(find).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('cache capacity per credential', () => {
+  it("does not let one credential's small capacity evict another credential's entries", async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, token: 'big', branch: 'keep', cacheMaxEntries: 100 });
+    for (const branch of ['a', 'b', 'c', 'd']) {
+      await lookup({ ...input, token: 'small', branch, cacheMaxEntries: 2 });
+    }
+    const before = find.mock.calls.length;
+    await lookup({ ...input, token: 'big', branch: 'keep', cacheMaxEntries: 100 });
+    expect(find).toHaveBeenCalledTimes(before);
+  });
+
+  it('bounds the credentials it keeps, dropping the one idle longest', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, token: 'first' });
+    for (let index = 0; index < 256; index += 1) {
+      await lookup({ ...input, token: `other-${index}` });
+    }
+    const before = find.mock.calls.length;
+    await lookup({ ...input, token: 'first' });
+    expect(find).toHaveBeenCalledTimes(before + 1);
+  });
+});

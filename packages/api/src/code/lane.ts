@@ -2,8 +2,16 @@ import { logger } from '@librechat/data-schemas';
 import type { WorkspaceLaneGit } from './workspace';
 import { getSafeErrorMetadata } from '~/utils';
 
-/** The workspace a command ran in. `required` demands the conversation have it recorded. */
-export type LaneWorkspace = { environmentId: string; workspaceId: string; required?: boolean };
+/**
+ * The workspace a command ran in. `required` demands the conversation have it recorded, and
+ * `epoch` is the attachment epoch read when the tool was created.
+ */
+export type LaneWorkspace = {
+  environmentId: string;
+  workspaceId: string;
+  required?: boolean;
+  epoch?: number;
+};
 
 export type LaneGitWriter = (input: {
   user: string;
@@ -19,11 +27,17 @@ export type LaneGitWriter = (input: {
 /** Draws the next report sequence number from the database, so every replica shares one order. */
 export type LaneSeqReserver = (user: string, conversationId: string) => Promise<number | null>;
 
-/** Reads what the recorder needs to place a conversation: whether it is a subagent thread. */
-export type LaneOwnershipReader = (
+/**
+ * Reads what the recorder needs to place and fence its reports: the subagent route of the
+ * conversation and its workspace attachment epoch. Null when the conversation is not saved yet.
+ */
+export type LaneContextReader = (
   user: string,
   conversationId: string,
-) => Promise<{ subagentThread?: { rootConversationId?: string | null } | null } | null | undefined>;
+) => Promise<{
+  subagentThread?: { rootConversationId?: string | null } | null;
+  codeAttachmentEpoch?: number;
+} | null>;
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const MAX_REPO_LENGTH = 256;
@@ -34,7 +48,7 @@ const isSafeRepo = (repo: string | undefined): repo is string =>
   REPO_PATTERN.test(repo) &&
   repo.split('/').every((segment) => segment !== '.' && segment !== '..');
 
-type Placement = { conversationId: string; required: boolean };
+type Placement = { conversationId: string; required: boolean; epoch: number };
 type Reservation = Placement & { seq: number };
 
 /**
@@ -49,23 +63,22 @@ type Reservation = Placement & { seq: number };
 const reservationTails = new Map<string, Promise<unknown>>();
 
 /**
- * Records the lane state a finished command reported, for the owner's conversation. It never
- * throws and is never awaited by the command: the branch is a header affordance, so a database
- * outage must not fail or delay the agent's tool call. Each report takes a sequence number from
- * the database when it arrives and is written with it, so the newest report wins whatever order
- * the writes land in. Every report is written, repeats included, because another recorder (a
- * sibling subagent thread, another replica) may have changed the lane since this one last wrote,
- * and the database already ignores a write that changes nothing the reader can see. Resolves to
- * whether the write applied, which is false when a newer report is already stored and for a
- * conversation not saved yet. A repo that is not a plain `owner/name` is dropped rather than
- * stored.
+ * Builds the recorder for one tool, placing it once, here, so no report waits on a lookup that
+ * could let a later report take an earlier turn. The conversation's route and attachment epoch
+ * are read when the tool is created: a subagent thread is a hidden child of the conversation the
+ * user sees, its commands run on the parent's machine, so its lane belongs to the visible root
+ * and that write must match the root's recorded workspace; the epoch fences out a report that
+ * outlives a move of the workspace, even one that moved away and back. A conversation not saved
+ * yet is placed on itself at epoch 0. When the context cannot be read nothing is recorded: the
+ * branch is a header affordance, so a database outage never fails or delays the tool call.
+ * Resolves to undefined when there is nothing to record against.
  */
-export function createLaneGitRecorder({
+export async function createLaneGitRecorder({
   user,
   conversationId,
   repo,
   workspace,
-  getConvoOwnership,
+  getConvoLaneContext,
   reserveConvoLaneGitSeq,
   setConvoLaneGit,
 }: {
@@ -73,43 +86,32 @@ export function createLaneGitRecorder({
   conversationId: string | undefined;
   repo?: string;
   workspace?: { environmentId: string; workspaceId: string };
-  getConvoOwnership?: LaneOwnershipReader;
+  getConvoLaneContext?: LaneContextReader;
   reserveConvoLaneGitSeq: LaneSeqReserver;
   setConvoLaneGit: LaneGitWriter;
-}): ((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined {
+}): Promise<((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined> {
   if (!user || !conversationId) return undefined;
   const safeRepo = isSafeRepo(repo) ? repo : undefined;
 
-  /**
-   * A subagent thread is a hidden child of the conversation the user sees, and its commands run on
-   * the parent's machine, so its lane belongs to the visible root. That write must also match the
-   * root's recorded workspace, since nothing else ties the child to it. The lookup is made once;
-   * a failed one is retried on the next report.
-   */
-  let target: Promise<Placement> | undefined;
-  const resolveTarget = (): Promise<Placement> => {
-    if (target == null) {
-      const resolving = (async (): Promise<Placement> => {
-        if (getConvoOwnership == null) return { conversationId, required: false };
-        const owned = await getConvoOwnership(user, conversationId);
-        const root = owned?.subagentThread?.rootConversationId;
-        return root
-          ? { conversationId: root, required: true }
-          : { conversationId, required: false };
-      })();
-      target = resolving;
-      resolving.catch(() => {
-        if (target === resolving) target = undefined;
-      });
-    }
-    return target;
-  };
+  let placed: Placement;
+  try {
+    const context = getConvoLaneContext ? await getConvoLaneContext(user, conversationId) : null;
+    const root = context?.subagentThread?.rootConversationId;
+    placed = {
+      conversationId: root || conversationId,
+      required: Boolean(root),
+      epoch: context?.codeAttachmentEpoch ?? 0,
+    };
+  } catch (error) {
+    logger.warn('[LaneGit] Failed to place a lane recorder', getSafeErrorMetadata(error));
+    return undefined;
+  }
+  if (placed.required && workspace == null) return undefined;
+  const queueKey = `${user}\0${placed.conversationId}`;
 
   /** Never rejects, so a failed reservation cannot stall the ones queued behind it. */
   const reserve = async (): Promise<Reservation | null> => {
     try {
-      const placed = await resolveTarget();
-      if (placed.required && workspace == null) return null;
       const seq = await reserveConvoLaneGitSeq(user, placed.conversationId);
       return seq == null ? null : { ...placed, seq };
     } catch (error) {
@@ -127,7 +129,13 @@ export function createLaneGitRecorder({
         ...(safeRepo ? { repo: safeRepo } : {}),
         seq: reserved.seq,
         ...(workspace
-          ? { workspace: { ...workspace, ...(reserved.required ? { required: true } : {}) } }
+          ? {
+              workspace: {
+                ...workspace,
+                ...(reserved.required ? { required: true } : {}),
+                epoch: reserved.epoch,
+              },
+            }
           : {}),
       });
     } catch (error) {
@@ -136,30 +144,22 @@ export function createLaneGitRecorder({
     }
   };
 
+  /**
+   * Fire-and-forget for the command: it never throws and is never awaited. Each report takes its
+   * sequence number from the database in report order and is written with it, so the newest report
+   * wins whatever order the writes land in. Every report is written, repeats included, because
+   * another recorder (a sibling thread, another replica) may have changed the lane since this one
+   * last wrote, and the database already ignores a write that changes nothing the reader can see.
+   * Resolves to whether the write applied, which is false when a newer report is already stored
+   * and for a conversation not saved yet. A repo that is not a plain `owner/name` is dropped.
+   */
   return (laneGit) => {
-    /**
-     * The chain is chosen after the target is resolved, so threads that share a visible
-     * conversation share it. Resolution is memoised and idempotent, so waiting on it here costs
-     * one lookup per recorder.
-     */
-    const run = async (): Promise<boolean> => {
-      let placed: Placement;
-      try {
-        placed = await resolveTarget();
-      } catch (error) {
-        logger.warn('[LaneGit] Failed to place a lane report', getSafeErrorMetadata(error));
-        return false;
-      }
-      const queueKey = `${user}\0${placed.conversationId}`;
-      const previous = reservationTails.get(queueKey) ?? Promise.resolve();
-      const reservation = previous.then(() => reserve());
-      reservationTails.set(queueKey, reservation);
-      void reservation.then(() => {
-        if (reservationTails.get(queueKey) === reservation) reservationTails.delete(queueKey);
-      });
-      const reserved = await reservation;
-      return reserved == null ? false : write(laneGit, reserved);
-    };
-    return run();
+    const previous = reservationTails.get(queueKey) ?? Promise.resolve();
+    const reservation = previous.then(() => reserve());
+    reservationTails.set(queueKey, reservation);
+    void reservation.then(() => {
+      if (reservationTails.get(queueKey) === reservation) reservationTails.delete(queueKey);
+    });
+    return reservation.then((reserved) => (reserved == null ? false : write(laneGit, reserved)));
   };
 }

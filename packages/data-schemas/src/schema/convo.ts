@@ -64,6 +64,10 @@ const convoSchema: Schema<IConversation> = new Schema(
     /** Counter that issues `laneGit.seq`, shared by every replica. Server-written only, through
      *  `reserveConvoLaneGitSeq`, and excluded from ordinary conversation reads. */
     laneGitSeq: { type: Number, default: undefined, select: false },
+    /** Counts the owner's moves and detaches of the conversation's workspace. A lane report
+     *  carries the value read when its tool was created and applies only while it still matches,
+     *  so moving away and back cannot revive an older report. Server-written only. */
+    codeAttachmentEpoch: { type: Number, default: undefined, select: false },
     agent_id: {
       type: String,
     },

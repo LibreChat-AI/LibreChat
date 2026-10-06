@@ -9913,3 +9913,167 @@ describe('stampForcedRetention', () => {
     },
   );
 });
+
+describe('laneGit review hardening', () => {
+  const head = 'a'.repeat(40);
+  const mac = { environmentId: 'code-mac', workspaceId: 'primary' };
+  const team = { environmentId: 'code-team', workspaceId: 'shared' };
+  const seedAttached = async (
+    workspaces: Array<{ environmentId: string; workspaceId: string }>,
+  ) => {
+    const conversationId = uuidv4();
+    await Conversation.collection.insertOne({
+      conversationId,
+      user: 'lane-user',
+      title: 'Hardening',
+      endpoint: 'agents',
+      messages: [],
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: workspaces,
+    });
+    return conversationId;
+  };
+  const move = async (
+    conversationId: string,
+    codeWorkspaces: Array<{ environmentId: string; workspaceId: string }>,
+  ) => {
+    const stored = await methods.getConvoCodeEnvironmentDecision('lane-user', conversationId);
+    return methods.replaceConvoCodeEnvironmentDecision({
+      user: 'lane-user',
+      conversationId,
+      expected: {
+        codeEnvironmentMode: stored?.codeEnvironmentMode,
+        codeWorkspaces: stored?.codeWorkspaces,
+        codeEnvironmentRevision: stored?.codeEnvironmentRevision,
+      },
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: codeWorkspaces as never,
+    });
+  };
+
+  describe('dotted import and save keys', () => {
+    it('does not let an import set a lane through dotted keys', async () => {
+      const imported = uuidv4();
+      await methods.bulkSaveConvos([
+        {
+          conversationId: imported,
+          user: 'lane-user',
+          title: 'Imported',
+          'laneGit.branch': 'forged',
+          'laneGit.repo': 'o/forged',
+          'laneGit.seq': 999,
+          'laneGitSeq.x': 1,
+          'codeAttachmentEpoch.x': 5,
+        },
+      ]);
+      await expect(methods.getConvoLaneGit('lane-user', imported)).resolves.toBeNull();
+      const raw = await Conversation.collection.findOne({ conversationId: imported });
+      expect(raw).not.toHaveProperty('laneGit');
+      expect(raw).not.toHaveProperty('codeAttachmentEpoch');
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', imported)).toBe(1);
+    });
+
+    it('does not let a save set a lane through dotted keys or unset keys', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: 'lane-user', endpoint: 'agents' });
+      const seq = (await methods.reserveConvoLaneGitSeq('lane-user', conversationId)) as number;
+      await methods.setConvoLaneGit({
+        user: 'lane-user',
+        conversationId,
+        laneGit: { branch: 'kept', head },
+        seq,
+      });
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, 'laneGit.branch': 'forged', 'laneGit.seq': 999 },
+        { unsetFields: { 'laneGit.repo': 1, 'laneGit.head': 1 } },
+      );
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toEqual({
+        branch: 'kept',
+        head,
+      });
+      expect(await methods.reserveConvoLaneGitSeq('lane-user', conversationId)).toBe(seq + 1);
+    });
+  });
+
+  describe('attachment epoch', () => {
+    const write = (
+      conversationId: string,
+      epoch: number | undefined,
+      workspace: { environmentId: string; workspaceId: string },
+    ) =>
+      methods.reserveConvoLaneGitSeq('lane-user', conversationId).then((seq) =>
+        methods.setConvoLaneGit({
+          user: 'lane-user',
+          conversationId,
+          laneGit: { branch: 'feat/x', head },
+          seq: seq as number,
+          workspace: { ...workspace, ...(epoch == null ? {} : { epoch }) },
+        }),
+      );
+
+    it('reads as zero until the conversation is moved, then advances on every move', async () => {
+      const conversationId = await seedAttached([mac]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch ?? 0,
+      ).toBe(0);
+      await move(conversationId, [team]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(1);
+      await move(conversationId, [mac]);
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(2);
+    });
+
+    it('applies a report from the epoch it was captured in', async () => {
+      const conversationId = await seedAttached([mac]);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(true);
+    });
+
+    it('refuses a report from before a move away and back to the same workspace', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await move(conversationId, [mac]);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(false);
+      await expect(methods.getConvoLaneGit('lane-user', conversationId)).resolves.toBeNull();
+      await expect(write(conversationId, 2, mac)).resolves.toBe(true);
+    });
+
+    it('is not advanced by admitting a generation', async () => {
+      const conversationId = await seedAttached([mac]);
+      await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await methods.readAdmittedConvoCodeEnvironmentDecision('lane-user', conversationId);
+      await expect(write(conversationId, 0, mac)).resolves.toBe(true);
+    });
+
+    it('keeps the epoch out of generic saves, unset fields and ordinary reads', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await saveConvo(
+        { userId: 'lane-user' },
+        { conversationId, codeAttachmentEpoch: 0 },
+        { unsetFields: { codeAttachmentEpoch: 1 } },
+      );
+      expect(
+        (await methods.getConvoLaneContext('lane-user', conversationId))?.codeAttachmentEpoch,
+      ).toBe(1);
+      const read = await Conversation.findOne({ conversationId }).lean();
+      expect(read).not.toHaveProperty('codeAttachmentEpoch');
+    });
+  });
+
+  describe('lane context', () => {
+    it('returns the subagent route and the epoch in one read, owner-scoped', async () => {
+      const conversationId = await seedAttached([mac]);
+      await move(conversationId, [team]);
+      await expect(methods.getConvoLaneContext('lane-user', conversationId)).resolves.toMatchObject(
+        {
+          codeAttachmentEpoch: 1,
+        },
+      );
+      await expect(methods.getConvoLaneContext('intruder', conversationId)).resolves.toBeNull();
+    });
+  });
+});

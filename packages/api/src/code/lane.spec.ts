@@ -1,12 +1,21 @@
 import { logger } from '@librechat/data-schemas';
 import type { CodeBridgeFetch } from './bridge';
+import { createLaneGitRecorder as createRecorder } from './lane';
 import { createAttachedWorkspaceBashTool } from './command';
-import { createLaneGitRecorder } from './lane';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: { warn: jest.fn(), debug: jest.fn(), info: jest.fn(), error: jest.fn() },
 }));
+
+type RecorderOptions = Parameters<typeof createRecorder>[0];
+
+/** Places the recorder once, as the tool does, then reports through it in call order. */
+const createLaneGitRecorder = (options: RecorderOptions) => {
+  const ready = createRecorder(options);
+  return (laneGit: Parameters<NonNullable<Awaited<typeof ready>>>[0]) =>
+    ready.then((record) => (record ? record(laneGit) : false));
+};
 
 const head = 'a'.repeat(40);
 const laneGit = { branch: 'feat/pr-chip', head };
@@ -48,8 +57,13 @@ describe('createLaneGitRecorder', () => {
     ['an empty user', { user: '', conversationId: 'c1' }],
     ['a missing conversation', { user: 'u1', conversationId: undefined }],
     ['an empty conversation', { user: 'u1', conversationId: '' }],
-  ])('does not record with %s', (_label, ids) => {
-    const { record, setConvoLaneGit } = make(ids);
+  ])('does not record with %s', async (_label, ids) => {
+    const setConvoLaneGit = jest.fn();
+    const record = await createRecorder({
+      ...ids,
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
+    } as RecorderOptions);
     expect(record).toBeUndefined();
     expect(setConvoLaneGit).not.toHaveBeenCalled();
   });
@@ -359,7 +373,7 @@ describe('createLaneGitRecorder ordering', () => {
     const reserve = jest.fn(
       () => new Promise<number>((resolve) => releases.push(() => resolve(releases.length))),
     );
-    const getConvoOwnership = jest
+    const getConvoLaneContext = jest
       .fn()
       .mockResolvedValue({ subagentThread: { rootConversationId: 'shared-root' } });
     const make = (conversationId: string) =>
@@ -367,7 +381,7 @@ describe('createLaneGitRecorder ordering', () => {
         user: 'u1',
         conversationId,
         workspace: { environmentId: 'code-mac', workspaceId: 'primary' },
-        getConvoOwnership,
+        getConvoLaneContext,
         reserveConvoLaneGitSeq: reserve,
         setConvoLaneGit: jest.fn().mockResolvedValue(true),
       });
@@ -386,7 +400,7 @@ describe('createLaneGitRecorder ordering', () => {
     const reserve = jest.fn(
       () => new Promise<number>((resolve) => releases.push(() => resolve(1))),
     );
-    const getConvoOwnership = jest.fn(async (_user: string, id: string) => ({
+    const getConvoLaneContext = jest.fn(async (_user: string, id: string) => ({
       subagentThread: { rootConversationId: id === 'child-a' ? 'root-a' : 'root-b' },
     }));
     const make = (conversationId: string) =>
@@ -394,7 +408,7 @@ describe('createLaneGitRecorder ordering', () => {
         user: 'u1',
         conversationId,
         workspace: { environmentId: 'code-mac', workspaceId: 'primary' },
-        getConvoOwnership,
+        getConvoLaneContext,
         reserveConvoLaneGitSeq: reserve,
         setConvoLaneGit: jest.fn().mockResolvedValue(true),
       });
@@ -425,7 +439,7 @@ describe('createLaneGitRecorder target conversation', () => {
 
   it('passes the workspace it ran in, so a stale writer can be fenced', async () => {
     const { record, setConvoLaneGit } = build();
-    await record?.(laneGit);
+    await record(laneGit);
     expect(written(setConvoLaneGit)[0]).toMatchObject({
       conversationId: 'target-1',
       workspace: { ...workspace },
@@ -434,15 +448,16 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('records a subagent thread on the visible conversation, and requires its workspace to match', async () => {
-    const getConvoOwnership = jest.fn().mockResolvedValue({
+    const getConvoLaneContext = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root', parentConversationId: 'mid' },
+      codeAttachmentEpoch: 0,
     });
     const { record, setConvoLaneGit, reserveConvoLaneGitSeq } = build({
       conversationId: 'child-thread',
-      getConvoOwnership,
+      getConvoLaneContext,
     });
-    await record?.(laneGit);
-    expect(getConvoOwnership).toHaveBeenCalledWith('u1', 'child-thread');
+    await record(laneGit);
+    expect(getConvoLaneContext).toHaveBeenCalledWith('u1', 'child-thread');
     expect(reserveConvoLaneGitSeq).toHaveBeenCalledWith('u1', 'visible-root');
     expect(written(setConvoLaneGit)[0]).toMatchObject({
       conversationId: 'visible-root',
@@ -451,49 +466,117 @@ describe('createLaneGitRecorder target conversation', () => {
   });
 
   it('records an ordinary conversation on itself', async () => {
-    const getConvoOwnership = jest.fn().mockResolvedValue({ user: 'u1' });
-    const { record, setConvoLaneGit } = build({ conversationId: 'plain', getConvoOwnership });
-    await record?.(laneGit);
+    const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 0 });
+    const { record, setConvoLaneGit } = build({ conversationId: 'plain', getConvoLaneContext });
+    await record(laneGit);
     expect(written(setConvoLaneGit)[0].conversationId).toBe('plain');
   });
 
   it('looks the conversation up once however many reports follow', async () => {
-    const getConvoOwnership = jest.fn().mockResolvedValue({
+    const getConvoLaneContext = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root' },
+      codeAttachmentEpoch: 0,
     });
-    const { record, setConvoLaneGit } = build({ conversationId: 'child-2', getConvoOwnership });
-    await record?.({ branch: 'a', head });
-    await record?.({ branch: 'b', head });
-    expect(getConvoOwnership).toHaveBeenCalledTimes(1);
+    const { record, setConvoLaneGit } = build({ conversationId: 'child-2', getConvoLaneContext });
+    await record({ branch: 'a', head });
+    await record({ branch: 'b', head });
+    expect(getConvoLaneContext).toHaveBeenCalledTimes(1);
     expect(written(setConvoLaneGit).map((call) => call.conversationId)).toEqual([
       'visible-root',
       'visible-root',
     ]);
   });
 
-  it('skips a report it cannot place rather than guess, and tries again on the next', async () => {
-    const getConvoOwnership = jest
+  it('records nothing when it cannot place the conversation, rather than guess', async () => {
+    const getConvoLaneContext = jest
       .fn()
-      .mockRejectedValueOnce(new Error('mongodb://user:secret@host'))
-      .mockResolvedValue({ subagentThread: { rootConversationId: 'visible-root' } });
-    const { record, setConvoLaneGit } = build({ conversationId: 'child-3', getConvoOwnership });
-    await expect(record?.({ branch: 'a', head })).resolves.toBe(false);
+      .mockRejectedValue(new Error('mongodb://user:secret@host'));
+    const setConvoLaneGit = jest.fn();
+    const record = await createRecorder({
+      user: 'u1',
+      conversationId: 'child-3',
+      workspace,
+      getConvoLaneContext,
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
+    });
+    expect(record).toBeUndefined();
     expect(setConvoLaneGit).not.toHaveBeenCalled();
     expect(JSON.stringify((logger.warn as jest.Mock).mock.calls)).not.toContain('secret');
-    await expect(record?.({ branch: 'b', head })).resolves.toBe(true);
-    expect(written(setConvoLaneGit)[0].conversationId).toBe('visible-root');
   });
 
   it('does not write a subagent lane to the parent without a workspace to verify it against', async () => {
-    const getConvoOwnership = jest.fn().mockResolvedValue({
+    const getConvoLaneContext = jest.fn().mockResolvedValue({
       subagentThread: { rootConversationId: 'visible-root' },
+      codeAttachmentEpoch: 0,
     });
-    const { record, setConvoLaneGit } = build({
+    const setConvoLaneGit = jest.fn();
+    const record = await createRecorder({
+      user: 'u1',
       conversationId: 'child-4',
-      workspace: undefined,
-      getConvoOwnership,
+      getConvoLaneContext,
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
     });
-    await expect(record?.(laneGit)).resolves.toBe(false);
+    expect(record).toBeUndefined();
     expect(setConvoLaneGit).not.toHaveBeenCalled();
+  });
+
+  it('places a conversation that is not saved yet on itself at epoch 0', async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue(null);
+    const { record, setConvoLaneGit } = build({ getConvoLaneContext });
+    await record(laneGit);
+    expect(written(setConvoLaneGit)[0]).toMatchObject({
+      conversationId: 'target-1',
+      workspace: { ...workspace, epoch: 0 },
+    });
+  });
+});
+
+describe('createLaneGitRecorder placement timing', () => {
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const workspace = { environmentId: 'code-mac', workspaceId: 'primary' };
+
+  it('settles placement before any report, so a slow lookup cannot reorder reports', async () => {
+    let release: () => void = () => undefined;
+    const getConvoLaneContext = jest.fn(
+      () =>
+        new Promise<{ codeAttachmentEpoch: number }>((resolve) => {
+          release = () => resolve({ codeAttachmentEpoch: 0 });
+        }),
+    );
+    const reserve = counter();
+    const pending = createRecorder({
+      user: 'u1',
+      conversationId: 'slow-lookup',
+      workspace,
+      getConvoLaneContext,
+      reserveConvoLaneGitSeq: reserve,
+      setConvoLaneGit: jest.fn().mockResolvedValue(true),
+    });
+    await flush();
+    expect(reserve).not.toHaveBeenCalled();
+    release();
+    const record = await pending;
+    expect(record).toBeDefined();
+    await record?.({ branch: 'a', head });
+    expect(reserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries the epoch read at creation into every write, even if the chat moves later', async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 3 });
+    const setConvoLaneGit = jest.fn().mockResolvedValue(true);
+    const record = await createRecorder({
+      user: 'u1',
+      conversationId: 'epoch-1',
+      workspace,
+      getConvoLaneContext,
+      reserveConvoLaneGitSeq: counter(),
+      setConvoLaneGit,
+    });
+    await record?.({ branch: 'a', head });
+    await record?.({ branch: 'b', head });
+    expect(setConvoLaneGit.mock.calls.map(([call]) => call.workspace.epoch)).toEqual([3, 3]);
+    expect(getConvoLaneContext).toHaveBeenCalledTimes(1);
   });
 });

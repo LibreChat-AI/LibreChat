@@ -25,7 +25,7 @@ const mockCreateAttachedWorkspaceBashTool = jest.fn(() => ({ name: AgentConstant
 const mockLaneGitRecorder = jest.fn();
 const mockCreateLaneGitRecorder = jest.fn(() => mockLaneGitRecorder);
 const mockSetConvoLaneGit = jest.fn();
-const mockGetConvoOwnership = jest.fn();
+const mockGetConvoLaneContext = jest.fn();
 const mockReserveConvoLaneGitSeq = jest.fn();
 const attachedWorkspaceOperations = [
   'read_file',
@@ -178,7 +178,7 @@ jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
   getRoleByName: (...args) => mockGetRoleByName(...args),
   setConvoLaneGit: (...args) => mockSetConvoLaneGit(...args),
-  getConvoOwnership: (...args) => mockGetConvoOwnership(...args),
+  getConvoLaneContext: (...args) => mockGetConvoLaneContext(...args),
   reserveConvoLaneGitSeq: (...args) => mockReserveConvoLaneGitSeq(...args),
 }));
 jest.mock('~/config', () => ({
@@ -3296,7 +3296,7 @@ describe('ToolService - Action Capability Gating', () => {
           user: req.user.id,
           conversationId: 'resolved-convo',
           workspace: { environmentId: 'personal-machine', workspaceId: 'project-a' },
-          getConvoOwnership: expect.any(Function),
+          getConvoLaneContext: expect.any(Function),
           reserveConvoLaneGitSeq: expect.any(Function),
           setConvoLaneGit: expect.any(Function),
         }),

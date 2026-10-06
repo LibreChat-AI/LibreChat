@@ -135,7 +135,7 @@ const {
   findPluginAuthsByKeys,
   getRoleByName,
   setConvoLaneGit,
-  getConvoOwnership,
+  getConvoLaneContext,
   reserveConvoLaneGitSeq,
 } = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
@@ -2393,7 +2393,7 @@ async function loadToolsForExecution({
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
-              onLaneGit: createLaneGitRecorder({
+              onLaneGit: await createLaneGitRecorder({
                 user: req.user.id,
                 conversationId: conversationId ?? runtimeRequestBody?.conversationId,
                 repo: codeExecutionContext.codeWorkspace.environment?.repo,
@@ -2401,7 +2401,7 @@ async function loadToolsForExecution({
                   environmentId: codeExecutionContext.codeWorkspace.environmentId,
                   workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
                 },
-                getConvoOwnership,
+                getConvoLaneContext,
                 reserveConvoLaneGitSeq,
                 setConvoLaneGit,
               }),

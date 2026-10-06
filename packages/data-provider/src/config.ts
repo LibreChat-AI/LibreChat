@@ -1868,9 +1868,9 @@ export const agentsEndpointSchema = baseEndpointSchema
           allowedRepositories: z.array(pullRequestRepositorySchema).max(256).optional(),
           /** Seconds a looked-up pull request is reused before GitHub is asked again. */
           cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
-          /** Pull requests the shared cache holds before it evicts the oldest. Size it to the
-           *  distinct credential, repository and branch combinations seen within one cache lifetime,
-           *  or fresh results are evicted and GitHub is asked again. */
+          /** Pull requests cached per credential before the oldest is evicted. Size it to the
+           *  distinct repository and branch combinations seen within one cache lifetime, or fresh
+           *  results are evicted and GitHub is asked again. */
           cacheMaxEntries: z.number().int().min(10).max(100_000).optional().default(500),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */
           requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),

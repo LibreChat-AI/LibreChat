@@ -304,6 +304,8 @@ export interface IConversation extends Document {
   laneGit?: IConversationLaneGit;
   /** Counter behind `laneGit.seq`; server-written only and excluded from reads. */
   laneGitSeq?: number;
+  /** Moves and detaches of the workspace; fences lane reports from an earlier attachment. */
+  codeAttachmentEpoch?: number;
   /** Immutable primary persisted-agent attribution for Insights. */
   initial_agent_id?: string | null;
   subagentThread?: TSubagentThreadLineage;

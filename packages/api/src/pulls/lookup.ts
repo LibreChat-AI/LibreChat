@@ -11,6 +11,8 @@ const MIN_COOLDOWN_MS = 10_000;
 /** GitHub's primary limit resets within the hour; a larger hint is malformed and is capped. */
 const MAX_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_MAX_ENTRIES = 500;
+/** Credentials with a cache partition at once. Past it the least recently used partition goes. */
+const MAX_PARTITIONS = 256;
 
 type Entry = { result: PullRequestLookupResult; expiresAt: number };
 
@@ -20,7 +22,8 @@ const scopeOf = (token: string): string =>
 
 /**
  * Caches lookups per credential, repository, branch, recorded commit and lookup policy, and shares
- * one in-flight request between concurrent callers with all of those in common. What a token can see is part of the answer (a
+ * one in-flight request between concurrent callers with all of those in common. Each credential
+ * has its own bounded partition, sized by the capacity its callers ask for. What a token can see is part of the answer (a
  * private repository is a pull request for one tenant and nothing for another), so the credential
  * scopes both the cache and the in-flight map. A rate limit applies to the credential, not the
  * branch, so it starts a cooldown for every branch under that credential. Callers must have
@@ -35,18 +38,39 @@ export function createPullRequestLookup({
   now?: () => number;
   maxEntries?: number;
 }): PullRequestLookup {
-  const entries = new Map<string, Entry>();
+  /** One bounded partition per credential, so a deployment's capacity setting only ever evicts
+   *  entries fetched with its own credential. */
+  const partitions = new Map<string, Map<string, Entry>>();
   const inflight = new Map<string, Promise<PullRequestLookupResult>>();
   const cooldowns = new Map<string, number>();
   const rateLimited: PullRequestLookupResult = { ok: false, error: { code: 'RATE_LIMITED' } };
 
+  function partitionOf(scope: string): Map<string, Entry> {
+    let partition = partitions.get(scope);
+    if (partition == null) {
+      partition = new Map();
+      partitions.set(scope, partition);
+    }
+    /** Recency of use orders the partitions, so the one idle longest is the one dropped. */
+    partitions.delete(scope);
+    partitions.set(scope, partition);
+    while (partitions.size > MAX_PARTITIONS) {
+      const idle = partitions.keys().next();
+      if (idle.done) break;
+      partitions.delete(idle.value);
+    }
+    return partition;
+  }
+
   function remember(
+    scope: string,
     key: string,
     result: PullRequestLookupResult,
     ttlMs: number,
     capacity: number,
   ): void {
     const lifetime = result.ok ? ttlMs : Math.min(ttlMs, FAILURE_TTL_MS);
+    const entries = partitionOf(scope);
     entries.delete(key);
     entries.set(key, { result, expiresAt: now() + lifetime });
     while (entries.size > capacity) {
@@ -76,7 +100,7 @@ export function createPullRequestLookup({
       limits?.maxHeadComparisons,
     ].join(',');
     const key = `${scope}\0${repo}#${branch}\0${head ?? ''}\0${policy}`;
-    const cached = entries.get(key);
+    const cached = partitions.get(scope)?.get(key);
     if (cached != null && cached.expiresAt > now()) return cached.result;
     const pending = inflight.get(key);
     if (pending != null) return pending;
@@ -100,7 +124,7 @@ export function createPullRequestLookup({
         }
         result = { ok: false, error: { code } };
       }
-      remember(key, result, ttlMs, cacheMaxEntries ?? maxEntries);
+      remember(scope, key, result, ttlMs, cacheMaxEntries ?? maxEntries);
       return result;
     })().finally(() => inflight.delete(key));
     inflight.set(key, run);
