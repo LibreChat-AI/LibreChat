@@ -58,8 +58,11 @@ export const useReasoningCapabilitiesQuery = (
     () => dataService.getReasoningCapabilities(endpoint),
     {
       staleTime: Time.ONE_HOUR,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
+      /** Loaded data lives for an hour, so focus and reconnect do not refetch it. A failed
+       *  request is different: the editors fall back to the generic list while the server may
+       *  have recovered and start refusing it, so only an errored query retries on those events. */
+      refetchOnWindowFocus: (query) => query.state.status === 'error',
+      refetchOnReconnect: (query) => query.state.status === 'error',
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,
     },
