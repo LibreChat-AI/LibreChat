@@ -837,11 +837,6 @@
       "count": 4
     }
   },
-  "client/src/components/Conversations/ConvoOptions/ProjectButton.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
   "client/src/components/Conversations/ConvoOptions/ShareButton.tsx": {
     "shadcn/no-restyle": {
       "count": 10

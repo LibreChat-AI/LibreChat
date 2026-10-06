@@ -69,7 +69,7 @@ export function useChatProjectPicker(enabled = true): ChatProjectPicker {
       options.push({
         label: project.name,
         value: project._id,
-        icon: <Folder className="h-4 w-4 text-text-secondary" aria-hidden="true" />,
+        icon: <Folder className="text-text-secondary h-4 w-4" aria-hidden="true" />,
       });
     }
     return { items: options, namesById: names };
