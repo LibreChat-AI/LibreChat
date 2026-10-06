@@ -23,13 +23,13 @@ const {
   resolveCodeWorkspaceInheritanceCapability,
   resolveCodeEnvironmentTransitionVersion,
   loadConversationListLimits,
+  resolvePullRequestCapabilities,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
   EModelEndpoint,
   defaultSocialLogins,
   resolveMCPAppsPolicy,
-  PULL_REQUEST_BATCH_VERSION,
 } = require('librechat-data-provider');
 const { logger, getTenantId, SystemCapabilities } = require('@librechat/data-schemas');
 const { hasCapability, hasConfigCapability } = require('~/server/middleware/roles/capabilities');
@@ -225,15 +225,6 @@ function buildCloudFrontStartupConfig() {
   };
 }
 
-/** The pull request flag, and the batch route's version beside it once the feature is on. */
-function pullRequestCapabilities(appConfig) {
-  const enabled = appConfig?.endpoints?.[EModelEndpoint.agents]?.pullRequests?.enabled === true;
-  return {
-    pullRequestsEnabled: enabled,
-    ...(enabled ? { pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION } : {}),
-  };
-}
-
 router.get('/', async function (req, res) {
   try {
     const preLoginPayload = buildPreLoginPayload();
@@ -341,7 +332,7 @@ router.get('/', async function (req, res) {
       langfuseConnectionAccess,
       insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
       /** Lets the client skip the pull request lookup entirely when the feature is off. */
-      ...pullRequestCapabilities(appConfig),
+      ...resolvePullRequestCapabilities(appConfig),
       compactionEnabled: appConfig?.summarization?.enabled !== false,
       ...(codeEnvironmentDecisionVersion != null ? { codeEnvironmentDecisionVersion } : {}),
       mcpApps: resolveMCPAppsPolicy(

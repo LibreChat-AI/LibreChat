@@ -1,12 +1,9 @@
 import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
-import {
-  EModelEndpoint,
-  PULL_REQUEST_BATCH_MAX,
-  PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS,
-} from 'librechat-data-provider';
+import { EModelEndpoint, PULL_REQUEST_BATCH_MAX } from 'librechat-data-provider';
 import type {
   TAgentsEndpoint,
+  TConversationPullRequest,
   TConversationPullRequestsEntry,
   TConversationPullRequestResponse,
   TConversationPullRequestsResponse,
@@ -269,36 +266,45 @@ export function createConversationPullRequestsHandler(deps: {
     }
     try {
       /**
-       * The clock starts when the request arrives, so the configured deadline bounds everything
-       * after it, including these reads. The configured value is not known until the config has
-       * loaded, so the reads themselves are held to the longest value a deployment may set.
+       * The clock starts when the request arrives. The configured deadline lives in the config,
+       * so until the config has loaded the default applies to it; once it has, the lane read and
+       * everything after it share what is left of the configured deadline, however the two reads
+       * overlapped.
        */
       const startedAt = Date.now();
-      const read = await withDeadline(
-        Promise.all([
-          deps.getAppConfig({
-            ...getAppConfigOptionsFromUser(req.user),
-            skipRuntimeAugmentation: true,
-            failClosed: true,
-          }),
-          deps.getConvosLaneGit(userId, ids),
-        ]),
-        PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS * 1000,
-      );
-      if (read === TIMED_OUT) {
+      const configRead = deps.getAppConfig({
+        ...getAppConfigOptionsFromUser(req.user),
+        skipRuntimeAugmentation: true,
+        failClosed: true,
+      });
+      const laneRead = deps.getConvosLaneGit(userId, ids);
+      /** A lane read nobody waits for (feature off, config timed out) must not fail unhandled. */
+      laneRead.catch(() => undefined);
+      const unavailable = () =>
         res
           .status(503)
           .json({ error: 'Pull request lookup is unavailable', code: 'UPSTREAM_ERROR' });
+      const loaded = await withDeadline(configRead, DEFAULT_BATCH_TIMEOUT_SECONDS * 1000);
+      if (loaded === TIMED_OUT) {
+        unavailable();
         return;
       }
-      const [appConfig, lanes] = read;
+      const appConfig = loaded;
       const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
         ?.pullRequests;
+      const deadline =
+        startedAt + (settings?.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
       const none = (): TConversationPullRequestsResponse => ({
         results: ids.map((conversationId) => ({ conversationId, pullRequest: null })),
       });
       if (settings?.enabled !== true) {
         res.status(200).json(none());
+        return;
+      }
+
+      const lanes = await withDeadline(laneRead, deadline - Date.now());
+      if (lanes === TIMED_OUT) {
+        unavailable();
         return;
       }
 
@@ -337,39 +343,53 @@ export function createConversationPullRequestsHandler(deps: {
        * with an upstream error; a lookup already running finishes in the background under its own
        * limit and fills the cache for the next request.
        */
-      const deadline =
-        startedAt + (settings.batchTimeoutSeconds ?? DEFAULT_BATCH_TIMEOUT_SECONDS) * 1000;
       const limit = settings.maxConcurrentLookups ?? DEFAULT_BATCH_CONCURRENCY;
       const scope = limiterScope(token);
-      const looked = await mapWithLimit(
-        ids,
-        limit,
-        async (conversationId): Promise<TConversationPullRequestsEntry> => {
-          const lane = eligible.get(conversationId);
-          if (lane == null) return { conversationId, pullRequest: null };
-          /** Checked before a slot is taken, so nothing starts once time is up. */
-          const remaining = deadline - Date.now();
-          let abandoned = false;
-          /** Holds its slot until the lookup itself ends, whether or not anyone is still waiting. */
-          const run = async () => {
-            await limiter.acquire(scope, limit);
-            try {
-              if (abandoned) return TIMED_OUT;
-              return await deps.lookup(lookupInput(settings, token, lane));
-            } finally {
-              limiter.release(scope, limit);
-            }
-          };
-          const result = remaining <= 0 ? TIMED_OUT : await withDeadline(run(), remaining);
-          if (result === TIMED_OUT) {
-            abandoned = true;
-            return { conversationId, error: { code: 'UPSTREAM_ERROR' } };
+      /**
+       * Conversations that share a repository, branch and head share one answer, and the lookup
+       * already coalesces them, so each distinct lookup takes one slot and one deadline, not one
+       * per conversation. Otherwise duplicates would hold every slot while a single request ran.
+       */
+      const keyOf = (lane: EligibleLane) => `${lane.repo}\0${lane.branch}\0${lane.head ?? ''}`;
+      const distinct = new Map<string, EligibleLane>();
+      for (const lane of eligible.values()) distinct.set(keyOf(lane), lane);
+      type Outcome =
+        | { ok: true; value: TConversationPullRequest | null }
+        | { ok: false; code: string };
+      const outcomes = new Map<string, Outcome>();
+      await mapWithLimit([...distinct.entries()], limit, async ([key, lane]): Promise<void> => {
+        /** Checked before a slot is taken, so nothing starts once time is up. */
+        const remaining = deadline - Date.now();
+        let abandoned = false;
+        /** Holds its slot until the lookup itself ends, whether or not anyone is still waiting. */
+        const run = async () => {
+          await limiter.acquire(scope, limit);
+          try {
+            if (abandoned) return TIMED_OUT;
+            return await deps.lookup(lookupInput(settings, token, lane));
+          } finally {
+            limiter.release(scope, limit);
           }
-          return result.ok
-            ? { conversationId, pullRequest: result.value }
-            : { conversationId, error: { code: result.error.code } };
-        },
-      );
+        };
+        const result = remaining <= 0 ? TIMED_OUT : await withDeadline(run(), remaining);
+        if (result === TIMED_OUT) {
+          abandoned = true;
+          outcomes.set(key, { ok: false, code: 'UPSTREAM_ERROR' });
+          return;
+        }
+        outcomes.set(
+          key,
+          result.ok ? { ok: true, value: result.value } : { ok: false, code: result.error.code },
+        );
+      });
+      const looked = ids.map((conversationId): TConversationPullRequestsEntry => {
+        const lane = eligible.get(conversationId);
+        const outcome = lane == null ? undefined : outcomes.get(keyOf(lane));
+        if (outcome == null) return { conversationId, pullRequest: null };
+        return outcome.ok
+          ? { conversationId, pullRequest: outcome.value }
+          : { conversationId, error: { code: outcome.code } };
+      });
       res.status(200).json({ results: looked });
     } catch (error) {
       logger.error('[PullRequests] Batch handler failed', getSafeErrorMetadata(error));

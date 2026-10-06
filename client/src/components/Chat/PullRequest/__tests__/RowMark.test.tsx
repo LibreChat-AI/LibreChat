@@ -7,12 +7,18 @@ import type { TConversationPullRequest } from 'librechat-data-provider';
 import PullRequestRowMark from '../RowMark';
 
 const mockGetMany = jest.fn();
+const mockGetOne = jest.fn();
 const mockStartup: {
   current: { pullRequestsEnabled?: boolean; pullRequestsBatchVersion?: number } | undefined;
 } = {
   current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
 };
 
+const mockUser: { current: { id: string } | undefined } = { current: { id: 'user-a' } };
+jest.mock('recoil', () => ({
+  ...jest.requireActual('recoil'),
+  useRecoilValue: () => mockUser.current,
+}));
 jest.mock('~/data-provider/Endpoints', () => ({
   useGetStartupConfig: () => ({ data: mockStartup.current }),
 }));
@@ -23,6 +29,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       ...actual.dataService,
       getConversationPullRequests: (...args: unknown[]) => mockGetMany(...args),
+      getConversationPullRequest: (...args: unknown[]) => mockGetOne(...args),
     },
   };
 });
@@ -80,7 +87,9 @@ const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMar
 describe('PullRequestRowMark', () => {
   beforeEach(() => {
     mockGetMany.mockReset();
+    mockGetOne.mockReset();
     mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
+    mockUser.current = { id: 'user-a' };
   });
 
   it.each([
@@ -163,6 +172,66 @@ describe('PullRequestRowMark', () => {
     mockGetMany.mockRejectedValueOnce(new Error('503'));
     renderMark();
     expect(await screen.findByTestId('convo-pull-request-failed')).toHaveClass('mr-1');
+  });
+
+  it('falls back to the single route when the replica that answered has no batch route', async () => {
+    mockGetMany.mockRejectedValue(
+      Object.assign(new Error('Not Found'), { response: { status: 404 } }),
+    );
+    mockGetOne.mockResolvedValue({ pullRequest: pr });
+    renderMark();
+    expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
+    expect(mockGetOne).toHaveBeenCalledWith('convo-1');
+    expect(screen.queryByTestId('convo-pull-request-failed')).toBeNull();
+  });
+
+  it('shows no failure for a conversation without a pull request when only the batch route is missing', async () => {
+    mockGetMany.mockRejectedValue(
+      Object.assign(new Error('Not Found'), { response: { status: 404 } }),
+    );
+    mockGetOne.mockResolvedValue({ pullRequest: null });
+    const { container } = renderMark();
+    await waitFor(() => expect(mockGetOne).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(container.querySelector('[data-testid="convo-pull-request-failed"]')).toBeNull();
+    expect(container.querySelector('[data-testid="convo-pull-request"]')).toBeNull();
+  });
+
+  it('does not ask for a user it cannot name, so a batch is never sent for no one', async () => {
+    mockUser.current = undefined;
+    const { container } = renderMark();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(mockGetMany).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="convo-pull-request"]')).toBeNull();
+  });
+
+  it('asks again for the next account, in a queue of its own, once the user changes', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    const first = renderMark({ conversationId: 'convo-1' });
+    await screen.findByTestId('convo-pull-request');
+    first.unmount();
+
+    /** The next account's row is not held up by anything the previous account left queued. */
+    mockUser.current = { id: 'user-b' };
+    mockGetMany.mockResolvedValue(answer('convo-2', { ...pr, number: 2 }));
+    renderMark({ conversationId: 'convo-2' });
+    await screen.findByTestId('convo-pull-request');
+    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2']);
+  });
+
+  it('does not hold the next account behind work the previous account left in flight', async () => {
+    /** The first account's request never answers, as a stalled upstream would leave it. */
+    mockGetMany.mockImplementationOnce(() => new Promise(() => undefined));
+    const stalled = renderMark({ conversationId: 'convo-1' });
+    await waitFor(() => expect(mockGetMany).toHaveBeenCalledTimes(1));
+    stalled.unmount();
+
+    mockUser.current = { id: 'user-b' };
+    mockGetMany.mockResolvedValue(answer('convo-2', { ...pr, number: 2 }));
+    renderMark({ conversationId: 'convo-2' });
+    /** Without a queue of its own it would wait out the other account's request, which never ends. */
+    expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
+    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2']);
   });
 
   it('does not ask when the deployment does not advertise the feature', async () => {

@@ -51,6 +51,7 @@ export function createPullRequestBatcher({
 }: BatcherOptions) {
   const pending = new Map<string, Waiter[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
 
   /**
    * Requests go out one at a time. Each request lets the server run its own number of lookups at
@@ -62,6 +63,13 @@ export function createPullRequestBatcher({
   let tail: Promise<void> = Promise.resolve();
 
   const send = (ids: string[], waiters: Map<string, Waiter[]>): Promise<void> => {
+    /** Work that was still waiting its turn when the batcher was disposed never goes out. */
+    if (disposed) {
+      for (const list of waiters.values()) {
+        list.forEach((waiter) => waiter.reject(new PullRequestBatchError('DISPOSED')));
+      }
+      return Promise.resolve();
+    }
     const settle = ({ results }: TConversationPullRequestsResponse) => {
       const byId = new Map(results.map((entry) => [entry.conversationId, entry]));
       for (const [id, list] of waiters) {
@@ -109,7 +117,23 @@ export function createPullRequestBatcher({
   };
 
   return {
+    /**
+     * Ends this batcher's life, for the identity it was made for. What has not gone out yet is
+     * rejected instead of being sent under whoever is signed in next, and nothing queued behind a
+     * request still in flight waits on it for the next session. A request already on the wire
+     * finishes on its own.
+     */
+    dispose(): void {
+      disposed = true;
+      clearTimeout(timer);
+      timer = undefined;
+      for (const list of pending.values()) {
+        list.forEach((waiter) => waiter.reject(new PullRequestBatchError('DISPOSED')));
+      }
+      pending.clear();
+    },
     load(conversationId: string): Promise<TConversationPullRequestResponse> {
+      if (disposed) return Promise.reject(new PullRequestBatchError('DISPOSED'));
       return new Promise((resolve, reject) => {
         const waiters = pending.get(conversationId) ?? [];
         waiters.push({ resolve, reject });
@@ -117,5 +141,57 @@ export function createPullRequestBatcher({
         timer ??= setTimeout(flush, delayMs);
       });
     },
+  };
+}
+
+const FALLBACK_CONCURRENCY = 4;
+
+const statusOf = (error: unknown): number | undefined => {
+  if (error == null || typeof error !== 'object') return undefined;
+  const candidate = error as { status?: number; response?: { status?: number } };
+  return candidate.response?.status ?? candidate.status;
+};
+
+const codeOf = (error: unknown): string => {
+  const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data?.code;
+  return typeof code === 'string' ? code : 'UPSTREAM_ERROR';
+};
+
+/**
+ * Asks the batch route, and when the server that answered does not have it (a replica that has
+ * not been upgraded yet answers 404, whatever the startup config of another replica advertised),
+ * asks the single route for each conversation instead, a few at a time. Anything but a 404 is a
+ * real failure and is passed on untouched.
+ */
+export function createBatchFetcher({
+  fetchMany,
+  fetchOne,
+}: {
+  fetchMany: (conversationIds: string[]) => Promise<TConversationPullRequestsResponse>;
+  fetchOne: (conversationId: string) => Promise<TConversationPullRequestResponse>;
+}) {
+  return async (conversationIds: string[]): Promise<TConversationPullRequestsResponse> => {
+    try {
+      return await fetchMany(conversationIds);
+    } catch (error) {
+      if (statusOf(error) !== 404) throw error;
+    }
+    const results: TConversationPullRequestsResponse['results'] = new Array(conversationIds.length);
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      for (let index = next++; index < conversationIds.length; index = next++) {
+        const conversationId = conversationIds[index];
+        try {
+          const { pullRequest } = await fetchOne(conversationId);
+          results[index] = { conversationId, pullRequest };
+        } catch (error) {
+          results[index] = { conversationId, error: { code: codeOf(error) } };
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(FALLBACK_CONCURRENCY, conversationIds.length) }, worker),
+    );
+    return { results };
   };
 }

@@ -1,5 +1,5 @@
 import type { TConversationPullRequest } from 'librechat-data-provider';
-import { PullRequestBatchError, createPullRequestBatcher } from './batch';
+import { PullRequestBatchError, createBatchFetcher, createPullRequestBatcher } from './batch';
 
 const pr: TConversationPullRequest = {
   number: 1,
@@ -258,5 +258,142 @@ describe('createPullRequestBatcher', () => {
     await jest.advanceTimersByTimeAsync(50);
     await second;
     expect(fetchMany.mock.calls.map(([ids]) => ids)).toEqual([['a'], ['b']]);
+  });
+});
+
+describe('createPullRequestBatcher dispose', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  it('rejects ids that have not gone out, and sends nothing for them', async () => {
+    const fetchMany = jest.fn();
+    const batcher = createPullRequestBatcher({ fetchMany });
+    const waiting = batcher.load('a').catch((error) => error);
+    batcher.dispose();
+    await jest.advanceTimersByTimeAsync(100);
+    const error = await waiting;
+    expect(error).toBeInstanceOf(PullRequestBatchError);
+    expect(error.code).toBe('DISPOSED');
+    expect(fetchMany).not.toHaveBeenCalled();
+  });
+
+  it('does not send chunks that were still queued behind a request in flight', async () => {
+    const releases: Array<() => void> = [];
+    const fetchMany = jest.fn(
+      (ids: string[]) =>
+        new Promise<{ results: Array<{ conversationId: string; pullRequest: null }> }>((resolve) =>
+          releases.push(() =>
+            resolve({
+              results: ids.map((conversationId) => ({ conversationId, pullRequest: null })),
+            }),
+          ),
+        ),
+    );
+    const batcher = createPullRequestBatcher({ fetchMany, maxBatch: 1 });
+    const outcomes = ['a', 'b', 'c'].map((id) =>
+      batcher.load(id).then(
+        () => 'sent',
+        (error) => error.code,
+      ),
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    expect(fetchMany).toHaveBeenCalledTimes(1);
+    batcher.dispose();
+    releases.shift()?.();
+    await jest.advanceTimersByTimeAsync(50);
+    expect(await Promise.all(outcomes)).toEqual(['sent', 'DISPOSED', 'DISPOSED']);
+    expect(fetchMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses new work once disposed', async () => {
+    const batcher = createPullRequestBatcher({ fetchMany: jest.fn() });
+    batcher.dispose();
+    await expect(batcher.load('a')).rejects.toMatchObject({ code: 'DISPOSED' });
+  });
+});
+
+describe('createBatchFetcher', () => {
+  const entry = (conversationId: string) => ({ conversationId, pullRequest: null });
+  const notFound = () => Object.assign(new Error('Not Found'), { response: { status: 404 } });
+
+  it('uses the batch route when the server has it', async () => {
+    const fetchMany = jest.fn().mockResolvedValue({ results: [entry('a')] });
+    const fetchOne = jest.fn();
+    await expect(createBatchFetcher({ fetchMany, fetchOne })(['a'])).resolves.toEqual({
+      results: [entry('a')],
+    });
+    expect(fetchOne).not.toHaveBeenCalled();
+  });
+
+  it('asks the single route for each conversation when the replica has no batch route', async () => {
+    const fetchMany = jest.fn().mockRejectedValue(notFound());
+    const fetchOne = jest.fn(async (id: string) => ({ pullRequest: id === 'a' ? pr : null }));
+    const results = await createBatchFetcher({ fetchMany, fetchOne })(['a', 'b']);
+    expect(results).toEqual({
+      results: [
+        { conversationId: 'a', pullRequest: pr },
+        { conversationId: 'b', pullRequest: null },
+      ],
+    });
+    expect(fetchOne.mock.calls.map(([id]) => id)).toEqual(['a', 'b']);
+  });
+
+  it("keeps one conversation's failure to itself and reports its code", async () => {
+    const fetchMany = jest.fn().mockRejectedValue(notFound());
+    const fetchOne = jest.fn(async (id: string) => {
+      if (id === 'a') {
+        throw Object.assign(new Error('x'), {
+          response: { status: 503, data: { code: 'RATE_LIMITED' } },
+        });
+      }
+      return { pullRequest: pr };
+    });
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(['a', 'b']);
+    expect(results).toEqual([
+      { conversationId: 'a', error: { code: 'RATE_LIMITED' } },
+      { conversationId: 'b', pullRequest: pr },
+    ]);
+  });
+
+  it('answers a failure with no code as an upstream error, never with its text', async () => {
+    const fetchMany = jest.fn().mockRejectedValue(notFound());
+    const fetchOne = jest.fn().mockRejectedValue(new Error('secret host name'));
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(['a']);
+    expect(results).toEqual([{ conversationId: 'a', error: { code: 'UPSTREAM_ERROR' } }]);
+    expect(JSON.stringify(results)).not.toContain('secret');
+  });
+
+  it.each([
+    ['a server error', { response: { status: 503 } }],
+    ['a rate limit', { response: { status: 429 } }],
+    ['an expired session', { response: { status: 401 } }],
+    ['a network failure', new Error('Network Error')],
+  ])(
+    'does not fall back on %s, since the route exists and really failed',
+    async (_label, failure) => {
+      const error = failure instanceof Error ? failure : Object.assign(new Error('x'), failure);
+      const fetchMany = jest.fn().mockRejectedValue(error);
+      const fetchOne = jest.fn();
+      await expect(createBatchFetcher({ fetchMany, fetchOne })(['a'])).rejects.toBe(error);
+      expect(fetchOne).not.toHaveBeenCalled();
+    },
+  );
+
+  it('runs the single-route calls a few at a time, not all at once', async () => {
+    let active = 0;
+    let peak = 0;
+    const fetchMany = jest.fn().mockRejectedValue(notFound());
+    const fetchOne = jest.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { pullRequest: null };
+    });
+    jest.useRealTimers();
+    const ids = Array.from({ length: 12 }, (_, i) => `c${i}`);
+    const { results } = await createBatchFetcher({ fetchMany, fetchOne })(ids);
+    expect(results.map((r) => r.conversationId)).toEqual(ids);
+    expect(peak).toBe(4);
   });
 });

@@ -1,3 +1,4 @@
+import { useRecoilValue } from 'recoil';
 import { useQuery } from '@tanstack/react-query';
 import {
   Constants,
@@ -7,8 +8,9 @@ import {
 } from 'librechat-data-provider';
 import type { TConversationPullRequestResponse } from 'librechat-data-provider';
 import type { UseQueryOptions } from '@tanstack/react-query';
-import { createPullRequestBatcher } from './batch';
+import { createBatchFetcher, createPullRequestBatcher } from './batch';
 import { useGetStartupConfig } from '../Endpoints';
+import store from '~/store';
 
 const SETTLED_REFRESH_MS = 60_000;
 /** Checks and conflict state change while a pull request is being worked on. */
@@ -59,10 +61,27 @@ export const useConversationPullRequestQuery = (
   );
 };
 
-/** One batcher for the app: every sidebar row mounted in the same moment shares one request. */
-const rowBatcher = createPullRequestBatcher({
+const fetchRows = createBatchFetcher({
   fetchMany: (conversationIds) => dataService.getConversationPullRequests(conversationIds),
+  fetchOne: (conversationId) => dataService.getConversationPullRequest(conversationId),
 });
+
+type RowBatcher = ReturnType<typeof createPullRequestBatcher>;
+let rowBatcher: { userId: string; batcher: RowBatcher } | undefined;
+
+/**
+ * The batcher for the signed-in user: every sidebar row mounted in the same moment shares one
+ * request. It belongs to one identity, so when the user changes the old one is disposed, and ids
+ * it still held are neither sent under the next account's authorization nor made to wait ahead
+ * of that account's own rows.
+ */
+const batcherFor = (userId: string): RowBatcher => {
+  if (rowBatcher?.userId === userId) return rowBatcher.batcher;
+  rowBatcher?.batcher.dispose();
+  const batcher = createPullRequestBatcher({ fetchMany: fetchRows });
+  rowBatcher = { userId, batcher };
+  return batcher;
+};
 
 /**
  * The pull request of a sidebar row. It shares its cache entry with the header's query, so the
@@ -73,14 +92,16 @@ const rowBatcher = createPullRequestBatcher({
  */
 export const useRowPullRequestQuery = (conversationId: string) => {
   const { data: startupConfig } = useGetStartupConfig();
+  const userId = useRecoilValue(store.user)?.id ?? '';
   return useQuery<TConversationPullRequestResponse>(
     [QueryKeys.conversationPullRequest, conversationId],
-    () => rowBatcher.load(conversationId),
+    () => batcherFor(userId).load(conversationId),
     {
       /** The batch route is newer than the flag: ask only a server that says it has it. */
       enabled:
         startupConfig?.pullRequestsEnabled === true &&
         startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+        userId !== '' &&
         isSavedConversation(conversationId),
       staleTime: SETTLED_REFRESH_MS,
       retry: false,
