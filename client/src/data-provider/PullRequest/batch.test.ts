@@ -301,7 +301,8 @@ describe('createPullRequestBatcher dispose', () => {
     batcher.dispose();
     releases.shift()?.();
     await jest.advanceTimersByTimeAsync(50);
-    expect(await Promise.all(outcomes)).toEqual(['sent', 'DISPOSED', 'DISPOSED']);
+    /** The request on the wire is aborted with the batcher, and the queued chunks never go out. */
+    expect(await Promise.all(outcomes)).toEqual(['ABORTED', 'DISPOSED', 'DISPOSED']);
     expect(fetchMany).toHaveBeenCalledTimes(1);
   });
 
@@ -541,5 +542,54 @@ describe('the single-route fallback and the queue', () => {
     await batcher.load('a');
     expect(seen).toBeDefined();
     expect(seen?.aborted).toBe(false);
+  });
+});
+
+describe('the batch POST receives the request signal', () => {
+  it("hands the batcher's signal to the primary batch call, and aborts it on timeout", async () => {
+    jest.useFakeTimers();
+    try {
+      const seen: AbortSignal[] = [];
+      const fetchMany = jest.fn(
+        (_ids: string[], signal: AbortSignal) =>
+          new Promise<never>(() => {
+            seen.push(signal);
+          }),
+      );
+      const fetcher = createBatchFetcher({ fetchMany, fetchOne: jest.fn() });
+      const batcher = createPullRequestBatcher({ fetchMany: fetcher, requestTimeoutMs: 1000 });
+      const outcome = batcher.load('a').catch((error) => error.code);
+      await jest.advanceTimersByTimeAsync(50);
+      expect(seen).toHaveLength(1);
+      expect(seen[0].aborted).toBe(false);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(await outcome).toBe('TIMEOUT');
+      expect(seen[0].aborted).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('aborts the batch call on the wire when the batcher is disposed', async () => {
+    jest.useFakeTimers();
+    try {
+      let seen: AbortSignal | undefined;
+      const fetchMany = jest.fn(
+        (_ids: string[], signal: AbortSignal) =>
+          new Promise<never>(() => {
+            seen = signal;
+          }),
+      );
+      const batcher = createPullRequestBatcher({
+        fetchMany: createBatchFetcher({ fetchMany, fetchOne: jest.fn() }),
+      });
+      const outcome = batcher.load('a').catch(() => 'rejected');
+      await jest.advanceTimersByTimeAsync(50);
+      batcher.dispose();
+      expect(seen?.aborted).toBe(true);
+      expect(await outcome).toBe('rejected');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

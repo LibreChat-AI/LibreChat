@@ -62,7 +62,8 @@ export const useConversationPullRequestQuery = (
 };
 
 const fetchRows = createBatchFetcher({
-  fetchMany: (conversationIds) => dataService.getConversationPullRequests(conversationIds),
+  fetchMany: (conversationIds, signal) =>
+    dataService.getConversationPullRequests(conversationIds, { signal }),
   fetchOne: (conversationId, signal) =>
     dataService.getConversationPullRequest(conversationId, { signal }),
 });

@@ -99,11 +99,19 @@ export function createPullRequestBatcher({
     const controller = new AbortController();
     active = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    /**
+     * Settles the request on its timeout, and on an abort from disposal, so callers never wait on
+     * a fetcher that ignores its signal. The timeout aborts first, so the code it reports stays
+     * `TIMEOUT` and the abort listener only ever fires for disposal.
+     */
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        controller.abort();
         reject(new PullRequestBatchError('TIMEOUT'));
+        controller.abort();
       }, requestTimeoutMs);
+      controller.signal.addEventListener('abort', () =>
+        reject(new PullRequestBatchError('ABORTED')),
+      );
     });
     /**
      * `settle` is inside the guarded chain: a response that is not the shape it should be would
@@ -186,7 +194,10 @@ export function createBatchFetcher({
   fetchMany,
   fetchOne,
 }: {
-  fetchMany: (conversationIds: string[]) => Promise<TConversationPullRequestsResponse>;
+  fetchMany: (
+    conversationIds: string[],
+    signal: AbortSignal,
+  ) => Promise<TConversationPullRequestsResponse>;
   fetchOne: (
     conversationId: string,
     signal: AbortSignal,
@@ -197,7 +208,7 @@ export function createBatchFetcher({
     signal: AbortSignal,
   ): Promise<TConversationPullRequestsResponse> => {
     try {
-      return await fetchMany(conversationIds);
+      return await fetchMany(conversationIds, signal);
     } catch (error) {
       if (statusOf(error) !== 404) throw error;
     }

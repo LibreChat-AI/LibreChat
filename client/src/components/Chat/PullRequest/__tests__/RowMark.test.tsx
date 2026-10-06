@@ -216,7 +216,7 @@ describe('PullRequestRowMark', () => {
     mockGetMany.mockResolvedValue(answer('convo-2', { ...pr, number: 2 }));
     renderMark({ conversationId: 'convo-2' });
     await screen.findByTestId('convo-pull-request');
-    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2']);
+    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2'], { signal: expect.any(AbortSignal) });
   });
 
   it('does not hold the next account behind work the previous account left in flight', async () => {
@@ -231,7 +231,7 @@ describe('PullRequestRowMark', () => {
     renderMark({ conversationId: 'convo-2' });
     /** Without a queue of its own it would wait out the other account's request, which never ends. */
     expect(await screen.findByTestId('convo-pull-request')).toBeInTheDocument();
-    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2']);
+    expect(mockGetMany).toHaveBeenLastCalledWith(['convo-2'], { signal: expect.any(AbortSignal) });
   });
 
   it('does not ask when the deployment does not advertise the feature', async () => {
@@ -246,7 +246,7 @@ describe('PullRequestRowMark', () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark();
     await screen.findByTestId('convo-pull-request');
-    expect(mockGetMany).toHaveBeenCalledWith(['convo-1']);
+    expect(mockGetMany).toHaveBeenCalledWith(['convo-1'], { signal: expect.any(AbortSignal) });
   });
 
   it('shows the state icon with the CI dot, in the row surface colors', async () => {

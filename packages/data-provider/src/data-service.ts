@@ -1236,8 +1236,9 @@ export function getConversationPullRequest(
 
 export function getConversationPullRequests(
   conversationIds: string[],
+  options?: { signal?: AbortSignal },
 ): Promise<t.TConversationPullRequestsResponse> {
-  return request.post(endpoints.conversationPullRequests(), { conversationIds });
+  return request.post(endpoints.conversationPullRequests(), { conversationIds }, options);
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
