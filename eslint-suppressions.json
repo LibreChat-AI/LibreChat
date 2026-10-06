@@ -987,7 +987,7 @@
   },
   "client/src/components/Messages/ScrollToBottom.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/Nav/AccountSettings.tsx": {

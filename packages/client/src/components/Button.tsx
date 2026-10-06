@@ -15,9 +15,11 @@ type ButtonVariantOptions =
         | 'submit'
         | 'outline'
         | 'outline-toggle'
+        | 'floating'
         | 'choice'
         | 'subtle'
         | 'destructive'
+        | 'destructive-soft'
         | 'secondary'
         | 'ghost'
         | 'quiet'
@@ -71,9 +73,23 @@ const buttonVariantRecipe = cva(
         default:
           'bg-button-primary text-text-inverted hover:bg-button-primary-hover hover:active:bg-surface-inverted-pressed',
         destructive:
+          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
+        /**
+         * A destructive action offered inline, such as a row's delete or a revoke beside its
+         * label. A theme whose `destructiveStyle` is `soft` tints it; the confirming button of a
+         * destructive dialog stays `destructive`, the strongest action on screen.
+         */
+        'destructive-soft':
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover theme-destructive-soft:bg-surface-destructive/10 theme-destructive-soft:text-text-destructive theme-destructive-soft:hover:bg-surface-destructive/14 theme-destructive-soft:hover:active:bg-surface-destructive/17',
         outline:
           'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /**
+         * A control floating over scrolling content, such as the scroll-to-bottom chip. A theme that
+         * draws no chrome outline gives it an opaque fill and a lift instead, so it never reads as a
+         * bare glyph over the thread.
+         */
+        floating:
+          'border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover',
         /** An outlined filter whose pressed state stays visible between activations. */
         'outline-toggle':
           'text-text-primary border border-border-control bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',

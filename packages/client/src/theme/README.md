@@ -441,10 +441,13 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
-- `theme-destructive-soft:` - A variant for a `destructive` Button's tint: the
+- `theme-destructive-soft:` - A variant for a `destructive-soft` Button's tint (the inline delete or revoke; a dialog's confirming `destructive` button stays solid): the
   button paints a 10% tint of the destructive surface under the destructive ink
   when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
   solid destructive surface.
+- `theme-chrome-quiet:` - A variant for a surface that stands in for a chrome
+  outline: it applies when the theme's `chromeBorderAlpha` is `0`, so a floating
+  control or a bar over a scrolling thread stays separable once its edge is gone.
 - `border-border-inset-medium` - `border-medium` at the `insetBorderAlpha`
   appearance role, for the box edges of a form that sits on a stroked page.
 - `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or

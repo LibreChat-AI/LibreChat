@@ -287,6 +287,18 @@
   }
 }
 
+/* A theme whose `chromeBorderAlpha` is `0` draws no outline on chrome controls, so a control that
+ * floats over content or a bar that sits over a scrolling thread needs a surface in place of the
+ * edge. Read, like the disabled style, from the `--theme-border-chrome-alpha` property the nearest
+ * themed root carries. */
+@custom-variant theme-chrome-quiet {
+  @container style(--theme-border-chrome-alpha: 0) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
 /* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
  * drawing a ring. Read, like the disabled style, from the `--theme-field-focus-style` property
  * the nearest themed root carries. */

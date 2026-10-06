@@ -10,8 +10,16 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
-  it('paints a destructive button solid and tints it only when the theme asks', () => {
+  it('keeps a confirming destructive button solid in every theme', () => {
     const destructive = cn(buttonVariants({ variant: 'destructive' }));
+
+    expect(destructive).toContain('bg-surface-destructive');
+    expect(destructive).toContain('text-text-on-status');
+    expect(destructive).not.toContain('theme-destructive-soft:');
+  });
+
+  it('paints an inline destructive button solid and tints it only when the theme asks', () => {
+    const destructive = cn(buttonVariants({ variant: 'destructive-soft' }));
 
     expect(destructive).toContain('bg-surface-destructive');
     expect(destructive).toContain('text-text-on-status');
@@ -52,6 +60,15 @@ describe('Button', () => {
     expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('px-4');
     expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('py-1');
     expect(cn(buttonVariants({ variant: 'toolbar' }))).not.toContain('py-2');
+  });
+
+  it('gives a floating control a surface only when its chrome outline is gone', () => {
+    const floating = cn(buttonVariants({ variant: 'floating', size: 'icon-theme' }));
+
+    expect(floating).toContain('border-border-chrome');
+    expect(floating).toContain('bg-surface-chat/90');
+    expect(floating).toContain('theme-chrome-quiet:bg-surface-chat');
+    expect(floating).toContain('theme-chrome-quiet:shadow-md');
   });
 
   it('outlines a toggle in the control border', () => {
