@@ -97,7 +97,6 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-dialog-title': 'click.dialog.color.title.default',
     'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
-    'rgb-surface-media-overlay': 'click.dialog.color.opaqueBackground.default',
     'rgb-surface-nav-hover': 'click.sidebar.main.navigation.item.color.background.hover',
     'rgb-avatar-edge': 'global.color.stroke.default',
     'rgb-alert-error-fill': 'click.alert.color.background.danger',
@@ -251,7 +250,6 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-dialog-title': 'click.dialog.color.title.default',
     'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
     'rgb-surface-nav-selected': 'click.sidebar.main.navigation.item.color.background.active',
-    'rgb-surface-media-overlay': 'click.dialog.color.opaqueBackground.default',
     'rgb-avatar-edge': 'global.color.stroke.default',
     'rgb-alert-error-fill': 'click.alert.color.background.danger',
     'rgb-alert-error-border': 'click.alert.color.background.danger',
@@ -282,7 +280,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-medium-alt': 'global.color.stroke.default',
     'rgb-border-heavy': 'global.color.stroke.intense',
     'rgb-border-xheavy': 'global.color.stroke.intense',
-    'rgb-drawer-edge': 'click.sidebar.main.color.stroke.default',
+    'rgb-drawer-edge': 'palette.neutral.500',
     'rgb-border-destructive': 'palette.danger.300',
     'rgb-border-control': 'click.field.color.stroke.default',
     'rgb-border-field-focus': 'click.field.color.stroke.active',
@@ -365,10 +363,13 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
   },
 };
 
-/** Values the theme sets on purpose without a Click UI source, and why. Every role has a source today. */
+/** Values the theme sets on purpose without a Click UI source, and why. */
+const MEDIA_OVERLAY_REASON =
+  'Click UI has no media scrim; the image frame stays black in both modes';
+
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
-  light: {},
-  dark: {},
+  light: { 'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON },
+  dark: { 'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON },
 };
 
 /**
@@ -393,7 +394,7 @@ const composites: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = 
  * How close a role lands on Click UI: `match` holds the token that names the role's job, `near` is
  * within deltaE2000 5 of it, and `mismatch` is further off.
  */
-type RoleStatus = 'match' | 'near' | 'mismatch';
+type RoleStatus = 'match' | 'near' | 'mismatch' | 'unsourced';
 
 interface Departure {
   /** The Click UI token that names the role's job, which the theme's value departs from. */
@@ -1610,7 +1611,8 @@ function roleStatuses(mode: ThemeMode): Array<[keyof IThemeRGB, RoleStatus, stri
     const departure = departures[mode][key];
     const token = departure?.counterpart ?? colorSources[mode][key];
     if (token === undefined) {
-      return [key, 'mismatch', 'unsourced'];
+      const reason = unsourcedColors[mode][key];
+      return [key, reason === undefined ? 'mismatch' : 'unsourced', reason ?? 'unsourced'];
     }
     const theme = tripletRgba(colors[key] ?? '');
     const counterpart = sourceColor(mode, key, token);
@@ -1822,7 +1824,10 @@ describe('ClickHouse primitive parity against Click UI components', () => {
     ]);
 
     const moved = statuses.flatMap(([key, status]) => {
-      const pinned = departures[mode][key]?.status ?? 'match';
+      const pinned =
+        unsourcedColors[mode][key] === undefined
+          ? (departures[mode][key]?.status ?? 'match')
+          : 'unsourced';
       return status === pinned ? [] : [`${key}: pinned ${pinned}, measures ${status}`];
     });
     const stale = Object.keys(departures[mode]).filter(

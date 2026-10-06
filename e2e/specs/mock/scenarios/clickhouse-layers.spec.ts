@@ -52,7 +52,7 @@ const paint = (page: Page, selector: string) =>
 
 const rgb = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;
 
-const sidebar = 'nav.bg-surface-primary-alt';
+const sidebar = 'nav.bg-surface-sidebar';
 
 test.describe('layered surfaces', () => {
   test('the canvas, sidebar and user turn take their own Click UI layers under the ClickHouse theme @scenario:clickhouse-layers-follow-click-ui', async ({
@@ -66,7 +66,7 @@ test.describe('layered surfaces', () => {
 
       const canvas = await paint(page, '.bg-surface-canvas');
       expect(canvas).toBe(rgb(colors['rgb-surface-canvas']));
-      expect(await paint(page, sidebar)).toBe(rgb(colors['rgb-surface-primary-alt']));
+      expect(await paint(page, sidebar)).toBe(rgb(colors['rgb-surface-sidebar']));
       expect(await paint(page, '.bg-surface-user-message')).toBe(
         rgb(colors['rgb-surface-user-message']),
       );
