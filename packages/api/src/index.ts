@@ -11,6 +11,7 @@ export * from './artifacts';
 export * from './admin';
 export * from './cdn';
 export * from './code';
+export * from './pulls';
 /* Auth */
 export * from './auth';
 /* API Keys */
@@ -85,6 +86,8 @@ export * from './prompts';
 export * from './projects';
 /* Conversations */
 export * from './conversations';
+/* Messages */
+export * from './messages';
 /* Skills */
 export * from './schedules';
 export * from './schedules/service';

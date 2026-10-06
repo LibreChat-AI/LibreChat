@@ -286,7 +286,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
             options={modeOptions}
             value={mode}
             onChange={handleModeChange}
-            buttonClassName="!h-7 !px-2.5 !text-xs"
+            size="sm"
             aria-labelledby="skills-mode-label"
           />
         </div>

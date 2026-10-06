@@ -218,7 +218,7 @@ const CreatePromptForm = ({
               />
             </div>
           </div>
-          <PromptVariables promptText={promptText} />
+          <PromptVariables promptText={promptText} inset />
           <Description
             onValueChange={(value) => methods.setValue('oneliner', value)}
             tabIndex={0}

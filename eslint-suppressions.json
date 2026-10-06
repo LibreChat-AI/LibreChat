@@ -88,22 +88,22 @@
   },
   "client/src/components/Auth/LoginForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 39
+      "count": 33
     }
   },
   "client/src/components/Auth/Registration.tsx": {
     "shadcn/no-restyle": {
-      "count": 39
+      "count": 33
     }
   },
   "client/src/components/Auth/RequestPasswordReset.tsx": {
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 13
     }
   },
   "client/src/components/Auth/ResetPassword.tsx": {
     "shadcn/no-restyle": {
-      "count": 54
+      "count": 48
     }
   },
   "client/src/components/Auth/TwoFactorScreen.tsx": {
@@ -134,11 +134,6 @@
   "client/src/components/Bookmarks/EditBookmarkButton.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    }
-  },
-  "client/src/components/Chat/AddMultiConvo.tsx": {
-    "shadcn/no-restyle": {
-      "count": 9
     }
   },
   "client/src/components/Chat/ChatView.tsx": {
@@ -173,16 +168,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/CodeApprovalMenu.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/CodeWorkspaceMenu.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/ConversationStarters.tsx": {
@@ -1667,9 +1652,6 @@
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 10
-    },
-    "shadcn/no-restyle": {
-      "count": 2
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ToolCard.tsx": {

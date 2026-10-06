@@ -2,8 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { ToolDisclosures } from '../../disclosure';
-import { SoleToolContext, ToolDisclosureContext, ToolDisclosureKeyContext } from '../../disclosure';
+import { LoneGroupContext, SoleToolContext } from '../../disclosure';
 import BashCall from '../BashCall';
 import store from '~/store';
 
@@ -353,6 +352,104 @@ describe('BashCall sole tool disclosure', () => {
     expect(panel(container).style.gridTemplateRows).toBe('0fr');
   });
 
+  it('drops its own row when it is the only call, so the output follows the group header', () => {
+    renderCall(true);
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+
+  it('keeps its row when it is one of several calls', () => {
+    renderCall(false);
+    expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+  });
+
+  it('keeps its row when the call carries a model-authored intent', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ intent: 'Check the build', command: 'echo hi' }}
+            output="hi"
+            runStepStatus="completed"
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Check the build');
+  });
+
+  it('drops its row when its group holds one call inside a phase of several', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value={false}>
+          <LoneGroupContext.Provider value>
+            <BashCall
+              initialProgress={1}
+              isSubmitting={false}
+              args={{ command: 'echo hi' }}
+              output="hi"
+              runStepStatus="completed"
+            />
+          </LoneGroupContext.Provider>
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+    expect(screen.getByText('hi')).toBeInTheDocument();
+  });
+
+  it('keeps its row while the only call is still running', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall initialProgress={0.5} isSubmitting args={{ command: 'sleep 5' }} output="" />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Running command');
+  });
+
+  it('keeps its row when the only call failed, so the failure stays reachable', () => {
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            executor="attached_workspace"
+            args={{ command: 'false' }}
+            output={'stderr:\nboom\n\n[exit code: 1]'}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('tool failed');
+  });
+
+  it('keeps its row for a detached task whose dispatch step has closed', () => {
+    const handle = JSON.stringify({
+      background_task_id: 'task-1',
+      tool: 'bash_tool',
+      status: 'running',
+      message: 'Use check_background_task to follow it',
+    });
+    render(
+      <RecoilRoot>
+        <SoleToolContext.Provider value>
+          <BashCall
+            initialProgress={1}
+            isSubmitting={false}
+            args={{ command: 'sleep 600' }}
+            output={handle}
+          />
+        </SoleToolContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('progress-text')).toHaveTextContent('Running in background');
+  });
+
   it('closes the card again when its group gains a second call', () => {
     const { container, rerender } = renderCall(true);
     expect(panel(container).style.gridTemplateRows).toBe('1fr');
@@ -369,32 +466,6 @@ describe('BashCall sole tool disclosure', () => {
       </RecoilRoot>,
     );
     expect(panel(container).style.gridTemplateRows).toBe('0fr');
-  });
-
-  it('keeps a closed sole card closed when it remounts under a new group', () => {
-    const disclosures: ToolDisclosures = new Map();
-    const tree = () => (
-      <RecoilRoot>
-        <ToolDisclosureContext.Provider value={disclosures}>
-          <ToolDisclosureKeyContext.Provider value="call-1">
-            <SoleToolContext.Provider value>
-              <BashCall
-                initialProgress={1}
-                isSubmitting={false}
-                args={{ command: 'echo hi' }}
-                output="hi"
-              />
-            </SoleToolContext.Provider>
-          </ToolDisclosureKeyContext.Provider>
-        </ToolDisclosureContext.Provider>
-      </RecoilRoot>
-    );
-    const first = render(tree());
-    fireEvent.click(first.getByTestId('progress-text'));
-    expect(panel(first.container).style.gridTemplateRows).toBe('0fr');
-    first.unmount();
-    const second = render(tree());
-    expect(panel(second.container).style.gridTemplateRows).toBe('0fr');
   });
 });
 

@@ -424,6 +424,127 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('createUserIfAbsent', () => {
+    const newUser = {
+      name: 'First Login',
+      email: 'first@example.com',
+      provider: 'openid',
+      openidId: 'first-sub',
+      openidIssuer: 'https://issuer.example.com',
+    };
+
+    beforeEach(async () => {
+      await User.syncIndexes();
+    });
+
+    test('creates the user, credits the start balance, and returns it', async () => {
+      const result = await methods.createUserIfAbsent(newUser, {
+        enabled: true,
+        startBalance: 500,
+      });
+
+      expect(result.ok).toBe(true);
+      const created = result.ok ? result.value : null;
+      expect(created).toEqual(expect.objectContaining({ email: 'first@example.com' }));
+      const balance = await Balance.findOne({ user: created?._id });
+      expect(balance?.tokenCredits).toBe(500);
+    });
+
+    test('reports user_exists for one of two concurrent inserts and credits the balance once', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+
+      const results = await Promise.all([
+        methods.createUserIfAbsent(newUser, balanceConfig),
+        methods.createUserIfAbsent(newUser, balanceConfig),
+      ]);
+
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.find((result) => !result.ok)).toEqual({
+        ok: false,
+        error: { code: 'user_exists' },
+      });
+      expect(await User.countDocuments()).toBe(1);
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.tokenCredits)).toEqual([500]);
+    });
+
+    test('reports user_exists when another account holds the provider identity', async () => {
+      await methods.createUserIfAbsent(newUser);
+
+      const result = await methods.createUserIfAbsent({ ...newUser, email: 'renamed@example.com' });
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+    });
+
+    test('initializes the start balance before the user exists', async () => {
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate');
+      const userSave = jest.spyOn(User.prototype, 'save');
+
+      await methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 });
+
+      expect(balanceWrite.mock.invocationCallOrder[0]).toBeLessThan(
+        userSave.mock.invocationCallOrder[0],
+      );
+      balanceWrite.mockRestore();
+      userSave.mockRestore();
+    });
+
+    test('removes the start balance it initialized when the account already exists', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+      const created = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      const result = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.user.toString())).toEqual([
+        created.ok ? created.value._id.toString() : '',
+      ]);
+    });
+
+    test('removes the start balance when its write commits but reports a failure', async () => {
+      const realWrite = Balance.findOneAndUpdate.bind(Balance);
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate').mockImplementationOnce(
+        (...args: Parameters<typeof Balance.findOneAndUpdate>) =>
+          ({
+            lean: async () => {
+              await realWrite(...args).lean();
+              throw new Error('connection closed before acknowledgement');
+            },
+          }) as never,
+      );
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(0);
+      expect(await User.countDocuments()).toBe(0);
+      balanceWrite.mockRestore();
+    });
+
+    test('keeps the start balance when the insert fails without a unique-index rejection', async () => {
+      const userSave = jest
+        .spyOn(User.prototype, 'save')
+        .mockRejectedValueOnce(new Error('connection closed before acknowledgement'));
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(1);
+      userSave.mockRestore();
+    });
+
+    test('throws failures other than an existing account without writing a balance', async () => {
+      await expect(
+        methods.createUserIfAbsent(
+          { ...newUser, email: 'not-an-email' },
+          { enabled: true, startBalance: 500 },
+        ),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+      expect(await Balance.countDocuments()).toBe(0);
+    });
+  });
+
   describe('updateUser', () => {
     test('should update user fields', async () => {
       const user = await User.create({

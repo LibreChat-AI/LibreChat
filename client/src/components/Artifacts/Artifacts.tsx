@@ -502,7 +502,7 @@ export default function Artifacts() {
               aria-valuemin={10}
               aria-valuemax={100}
               aria-valuenow={Math.round(height)}
-              className="bg-surface-primary-alt focus-visible:ring-border-heavy flex shrink-0 cursor-grab items-center justify-center pt-2.5 pb-1.5 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset active:cursor-grabbing"
+              className="bg-surface-primary-alt focus-visible:ring-focus-subtle flex shrink-0 cursor-grab items-center justify-center pt-2.5 pb-1.5 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset active:cursor-grabbing"
               onPointerDown={handleDragStart}
               onPointerMove={handleDragMove}
               onPointerUp={handleDragEnd}

@@ -46,9 +46,12 @@ import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
+import {
+  withSubmittedCodeDecision,
+  resolveSubmittedCodeApprovalMode,
+} from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
-import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
@@ -258,11 +261,12 @@ export default function useChatFunctions({
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
   const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
     immutableConversation,
     addedConversation,
+    codeWorkspaceState.mode,
   );
-  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
 
   /**
    * `ask` refuses while `isSubmitting`, but that Recoil value only reads true
@@ -391,10 +395,6 @@ export default function useChatFunctions({
 
     const conversation = cloneDeep(immutableConversation);
     const latestCodeApprovalMode = getConversation()?.codeApprovalMode;
-    const codeApprovalMode =
-      latestCodeApprovalMode != null && codeApprovalModes.includes(latestCodeApprovalMode)
-        ? latestCodeApprovalMode
-        : fallbackCodeApprovalMode;
     const latestCodeWorkspaces = getConversation()?.codeWorkspaces ?? conversation?.codeWorkspaces;
     const latestCodeEnvironmentMode =
       getConversation()?.codeEnvironmentMode ?? conversation?.codeEnvironmentMode;
@@ -407,6 +407,12 @@ export default function useChatFunctions({
       return false;
     }
     const { codeEnvironmentMode, codeWorkspaces } = workspaceSubmission;
+    const codeApprovalMode = resolveSubmittedCodeApprovalMode({
+      requested: latestCodeApprovalMode,
+      modes: codeApprovalModes,
+      fallback: fallbackCodeApprovalMode,
+      codeEnvironmentMode,
+    });
 
     const endpoint = conversation?.endpoint;
     if (endpoint === null) {

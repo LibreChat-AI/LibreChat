@@ -44,7 +44,7 @@ jest.mock('~/hooks/Chat/useBookmarkItems', () => ({
     return mockHookState.bookmarks;
   },
 }));
-jest.mock('~/hooks/Chat/useExportShare', () => ({
+jest.mock('~/hooks/Chat/useChatOptions', () => ({
   __esModule: true,
   default: () => mockHookState.exportShare,
 }));
@@ -186,7 +186,7 @@ describe('HeaderMenu', () => {
     expect(screen.getByTestId('header-menu-shared-link-indicator')).toBeInTheDocument();
     expect(screen.getByTestId('header-overflow-menu')).toHaveAttribute(
       'aria-label',
-      'com_ui_export_share_link_active',
+      'com_ui_chat_options_link_active',
     );
   });
 

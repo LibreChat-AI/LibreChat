@@ -95,6 +95,65 @@ const subagentDisplay = {
 };
 
 describe('Wakeup', () => {
+  it.each([
+    ['subagent', subagentDisplay, 'com_ui_wakeup_subagent_completed'],
+    [
+      'background tool',
+      {
+        kind: 'background_tool' as const,
+        tasks: [
+          {
+            taskId: 'bg-wide',
+            status: 'completed' as const,
+            result: 'wide output '.repeat(200),
+            toolName: 'bash_tool',
+          },
+        ],
+      },
+      'com_ui_wakeup_task_finished',
+    ],
+  ])('holds the %s width until its closing body unmounts', (_kind, display, label) => {
+    render(
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <Wakeup display={display} conversationId="conversation-1" />
+        </RecoilRoot>
+      </ChatSurfaceHarness>,
+    );
+
+    const header = screen.getByRole('button', { name: label });
+    const panel = screen.getByTestId('wakeup-panel');
+    const card = header.parentElement;
+    expect(card).not.toHaveClass('w-[36rem]');
+    expect(panel).toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveAttribute('aria-hidden', 'true');
+    expect(panel.firstElementChild).toHaveAttribute('inert');
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.transitionEnd(panel.firstElementChild!);
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    fireEvent.transitionEnd(panel);
+    expect(header).toHaveAttribute('aria-expanded', 'true');
+    expect(card).toHaveClass('w-[36rem]');
+    expect(panel).not.toBeEmptyDOMElement();
+
+    fireEvent.click(header);
+    fireEvent.transitionEnd(panel);
+    expect(card).not.toHaveClass('w-[36rem]');
+    expect(panel).toBeEmptyDOMElement();
+  });
+
   it('renders a collapsible subagent completion card with the result and panel affordance', () => {
     render(
       <ChatSurfaceHarness>

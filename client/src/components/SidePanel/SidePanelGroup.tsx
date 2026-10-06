@@ -31,7 +31,7 @@ const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
       {/* The surface behind the panels is this group's host, not the group
           primitive: the resizer owns its own chrome, and the caller owns the
           backdrop the panels sit on. */}
-      <div className="bg-surface-primary-alt relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         <ResizablePanelGroup
           orientation="horizontal"
           defaultLayout={defaultLayout}
