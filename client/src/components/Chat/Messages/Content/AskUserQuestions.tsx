@@ -11,6 +11,11 @@ import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
+/** Batches whose arrival already placed focus. A batch remounts when it moves
+ *  between the composer popover and the chat card; only its first arrival may
+ *  take focus, or every move would pull the user back onto its options. */
+const arrivalFocused = new Set<string>();
+
 /**
  * One bounded batch of `ask_user_question` items, presented a single question at
  * a time. The batch arrives as one interrupt and submits as one answer map — the
@@ -22,10 +27,14 @@ export default function AskUserQuestions({
   questions,
   className,
   headerAction,
+  focusOnArrival = false,
 }: {
   actionId: string;
   questions: Agents.AskUserQuestionBatchItem[];
   className?: string;
+  /** This surface is the live pause's visible one, so the batch arriving may
+   *  take focus. A Share view or a hidden footprint copy leaves it alone. */
+  focusOnArrival?: boolean;
   /** The surface's own control (move to chat, move back), set in the
    *  question's header row so it shares the form's inset. */
   headerAction?: ReactNode;
@@ -72,23 +81,31 @@ export default function AskUserQuestions({
   );
 
   /**
-   * Focus the step's first control, ready to answer: its picked option, else
-   * its first option, else the answer field. Each is labelled within the
-   * step, so a screen reader still announces the new question. The step
-   * itself is the fallback when every control is locked.
+   * Focus the step's control that is ready to answer: its picked option, else
+   * the answer field. Each is labelled within the step, so a screen reader
+   * still announces the new question. The step itself is the fallback when
+   * every control is locked.
+   *
+   * An unpicked option is only a target on arrival (`firstOption`). After a
+   * step change the key that caused it may still be down: a held or
+   * double-tapped Enter on a focused option is its click, which would pick it,
+   * advance again, and on the last step confirm the pick and submit the batch.
    */
-  const focusStep = useCallback((options?: FocusOptions) => {
-    const step = stepRef.current;
-    if (step == null) {
-      return;
-    }
-    const target =
-      step.querySelector<HTMLElement>('button[data-selected]:not(:disabled)') ??
-      step.querySelector<HTMLElement>('button:not(:disabled)') ??
-      (answerRef.current?.disabled === false ? answerRef.current : null) ??
-      step;
-    target.focus(options);
-  }, []);
+  const focusStep = useCallback(
+    ({ firstOption = false, ...options }: FocusOptions & { firstOption?: boolean } = {}) => {
+      const step = stepRef.current;
+      if (step == null) {
+        return;
+      }
+      const target =
+        step.querySelector<HTMLElement>('button[data-selected]:not(:disabled)') ??
+        (firstOption ? step.querySelector<HTMLElement>('button:not(:disabled)') : null) ??
+        (answerRef.current?.disabled === false ? answerRef.current : null) ??
+        step;
+      target.focus(options);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (scrollRef.current != null) {
@@ -105,11 +122,11 @@ export default function AskUserQuestions({
    * An arriving batch puts the user on the first question's controls, but
    * only when focus is idle — nowhere, or the empty composer that just sent
    * the turn — so a draft or any other control the user is in keeps focus.
-   * A hidden footprint copy of the card cannot take focus, so only the
-   * visible surface lands it.
+   * It happens once per batch: moving it between the popover and the chat
+   * remounts it, and that is not a new arrival.
    */
   useEffect(() => {
-    if (form.locked) {
+    if (!focusOnArrival || form.locked || arrivalFocused.has(actionId)) {
       return;
     }
     const active = document.activeElement;
@@ -119,8 +136,12 @@ export default function AskUserQuestions({
       (active instanceof HTMLTextAreaElement &&
         active.id === mainTextareaId &&
         active.value.trim().length === 0);
-    if (idle) {
-      focusStep({ preventScroll: true });
+    if (!idle) {
+      return;
+    }
+    focusStep({ firstOption: true, preventScroll: true });
+    if (stepRef.current?.contains(document.activeElement) === true) {
+      arrivalFocused.add(actionId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- arrival only
   }, []);

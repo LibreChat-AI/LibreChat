@@ -86,6 +86,7 @@ function AskUserQuestionsCard({
       <AskUserQuestions
         actionId={actionId}
         questions={questions}
+        focusOnArrival={live}
         headerAction={
           onExpand != null && (
             <TooltipAnchor

@@ -47,12 +47,36 @@ const questions: Agents.AskUserQuestionBatchItem[] = [
   { id: 'window', question: 'Which time window?' },
 ];
 
-const renderBatch = (actionId: string, batch: Agents.AskUserQuestionBatchItem[] = questions) =>
+const renderBatch = (
+  actionId: string,
+  batch: Agents.AskUserQuestionBatchItem[] = questions,
+  focusOnArrival = true,
+) =>
   render(
     <RecoilRoot>
-      <AskUserQuestions actionId={actionId} questions={batch} />
+      <AskUserQuestions actionId={actionId} questions={batch} focusOnArrival={focusOnArrival} />
     </RecoilRoot>,
   );
+
+const optionBatch: Agents.AskUserQuestionBatchItem[] = [
+  { id: 'window', question: 'Which time window?' },
+  {
+    id: 'environment',
+    question: 'Where should this run?',
+    options: [
+      { label: 'Staging', value: 'staging' },
+      { label: 'Production', value: 'production' },
+    ],
+  },
+  {
+    id: 'region',
+    question: 'Which region?',
+    options: [
+      { label: 'us-east', value: 'us-east' },
+      { label: 'eu-west', value: 'eu-west' },
+    ],
+  },
+];
 
 /** Only the active step renders. */
 const isShown = (text: string) => screen.queryByText(text) != null;
@@ -307,6 +331,20 @@ describe('AskUserQuestions', () => {
       expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
     });
 
+    test('stays put on a surface that is not the live pause', () => {
+      renderBatch('ask-focus-not-live', questions, false);
+      expect(document.body).toHaveFocus();
+    });
+
+    test('happens once per batch, not again when it moves between surfaces', () => {
+      const view = renderBatch('ask-focus-once');
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+      view.unmount();
+
+      renderBatch('ask-focus-once');
+      expect(document.body).toHaveFocus();
+    });
+
     test('leaves focus alone while the user is drafting in the composer', () => {
       const composer = document.createElement('textarea');
       composer.id = 'prompt-textarea';
@@ -365,6 +403,24 @@ describe('AskUserQuestions', () => {
         { window: 'Today', environment: 'staging' },
         expect.objectContaining({ onSuccess: expect.any(Function) }),
       );
+    });
+
+    test('a held or double-tapped Enter from the answer field never picks the next options', () => {
+      renderBatch('ask-option-held', optionBatch);
+      const first = screen.getByRole('textbox', { name: /Which time window/ });
+      fireEvent.change(first, { target: { value: 'Today' } });
+      fireEvent.keyDown(first, { key: 'Enter' });
+
+      expect(isShown('Where should this run?')).toBe(true);
+      /* Focus waits in the answer field, not on an option, so the repeats
+         reach a field: they can page on, but never pick an option for the user. */
+      expect(screen.getByRole('textbox', { name: /Where should this run/ })).toHaveFocus();
+      for (let i = 0; i < 3; i++) {
+        pressEnter(document.activeElement as HTMLElement);
+      }
+
+      expect(screen.queryByRole('button', { pressed: true })).not.toBeInTheDocument();
+      expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
     });
 
     test('Enter on a multi-select option toggles it and never submits', () => {
