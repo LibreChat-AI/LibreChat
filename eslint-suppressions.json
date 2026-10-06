@@ -1048,12 +1048,12 @@
   },
   "client/src/components/Nav/SettingsTabs/Account/BackupCodesItem.tsx": {
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 3
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/DeleteAccount.tsx": {
     "shadcn/no-restyle": {
-      "count": 21
+      "count": 17
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorAuthentication.tsx": {
@@ -1068,7 +1068,7 @@
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/DisablePhase.tsx": {
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 6
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/QRPhase.tsx": {
