@@ -43,6 +43,7 @@ type ButtonVariantOptions =
         | 'xs'
         | 'sm'
         | 'lg'
+        | 'wide'
         | 'snug'
         | 'bare'
         | 'theme'
@@ -196,6 +197,8 @@ const buttonVariantRecipe = cva(
         xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
+        /** Default height with the generous pad of a dialog's confirming action. */
+        wide: 'h-theme-button px-8',
         /** Default height with a snug pad, for a text action that sits close to its neighbors. */
         snug: 'h-theme-button p-1',
         /** Sized by its own text with no pad, for an action set inside a sentence. */

@@ -70,12 +70,7 @@ export const DisablePhase: React.FC<DisablePhaseProps> = ({ onDisable, isDisabli
         {isDisabling && <Spinner className="mr-2" />}
         {isDisabling ? localize('com_ui_disabling') : localize('com_ui_2fa_disable')}
       </Button>
-      <Button
-        type="button"
-        variant="link"
-        onClick={() => setUseBackup(!useBackup)}
-        className="text-text-primary h-auto p-0 text-sm hover:underline"
-      >
+      <Button type="button" variant="link" onClick={() => setUseBackup(!useBackup)} size="bare">
         {useBackup ? localize('com_ui_use_2fa_code') : localize('com_ui_use_backup_code')}
       </Button>
     </motion.div>

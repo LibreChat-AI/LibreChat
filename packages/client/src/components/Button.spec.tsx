@@ -361,6 +361,7 @@ describe('Button', () => {
   it('offers the sign-in sizes, shape and link variants as roles rather than caller classes', () => {
     expect(cn(buttonVariants({ shape: 'soft' }))).toContain('rounded-2xl');
     expect(cn(buttonVariants({ size: 'snug' }))).toContain('p-1');
+    expect(cn(buttonVariants({ size: 'wide' }))).toContain('px-8');
     expect(cn(buttonVariants({ size: 'bare' }))).toContain('p-0');
     expect(cn(buttonVariants({ variant: 'link-accent' }))).toContain('text-accent-primary');
     expect(cn(buttonVariants({ variant: 'hyperlink' }))).toContain('text-link');

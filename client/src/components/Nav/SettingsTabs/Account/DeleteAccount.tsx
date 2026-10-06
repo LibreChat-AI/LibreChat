@@ -138,7 +138,8 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
                     setUseBackup(!useBackup);
                     setOtpToken('');
                   }}
-                  className="text-text-primary h-auto p-0 text-sm font-normal hover:underline"
+                  size="bare"
+                  className="font-normal"
                 >
                   {useBackup ? localize('com_ui_use_2fa_code') : localize('com_ui_use_backup_code')}
                 </Button>
