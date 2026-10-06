@@ -9,6 +9,7 @@ const {
 const {
   sendEvent,
   getToolkitKey,
+  createGitHubCompareRegistry,
   getUserMCPAuthMap,
   createAuthIdentityContext,
   selectMCPUpstreamTokenProvider,
@@ -49,6 +50,7 @@ const {
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
+  createLaneGitRecorder,
   createAttachedWorkspaceBashTool,
   createRepositoryInstructionSource,
   createRepositoryInstructionLoader,
@@ -129,7 +131,13 @@ const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSe
 const { getMCPRequestContext } = require('~/server/services/MCPRequestContext');
 const { recordUsage } = require('~/server/services/Threads');
 const { loadTools } = require('~/app/clients/tools/util');
-const { findPluginAuthsByKeys, getRoleByName } = require('~/models');
+const {
+  findPluginAuthsByKeys,
+  getRoleByName,
+  setConvoLaneGit,
+  getConvoLaneContext,
+  reserveConvoLaneGitSeq,
+} = require('~/models');
 const { getFlowStateManager, getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 
@@ -1381,6 +1389,7 @@ async function loadToolDefinitionsWrapper({
       userId: req.user.id,
       agentId: agent.id,
       tools: defsFilteredTools,
+      githubCompareEnabled: appConfig?.githubCompare?.enabled,
       toolOptions: agent.tool_options,
       deferredToolsEnabled,
       programmaticToolsEnabled,
@@ -1483,6 +1492,7 @@ async function loadToolDefinitionsWrapper({
           userId: req.user.id,
           agentId: agent.id,
           tools: defsFilteredTools,
+          githubCompareEnabled: appConfig?.githubCompare?.enabled,
           toolOptions: agent.tool_options,
           deferredToolsEnabled,
           programmaticToolsEnabled,
@@ -1875,6 +1885,7 @@ async function loadAgentTools({
       upstreamTokenProvider,
       upstreamTokenProviderResolver,
       codeExecutionContext,
+      toolRegistry: createGitHubCompareRegistry(_agentTools, appConfig?.githubCompare),
       [Tools.web_search]: webSearchCallbacks,
     },
     webSearch: appConfig.webSearch,
@@ -2382,6 +2393,19 @@ async function loadToolsForExecution({
               baseUrl: codeExecutionContext.baseUrl,
               workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
               workspaceInstanceId: codeExecutionContext.codeWorkspace.workspaceInstanceId,
+              onLaneGit: await createLaneGitRecorder({
+                enabled: req.config?.endpoints?.agents?.pullRequests?.enabled === true,
+                user: req.user.id,
+                conversationId: conversationId ?? runtimeRequestBody?.conversationId,
+                repo: codeExecutionContext.codeWorkspace.environment?.repo,
+                workspace: {
+                  environmentId: codeExecutionContext.codeWorkspace.environmentId,
+                  workspaceId: codeExecutionContext.codeWorkspace.workspaceId,
+                },
+                getConvoLaneContext,
+                reserveConvoLaneGitSeq,
+                setConvoLaneGit,
+              }),
               linkedWorktrees: codeExecutionContext.codeWorkspace.linkedWorktrees,
               nativeSandbox: codeExecutionContext.codeWorkspace.nativeSandbox,
               environment: codeExecutionContext.codeWorkspace.environment,
@@ -2499,6 +2523,7 @@ async function loadToolsForExecution({
          *  registry failure at execution can't fail-closed a tool the same
          *  turn already advertised. */
         accessibleMcpServerNames,
+        toolRegistry,
         requestScopedConnections: mcpRequestScopedConnections,
         upstreamTokenProvider,
         upstreamTokenProviderResolver,

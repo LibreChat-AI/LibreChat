@@ -84,6 +84,7 @@ import {
   generationProtocolHeaders,
   getGenerationProtocolVersion,
   supportsGenerationProtocolV2,
+  fetchConversationMessages,
   GENERATION_PROTOCOL_VERSION,
 } from '~/data-provider';
 import {
@@ -3231,7 +3232,7 @@ export default function useResumableSSE(
               const fetched = await queryClient.fetchQuery<TMessage[]>({
                 queryKey: messageQueryKey,
                 // The first stream can finish before CREATED mounts the saved-chat query.
-                queryFn: () => dataService.getMessagesByConvoId(convoId),
+                queryFn: () => fetchConversationMessages(convoId),
               });
               if (!isCurrentSubscription()) {
                 return;

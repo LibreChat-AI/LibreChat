@@ -169,7 +169,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const message = screen.getByText('steered words');
 
-    expect(message.closest('.bg-surface-tertiary')).toHaveClass('rounded-theme-surface');
+    expect(message.closest('.bg-surface-user-message')).toHaveClass('rounded-theme-surface');
     expect(screen.getByRole('heading', { name: 'Danny' })).toHaveClass('sr-only');
     expect(screen.queryByTitle('Danny')).not.toBeInTheDocument();
   });
@@ -234,7 +234,7 @@ describe('SteerPart presentation', () => {
     );
     const quotes = screen.getByTestId('message-quotes');
     expect(quotes).toHaveTextContent('the selected excerpt');
-    expect(quotes.closest('.bg-surface-tertiary')).not.toBeNull();
+    expect(quotes.closest('.bg-surface-user-message')).not.toBeNull();
   });
 
   it('renders no quote block when the steer carried none', () => {

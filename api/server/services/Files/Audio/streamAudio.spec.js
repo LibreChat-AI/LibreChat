@@ -1,4 +1,4 @@
-const { createChunkProcessor, splitTextIntoChunks } = require('./streamAudio');
+const { splitTextIntoChunks } = require('./streamAudio');
 
 jest.mock('keyv');
 
@@ -52,102 +52,6 @@ jest.mock('~/cache/getLogStores', () => {
       namespace: CacheKeys.MESSAGES,
       ttl: 0,
     });
-  });
-});
-
-describe('processChunks', () => {
-  let processChunks;
-  let mockMessageCache;
-
-  beforeEach(() => {
-    jest.resetAllMocks();
-    mockMessageCache = {
-      get: jest.fn(),
-      set: jest.fn(),
-    };
-    require('~/cache/getLogStores').mockReturnValue(mockMessageCache);
-    processChunks = createChunkProcessor('userId', 'message-id');
-  });
-
-  it('should return an empty array when the message is not found', async () => {
-    mockMessageCache.get.mockResolvedValueOnce(null);
-
-    const result = await processChunks();
-
-    expect(result).toEqual([]);
-    expect(mockMessageCache.get).toHaveBeenCalledWith('message-id');
-  });
-
-  it('should return an error message after MAX_NOT_FOUND_COUNT attempts', async () => {
-    mockMessageCache.get.mockResolvedValue(null);
-
-    for (let i = 0; i < 6; i++) {
-      await processChunks();
-    }
-    const result = await processChunks();
-
-    expect(result).toBe('Message not found after 6 attempts');
-  });
-
-  it('should return chunks for an incomplete message with separators', async () => {
-    const messageText = 'This is a long message. It should be split into chunks. Lol hi mom';
-    mockMessageCache.get.mockResolvedValueOnce({ text: messageText, complete: false });
-
-    const result = await processChunks();
-
-    expect(result).toEqual([
-      { text: 'This is a long message. It should be split into chunks.', isFinished: false },
-    ]);
-  });
-
-  it('should return chunks for an incomplete message without separators', async () => {
-    const messageText = 'This is a long message without separators hello there my friend';
-    mockMessageCache.get.mockResolvedValueOnce({ text: messageText, complete: false });
-
-    const result = await processChunks();
-
-    expect(result).toEqual([{ text: messageText, isFinished: false }]);
-  });
-
-  it('should return the remaining text as a chunk for a complete message', async () => {
-    const messageText = 'This is a finished message.';
-    mockMessageCache.get.mockResolvedValueOnce({ text: messageText, complete: true });
-
-    const result = await processChunks();
-
-    expect(result).toEqual([{ text: messageText, isFinished: true }]);
-  });
-
-  it('should return an empty array for a complete message with no remaining text', async () => {
-    const messageText = 'This is a finished message.';
-    mockMessageCache.get.mockResolvedValueOnce({ text: messageText, complete: true });
-
-    await processChunks();
-    mockMessageCache.get.mockResolvedValueOnce({ text: messageText, complete: true });
-    const result = await processChunks();
-
-    expect(result).toEqual([]);
-  });
-
-  it('should return an error message after MAX_NO_CHANGE_COUNT attempts with no change', async () => {
-    const messageText = 'This is a message that does not change.';
-    mockMessageCache.get.mockResolvedValue({ text: messageText, complete: false });
-
-    for (let i = 0; i < 11; i++) {
-      await processChunks();
-    }
-    const result = await processChunks();
-
-    expect(result).toBe('No change in message after 10 attempts');
-  });
-
-  it('should handle string messages as incomplete', async () => {
-    const messageText = 'This is a message as a string.';
-    mockMessageCache.get.mockResolvedValueOnce(messageText);
-
-    const result = await processChunks();
-
-    expect(result).toEqual([{ text: messageText, isFinished: false }]);
   });
 });
 

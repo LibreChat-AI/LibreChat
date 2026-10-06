@@ -1,4 +1,5 @@
-import { Button, Label } from '@librechat/client';
+import { useId, useMemo } from 'react';
+import { Label, Radio } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import InstructionsPromptFields, { fieldWrapperClass, LoadError } from './InstructionsPromptFields';
@@ -14,42 +15,38 @@ import { cn } from '~/utils';
  * resolves, rather than briefly reading the link as absent. */
 export type InstructionsPromptStatus = 'ready' | 'loading' | 'error';
 
-/** Two-way segmented toggle between the inline editor and a linked prompt group. */
+/** Two-way segmented toggle between the inline editor and a linked prompt group, matching the
+ *  skills mode control so the section headers read as one set. */
 function SourceToggle({ disabled = false }: { disabled?: boolean }) {
   const localize = useLocalize();
+  const labelId = useId();
   const { control } = useFormContext<AgentForm>();
+  const options = useMemo(
+    () => [
+      { value: 'inline', label: localize('com_agents_instructions_source_inline') },
+      { value: 'prompt', label: localize('com_agents_instructions_source_prompt') },
+    ],
+    [localize],
+  );
 
   return (
     <Controller
       name="instructionsSource"
       control={control}
       render={({ field }) => (
-        <div
-          role="group"
-          aria-label={localize('com_agents_instructions_source_toggle_aria')}
-          className="border-border-light bg-surface-primary inline-flex w-fit gap-1 rounded-lg border p-0.5"
-        >
-          <Button
-            type="button"
-            variant={field.value === 'inline' ? 'secondary' : 'ghost'}
-            size="sm"
-            aria-pressed={field.value === 'inline'}
+        <>
+          <span id={labelId} className="sr-only">
+            {localize('com_agents_instructions_source_toggle_aria')}
+          </span>
+          <Radio
+            options={options}
+            value={field.value}
+            onChange={field.onChange}
             disabled={disabled}
-            onClick={() => field.onChange('inline')}
-          >
-            {localize('com_agents_instructions_source_inline')}
-          </Button>
-          <Button
-            type="button"
-            variant={field.value === 'prompt' ? 'secondary' : 'ghost'}
             size="sm"
-            aria-pressed={field.value === 'prompt'}
-            disabled={disabled}
-            onClick={() => field.onChange('prompt')}
-          >
-            {localize('com_agents_instructions_source_prompt')}
-          </Button>
-        </div>
+            aria-labelledby={labelId}
+          />
+        </>
       )}
     />
   );

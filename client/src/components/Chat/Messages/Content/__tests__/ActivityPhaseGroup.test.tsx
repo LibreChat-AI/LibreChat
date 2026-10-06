@@ -892,4 +892,19 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
     expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
     expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
   });
+
+  test('hides the thought when it streams after tool calls in the same card', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={makeLabelPart('')}
+        hasContent
+        liveParts={[call, thought]}
+        showCursor
+      >
+        <div data-testid="phase-content" />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.queryByTestId('streaming-thought-peek')).toBeNull();
+    expect(screen.getByTestId('activity-phase-cursor')).toBeInTheDocument();
+  });
 });

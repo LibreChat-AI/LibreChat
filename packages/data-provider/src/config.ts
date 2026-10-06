@@ -22,18 +22,19 @@ import {
   MAX_PII_PATTERN_LENGTH,
 } from './filters';
 import {
+  REFILL_INTERVAL_UNITS,
+  BALANCE_DISPLAY_MODES,
+  BALANCE_REFILL_MODES,
+  MIN_BALANCE_RESERVATION_TTL_MS,
+  DEFAULT_BALANCE_RESERVATION_TTL_MS,
+} from './balance';
+import {
   EModelEndpoint,
   eModelEndpointSchema,
   isAgentsEndpoint,
   eReasoningParameterFormatSchema,
   eReasoningResponseKeySchema,
 } from './schemas';
-import {
-  REFILL_INTERVAL_UNITS,
-  BALANCE_DISPLAY_MODES,
-  MIN_BALANCE_RESERVATION_TTL_MS,
-  DEFAULT_BALANCE_RESERVATION_TTL_MS,
-} from './balance';
 import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
@@ -495,6 +496,24 @@ const skillSyncTenantIdSchema = z
   })
   .refine((value) => value !== '__SYSTEM__', {
     message: 'must not be the reserved system tenant id',
+  });
+
+/** `owner/name`, or `owner/*` for every repository of one owner; never a bare `*`. */
+const pullRequestRepositorySchema = z
+  .string()
+  .trim()
+  .regex(/^[A-Za-z0-9_.-]+\/(?:[A-Za-z0-9_.-]+|\*)$/, {
+    message: 'must be owner/name or owner/*',
+  })
+  .refine((value) => value.split('/').every((segment) => segment !== '.' && segment !== '..'), {
+    message: 'must not contain dot segments',
+  });
+
+const pullRequestTokenReferenceSchema = z
+  .string()
+  .trim()
+  .regex(/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/, {
+    message: 'must be an environment variable reference like ${GITHUB_PULL_REQUEST_TOKEN}',
   });
 
 export const skillSyncGitHubSourceSchema = z
@@ -1833,6 +1852,57 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .default(60_000),
             })
             .optional(),
+        })
+        .optional(),
+      /** Header pull request chip: finds the pull request for the branch a conversation's code
+       *  workspace reports, using a server-held GitHub token. Off unless an administrator opts in. */
+      pullRequests: z
+        .object({
+          enabled: z.boolean().optional().default(false),
+          /** Environment variable reference holding a read-only GitHub token, e.g.
+           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. */
+          token: pullRequestTokenReferenceSchema.optional(),
+          /** Repositories the token may be used for, as `owner/name` or `owner/*`. A worker reports
+           *  its own repository, so without this list a user could point the server's token at any
+           *  repository it can read. */
+          allowedRepositories: z.array(pullRequestRepositorySchema).max(256).optional(),
+          /** Seconds a looked-up pull request is reused before GitHub is asked again. */
+          cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
+          /** Pull requests cached per credential before the oldest is evicted. Size it to the
+           *  distinct repository and branch combinations seen within one cache lifetime, or fresh
+           *  results are evicted and GitHub is asked again. */
+          cacheMaxEntries: z.number().int().min(10).max(100_000).optional().default(500),
+          /** Credentials whose results are cached at once; past it the one idle longest is dropped.
+           *  Deployment-wide: when principals configure different values, the largest applies.
+           *  Raise it when many tenants each configure their own token. */
+          cacheMaxCredentials: z.number().int().min(1).max(10_000).optional().default(256),
+          /** Longest one GitHub request may take. Raise it behind a slow proxy. */
+          requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),
+          /** Longest a whole lookup, every request together, may hold the header request. */
+          lookupTimeoutSeconds: z.number().int().min(1).max(120).optional().default(30),
+          /** Pages of 100 check runs read before the rollup is reported as still running. */
+          maxCheckRunPages: z.number().int().min(1).max(50).optional().default(10),
+          /** Pull requests listed per state when matching a branch's history to the commit a chat
+           *  last ran at. Raise it for branch names that are reused many times. */
+          maxCandidatePullRequests: z.number().int().min(1).max(100).optional().default(10),
+          /** Candidates compared with that commit before the search gives up. Each is one request. */
+          maxHeadComparisons: z.number().int().min(0).max(20).optional().default(3),
+        })
+        .superRefine((value, ctx) => {
+          if (value.enabled && !value.token) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['token'],
+              message: 'A token reference is required when pull requests are enabled',
+            });
+          }
+          if (value.enabled && (value.allowedRepositories?.length ?? 0) === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['allowedRepositories'],
+              message: 'At least one allowed repository is required when pull requests are enabled',
+            });
+          }
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are
@@ -3384,22 +3454,37 @@ export const ocrSchema = z.object({
   strategy: z.nativeEnum(OCRStrategy).default(OCRStrategy.MISTRAL_OCR),
 });
 
-export const balanceSchema = z.object({
-  enabled: z.boolean().optional().default(false),
-  startBalance: z.number().optional().default(20000),
-  autoRefillEnabled: z.boolean().optional().default(false),
-  refillIntervalValue: z.number().optional().default(30),
-  refillIntervalUnit: z.enum(REFILL_INTERVAL_UNITS).optional().default('days'),
-  refillAmount: z.number().optional().default(10000),
-  reservationTtlMs: z
-    .number()
-    .int()
-    .min(MIN_BALANCE_RESERVATION_TTL_MS)
-    .optional()
-    .default(DEFAULT_BALANCE_RESERVATION_TTL_MS),
-  /** How the UI presents the balance; `credits` keeps the raw figure. */
-  display: z.enum(BALANCE_DISPLAY_MODES).optional().default('credits'),
-});
+export const balanceSchema = z
+  .object({
+    enabled: z.boolean().optional().default(false),
+    startBalance: z.number().optional().default(20000),
+    autoRefillEnabled: z.boolean().optional().default(false),
+    refillIntervalValue: z.number().optional().default(30),
+    refillIntervalUnit: z.enum(REFILL_INTERVAL_UNITS).optional().default('days'),
+    refillAmount: z.number().optional().default(10000),
+    /** Add credits on exhaustion, or replace the allowance on the next read/request once due. */
+    refillMode: z.enum(BALANCE_REFILL_MODES).optional().default('add'),
+    reservationTtlMs: z
+      .number()
+      .int()
+      .min(MIN_BALANCE_RESERVATION_TTL_MS)
+      .optional()
+      .default(DEFAULT_BALANCE_RESERVATION_TTL_MS),
+    /** How the UI presents the balance; `credits` keeps the raw figure. */
+    display: z.enum(BALANCE_DISPLAY_MODES).optional().default('credits'),
+  })
+  .superRefine((balance, ctx) => {
+    if (
+      balance.refillMode === 'reset' &&
+      !(Number.isInteger(balance.refillIntervalValue) && balance.refillIntervalValue > 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['refillIntervalValue'],
+        message: 'Reset intervals must be positive integers',
+      });
+    }
+  });
 
 export const transactionsSchema = z.object({
   enabled: z.boolean().optional().default(true),
@@ -3829,6 +3914,24 @@ export const conversationListConfigSchema = z.object({
 
 export type TConversationListConfig = z.infer<typeof conversationListConfigSchema>;
 
+/**
+ * Bounded previews of settled tool calls on conversation loads. A client that asks for them
+ * receives the start and end of each long output and argument string, without subagent
+ * transcripts, and fetches a part in full only when the reader opens it. `enabled: false` sends
+ * every load in full, as before previews existed.
+ */
+export const toolCallPreviewsConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Characters of `output` kept per tool call, half from the start and half from the end.
+   *  JSON output stays valid JSON, and an exit-status trailer is always kept whole. */
+  outputChars: z.number().int().min(256).max(1_000_000).default(512),
+  /** Characters of serialized `args` kept per tool call. JSON arguments stay valid JSON with
+   *  every field present; only the longest strings are shortened. */
+  argsChars: z.number().int().min(256).max(1_000_000).default(512),
+});
+
+export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchema>;
+
 export const configSchema = z.object({
   version: z.string(),
   prompts: promptsConfigSchema,
@@ -3837,6 +3940,13 @@ export const configSchema = z.object({
   projects: chatProjectsConfigSchema,
   ocr: ocrSchema.optional(),
   webSearch: webSearchSchema.optional(),
+  githubCompare: z
+    .object({
+      enabled: z.boolean().default(false),
+      timeoutMs: z.number().int().min(1).max(30000).default(10000),
+    })
+    .strict()
+    .optional(),
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
@@ -3845,6 +3955,9 @@ export const configSchema = z.object({
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),
   conversationList: conversationListConfigSchema.default(() =>
     conversationListConfigSchema.parse({}),
+  ),
+  toolCallPreviews: toolCallPreviewsConfigSchema.default(() =>
+    toolCallPreviewsConfigSchema.parse({}),
   ),
   includedTools: z.array(z.string()).optional(),
   filteredTools: z.array(z.string()).optional(),

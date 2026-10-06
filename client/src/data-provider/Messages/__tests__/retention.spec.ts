@@ -244,6 +244,35 @@ describe('retainMessages', () => {
     void pending.catch(() => undefined);
   });
 
+  it('releases the full tool-call parts fetched for a conversation along with its history', () => {
+    const part = (conversationId: string, index: number) => [
+      QueryKeys.toolCallPart,
+      conversationId,
+      `${conversationId}-1`,
+      index,
+      'call',
+      '',
+      '',
+      'rev',
+    ];
+    const isPartCached = (key: unknown[]) => queryClient.getQueryCache().find(key) != null;
+    visit(queryClient, 'a');
+    queryClient.setQueryData(part('a', 1), { tool_call: { output: 'full' } });
+    queryClient.setQueryData(part('b', 1), { tool_call: { output: 'other conversation' } });
+    seed(queryClient, 'b');
+    const stillOpen = observe(queryClient, 'b');
+
+    jest.advanceTimersByTime(TTL);
+    expect(isCached(queryClient, 'a')).toBe(false);
+    expect(isPartCached(part('a', 1))).toBe(false);
+    expect(isPartCached(part('b', 1))).toBe(true);
+
+    queryClient.setQueryData(part('b', 2), { tool_call: { output: 'cleared' } });
+    queryClient.removeQueries([QueryKeys.messages, 'b'], { exact: true });
+    expect(isPartCached(part('b', 2))).toBe(false);
+    stillOpen();
+  });
+
   it('restores the messages query defaults on cleanup', () => {
     expect(queryClient.getQueryDefaults([QueryKeys.messages])?.cacheTime).toBe(Infinity);
     stop();

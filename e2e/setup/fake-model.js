@@ -61,6 +61,7 @@ const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const TOOL_THEN_THINK_REPLY_MARKER = 'E2E_TOOL_THEN_THINK_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
 const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
@@ -1733,6 +1734,49 @@ function activityPhaseReplyResponses(label, toolNames) {
         };
       }
       return { response: `${ACTIVITY_PHASE_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
+/**
+ * One tool call, then a slowly streamed `<think>` of several sentences and the
+ * final text. The thought streams after a tool batch, which is the state the
+ * live thought peek must stay hidden in.
+ */
+function toolThenThinkReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E tool then think reply unavailable: no ${STEER_TOOL_NAME_PREFIX} tool advertised.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    sleep: 200,
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_tool_then_think_${label}`,
+              name: toolName,
+              args: { fact: `tool then think ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return {
+        response:
+          '<think>First I read the tool result slowly. Then I weigh what it changes with care. ' +
+          'Next I compare it against the original request. Afterwards I check the edge cases once more. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E tool then think reply done ${label}`,
+      };
     },
   };
 }
@@ -3487,6 +3531,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const activityPhaseLabel = getMarkerValue(text, ACTIVITY_PHASE_REPLY_MARKER);
   if (activityPhaseLabel) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
+  }
+
+  const toolThenThinkLabel = getMarkerValue(text, TOOL_THEN_THINK_REPLY_MARKER);
+  if (toolThenThinkLabel) {
+    return toolThenThinkReplyResponses(toolThenThinkLabel, toolNames);
   }
 
   const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);

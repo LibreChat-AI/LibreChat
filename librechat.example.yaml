@@ -17,6 +17,18 @@ projects:
   # Characters of the project description shown in the workspace and sidebar (maximum 10000).
   maxDescriptionLength: 1000
 
+# Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
+# can run to megabytes, though their cards render collapsed. The web client asks for bounded
+# previews when it loads a conversation (the start and end of each long output, arguments
+# with their long strings shortened, no subagent transcripts) and loads a call in full when
+# the reader opens it. Clients that do not ask, exports and share links get full content.
+# Every field is optional and defaults to the value shown; enabled: false always sends the
+# full payload.
+# toolCallPreviews:
+#   enabled: true
+#   outputChars: 512   # characters of each output kept, half from the start and half from the end
+#   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central
@@ -452,9 +464,11 @@ registration:
 #   enabled: false
 #   startBalance: 20000
 #   autoRefillEnabled: false
-#   refillIntervalValue: 30
+#   refillIntervalValue: 30 # Reset mode requires a positive integer
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   # Deploy reset-capable servers to every replica before selecting 'reset'.
+#   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
 #   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
@@ -923,6 +937,34 @@ endpoints:
   #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
+  #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
+  #   # a code worker built from LibreChat-AI/code-interpreter#311 or later that reports its
+  #   # branch, with CODEAPI_BRIDGE_LANE_GIT=true set on the Code API; without both, every chat
+  #   # simply shows no pull request. It also needs a GitHub token held on the server. Use a
+  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests",
+  #   # "Checks" and "Contents" permissions. Without "Checks" every matched pull request fails to
+  #   # load, and without "Contents" a chat whose branch has moved on since its last command does.
+  #   pullRequests:
+  #     enabled: false
+  #     # Environment variable reference only, never the token itself.
+  #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
+  #     # Repositories the token may be used for, as owner/name or owner/*. Required: a worker
+  #     # reports its own repository, and only these are ever looked up with the server's token.
+  #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
+  #     cacheTtlSeconds: 30
+  #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
+  #     # repositories and branches are active at once, or fresh results are evicted and GitHub is asked again.
+  #     cacheMaxEntries: 500
+  #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
+  #     # past it. When principals configure different values, the largest applies.
+  #     cacheMaxCredentials: 256
+  #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
+  #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
+  #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
+  #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
+  #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.

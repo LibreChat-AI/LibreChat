@@ -361,7 +361,7 @@ const AgentGrid: React.FC<AgentGridProps> = ({
             and reading order reach it immediately; without rows it is the whole of the
             page. */}
         <div ref={recoveryCardRef} className="pointer-events-auto w-full max-w-xl pb-5">
-          <div className="rounded-theme-surface border-border-light bg-surface-secondary high-contrast:border-border-medium high-contrast:shadow-none border shadow-lg">
+          <div className="rounded-theme-surface border-border-light bg-surface-card high-contrast:border-border-medium high-contrast:shadow-none border shadow-lg">
             {errorCard}
           </div>
         </div>

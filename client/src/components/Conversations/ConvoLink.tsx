@@ -135,7 +135,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
       type="button"
       className={cn(
         'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 self-stretch overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
-        isActiveConvo || isPopoverActive ? 'bg-surface-active-alt' : '',
+        isActiveConvo || isPopoverActive ? 'bg-surface-nav-selected' : '',
       )}
       aria-current={isActiveConvo ? 'page' : undefined}
       aria-keyshortcuts={keyShortcuts}

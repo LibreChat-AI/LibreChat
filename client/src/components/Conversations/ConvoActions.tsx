@@ -8,7 +8,6 @@ import { useLocalize } from '~/hooks';
 
 export type ConvoActionsProps = {
   conversationId: string | null;
-  chatProjectId?: string | null;
   title: string | null;
   canRename?: boolean;
   isPinned?: boolean;

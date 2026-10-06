@@ -243,7 +243,7 @@ function ChatView({
                         so they cannot paint through the approval preview. */}
                           <div
                             className={cn(
-                              'bg-surface-primary-alt relative z-10 w-full [view-transition-name:chat-form]',
+                              'bg-surface-canvas relative z-10 w-full [view-transition-name:chat-form]',
                               !isLandingPage && 'scrollbar-gutter-spacer',
                               isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
                             )}

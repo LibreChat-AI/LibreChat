@@ -187,7 +187,7 @@ describe('MessageRender wake-up rows', () => {
     expect(screen.queryByText(/agent_reviewer/)).not.toBeInTheDocument();
     /** Delivered by the host, not typed: outlined, on the user's side. */
     expect(screen.getByTestId('message-body')).toHaveClass('border', 'border-border-medium');
-    expect(screen.getByTestId('message-body')).not.toHaveClass('bg-surface-tertiary');
+    expect(screen.getByTestId('message-body')).not.toHaveClass('bg-surface-user-message');
     expect(screen.getByTestId('wakeup-card')).toBeInTheDocument();
   });
 
@@ -341,7 +341,7 @@ describe('MessageRender wake-up rows', () => {
     renderMessage('Hello there');
 
     expect(screen.getByRole('heading', { hidden: true })).toHaveClass('sr-only');
-    expect(screen.getByTestId('message-body')).toHaveClass('bg-surface-tertiary');
+    expect(screen.getByTestId('message-body')).toHaveClass('bg-surface-user-message');
   });
 });
 

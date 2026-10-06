@@ -1,5 +1,5 @@
+import { isBalanceRefillDue, Permissions, PermissionTypes } from 'librechat-data-provider';
 import { logger, runAsSystem, tenantStorage, isRuntimeDisabled } from '@librechat/data-schemas';
-import { getRefillEligibilityDate, Permissions, PermissionTypes } from 'librechat-data-provider';
 import {
   DEFAULT_SCHEDULE_MCP_CONSENT_LIFETIME_HOURS,
   isScheduleMCPAuthorizationFailure,
@@ -169,7 +169,7 @@ export interface SchedulesServiceDeps {
     userId: string | Types.ObjectId,
   ) => Promise<{ _id: Types.ObjectId; tenantId?: string; role?: string } | null>;
   /** Reads the balance record together with the credits unexpired in-flight reservations hold. */
-  findBalance: (userId: string) => Promise<IBalance | null>;
+  findBalance: (userId: string, options?: { applyReset?: boolean }) => Promise<IBalance | null>;
   /**
    * Upserts a balance record. `setOnInsert` carries fields that must ONLY apply to a
    * document this call creates — chiefly the starting credit — so a record created by a
@@ -676,27 +676,7 @@ export function createSchedulesService(
    * mirroring the chat balance check's auto-refill eligibility (record-based).
    */
   function isRefillEligible(record: IBalance | null | undefined): boolean {
-    if (record?.autoRefillEnabled !== true) {
-      return false;
-    }
-    if (!(typeof record.refillAmount === 'number' && record.refillAmount > 0)) {
-      return false;
-    }
-    const lastRefillDate = new Date(record.lastRefill ?? 0);
-    if (Number.isNaN(lastRefillDate.getTime())) {
-      return true;
-    }
-    // Mirror checkBalanceRecord's fallbacks exactly (interval 0 / 'days' when a
-    // partially-synced record is missing them) so we never pre-skip a record the
-    // interactive chat balance check would have refilled.
-    return (
-      new Date() >=
-      getRefillEligibilityDate(
-        lastRefillDate,
-        record.refillIntervalValue ?? 0,
-        record.refillIntervalUnit ?? 'days',
-      )
-    );
+    return record != null && isBalanceRefillDue(record, new Date());
   }
 
   const engineDeps: ScheduleEngineDeps = {
@@ -726,11 +706,11 @@ export function createSchedulesService(
       if (balanceConfig?.enabled !== true) {
         return false;
       }
-      let record = await deps.findBalance(user.id);
+      let record = await deps.findBalance(user.id, { applyReset: false });
       // Credits in-flight requests hold are unavailable to this fire as well: the chat
       // balance check admits against the unreserved amount. Taken from this read because
       // the initialization/sync writes below return the record without the total.
-      const reservedCredits = record?.reservedCredits ?? 0;
+      let reservedCredits = record?.reservedCredits ?? 0;
       // Initialize/sync the record exactly as the chat's balance middleware would,
       // so a new user's startBalance is applied before we read it (avoids skipping
       // a schedule that an interactive chat would have allowed).
@@ -763,13 +743,22 @@ export function createSchedulesService(
               tokenCredits,
               sync: syncFields,
             });
-            record = initialized ?? (await deps.findBalance(user.id)) ?? record;
+            record =
+              initialized ?? (await deps.findBalance(user.id, { applyReset: false })) ?? record;
           } else if (Object.keys(syncFields).length > 0) {
             // EXISTING record with a real credit: only refill-config sync remains, which
             // never touches `tokenCredits` and is safe to `$set` directly.
             record = await deps.upsertBalance(user.id, { set: syncFields, setOnInsert: {} });
           }
         }
+      }
+      if (
+        balanceConfig.autoRefillEnabled === true &&
+        record?.refillMode === 'reset' &&
+        isBalanceRefillDue(record, new Date())
+      ) {
+        record = await deps.findBalance(user.id, { applyReset: true });
+        reservedCredits = record?.reservedCredits ?? 0;
       }
       const credits = (record?.tokenCredits ?? 0) - reservedCredits;
       if (credits > 0) {

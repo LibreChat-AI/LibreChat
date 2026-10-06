@@ -302,6 +302,26 @@ describe('useChatFunctions ask', () => {
     expect(submission.conversation.codeApprovalMode).toBe('acceptEdits');
   });
 
+  it('sends the gated ask for a turn without a workspace while keeping the chat pick', () => {
+    mockResolveCodeWorkspaceSubmission.mockReturnValue({ codeEnvironmentMode: 'without_attached' });
+    mockGetLatestConversation.mockReturnValue({
+      ...conversation('conversation-1'),
+      codeApprovalMode: 'acceptEdits',
+      codeEnvironmentMode: 'without_attached',
+    });
+    const { result, setSubmission } = renderAsk([]);
+
+    act(() => {
+      result.current.ask({ text: 'Just chat', conversationId: 'conversation-1' });
+    });
+
+    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
+    expect(submission.codeEnvironmentMode).toBe('without_attached');
+    expect(submission.codeApprovalMode).toBe('ask');
+    expect(createPayload(submission).payload.codeApprovalMode).toBe('ask');
+    expect(submission.conversation.codeApprovalMode).toBe('acceptEdits');
+  });
+
   it('preallocates a durable Agents user id for the optimistic response anchor', () => {
     const { result, setSubmission } = renderAsk([]);
 

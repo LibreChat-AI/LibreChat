@@ -62,6 +62,7 @@ export function AutoRefill() {
 
   return (
     <AutoRefillSettings
+      refillMode={summary.refillMode}
       lastRefill={lastRefill}
       nextRefill={summary.nextRefill}
       /** Percent-only deployments show no credit figures anywhere */

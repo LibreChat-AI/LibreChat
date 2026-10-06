@@ -163,6 +163,15 @@ export function retainMessages(
     });
   }
 
+  /** Full tool-call parts fetched for a conversation's previews leave with its history, so a
+   *  released conversation does not keep its largest content alive under another key. */
+  const releaseToolCallParts = (conversationId: string) => {
+    queryClient.removeQueries({
+      queryKey: [QueryKeys.toolCallPart, conversationId],
+      predicate: (query) => query.getObserversCount() === 0,
+    });
+  };
+
   const unsubscribe = cache.subscribe((event) => {
     if (
       event.type !== 'added' &&
@@ -179,6 +188,9 @@ export function retainMessages(
     if (event.type === 'added') {
       schedule(RELEASE_SETTLE_MS);
       return;
+    }
+    if (event.type === 'removed') {
+      releaseToolCallParts(conversationId);
     }
     if (event.type !== 'observerRemoved') {
       leftAt.delete(conversationId);
