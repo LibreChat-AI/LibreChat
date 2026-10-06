@@ -10,9 +10,9 @@ import { NEW_CHAT_PATH } from '../helpers';
  */
 
 type Mode = 'light' | 'dark';
-type Sizes = Record<'3xs' | '2xs' | 'xs-plus' | 'sm-plus', string>;
+type Sizes = Record<'3xs' | '2xs' | '1xs' | '1sm', string>;
 
-const DEFAULT_SIZES: Sizes = { '3xs': '10px', '2xs': '11px', 'xs-plus': '13px', 'sm-plus': '15px' };
+const DEFAULT_SIZES: Sizes = { '3xs': '10px', '2xs': '11px', '1xs': '13px', '1sm': '15px' };
 
 const REFERENCE_THEME = {
   version: 1,
@@ -22,8 +22,8 @@ const REFERENCE_THEME = {
       appearance: {
         text3xs: '0.5rem',
         text2xs: '0.5625rem',
-        textXsPlus: '0.875rem',
-        textSmPlus: '1rem',
+        text1xs: '0.875rem',
+        text1sm: '1rem',
       },
     },
   },
@@ -96,7 +96,7 @@ const CASES: Array<{
       'a theme that names the step roles resizes the steps @scenario:type-steps-follow-reference-theme',
     mode: 'light',
     definition: REFERENCE_THEME,
-    sizes: { '3xs': '8px', '2xs': '9px', 'xs-plus': '14px', 'sm-plus': '16px' },
+    sizes: { '3xs': '8px', '2xs': '9px', '1xs': '14px', '1sm': '16px' },
   },
 ];
 

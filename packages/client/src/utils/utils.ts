@@ -3,7 +3,7 @@ import { type ClassValue, clsx } from 'clsx';
 import { extendTailwindMerge } from 'tailwind-merge';
 
 /** `text-*` steps off Tailwind's scale; unregistered, twMerge reads them as colors and drops a real one. */
-export const TYPE_STEPS = ['3xs', '2xs', 'xs-plus', 'sm-plus'] as const;
+export const TYPE_STEPS = ['3xs', '2xs', '1xs', '1sm'] as const;
 
 /**
  * Theme utilities whose names Tailwind Merge cannot classify, registered so a caller's own

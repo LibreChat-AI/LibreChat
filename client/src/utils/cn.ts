@@ -1,9 +1,9 @@
 import { type ClassValue, clsx } from 'clsx';
-import { TYPE_STEPS } from '@librechat/client';
 import { extendTailwindMerge } from 'tailwind-merge';
 
+/** Mirrors `TYPE_STEPS` in `@librechat/client`; imported values there are mocked away in specs. */
 const twMerge = extendTailwindMerge({
-  extend: { classGroups: { 'font-size': [{ text: [...TYPE_STEPS] }] } },
+  extend: { classGroups: { 'font-size': [{ text: ['3xs', '2xs', '1xs', '1sm'] }] } },
 });
 
 /**
