@@ -14,6 +14,7 @@ import {
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
@@ -2146,4 +2147,42 @@ describe('theme registry', () => {
     expect(validateThemeDefinition(definition as ThemeDefinition)).toContain(expectedError);
     expect(() => resolveTheme(definition as ThemeDefinition, 'light')).toThrow(TypeError);
   });
+});
+
+describe('appearance families substitute through the emitted variables', () => {
+  const reference: ThemeDefinition = {
+    version: 1,
+    name: 'family-reference',
+    modes: {
+      light: {
+        appearance: {
+          radiusLg: '0.125rem',
+          fontFamily: 'Georgia, serif',
+          shadowMd: '0 1px 2px 0 rgb(0 0 0 / 0.3)',
+          controlHeight: '3rem',
+          spaceNormal: '1rem',
+        },
+      },
+    },
+  };
+  const emitted = (theme: ThemeDefinition) =>
+    new Map(describeResolvedTheme(resolveTheme(theme, 'light')).properties);
+
+  it.each([
+    ['radius', '--theme-radius-lg', '0.125rem'],
+    ['font', '--theme-font-family', 'Georgia, serif'],
+    ['shadow', '--theme-shadow-md', '0 1px 2px 0 rgb(0 0 0 / 0.3)'],
+    ['density (control height)', '--theme-control-height', '3rem'],
+    ['density (spacing)', '--theme-space-normal', '1rem'],
+  ])(
+    'changes the %s variable and only restates it for a reference theme',
+    (_family, property, value) => {
+      const base = emitted(libreChatTheme);
+      const themed = emitted(reference);
+
+      expect(base.get(property)).toBeDefined();
+      expect(themed.get(property)).toBe(value);
+      expect(themed.get(property)).not.toBe(base.get(property));
+    },
+  );
 });

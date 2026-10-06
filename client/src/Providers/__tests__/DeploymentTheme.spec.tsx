@@ -537,6 +537,54 @@ describe('DeploymentTheme cache', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('acme'));
   });
 
+  it('keeps painting the signed-out answer while the signed-in one loads', async () => {
+    let signIn: () => void = () => undefined;
+    function SignIn() {
+      const setUser = useSetRecoilState(store.user);
+      signIn = () => setUser(user as TUser);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignIn />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => signIn());
+    expect(root().dataset.theme).toBe('clickhouse');
+  });
+
+  it('drops a signed-in answer when the identity ends before the signed-out one loads', async () => {
+    let signOut: () => void = () => undefined;
+    function SignOut() {
+      const setUser = useSetRecoilState(store.user);
+      signOut = () => setUser(undefined);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, user as TUser)}>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignOut />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => signOut());
+    await waitFor(() => expect(root().dataset.theme).toBeUndefined());
+  });
+
   it('does not write a signed-out answer over the cache', async () => {
     cacheTheme();
     getStartupConfig.mockResolvedValue(configWith());

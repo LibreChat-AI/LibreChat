@@ -193,7 +193,7 @@ function SelectDropDown({
               >
                 <ListboxOptions
                   className={cn(
-                    'border-border-light bg-surface-secondary absolute z-10 mt-2 max-h-60 w-full overflow-auto rounded border text-xs md:w-[100%]',
+                    'border-border-light bg-surface-secondary absolute z-10 mt-2 max-h-60 w-full overflow-auto rounded-sm border text-xs md:w-[100%]',
                     optionsListClass ?? '',
                   )}
                 >

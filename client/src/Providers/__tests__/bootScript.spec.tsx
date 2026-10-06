@@ -3,7 +3,13 @@ import { readFileSync } from 'fs';
 import { render } from '@testing-library/react';
 import { ThemeProvider, applyResolvedTheme, resolveTheme } from '@librechat/client';
 import type { ThemeDefinition } from '@librechat/client';
-import { isPublicRoute, buildThemeCache, writeThemeCache } from '../themeCache';
+import {
+  isPublicRoute,
+  buildThemeCache,
+  writeThemeCache,
+  THEME_CACHE_KEY,
+  THEME_CACHE_VERSION,
+} from '../themeCache';
 
 /** The inline shell script in `client/index.html`, run as the browser runs it. */
 const bootScript = (() => {
@@ -13,7 +19,7 @@ const bootScript = (() => {
   if (!script) {
     throw new Error('client/index.html has no deployment theme boot script');
   }
-  return script;
+  return script.replace('__THEME_CACHE_VERSION__', THEME_CACHE_VERSION);
 })();
 
 const acme: ThemeDefinition = {
@@ -95,6 +101,28 @@ describe('index.html deployment theme boot script', () => {
       );
     },
   );
+
+  it('leaves the placeholder out of the script the build serves', () => {
+    expect(bootScript).not.toContain('__THEME_CACHE_VERSION__');
+    expect(bootScript).toContain(`'${THEME_CACHE_VERSION}'`);
+  });
+
+  it('does not replay an entry stored against another role set', () => {
+    const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+    localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, v: 'before-a-new-role' }));
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+  });
+
+  it('paints nothing on a first-ever visit, leaving the operator theme to the config answer', () => {
+    localStorage.clear();
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(root().classList.contains('light')).toBe(true);
+  });
 
   it('follows the OS scheme under `system`', () => {
     mockMedia(true);
