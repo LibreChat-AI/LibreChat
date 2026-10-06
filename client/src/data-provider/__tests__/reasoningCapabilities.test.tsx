@@ -20,7 +20,10 @@ jest.mock('librechat-data-provider', () => {
 });
 
 const mockGet = dataService.getReasoningCapabilities as jest.Mock;
-const capabilities = { OpenRouter: { 'a/b': { efforts: ['low'] } } };
+const capabilities = {
+  capabilities: { OpenRouter: { 'a/b': { efforts: ['low'] } } },
+  expiresInMs: 60_000,
+};
 
 const setup = () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -31,7 +34,6 @@ const setup = () => {
   );
   return renderHook(() => useReasoningCapabilitiesQuery('OpenRouter'), { wrapper });
 };
-const MINUTE = 60_000;
 
 const refocus = async () => {
   await act(async () => {
@@ -47,46 +49,7 @@ const reconnect = async () => {
   });
 };
 
-describe('useReasoningCapabilitiesQuery recovery', () => {
-  beforeEach(() => {
-    mockGet.mockReset();
-  });
-
-  it('refetches on window focus after a failed request, so the list can recover', async () => {
-    mockGet.mockRejectedValueOnce(new Error('503')).mockResolvedValue(capabilities);
-    const { result } = setup();
-    await waitFor(() => expect(result.current.isError).toBe(true));
-
-    await refocus();
-
-    await waitFor(() => expect(result.current.data).toEqual(capabilities));
-    expect(mockGet).toHaveBeenCalledTimes(2);
-  });
-
-  it('refetches on reconnect after a failed request', async () => {
-    mockGet.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(capabilities);
-    const { result } = setup();
-    await waitFor(() => expect(result.current.isError).toBe(true));
-
-    await reconnect();
-
-    await waitFor(() => expect(result.current.data).toEqual(capabilities));
-    expect(mockGet).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not refetch on focus or reconnect once the capabilities have loaded', async () => {
-    mockGet.mockResolvedValue(capabilities);
-    const { result } = setup();
-    await waitFor(() => expect(result.current.data).toEqual(capabilities));
-
-    await refocus();
-    await reconnect();
-
-    expect(mockGet).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('useReasoningCapabilitiesQuery freshness and retry', () => {
+describe('useReasoningCapabilitiesQuery expiry and retry', () => {
   beforeEach(() => {
     mockGet.mockReset();
     jest.useFakeTimers();
@@ -94,6 +57,7 @@ describe('useReasoningCapabilitiesQuery freshness and retry', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+    focusManager.setFocused(undefined);
   });
 
   const advance = (ms: number) =>
@@ -101,26 +65,56 @@ describe('useReasoningCapabilitiesQuery freshness and retry', () => {
       jest.advanceTimersByTime(ms);
     });
 
-  it('revalidates loaded data on focus once it is older than five minutes', async () => {
+  it('refetches when the server entry expires', async () => {
     mockGet.mockResolvedValue(capabilities);
     const { result } = setup();
     await waitFor(() => expect(result.current.data).toEqual(capabilities));
 
-    await advance(6 * MINUTE);
-    await refocus();
+    await advance(61_000);
 
     await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
   });
 
-  it('does not revalidate loaded data on focus within five minutes', async () => {
+  it('does not refetch before the server entry expires', async () => {
     mockGet.mockResolvedValue(capabilities);
     const { result } = setup();
     await waitFor(() => expect(result.current.data).toEqual(capabilities));
 
-    await advance(4 * MINUTE);
+    await advance(30_000);
     await refocus();
 
     expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates on focus when the entry expired while the page was in the background', async () => {
+    mockGet.mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+    await act(async () => {
+      focusManager.setFocused(false);
+    });
+
+    await advance(120_000);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      focusManager.setFocused(true);
+    });
+
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+  });
+
+  it('follows the expiry of the entry it just read, not a fixed window', async () => {
+    mockGet
+      .mockResolvedValueOnce({ ...capabilities, expiresInMs: 10_000 })
+      .mockResolvedValue({ ...capabilities, expiresInMs: 3_600_000 });
+    const { result } = setup();
+    await waitFor(() => expect(result.current.data?.expiresInMs).toBe(10_000));
+
+    await advance(11_000);
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2));
+    await advance(600_000);
+
+    expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
   it('retries a failed request on its own while the page stays focused', async () => {
@@ -134,12 +128,32 @@ describe('useReasoningCapabilitiesQuery freshness and retry', () => {
     expect(mockGet).toHaveBeenCalledTimes(2);
   });
 
-  it('does not poll once the capabilities have loaded', async () => {
+  it('refetches a failed request on focus', async () => {
+    mockGet.mockRejectedValueOnce(new Error('503')).mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    await refocus();
+
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+  });
+
+  it('refetches a failed request on reconnect', async () => {
+    mockGet.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(capabilities);
+    const { result } = setup();
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    await reconnect();
+
+    await waitFor(() => expect(result.current.data).toEqual(capabilities));
+  });
+
+  it('does not refetch loaded data on reconnect before the server entry expires', async () => {
     mockGet.mockResolvedValue(capabilities);
     const { result } = setup();
     await waitFor(() => expect(result.current.data).toEqual(capabilities));
 
-    await advance(4 * MINUTE);
+    await reconnect();
 
     expect(mockGet).toHaveBeenCalledTimes(1);
   });

@@ -774,6 +774,16 @@ export type TModelReasoning = {
  */
 export type TReasoningCapabilityMap = Record<string, Record<string, TModelReasoning>>;
 
+/**
+ * What the capabilities route returns: the efforts, and how long the server will keep the catalog
+ * they came from. The client revalidates when that time has passed, so it never holds a list longer
+ * than the server does, however old the server's entry was when it was fetched.
+ */
+export type TReasoningCapabilitiesResponse = {
+  capabilities: TReasoningCapabilityMap;
+  expiresInMs: number;
+};
+
 /** endpoint → model → resolved tokenomics, from GET /api/endpoints/token-config */
 export type TTokenConfigMap = Record<string, Record<string, TModelTokenomics>>;
 

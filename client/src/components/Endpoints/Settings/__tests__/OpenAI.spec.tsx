@@ -149,7 +149,10 @@ describe('OpenRouter custom endpoint effort list', () => {
       },
     });
     if (capabilities != null) {
-      queryClient.setQueryData([QueryKeys.reasoningCapabilities, 'OpenRouter'], capabilities);
+      queryClient.setQueryData([QueryKeys.reasoningCapabilities, 'OpenRouter'], {
+        capabilities,
+        expiresInMs: 3_600_000,
+      });
     }
     const conversation = {
       endpoint: 'OpenRouter',

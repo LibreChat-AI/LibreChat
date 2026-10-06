@@ -726,13 +726,19 @@ describe('useChatFunctions ask', () => {
     });
 
     it('keeps an override the loaded capabilities support', () => {
-      mockCapabilitiesData.current = { OpenRouter: { [model]: { efforts: ['max', 'high'] } } };
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
 
       expect(replay()).toEqual(override);
     });
 
     it('omits an override the loaded capabilities do not support', () => {
-      mockCapabilitiesData.current = { OpenRouter: { [model]: { efforts: ['low'] } } };
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
 
       expect(replay()).toBeUndefined();
     });
@@ -744,7 +750,10 @@ describe('useChatFunctions ask', () => {
     });
 
     it('keeps an override for a model the loaded catalog does not list', () => {
-      mockCapabilitiesData.current = { OpenRouter: { 'meta/other': { efforts: ['low'] } } };
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { 'meta/other': { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
 
       expect(replay()).toEqual(override);
     });

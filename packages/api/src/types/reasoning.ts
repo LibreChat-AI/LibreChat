@@ -28,4 +28,6 @@ export interface ReasoningCapabilityDeps {
 export interface ReasoningCapabilityResult {
   capabilities: TReasoningCapabilityMap;
   unavailable: string[];
+  /** Epoch milliseconds at which the earliest catalog behind `capabilities` expires. */
+  expiresAt?: number;
 }

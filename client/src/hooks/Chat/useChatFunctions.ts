@@ -29,7 +29,7 @@ import type {
   TEndpointOption,
   TEndpointsConfig,
   EndpointSchemaKey,
-  TReasoningCapabilityMap,
+  TReasoningCapabilitiesResponse,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
@@ -535,7 +535,8 @@ export default function useChatFunctions({
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
       const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
-      const capabilitiesData = queryClient.getQueryData<TReasoningCapabilityMap>(capabilitiesKey);
+      const capabilitiesData =
+        queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey)?.capabilities;
       /* A replayed override is checked against the loaded per-model efforts. While they are
          unknown (never requested, in flight or failed) `resolveModelReasoning` offers nothing, so
          the override is omitted rather than sent and refused by the server. */

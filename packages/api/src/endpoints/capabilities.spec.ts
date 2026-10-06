@@ -28,7 +28,36 @@ describe('createReasoningCapabilitiesHandler', () => {
     await handler(makeReq(), res);
 
     expect(res.status).not.toHaveBeenCalled();
-    expect(res.json).toHaveBeenCalledWith(capabilities);
+    expect(res.json).toHaveBeenCalledWith({ capabilities, expiresInMs: expect.any(Number) });
+  });
+
+  describe('expiry the client revalidates against', () => {
+    const NOW = 1_000_000;
+    beforeEach(() => {
+      jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+    const respond = async (expiresAt: number | undefined) => {
+      const res = makeRes();
+      await createReasoningCapabilitiesHandler({
+        getReasoningCapabilities: async () => ({ capabilities: {}, unavailable: [], expiresAt }),
+      })(makeReq(), res);
+      return res.json.mock.calls[0][0].expiresInMs;
+    };
+
+    it('sends the time left in the server entry', async () => {
+      expect(await respond(NOW + 42000)).toBe(42000);
+    });
+
+    it('never sends a negative time', async () => {
+      expect(await respond(NOW - 5)).toBe(0);
+    });
+
+    it('sends five minutes when no entry applies, so the client still revalidates', async () => {
+      expect(await respond(undefined)).toBe(300000);
+    });
   });
 
   it('scopes the lookup to the requested endpoint and the request config', async () => {

@@ -51,6 +51,9 @@ const isDynamicRouterModel = (id: string): boolean => id.startsWith('openrouter/
 
 type CatalogModels = Record<string, TModelReasoning>;
 
+/** A read catalog and the moment the cache drops it, kept with it so a cached read reports the same. */
+type CatalogEntry = { models: CatalogModels; expiresAt: number };
+
 /**
  * OpenRouter's `supported_efforts: null` means no allowlist applies and every gateway effort
  * is accepted; an omitted field, or an omitted `reasoning` object, means the model exposes no
@@ -212,7 +215,41 @@ type ResolvedTarget = {
   failureTtlMs: number;
   ttlMs: number;
   headers: Record<string, string>;
+  /** The base names of the models the endpoint exposes, or `undefined` when it fetches every one. */
+  exposedModels: Set<string> | undefined;
 };
+
+/** The part of a model name before a routing variant such as `:nitro` or `:free`. */
+const baseModelName = (model: string): string => model.split(':')[0];
+
+/**
+ * The models an endpoint exposes to its users. An endpoint that fetches its model list exposes
+ * every catalog model; one that does not exposes only its configured models, and the capabilities
+ * route must not disclose the rest of what a proxy's catalog lists to its users.
+ */
+function exposedModelNames(endpoint: TEndpoint): Set<string> | undefined {
+  if (endpoint.models?.fetch === true) {
+    return undefined;
+  }
+  return new Set(
+    (endpoint.models?.default ?? []).map((model) =>
+      baseModelName(typeof model === 'string' ? model : model.name),
+    ),
+  );
+}
+
+/** The catalog's models narrowed to those the endpoint exposes. */
+function exposedCapabilities(
+  models: CatalogModels,
+  exposed: Set<string> | undefined,
+): CatalogModels {
+  if (exposed == null) {
+    return models;
+  }
+  return Object.fromEntries(
+    Object.entries(models).filter(([id]) => exposed.has(baseModelName(id))),
+  );
+}
 
 /**
  * The endpoint's catalog target, or nothing when it does not use the OpenRouter catalog (see
@@ -246,6 +283,7 @@ function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
       endpoint.customParams?.reasoningCatalogFailureTtlMs ?? DEFAULT_CATALOG_FAILURE_TTL_MS,
     ttlMs: endpoint.customParams?.reasoningCatalogTtlMs ?? DEFAULT_CATALOG_TTL_MS,
     headers: staticCatalogHeaders(endpoint.headers),
+    exposedModels: exposedModelNames(endpoint),
   };
 }
 
@@ -258,21 +296,21 @@ const failureKey = (key: string): string => `${key}:failed`;
  * when the cache is cold or has just expired. An entry is removed once it settles; a failure is
  * then remembered for `reasoningCatalogFailureTtlMs` so it is retried after that, not per call.
  */
-const inFlight = new Map<string, Promise<CatalogModels | undefined>>();
+const inFlight = new Map<string, Promise<CatalogEntry | undefined>>();
 
 /** One cached, shared lookup per base URL and key; `undefined` when the catalog is unavailable. */
 function resolveCatalog(
   target: ResolvedTarget,
   deps: ReasoningCapabilityDeps,
-): Promise<CatalogModels | undefined> {
+): Promise<CatalogEntry | undefined> {
   const key = cacheKey(target);
   const existing = inFlight.get(key);
   if (existing != null) {
     return existing;
   }
   const lookup = (async () => {
-    const cached = (await deps.cache.get(key)) as CatalogModels | undefined;
-    if (cached != null) {
+    const cached = (await deps.cache.get(key)) as CatalogEntry | undefined;
+    if (cached != null && cached.expiresAt > Date.now()) {
       return cached;
     }
     /** A recent failure is not retried: the middleware and the endpoint initializer of one
@@ -290,11 +328,14 @@ function resolveCatalog(
       });
     }
     if (models != null) {
-      await deps.cache.set(key, models, target.ttlMs);
-    } else if (target.failureTtlMs > 0) {
+      const entry: CatalogEntry = { models, expiresAt: Date.now() + target.ttlMs };
+      await deps.cache.set(key, entry, target.ttlMs);
+      return entry;
+    }
+    if (target.failureTtlMs > 0) {
       await deps.cache.set(failureKey(key), true, target.failureTtlMs);
     }
-    return models;
+    return undefined;
   })().finally(() => inFlight.delete(key));
   inFlight.set(key, lookup);
   return lookup;
@@ -306,8 +347,9 @@ function resolveCatalog(
  * administrator's key, never a user's, and is the same for every caller, so it
  * is cached by base URL and key and shared across users. A catalog that cannot
  * be fetched or read is reported in `unavailable`, never as an endpoint without
- * reasoning, and is not cached, so the next request retries. `only` limits the result to one
- * endpoint, so one endpoint's outage does not hide another's data.
+ * reasoning, and is not cached, so the next request retries. Each endpoint's result holds only the
+ * models it exposes. `only` limits the result to one endpoint, so one endpoint's outage does not hide
+ * another's data. `expiresAt` is when the earliest catalog read expires.
  */
 export async function loadReasoningCapabilities(
   customEndpoints: TEndpoint[] | undefined,
@@ -322,13 +364,14 @@ export async function loadReasoningCapabilities(
   const catalogs = await Promise.all(targets.map((target) => resolveCatalog(target, deps)));
 
   const result: ReasoningCapabilityResult = { capabilities: {}, unavailable: [] };
-  targets.forEach(({ name }, index) => {
-    const models = catalogs[index];
-    if (models == null) {
+  targets.forEach(({ name, exposedModels }, index) => {
+    const entry = catalogs[index];
+    if (entry == null) {
       result.unavailable.push(name);
-    } else {
-      result.capabilities[name] = models;
+      return;
     }
+    result.capabilities[name] = exposedCapabilities(entry.models, exposedModels);
+    result.expiresAt = Math.min(result.expiresAt ?? entry.expiresAt, entry.expiresAt);
   });
   return result;
 }
@@ -363,9 +406,13 @@ export async function withSupportedEffort<T extends object>(
   if (target == null) {
     return modelOptions;
   }
-  const models = await resolveCatalog(target, deps);
+  const entry = await resolveCatalog(target, deps);
   const modelReasoning = effectiveModelReasoning(
-    getModelReasoning(models == null ? undefined : { [target.name]: models }, target.name, model),
+    getModelReasoning(
+      entry == null ? undefined : { [target.name]: entry.models },
+      target.name,
+      model,
+    ),
     endpoint.customParams?.paramDefinitions,
   );
   if (isOpenRouterEffortSupported(effort, modelReasoning)) {

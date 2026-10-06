@@ -28,7 +28,13 @@ const catalog = {
 };
 
 const endpoint = (overrides: Record<string, unknown> = {}): TEndpoint =>
-  ({ name: 'OpenRouter', baseURL: OPENROUTER, apiKey: 'sk-test', ...overrides }) as TEndpoint;
+  ({
+    name: 'OpenRouter',
+    baseURL: OPENROUTER,
+    apiKey: 'sk-test',
+    models: { default: ['seed/model'], fetch: true },
+    ...overrides,
+  }) as TEndpoint;
 
 function makeDeps(fetchPage?: ReasoningCapabilityDeps['fetchPage']) {
   const store = new Map<string, unknown>();
@@ -1061,5 +1067,138 @@ describe('relative pagination links', () => {
     expect((await walk(`${OPENROUTER}/models?offset=1`)).urls[1]).toBe(
       `${OPENROUTER}/models?offset=1`,
     );
+  });
+});
+
+describe('models an endpoint exposes', () => {
+  const load = async (models: Record<string, unknown>) => {
+    const { deps } = makeDeps();
+    const { capabilities } = await loadReasoningCapabilities([endpoint({ models })], deps);
+    return Object.keys(capabilities.OpenRouter ?? {}).sort();
+  };
+
+  it('returns every catalog model when the endpoint fetches its model list', async () => {
+    const ids = await load({ default: ['openai/gpt-6.1-sol'], fetch: true });
+
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'openai/gpt-6.1-sol',
+        'google/gemini-3.5-flash',
+        'meta/unrestricted',
+      ]),
+    );
+  });
+
+  it('returns only the configured models when the endpoint does not fetch', async () => {
+    expect(await load({ default: ['openai/gpt-6.1-sol'] })).toEqual(['openai/gpt-6.1-sol']);
+    expect(await load({ default: ['openai/gpt-6.1-sol'], fetch: false })).toEqual([
+      'openai/gpt-6.1-sol',
+    ]);
+  });
+
+  it('accepts configured models given as objects with a name', async () => {
+    expect(
+      await load({ default: [{ name: 'google/gemini-3.5-flash', description: 'fast' }] }),
+    ).toEqual(['google/gemini-3.5-flash']);
+  });
+
+  it('matches a configured routing variant to its base model', async () => {
+    expect(await load({ default: ['openai/gpt-6.1-sol:nitro'] })).toEqual(['openai/gpt-6.1-sol']);
+  });
+
+  it('returns nothing for a configured model the catalog does not list', async () => {
+    expect(await load({ default: ['meta/not-in-catalog'] })).toEqual([]);
+  });
+
+  it('returns nothing when the endpoint configures no models and does not fetch', async () => {
+    expect(await load({ default: [] })).toEqual([]);
+  });
+
+  it('still reads the full catalog once and filters per endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const { capabilities } = await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'Open', models: { default: ['openai/gpt-6.1-sol'] } }),
+        endpoint({ name: 'Wide', models: { default: ['seed/model'], fetch: true } }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(Object.keys(capabilities.Open)).toEqual(['openai/gpt-6.1-sol']);
+    expect(Object.keys(capabilities.Wide).length).toBeGreaterThan(1);
+  });
+
+  it('does not let the filter hide a model from the stored-effort check', async () => {
+    const { deps } = makeDeps();
+
+    const result = await withSupportedEffort(
+      { model: 'google/gemini-3.5-flash', reasoning_effort: 'max' },
+      endpoint({ models: { default: ['openai/gpt-6.1-sol'] } }),
+      deps,
+    );
+
+    expect(result).toEqual({ model: 'google/gemini-3.5-flash' });
+  });
+});
+
+describe('when the catalog entry expires', () => {
+  it('reports the moment a freshly read catalog expires', async () => {
+    const { deps } = makeDeps();
+    const before = Date.now();
+
+    const { expiresAt } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 3600000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 3600000);
+  });
+
+  it('keeps the original moment when the entry is served from the cache', async () => {
+    const { deps } = makeDeps();
+    const first = await loadReasoningCapabilities([endpoint()], deps);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(second.expiresAt).toBe(first.expiresAt);
+  });
+
+  it('follows the configured lifetime', async () => {
+    const { deps } = makeDeps();
+    const before = Date.now();
+
+    const { expiresAt } = await loadReasoningCapabilities(
+      [endpoint({ customParams: { reasoningCatalogTtlMs: 120000 } })],
+      deps,
+    );
+
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 120000);
+    expect(expiresAt).toBeLessThan(before + 3600000);
+  });
+
+  it('reports the earliest expiry across endpoints', async () => {
+    const { deps } = makeDeps();
+    const before = Date.now();
+
+    const { expiresAt } = await loadReasoningCapabilities(
+      [
+        endpoint({ name: 'Short', customParams: { reasoningCatalogTtlMs: 120000 } }),
+        endpoint({ name: 'Long', customParams: { reasoningCatalogTtlMs: 7200000 } }),
+      ],
+      deps,
+    );
+
+    expect(expiresAt).toBeLessThan(before + 3600000);
+  });
+
+  it('has no expiry when no endpoint was read', async () => {
+    const { deps } = makeDeps(async () => {
+      throw new Error('down');
+    });
+
+    const { expiresAt } = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(expiresAt).toBeUndefined();
   });
 });

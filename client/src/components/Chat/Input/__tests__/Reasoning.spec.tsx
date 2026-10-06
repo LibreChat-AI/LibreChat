@@ -29,7 +29,10 @@ jest.mock('~/data-provider', () => ({
   useGetAgentByIdQuery: () => ({ data: undefined }),
   useGetEndpointsQuery: () => ({ data: mockEndpointsConfig }),
   useReasoningCapabilitiesQuery: (_endpoint: string, config?: { enabled?: boolean }) => ({
-    data: config?.enabled === false ? undefined : mockCapabilities,
+    data:
+      config?.enabled === false || mockCapabilities == null
+        ? undefined
+        : { capabilities: mockCapabilities, expiresInMs: 3_600_000 },
     isInitialLoading: config?.enabled !== false && mockCapabilitiesLoading,
   }),
 }));

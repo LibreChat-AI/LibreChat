@@ -42,29 +42,51 @@ export const useTokenConfigQuery = (
   });
 };
 
+/** Floor for the revalidation timer, so an entry that is about to expire cannot cause a request storm. */
+const MIN_REVALIDATE_MS = 1000;
+
+/** The server's catalog entry is gone, or the request failed, so the data must be read again. */
+const reasoningCapabilitiesExpired = (query: {
+  state: { status: string; data?: unknown; dataUpdatedAt: number };
+}): 'always' | false => {
+  const data = query.state.data as t.TReasoningCapabilitiesResponse | undefined;
+  if (query.state.status === 'error') {
+    return 'always';
+  }
+  return data != null && Date.now() - query.state.dataUpdatedAt >= data.expiresInMs
+    ? 'always'
+    : false;
+};
+
 /**
- * Per-model reasoning efforts of one OpenRouter endpoint. The server caches the catalog for
- * an hour; the client revalidates sooner so the two stay close. Scoped to the endpoint,
- * so another endpoint's outage cannot hide this one's data. Pass `enabled: false` unless the
- * endpoint is an OpenRouter one, so other users never pay for the request.
+ * Per-model reasoning efforts of one OpenRouter endpoint. Scoped to the endpoint, so another
+ * endpoint's outage cannot hide this one's data. Pass `enabled: false` unless the endpoint is an
+ * OpenRouter one, so other users never pay for the request.
+ *
+ * The response says how long the server keeps the catalog it came from, and the client reads it
+ * again when that time passes, on a timer while the page is open and on focus or reconnect
+ * otherwise, so it never offers a list the server has already replaced. A failed request retries
+ * every 30 seconds without waiting for an event, because the editors offer nothing while it fails.
  */
 export const useReasoningCapabilitiesQuery = (
   endpoint: string,
-  config?: UseQueryOptions<t.TReasoningCapabilityMap>,
-): QueryObserverResult<t.TReasoningCapabilityMap> => {
+  config?: UseQueryOptions<t.TReasoningCapabilitiesResponse>,
+): QueryObserverResult<t.TReasoningCapabilitiesResponse> => {
   const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  return useQuery<t.TReasoningCapabilityMap>(
+  return useQuery<t.TReasoningCapabilitiesResponse>(
     [QueryKeys.reasoningCapabilities, endpoint],
     () => dataService.getReasoningCapabilities(endpoint),
     {
-      /** The server holds the catalog for an hour from when it first read it, and the response
-       *  carries no age, so a long client window could outlive the server's entry. Revalidating
-       *  after five minutes, on focus or reconnect, bounds how far the two can drift. */
-      staleTime: Time.FIVE_MINUTES,
-      /** While the request keeps failing the editors offer nothing, so it retries on its own and
-       *  does not wait for a focus or reconnect event. */
-      refetchInterval: (_data, query) =>
-        query.state.status === 'error' ? Time.THIRTY_SECONDS : false,
+      staleTime: Infinity,
+      refetchOnWindowFocus: reasoningCapabilitiesExpired,
+      refetchOnReconnect: reasoningCapabilitiesExpired,
+      refetchOnMount: reasoningCapabilitiesExpired,
+      refetchInterval: (data, query) => {
+        if (query.state.status === 'error') {
+          return Time.THIRTY_SECONDS;
+        }
+        return data == null ? false : Math.max(data.expiresInMs, MIN_REVALIDATE_MS);
+      },
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,
     },

@@ -418,7 +418,9 @@ export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
   return request.get(endpoints.tokenConfig());
 };
 
-export const getReasoningCapabilities = (endpoint: string): Promise<t.TReasoningCapabilityMap> => {
+export const getReasoningCapabilities = (
+  endpoint: string,
+): Promise<t.TReasoningCapabilitiesResponse> => {
   return request.get(endpoints.reasoningCapabilities(endpoint));
 };
 
