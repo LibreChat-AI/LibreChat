@@ -158,6 +158,7 @@
   );
   --color-surface-composer: rgb(var(--surface-composer));
   --color-surface-search: rgb(var(--surface-search));
+  --color-surface-sidebar: rgb(var(--surface-sidebar));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */

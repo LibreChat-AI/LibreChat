@@ -39,6 +39,7 @@ const canvasSurfaces: Array<keyof IThemeRGB> = [
   'rgb-surface-popover',
   'rgb-surface-composer',
   'rgb-surface-search',
+  'rgb-surface-sidebar',
 ];
 
 /** Fills a row or menu item takes on hover or selection, which carry the
@@ -286,9 +287,9 @@ describe.each(modes)('clickhouse %s palette', (mode, theme) => {
       ['rgb-surface-user-message', 'rgb-surface-canvas'],
       ['rgb-surface-card-hover', 'rgb-surface-card'],
       ['rgb-surface-nav-selected', 'rgb-surface-nav-hover'],
-      ['rgb-surface-nav-hover', 'rgb-surface-primary-alt'],
+      ['rgb-surface-nav-hover', 'rgb-surface-sidebar'],
       ['rgb-surface-tab-selected', 'rgb-surface-dialog'],
-      ['rgb-surface-search', 'rgb-surface-primary-alt'],
+      ['rgb-surface-search', 'rgb-surface-sidebar'],
       ['rgb-border-menu', 'rgb-surface-menu'],
     ];
     expect(layers.filter(([layer, ground]) => theme[layer] === theme[ground])).toEqual([]);

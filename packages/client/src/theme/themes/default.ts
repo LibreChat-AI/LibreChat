@@ -106,6 +106,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-menu': '227 227 227', // matching border-light
   'rgb-surface-composer': '255 255 255', // matching surface-chat
   'rgb-surface-search': '247 247 248', // matching surface-secondary
+  'rgb-surface-sidebar': '247 247 248', // matching surface-primary-alt
   'rgb-surface-disabled': '236 236 236', // #ececec (gray-100)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '227 227 227', // #e3e3e3 (gray-200)

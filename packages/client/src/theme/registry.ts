@@ -138,6 +138,7 @@ export const layerRoleSources: ReadonlyArray<
   ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
   ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
   ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-sidebar', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
 ];
 
 export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {

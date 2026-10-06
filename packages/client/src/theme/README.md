@@ -401,8 +401,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `bg-surface-nav-selected` (sidebar, rail and drawer rows), `bg-surface-tab-selected`
   (the settings tab rail), `bg-surface-menu` and `bg-surface-popover` with `border-border-menu` (menu and popover
   panels), `bg-surface-composer` (the composer box) and `bg-surface-search` (the sidebar
-  search pill). Each follows the surface it painted before it had a name
-  (`surface-primary-alt`, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
+  search pill) and `bg-surface-sidebar` (the sidebar panel). Each follows the surface it painted before it had a name
+  (`surface-primary-alt` for the canvas and the sidebar, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
   `presentation` for menus, `surface-primary` or `surface-secondary` for popovers, `border-light`, `surface-chat`),
   so a theme that repaints that surface keeps the layer on it, and a theme steps the layers
   apart by naming them.

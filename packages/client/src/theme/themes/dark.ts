@@ -106,6 +106,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-menu': '33 33 33', // matching border-light
   'rgb-surface-composer': '47 47 47', // matching surface-chat
   'rgb-surface-search': '33 33 33', // matching surface-secondary
+  'rgb-surface-sidebar': '23 23 23', // matching surface-primary-alt
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)

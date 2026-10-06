@@ -104,6 +104,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-menu',
   'rgb-surface-composer',
   'rgb-surface-search',
+  'rgb-surface-sidebar',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',

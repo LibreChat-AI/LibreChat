@@ -167,7 +167,7 @@ html {
   --border-xheavy: var(--gray-500);
   --border-xheavy-alpha: 1;
   /* The drawer's own fill: the scrim separates it in light. */
-  --drawer-edge: var(--surface-primary-alt);
+  --drawer-edge: var(--surface-sidebar);
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
@@ -190,6 +190,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -480,6 +481,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);
@@ -570,6 +572,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
 }
 .dark [data-theme-scope],
 [data-theme-scope].dark {
@@ -586,5 +589,6 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --surface-code-inline: var(--surface-hover-alt);
 }

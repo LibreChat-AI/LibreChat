@@ -151,7 +151,7 @@ function ExpandedPanel({
   const toggleSidebarAriaKey = useShortcutAriaKey('toggleSidebar');
 
   return (
-    <div className="border-border-inset bg-surface-primary-alt flex h-full shrink-0 flex-col gap-2 border-r px-2 py-2">
+    <div className="border-border-inset bg-surface-sidebar flex h-full shrink-0 flex-col gap-2 border-r px-2 py-2">
       <TooltipAnchor
         side="right"
         description={toggleSidebarHint}

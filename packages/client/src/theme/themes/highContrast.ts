@@ -142,6 +142,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-border-menu': '0 0 0', // matching border-light
   'rgb-surface-composer': '255 255 255', // matching surface-chat
   'rgb-surface-search': '255 255 255', // matching surface-secondary
+  'rgb-surface-sidebar': '255 255 255', // matching surface-primary-alt
   'rgb-surface-disabled': '255 255 255', // #ffffff
   'rgb-text-disabled': '87 87 87', // #575757
   'rgb-border-disabled': '87 87 87', // #575757
@@ -342,6 +343,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-border-menu': '255 255 255', // matching border-light
   'rgb-surface-composer': '0 0 0', // matching surface-chat
   'rgb-surface-search': '0 0 0', // matching surface-secondary
+  'rgb-surface-sidebar': '0 0 0', // matching surface-primary-alt
   'rgb-surface-disabled': '0 0 0', // #000000
   'rgb-text-disabled': '184 184 184', // #b8b8b8
   'rgb-border-disabled': '184 184 184', // #b8b8b8

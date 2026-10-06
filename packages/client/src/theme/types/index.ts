@@ -139,6 +139,7 @@ export interface IThemeRGB {
   'rgb-border-menu'?: string;
   'rgb-surface-composer'?: string;
   'rgb-surface-search'?: string;
+  'rgb-surface-sidebar'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -348,6 +349,7 @@ export interface IThemeVariables {
   '--border-menu': string;
   '--surface-composer': string;
   '--surface-search': string;
+  '--surface-sidebar': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -507,6 +509,7 @@ export interface IThemeColors {
   'border-menu'?: string;
   'surface-composer'?: string;
   'surface-search'?: string;
+  'surface-sidebar'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;

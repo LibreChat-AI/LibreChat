@@ -429,7 +429,7 @@ function Conversation({
                   'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
                   isActiveConvo || isPopoverActive
                     ? 'ring-surface-nav-selected'
-                    : 'ring-surface-primary-alt group-hover:ring-surface-nav-hover',
+                    : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
                 )}
               />
             )}
