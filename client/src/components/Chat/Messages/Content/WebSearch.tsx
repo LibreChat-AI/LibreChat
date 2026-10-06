@@ -253,7 +253,7 @@ export default function WebSearch({
           <Button
             variant="disclosure"
             className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start gap-2 rounded-full p-0 font-normal',
+              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 justify-start rounded-full p-0 font-normal',
               /** This row is a status line, not a padded control: the shared
                *  recipe's color transition would turn its hover into a fade,
                *  and the chevron reveal beside it is deliberately instant. */

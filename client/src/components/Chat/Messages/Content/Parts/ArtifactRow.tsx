@@ -128,7 +128,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
           size="icon"
           onClick={onDownload}
           aria-label={`${localize('com_ui_download')} ${title}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="text-text-secondary size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>

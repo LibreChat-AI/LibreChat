@@ -167,7 +167,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
       <Button
         variant="ghost"
         className={cn(
-          'tool-status-text text-text-secondary hover:text-text-primary h-auto justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent',
+          'tool-status-text text-text-secondary hover:text-text-primary h-auto justify-start rounded-none p-0 font-normal hover:bg-transparent',
           !hasInfo && 'pointer-events-none disabled:opacity-100',
         )}
         disabled={!hasInfo}

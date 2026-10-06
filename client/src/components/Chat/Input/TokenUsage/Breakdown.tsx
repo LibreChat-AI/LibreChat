@@ -737,7 +737,7 @@ export default function Breakdown({
             {langfuseSessionUrl && (
               <>
                 <div className="border-border-light border-t" role="separator" />
-                <Button asChild variant="link" className="h-auto w-full justify-between gap-2 p-0">
+                <Button asChild variant="link" className="h-auto w-full justify-between p-0">
                   <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                     <span>{localize('com_ui_langfuse_view_session')}</span>
                     <ExternalLink className="size-4 shrink-0" aria-hidden="true" />

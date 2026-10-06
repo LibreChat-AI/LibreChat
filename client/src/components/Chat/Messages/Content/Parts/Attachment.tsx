@@ -86,7 +86,7 @@ const PreviewPlaceholderRow = memo(
           size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="text-text-secondary size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>

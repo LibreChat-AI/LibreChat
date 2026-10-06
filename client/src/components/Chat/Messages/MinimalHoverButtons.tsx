@@ -49,7 +49,7 @@ export default function MinimalHoverButtons({ message, searchResults, variant }:
                 : localize('com_ui_copy_to_clipboard')
             }
             className={cn(
-              'text-text-secondary-alt ml-0 flex size-auto items-center gap-1.5 rounded-lg p-1.5 text-xs',
+              'text-text-secondary-alt ml-0 flex size-auto items-center gap-1.5 p-1.5 text-xs',
               'hover:bg-surface-hover hover:text-text-primary',
               'focus-visible:ring-text-primary focus-visible:ring-2',
               revealOnRowHoverClasses,

@@ -110,7 +110,7 @@ const SummaryButton = memo(
               isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
             }
             className={cn(
-              'text-text-secondary-alt size-auto rounded-lg p-1.5',
+              'text-text-secondary-alt size-auto p-1.5',
               isExpanded
                 ? 'opacity-0 group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100'
                 : 'opacity-0',
