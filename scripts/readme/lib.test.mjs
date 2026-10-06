@@ -99,3 +99,18 @@ test('validate protects inline code and non-text HTML attributes', () => {
   assert.ok(validate(img, '<img src="logo.svg" width="200" alt="Логотип">', 'ru').length > 0);
   assert.deepEqual(validate(img, '<img src="logo.svg" width="400" alt="Логотип">', 'ru'), []);
 });
+
+test('splitChunks separates prose from an adjacent fenced block', () => {
+  assert.deepEqual(splitChunks('Intro\n```sh\nnpm install\n```\nOutro'), [
+    'Intro',
+    '```sh\nnpm install\n```',
+    'Outro',
+  ]);
+});
+
+test('validate rejects empty output and swapped link targets', () => {
+  assert.ok(validate('Continue', '', 'ru').includes('output is empty'));
+  const source = '[API](api.md) then [Setup](setup.md)';
+  assert.ok(validate(source, '[API](setup.md) затем [Setup](api.md)', 'ru').length > 0);
+  assert.deepEqual(validate(source, '[API](api.md) затем [Setup](setup.md)', 'ru'), []);
+});
