@@ -44,10 +44,12 @@ describe('loadCustomEndpointsConfig – native provider param set', () => {
 });
 
 describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
-  const load = (endpoint: Record<string, unknown>) =>
-    loadCustomEndpointsConfig([
+  const load = (endpoint: Record<string, unknown>) => {
+    const name = typeof endpoint.name === 'string' ? endpoint.name : 'Gateway';
+    return loadCustomEndpointsConfig([
       { ...baseEndpoint, name: 'Gateway', ...endpoint },
-    ] as unknown as TCustomEndpoints)?.Gateway?.customParams;
+    ] as unknown as TCustomEndpoints)?.[name]?.customParams;
+  };
 
   it('declares effort-style reasoning for OpenRouter', () => {
     expect(load({ baseURL: 'https://openrouter.ai/api/v1' })?.reasoningFormat).toBe(
@@ -68,6 +70,72 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
       expect(load({ baseURL: 'https://openrouter.ai/api/v1', dropParams })).toBeUndefined();
     },
   );
+
+  describe('OpenRouter identified from the resolved host', () => {
+    const envKey = 'OPENROUTER_BASE_URL_PROBE';
+    afterEach(() => {
+      delete process.env[envKey];
+    });
+
+    it('marks an endpoint whose URL comes from an environment variable and whose name does not say OpenRouter', () => {
+      process.env[envKey] = 'https://openrouter.ai/api/v1';
+
+      const params = load({ name: 'Gateway', baseURL: `\${${envKey}}` });
+
+      expect(params?.defaultParamsEndpoint).toBe('openrouter');
+      expect(params?.reasoningFormat).toBe(ReasoningParameterFormat.reasoningEffort);
+    });
+
+    it('marks a literal OpenRouter URL under any endpoint name', () => {
+      expect(
+        load({ name: 'Models', baseURL: 'https://openrouter.ai/api/v1' })?.defaultParamsEndpoint,
+      ).toBe('openrouter');
+    });
+
+    it('keeps an administrator-chosen params endpoint', () => {
+      expect(
+        load({
+          baseURL: 'https://openrouter.ai/api/v1',
+          customParams: { defaultParamsEndpoint: EModelEndpoint.openAI },
+        })?.defaultParamsEndpoint,
+      ).toBe(EModelEndpoint.openAI);
+    });
+
+    it('replaces the generic default the schema fills in', () => {
+      expect(
+        load({
+          baseURL: 'https://openrouter.ai/api/v1',
+          customParams: { defaultParamsEndpoint: EModelEndpoint.custom },
+        })?.defaultParamsEndpoint,
+      ).toBe('openrouter');
+    });
+
+    it('does not mark a host that is not OpenRouter', () => {
+      process.env[envKey] = 'https://api.mistral.ai/v1';
+
+      expect(load({ name: 'Gateway', baseURL: `\${${envKey}}` })).toBeUndefined();
+    });
+
+    it('does not mark an endpoint whose URL the user provides', () => {
+      expect(load({ baseURL: 'user_provided' })).toBeUndefined();
+    });
+
+    it('does not mark an endpoint that drops the effort', () => {
+      expect(
+        load({ baseURL: 'https://openrouter.ai/api/v1', dropParams: ['reasoning_effort'] }),
+      ).toBeUndefined();
+    });
+
+    it('keeps an administrator-defined reasoning_effort authoritative', () => {
+      const params = load({
+        baseURL: 'https://openrouter.ai/api/v1',
+        customParams: { paramDefinitions: [{ key: 'reasoning_effort' }] },
+      });
+
+      expect(params?.defaultParamsEndpoint).toBe('openrouter');
+      expect(params?.reasoningFormat).toBeUndefined();
+    });
+  });
 
   it('advertises reasoning for the OpenRouter params endpoint the config loader injects', () => {
     expect(

@@ -31,7 +31,8 @@ type CustomParams = NonNullable<TEndpoint['customParams']>;
 
 /**
  * Declares reasoning support for a known host so the effort control appears
- * without per-endpoint config. Anything the admin stated wins: a native
+ * without per-endpoint config, and marks the endpoint's parameter set as OpenRouter's. Anything
+ * the admin stated wins: a native
  * `provider`, a non-default `defaultParamsEndpoint`, a `reasoningFormat`
  * (including `disabled`), or reasoning parameter definitions. An endpoint that
  * drops the effort before sending it is not advertised as supporting it.
@@ -58,16 +59,21 @@ function withHostReasoning(
   const paramsEndpoint = params.defaultParamsEndpoint;
   if (
     params.reasoningFormat != null ||
-    declaresReasoning === true ||
     (paramsEndpoint != null &&
       paramsEndpoint !== EModelEndpoint.custom &&
       paramsEndpoint !== ProviderId.openrouter)
   ) {
     return customParams;
   }
+  /** The resolved host is what identifies OpenRouter. The config loader only sees the unresolved
+   *  name and URL, so an endpoint whose URL comes from an environment variable and whose name does
+   *  not say OpenRouter reaches here unmarked, and the client could not tell it uses a catalog. */
   return {
     ...params,
-    reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+    defaultParamsEndpoint: ProviderId.openrouter,
+    ...(declaresReasoning !== true && {
+      reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+    }),
   } as TEndpoint['customParams'];
 }
 
