@@ -57,6 +57,8 @@ export type PullRequestLookupInput = PullRequestFindInput & {
   ttlMs: number;
   /** Entries the shared cache holds before it evicts the oldest; the lookup's own default if omitted. */
   cacheMaxEntries?: number;
+  /** Credentials cached at once; the lookup's own default if omitted. */
+  cacheMaxCredentials?: number;
 };
 
 export type PullRequestLookup = (input: PullRequestLookupInput) => Promise<PullRequestLookupResult>;

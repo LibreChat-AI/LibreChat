@@ -3260,6 +3260,7 @@ describe('ToolService - Action Capability Gating', () => {
         AgentCapabilities.stateful_code_sessions,
       ];
       const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].pullRequests = { enabled: true };
       req.body = {
         conversationId: 'body-convo',
         codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
@@ -3293,6 +3294,7 @@ describe('ToolService - Action Capability Gating', () => {
 
       expect(mockCreateLaneGitRecorder).toHaveBeenCalledWith(
         expect.objectContaining({
+          enabled: true,
           user: req.user.id,
           conversationId: 'resolved-convo',
           workspace: { environmentId: 'personal-machine', workspaceId: 'project-a' },
@@ -3305,6 +3307,52 @@ describe('ToolService - Action Capability Gating', () => {
       const input = { user: 'u', conversationId: 'c', laneGit: { branch: 'main', head: null } };
       await setConvoLaneGit(input);
       expect(mockSetConvoLaneGit).toHaveBeenCalledWith(input);
+    });
+
+    it.each([
+      ['unset', undefined],
+      ['disabled', { enabled: false }],
+    ])('does not enable lane recording when pull requests are %s', async (_label, setting) => {
+      const capabilities = [
+        AgentCapabilities.tools,
+        AgentCapabilities.execute_code,
+        AgentCapabilities.stateful_code_sessions,
+      ];
+      const req = createMockReq(capabilities);
+      if (setting) req.config.endpoints[EModelEndpoint.agents].pullRequests = setting;
+      req.body = {
+        codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      mockResolveCodeExecutionContext.mockReturnValueOnce({
+        baseUrl: 'http://attached-code.test/v1',
+        codeSessionKey: 'execute_code:stateful:attached',
+        executionProfile: 'stateful',
+        statefulSessions: true,
+        environmentType: 'attached',
+        environmentId: 'personal-machine',
+        bridgeWorkerId: 'worker-abc',
+      });
+      mockCreateLaneGitRecorder.mockClear();
+
+      await loadToolsForExecution({
+        req,
+        res: {},
+        agent: {
+          id: 'attached-agent',
+          tools: [Tools.execute_code],
+          stateful_code_sessions: true,
+          stateful_code_environment: 'agent-user',
+        },
+        conversationId: 'resolved-convo',
+        toolNames: [AgentConstants.BASH_TOOL],
+        toolRegistry: new Map([[AgentConstants.BASH_TOOL, { name: AgentConstants.BASH_TOOL }]]),
+        actionsEnabled: false,
+      });
+
+      expect(mockCreateLaneGitRecorder).toHaveBeenCalledWith(
+        expect.objectContaining({ enabled: false }),
+      );
     });
 
     it('passes negotiated lane and native sandbox capabilities to the attached bash tool', async () => {

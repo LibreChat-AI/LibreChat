@@ -22,6 +22,8 @@ function sourceFor(routes: Record<string, () => Response>) {
   const fetchFn = jest.fn(async (input: string) => {
     const url = String(input);
     const key = Object.keys(routes).find((fragment) => url.includes(fragment));
+    /** Unless a test says otherwise, no pull request carries the recorded commit. */
+    if (key == null && /\/commits\/[a-f0-9]+\/pulls\?/.test(url)) return json([]);
     if (key == null) throw new Error(`unexpected ${url}`);
     return routes[key]();
   });
@@ -372,7 +374,7 @@ describe('matching the recorded head', () => {
   it('accepts the pull request whose head is the recorded commit, without a comparison', async () => {
     const { source, fetchFn } = sourceFor({
       '/pulls?state=open': () => json([{ number: 7, state: 'open', head: { sha: recorded } }]),
-      '/pulls/7': () => json(pull()),
+      '/pulls/7': () => json(pull({ head: { sha: recorded } })),
       '/check-runs': () => json({ total_count: 0, check_runs: [] }),
     });
     await expect(findWith(source, recorded)).resolves.toMatchObject({ number: 7 });
@@ -420,7 +422,7 @@ describe('matching the recorded head', () => {
       '/pulls?state=open': () => json([{ number: 9, state: 'open', head: { sha } }]),
       '/pulls?state=closed': () => json([{ number: 7, state: 'closed', head: { sha: recorded } }]),
       '/compare/': compare('diverged'),
-      '/pulls/7': () => json(pull({ state: 'closed', merged: true })),
+      '/pulls/7': () => json(pull({ state: 'closed', merged: true, head: { sha: recorded } })),
       '/check-runs': () => json({ total_count: 0, check_runs: [] }),
     });
     await expect(findWith(source, recorded)).resolves.toMatchObject({
@@ -537,5 +539,91 @@ describe('check runs follow the current head of the pull request', () => {
     });
     await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
     expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/check-runs'))).toBe(false);
+  });
+});
+
+describe('a head that moves after the candidate was listed', () => {
+  const recorded = 'c'.repeat(40);
+  const moved = 'd'.repeat(40);
+  const base = {
+    '/pulls?state=open': () => json([{ number: 7, state: 'open', head: { sha: recorded } }]),
+    '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+  };
+  const run = (source: ReturnType<typeof createGitHubPullRequestSource>) =>
+    source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, token: 't' });
+
+  it('returns nothing when the detail head no longer contains the recorded commit', async () => {
+    const { source } = sourceFor({
+      ...base,
+      '/compare/': () => json({ status: 'diverged' }),
+      '/pulls/7': () => json(pull({ head: { sha: moved } })),
+    });
+    await expect(run(source)).resolves.toBeNull();
+  });
+
+  it('keeps the pull request when the moved head still builds on the recorded commit', async () => {
+    const { source, fetchFn } = sourceFor({
+      ...base,
+      '/compare/': () => json({ status: 'ahead' }),
+      '/pulls/7': () => json(pull({ head: { sha: moved } })),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 7 });
+    expect(
+      fetchFn.mock.calls.some(([url]) => String(url).includes(`/commits/${moved}/check-runs`)),
+    ).toBe(true);
+  });
+
+  it('does not compare again when the detail head is the one that matched', async () => {
+    const { source, fetchFn } = sourceFor({
+      ...base,
+      '/pulls/7': () => json(pull({ head: { sha: recorded } })),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 7 });
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/compare/'))).toBe(false);
+  });
+});
+
+describe('a pull request whose head is in a fork', () => {
+  const recorded = 'c'.repeat(40);
+  const forked = (overrides: Record<string, unknown> = {}) => ({
+    number: 12,
+    state: 'open',
+    head: { sha: recorded, ref: 'feat/x' },
+    ...overrides,
+  });
+  const routes = (found: unknown[], status = 200) => ({
+    '/pulls?state=open': () => json([]),
+    '/pulls?state=closed': () => json([]),
+    '/pulls?per_page': () => json(found, { status }),
+    '/pulls/12': () => json(pull({ number: 12, head: { sha: recorded } })),
+  });
+  const run = (source: ReturnType<typeof createGitHubPullRequestSource>) =>
+    source.find({ repo: 'o/r', branch: 'feat/x', head: recorded, token: 't' });
+
+  it('finds it through the recorded commit when the owner-scoped lists are empty', async () => {
+    const { source, fetchFn } = sourceFor({
+      ...routes([forked()]),
+      '/check-runs': () => json({ total_count: 0, check_runs: [] }),
+    });
+    await expect(run(source)).resolves.toMatchObject({ number: 12 });
+    expect(
+      fetchFn.mock.calls.some(([url]) => String(url).includes(`/commits/${recorded}/pulls`)),
+    ).toBe(true);
+  });
+
+  it('ignores a pull request for the commit that is on another branch', async () => {
+    const { source } = sourceFor(routes([forked({ head: { sha: recorded, ref: 'other' } })]));
+    await expect(run(source)).resolves.toBeNull();
+  });
+
+  it('treats a commit GitHub does not know as no pull request', async () => {
+    const { source } = sourceFor(routes([], 422));
+    await expect(run(source)).resolves.toBeNull();
+  });
+
+  it('does not ask without a recorded commit', async () => {
+    const { source, fetchFn } = sourceFor(routes([forked()]));
+    await expect(source.find({ repo: 'o/r', branch: 'feat/x', token: 't' })).resolves.toBeNull();
+    expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/commits/'))).toBe(false);
   });
 });

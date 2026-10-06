@@ -82,7 +82,8 @@ const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as 
 /** What a lane recorder needs to place and fence its writes, read once when its tool is created. */
 export type ConvoLaneContext = {
   subagentThread?: IConversation['subagentThread'] | null;
-  /** Counts the owner's moves and detaches of the conversation's workspace; 0 until the first. */
+  /** Counts the owner's moves and detaches of the workspace the report is written to (the visible
+   *  root for a subagent thread); 0 until the first. */
   codeAttachmentEpoch: number;
 };
 
@@ -3082,9 +3083,18 @@ export function createConversationMethods(
       'subagentThread +codeAttachmentEpoch',
     ).lean<Pick<IConversation, 'subagentThread' | 'codeAttachmentEpoch'>>();
     if (stored == null) return null;
+    const rootId = stored.subagentThread?.rootConversationId;
+    /** A thread's report is written to its visible root, so it is fenced by the root's epoch. */
+    const fenced =
+      rootId && rootId !== conversationId
+        ? await Conversation.findOne(
+            { user, conversationId: rootId, ...activeExpirationFilter<IConversation>() },
+            '+codeAttachmentEpoch',
+          ).lean<Pick<IConversation, 'codeAttachmentEpoch'>>()
+        : stored;
     return {
       subagentThread: stored.subagentThread ?? null,
-      codeAttachmentEpoch: stored.codeAttachmentEpoch ?? 0,
+      codeAttachmentEpoch: fenced?.codeAttachmentEpoch ?? 0,
     };
   }
 

@@ -228,7 +228,12 @@ export function createGitHubPullRequestSource({
     maxHeadComparisons: number;
   };
 
-  async function getJson(pathname: string, lookup: Lookup): Promise<unknown | null> {
+  async function getJson(
+    pathname: string,
+    lookup: Lookup,
+    /** Statuses that mean "nothing there" for this request, besides 404. */
+    absent: readonly number[] = [],
+  ): Promise<unknown | null> {
     let response: Response;
     try {
       response = await fetchFn(`${apiBase}${pathname}`, {
@@ -254,7 +259,7 @@ export function createGitHubPullRequestSource({
       throw new PullRequestSourceError('RATE_LIMITED', retryAfterMs(response));
     }
     /** A repository the token cannot see is indistinguishable from one without pull requests. */
-    if (response.status === 404) return null;
+    if (response.status === 404 || absent.includes(response.status)) return null;
     throw new PullRequestSourceError('UPSTREAM_ERROR');
   }
 
@@ -316,16 +321,20 @@ export function createGitHubPullRequestSource({
        * only when its head is that commit or builds on it. A commit GitHub no longer knows is no
        * match, and both the candidates listed and the comparisons made are bounded by config.
        */
-      const matches = async (candidate: ListItem): Promise<boolean> => {
-        if (recorded == null || candidate.sha === recorded) return true;
-        if (comparisons >= lookup.maxHeadComparisons) return false;
-        comparisons += 1;
-        const comparison = await getJson(`${base}/compare/${recorded}...${candidate.sha}`, lookup);
+      const contains = async (headSha: string): Promise<boolean> => {
+        if (recorded == null || headSha === recorded) return true;
+        const comparison = await getJson(`${base}/compare/${recorded}...${headSha}`, lookup);
         if (comparison == null) return false;
         if (!isRecord(comparison) || typeof comparison.status !== 'string') {
           throw new PullRequestSourceError('UPSTREAM_ERROR');
         }
         return CONTAINS_RECORDED_STATUSES.has(comparison.status);
+      };
+      const matches = async (candidate: ListItem): Promise<boolean> => {
+        if (recorded == null || candidate.sha === recorded) return true;
+        if (comparisons >= lookup.maxHeadComparisons) return false;
+        comparisons += 1;
+        return contains(candidate.sha);
       };
       const choose = async (candidates: ListItem[]): Promise<ListItem | null> => {
         for (const candidate of candidates) {
@@ -336,11 +345,31 @@ export function createGitHubPullRequestSource({
       /** Open first on its own, so closed history on a reused branch name cannot hide it. */
       const open = await listPulls('open', lookup.maxCandidatePullRequests);
       if (open === undefined) return null;
+      /**
+       * The head filter names the repository's own owner, so a pull request from a fork is not in
+       * these lists. The recorded commit finds it instead: GitHub lists the pull requests that
+       * carry a commit whatever fork they come from, and the branch name narrows them.
+       */
+      const forkCandidates = async (): Promise<ListItem[]> => {
+        if (recorded == null) return [];
+        const found = await getJson(
+          `${base}/commits/${recorded}/pulls?per_page=${lookup.maxCandidatePullRequests}`,
+          lookup,
+          [422],
+        );
+        if (found == null) return [];
+        if (!Array.isArray(found)) throw new PullRequestSourceError('UPSTREAM_ERROR');
+        return found
+          .filter((item) => isRecord(item) && isRecord(item.head) && item.head.ref === branch)
+          .map(parseListItem)
+          .sort((a, b) => Number(a.state !== 'open') - Number(b.state !== 'open'));
+      };
       const chosen =
         (await choose(open)) ??
         (await choose(
           (await listPulls('closed', recorded == null ? 1 : lookup.maxCandidatePullRequests)) ?? [],
-        ));
+        )) ??
+        (await choose(await forkCandidates()));
       if (chosen == null) return null;
 
       /**
@@ -351,6 +380,8 @@ export function createGitHubPullRequestSource({
       const detail = await getJson(`${base}/pulls/${chosen.number}`, lookup);
       if (detail == null) return null;
       const pull = parsePull(detail);
+      /** A push between the list and the detail can move the head off the recorded commit. */
+      if (pull.headSha !== chosen.sha && !(await contains(pull.headSha))) return null;
       const checks = await readCheckRuns(`${base}/commits/${pull.headSha}/check-runs`, lookup);
       return toConversationPullRequest(pull, checks.runs, checks.incomplete);
     },

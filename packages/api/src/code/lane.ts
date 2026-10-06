@@ -74,6 +74,7 @@ const reservationTails = new Map<string, Promise<unknown>>();
  * Resolves to undefined when there is nothing to record against.
  */
 export async function createLaneGitRecorder({
+  enabled,
   user,
   conversationId,
   repo,
@@ -82,6 +83,8 @@ export async function createLaneGitRecorder({
   reserveConvoLaneGitSeq,
   setConvoLaneGit,
 }: {
+  /** Whether the deployment shows pull requests; when it does not, nothing is read or recorded. */
+  enabled: boolean;
   user: string | undefined;
   conversationId: string | undefined;
   repo?: string;
@@ -90,7 +93,7 @@ export async function createLaneGitRecorder({
   reserveConvoLaneGitSeq: LaneSeqReserver;
   setConvoLaneGit: LaneGitWriter;
 }): Promise<((laneGit: WorkspaceLaneGit) => Promise<boolean>) | undefined> {
-  if (!user || !conversationId) return undefined;
+  if (!enabled || !user || !conversationId) return undefined;
   const safeRepo = isSafeRepo(repo) ? repo : undefined;
 
   let placed: Placement;

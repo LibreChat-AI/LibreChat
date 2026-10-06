@@ -11,8 +11,8 @@ const MIN_COOLDOWN_MS = 10_000;
 /** GitHub's primary limit resets within the hour; a larger hint is malformed and is capped. */
 const MAX_COOLDOWN_MS = 60 * 60_000;
 const DEFAULT_MAX_ENTRIES = 500;
-/** Credentials with a cache partition at once. Past it the least recently used partition goes. */
-const MAX_PARTITIONS = 256;
+/** Credentials with a cache partition at once unless configured; the least recently used goes. */
+const DEFAULT_MAX_PARTITIONS = 256;
 
 type Entry = { result: PullRequestLookupResult; expiresAt: number };
 
@@ -45,7 +45,7 @@ export function createPullRequestLookup({
   const cooldowns = new Map<string, number>();
   const rateLimited: PullRequestLookupResult = { ok: false, error: { code: 'RATE_LIMITED' } };
 
-  function partitionOf(scope: string): Map<string, Entry> {
+  function partitionOf(scope: string, capacity: number): Map<string, Entry> {
     let partition = partitions.get(scope);
     if (partition == null) {
       partition = new Map();
@@ -54,7 +54,7 @@ export function createPullRequestLookup({
     /** Recency of use orders the partitions, so the one idle longest is the one dropped. */
     partitions.delete(scope);
     partitions.set(scope, partition);
-    while (partitions.size > MAX_PARTITIONS) {
+    while (partitions.size > capacity) {
       const idle = partitions.keys().next();
       if (idle.done) break;
       partitions.delete(idle.value);
@@ -68,9 +68,10 @@ export function createPullRequestLookup({
     result: PullRequestLookupResult,
     ttlMs: number,
     capacity: number,
+    credentials: number,
   ): void {
     const lifetime = result.ok ? ttlMs : Math.min(ttlMs, FAILURE_TTL_MS);
-    const entries = partitionOf(scope);
+    const entries = partitionOf(scope, credentials);
     entries.delete(key);
     entries.set(key, { result, expiresAt: now() + lifetime });
     while (entries.size > capacity) {
@@ -88,7 +89,16 @@ export function createPullRequestLookup({
     }
   }
 
-  return async ({ repo, branch, head, token, ttlMs, limits, cacheMaxEntries }) => {
+  return async ({
+    repo,
+    branch,
+    head,
+    token,
+    ttlMs,
+    limits,
+    cacheMaxEntries,
+    cacheMaxCredentials,
+  }) => {
     const scope = scopeOf(token);
     /** Everything that changes the answer or how long it may be reused is part of the key. */
     const policy = [
@@ -124,7 +134,14 @@ export function createPullRequestLookup({
         }
         result = { ok: false, error: { code } };
       }
-      remember(scope, key, result, ttlMs, cacheMaxEntries ?? maxEntries);
+      remember(
+        scope,
+        key,
+        result,
+        ttlMs,
+        cacheMaxEntries ?? maxEntries,
+        cacheMaxCredentials ?? DEFAULT_MAX_PARTITIONS,
+      );
       return result;
     })().finally(() => inflight.delete(key));
     inflight.set(key, run);

@@ -10064,6 +10064,38 @@ describe('laneGit review hardening', () => {
     });
   });
 
+  describe('subagent thread epoch', () => {
+    const seedThread = async (rootId: string) => {
+      const conversationId = uuidv4();
+      await Conversation.collection.insertOne({
+        conversationId,
+        user: 'lane-user',
+        title: 'Thread',
+        endpoint: 'agents',
+        messages: [],
+        subagentThread: { rootConversationId: rootId, parentConversationId: rootId },
+      });
+      return conversationId;
+    };
+
+    it("reads the epoch of the visible root the report is written to, not the thread's own", async () => {
+      const rootId = await seedAttached([mac]);
+      await move(rootId, [team]);
+      const threadId = await seedThread(rootId);
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 1,
+        subagentThread: { rootConversationId: rootId },
+      });
+    });
+
+    it('reads zero when the root is gone, so the write is refused rather than guessed', async () => {
+      const threadId = await seedThread(uuidv4());
+      await expect(methods.getConvoLaneContext('lane-user', threadId)).resolves.toMatchObject({
+        codeAttachmentEpoch: 0,
+      });
+    });
+  });
+
   describe('lane context', () => {
     it('returns the subagent route and the epoch in one read, owner-scoped', async () => {
       const conversationId = await seedAttached([mac]);

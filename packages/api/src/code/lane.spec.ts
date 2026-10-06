@@ -11,8 +11,8 @@ jest.mock('@librechat/data-schemas', () => ({
 type RecorderOptions = Parameters<typeof createRecorder>[0];
 
 /** Places the recorder once, as the tool does, then reports through it in call order. */
-const createLaneGitRecorder = (options: RecorderOptions) => {
-  const ready = createRecorder(options);
+const createLaneGitRecorder = (options: Omit<RecorderOptions, 'enabled'>) => {
+  const ready = createRecorder({ enabled: true, ...options });
   return (laneGit: Parameters<NonNullable<Awaited<typeof ready>>>[0]) =>
     ready.then((record) => (record ? record(laneGit) : false));
 };
@@ -60,6 +60,7 @@ describe('createLaneGitRecorder', () => {
   ])('does not record with %s', async (_label, ids) => {
     const setConvoLaneGit = jest.fn();
     const record = await createRecorder({
+      enabled: true,
       ...ids,
       reserveConvoLaneGitSeq: counter(),
       setConvoLaneGit,
@@ -493,6 +494,7 @@ describe('createLaneGitRecorder target conversation', () => {
       .mockRejectedValue(new Error('mongodb://user:secret@host'));
     const setConvoLaneGit = jest.fn();
     const record = await createRecorder({
+      enabled: true,
       user: 'u1',
       conversationId: 'child-3',
       workspace,
@@ -512,6 +514,7 @@ describe('createLaneGitRecorder target conversation', () => {
     });
     const setConvoLaneGit = jest.fn();
     const record = await createRecorder({
+      enabled: true,
       user: 'u1',
       conversationId: 'child-4',
       getConvoLaneContext,
@@ -547,6 +550,7 @@ describe('createLaneGitRecorder placement timing', () => {
     );
     const reserve = counter();
     const pending = createRecorder({
+      enabled: true,
       user: 'u1',
       conversationId: 'slow-lookup',
       workspace,
@@ -567,6 +571,7 @@ describe('createLaneGitRecorder placement timing', () => {
     const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 3 });
     const setConvoLaneGit = jest.fn().mockResolvedValue(true);
     const record = await createRecorder({
+      enabled: true,
       user: 'u1',
       conversationId: 'epoch-1',
       workspace,
@@ -578,5 +583,25 @@ describe('createLaneGitRecorder placement timing', () => {
     await record?.({ branch: 'b', head });
     expect(setConvoLaneGit.mock.calls.map(([call]) => call.workspace.epoch)).toEqual([3, 3]);
     expect(getConvoLaneContext).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createLaneGitRecorder when pull requests are off', () => {
+  it('reads and records nothing', async () => {
+    const getConvoLaneContext = jest.fn();
+    const reserveConvoLaneGitSeq = counter();
+    const setConvoLaneGit = jest.fn();
+    const record = await createRecorder({
+      enabled: false,
+      user: 'u1',
+      conversationId: 'off-1',
+      workspace: { environmentId: 'code-mac', workspaceId: 'primary' },
+      getConvoLaneContext,
+      reserveConvoLaneGitSeq,
+      setConvoLaneGit,
+    });
+    expect(record).toBeUndefined();
+    expect(getConvoLaneContext).not.toHaveBeenCalled();
+    expect(reserveConvoLaneGitSeq).not.toHaveBeenCalled();
   });
 });

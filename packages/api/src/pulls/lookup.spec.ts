@@ -351,4 +351,27 @@ describe('cache capacity per credential', () => {
     await lookup({ ...input, token: 'first' });
     expect(find).toHaveBeenCalledTimes(before + 1);
   });
+
+  it('keeps more credentials when the caller configures a larger bound', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    const call = (token: string) => lookup({ ...input, token, cacheMaxCredentials: 300 });
+    await call('first');
+    for (let index = 0; index < 256; index += 1) await call(`other-${index}`);
+    const before = find.mock.calls.length;
+    await call('first');
+    expect(find).toHaveBeenCalledTimes(before);
+  });
+
+  it('drops credentials sooner when the caller configures a smaller bound', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    const call = (token: string) => lookup({ ...input, token, cacheMaxCredentials: 2 });
+    await call('a');
+    await call('b');
+    await call('c');
+    const before = find.mock.calls.length;
+    await call('a');
+    expect(find).toHaveBeenCalledTimes(before + 1);
+  });
 });

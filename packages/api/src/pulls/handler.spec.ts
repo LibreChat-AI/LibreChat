@@ -83,6 +83,7 @@ describe('createConversationPullRequestHandler', () => {
       head: null,
       ttlMs: 30_000,
       cacheMaxEntries: 500,
+      cacheMaxCredentials: 256,
       limits: {
         requestTimeoutMs: 10_000,
         lookupTimeoutMs: 30_000,
@@ -105,12 +106,14 @@ describe('createConversationPullRequestHandler', () => {
         maxCandidatePullRequests: 25,
         maxHeadComparisons: 6,
         cacheMaxEntries: 77,
+        cacheMaxCredentials: 12,
       },
     });
     await run();
     expect(lookup).toHaveBeenCalledWith(
       expect.objectContaining({
         cacheMaxEntries: 77,
+        cacheMaxCredentials: 12,
         limits: {
           requestTimeoutMs: 3_000,
           lookupTimeoutMs: 8_000,

@@ -104,6 +104,7 @@ export function createConversationPullRequestHandler(deps: {
         token,
         ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
         cacheMaxEntries: settings.cacheMaxEntries ?? 500,
+        cacheMaxCredentials: settings.cacheMaxCredentials ?? 256,
         limits: {
           requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
           lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,

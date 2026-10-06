@@ -1872,6 +1872,9 @@ export const agentsEndpointSchema = baseEndpointSchema
            *  distinct repository and branch combinations seen within one cache lifetime, or fresh
            *  results are evicted and GitHub is asked again. */
           cacheMaxEntries: z.number().int().min(10).max(100_000).optional().default(500),
+          /** Credentials whose results are cached at once; past it the one idle longest is dropped.
+           *  Raise it when many tenants each configure their own token. */
+          cacheMaxCredentials: z.number().int().min(1).max(10_000).optional().default(256),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */
           requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),
           /** Longest a whole lookup, every request together, may hold the header request. */
