@@ -39,8 +39,9 @@ for (const mode of MODES) {
       expect(resting).toBe(1);
 
       await email.fill('someone@example.com');
-      const lifted = await label.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a);
-      expect(lifted).toBeCloseTo(0.75, 2);
+      await expect
+        .poll(() => label.evaluate((el) => new DOMMatrix(getComputedStyle(el).transform).a))
+        .toBeCloseTo(0.75, 2);
 
       const password = page.locator('#password');
       await expect(password).toHaveAttribute('placeholder', ' ');
