@@ -1297,9 +1297,6 @@
   "client/src/components/Prompts/display/PromptTextCard.tsx": {
     "shadcn/no-restyle": {
       "count": 2
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Prompts/display/PromptVariables.tsx": {
@@ -1315,9 +1312,6 @@
   "client/src/components/Prompts/editor/PromptEditor.tsx": {
     "shadcn/no-restyle": {
       "count": 11
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Prompts/editor/VariablesDropdown.tsx": {
@@ -1359,9 +1353,6 @@
   "client/src/components/Prompts/forms/VariableForm.tsx": {
     "shadcn/no-restyle": {
       "count": 8
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     },
     "shadcn/require-static-classes": {
       "count": 2
@@ -1892,9 +1883,6 @@
   "client/src/components/Skills/display/SkillMarkdownRenderer.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Skills/display/SkillState.tsx": {
@@ -1910,9 +1898,6 @@
   "client/src/components/Skills/forms/SkillContentEditor.tsx": {
     "shadcn/no-restyle": {
       "count": 13
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Skills/forms/SkillForm.tsx": {

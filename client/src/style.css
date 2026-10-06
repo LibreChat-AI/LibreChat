@@ -1329,7 +1329,7 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
   --tw-text-opacity: 1;
   color: rgba(64, 65, 79, var(--tw-text-opacity));
 }
-.dark .dark\:prose-invert {
+.dark .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
   --tw-prose-lead: var(--tw-prose-invert-lead);
