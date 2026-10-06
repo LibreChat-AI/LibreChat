@@ -258,6 +258,13 @@ describe.each([
     );
   });
 
+  it('keeps the tooltip label and the error alert text at WCAG AA', () => {
+    const tooltip = belowAA(theme, ['rgb-text-tooltip'], ['rgb-surface-tooltip']);
+    const alert = belowAA(theme, ['rgb-status-error'], ['rgb-alert-error-fill']);
+
+    expect({ tooltip, alert }).toEqual({ tooltip: [], alert: [] });
+  });
+
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {
     expect(belowAA(theme, statusTextTokens, canvasSurfaces)).toEqual([]);
   });

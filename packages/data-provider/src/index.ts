@@ -11,6 +11,7 @@ export * from './file-config';
 export * from './resolve-llm-delivery-path';
 /* messages  */
 export * from './messages';
+export * from './previews';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
@@ -63,6 +64,7 @@ export type {
 } from './types/protection';
 export * from './types/subagents';
 export * from './types/background';
+export * from './types/pullRequest';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';

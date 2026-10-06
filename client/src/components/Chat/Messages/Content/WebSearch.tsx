@@ -16,9 +16,9 @@ import type {
   PartMetadata,
   AnswerBoxResult,
 } from 'librechat-data-provider';
+import { useToolExpansion, useToolContentRequest, toolPanelSpacingClassName } from './disclosure';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
-import { toolPanelSpacingClassName, useToolExpansion } from './disclosure';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
@@ -204,6 +204,7 @@ export default function WebSearch({
 
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
+  useToolContentRequest(showDetails);
   const [showSourceList, setShowSourceList] = useToolExpansion(sourceCount > 0);
   const { style: sourceExpandStyle, ref: sourceExpandRef } = useExpandCollapse(showSourceList);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showSourceList);
@@ -325,7 +326,7 @@ export default function WebSearch({
                       )}
                     </div>
                     {answerBox && (answerBox.title || answerText) && (
-                      <div className="border-border-light border-t pt-2">
+                      <div className="border-border-inset border-t pt-2">
                         {answerBox.title && (
                           <div className="text-text-primary text-sm font-medium">
                             {answerBox.title}

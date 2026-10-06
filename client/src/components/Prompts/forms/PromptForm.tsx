@@ -547,7 +547,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
                       isEditing={isEditing}
                       setIsEditing={(value) => canEdit && setIsEditing(value)}
                     />
-                    <PromptVariables promptText={promptText} />
+                    <PromptVariables promptText={promptText} inset />
                     <Description
                       initialValue={group.oneliner ?? ''}
                       onValueChange={canEdit ? handleUpdateOneliner : undefined}

@@ -121,7 +121,7 @@ const SteerPart = memo(function SteerPart({
     >
       <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
         <h2 className="sr-only">{label}</h2>
-        <div className="rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal flex max-w-full flex-col items-start gap-2 py-2.5">
+        <div className="rounded-theme-surface rounded-br-theme-control bg-surface-user-message px-theme-normal flex max-w-full flex-col items-start gap-2 py-2.5">
           <MessageQuotes quotes={quotes} />
           {(imageFiles.length > 0 || otherFiles.length > 0) && (
             <div className="flex w-full flex-wrap gap-2">

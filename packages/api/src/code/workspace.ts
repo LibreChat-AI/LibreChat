@@ -35,6 +35,7 @@ export const WORKSPACE_COMMAND_MAX_TIMEOUT_MS: number = 5 * 60_000;
 const DEFAULT_COMMAND_OUTPUT_BYTES = 256 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
 const MAX_COMMAND_SIGNAL_LENGTH = 32;
+const MAX_LANE_BRANCH_LENGTH = 256;
 const WORKSPACE_COMMAND_TRANSPORT_GRACE_MS = 5_000;
 /** Legacy per-request admission window, independent of the retry horizon. */
 const WORKSPACE_QUEUE_TIMEOUT_MS = 30_000;
@@ -100,7 +101,9 @@ const COMMAND_RESULT_KEYS = new Set([
   'stderr',
   'truncated',
   'timedOut',
+  'laneGit',
 ]);
+const LANE_GIT_KEYS = new Set(['branch', 'head']);
 const WRITE_RESULT_KEYS = new Set([
   'protocolVersion',
   'operation',
@@ -264,6 +267,14 @@ export interface WorkspaceExecuteCommandResult {
   stderr: string;
   truncated: boolean;
   timedOut: boolean;
+  /** Branch and head of the lane the command ran in. Absent means unknown, null means the lane
+   *  has no branch (detached) or no commit yet. */
+  laneGit?: WorkspaceLaneGit;
+}
+
+export interface WorkspaceLaneGit {
+  branch: string | null;
+  head: string | null;
 }
 
 export interface WorkspaceWriteResult {
@@ -661,6 +672,27 @@ function areValidEditMatches(
   );
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function isLaneGit(value: unknown): value is WorkspaceLaneGit {
+  if (!isRecord(value) || !hasOnlyKeys(value, LANE_GIT_KEYS)) return false;
+  const { branch, head } = value;
+  return (
+    (branch === null ||
+      (typeof branch === 'string' &&
+        branch.length >= 1 &&
+        branch.length <= MAX_LANE_BRANCH_LENGTH &&
+        !hasControlCharacter(branch))) &&
+    (head === null || (typeof head === 'string' && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(head)))
+  );
+}
+
 function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
@@ -916,6 +948,7 @@ function isValidResult(
     const outputLimit = request.maxOutputBytes ?? DEFAULT_COMMAND_OUTPUT_BYTES;
     return (
       hasOnlyKeys(value, COMMAND_RESULT_KEYS) &&
+      (!('laneGit' in value) || isLaneGit(value.laneGit)) &&
       typeof value.truncated === 'boolean' &&
       stdout != null &&
       stderr != null &&

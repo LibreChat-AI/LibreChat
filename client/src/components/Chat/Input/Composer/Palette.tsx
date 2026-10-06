@@ -1002,7 +1002,7 @@ function Palette({
                 )}
                 <span className="flex min-w-0 flex-1 flex-col justify-center">
                   <span className="truncate">{file.filename}</span>
-                  <span className="text-text-secondary truncate text-xs opacity-80">
+                  <span className="text-text-secondary truncate text-xs">
                     {formatFileDate(file)}
                   </span>
                 </span>
@@ -1087,9 +1087,7 @@ function Palette({
                 {/* The dot is color only, so the status is still said aloud. */}
                 {status != null && <span className="sr-only">{status.label}</span>}
                 {description != null && description !== '' && (
-                  <span className="text-text-secondary truncate text-xs opacity-80">
-                    {description}
-                  </span>
+                  <span className="text-text-secondary truncate text-xs">{description}</span>
                 )}
               </span>
             </button>
@@ -1305,7 +1303,7 @@ function Palette({
             getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover border-border-light bg-presentation z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border shadow-lg outline-hidden"
+            className="animate-composer-popover border-border-menu bg-surface-menu z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border shadow-lg outline-hidden"
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking

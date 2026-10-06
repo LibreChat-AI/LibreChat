@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import type { TBalanceResponse } from 'librechat-data-provider';
 import type { BalanceState } from '~/hooks/useBalanceSummary';
-import { summarizeBalance } from '~/utils';
+import { summarizeBalance } from '~/utils/balance';
 import Summary from '../Summary';
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');
@@ -62,6 +62,31 @@ describe('balance Summary', () => {
   it('says when a due refill will land rather than a past date', () => {
     render(<Summary state={success('percent', { lastRefill: '2026-06-01T00:00:00.000Z' })} />);
     expect(screen.getByTestId('balance-refill')).toHaveTextContent('Refills when you run out');
+  });
+
+  it('shows reset timing without exposing the allowance in percent mode', () => {
+    const { container } = render(<Summary state={success('percent', { refillMode: 'reset' })} />);
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent('Usage resets in 3 days');
+    expect(container).not.toHaveTextContent(/credits|5,000,000|3,100,000|\$/);
+  });
+
+  it('shows a due reset on the next request rather than waiting for exhaustion', () => {
+    render(
+      <Summary
+        state={success('percent', {
+          refillMode: 'reset',
+          lastRefill: '2026-06-01T00:00:00.000Z',
+        })}
+      />,
+    );
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent(
+      'Usage resets on your next request',
+    );
+  });
+
+  it('shows the reset target in currency mode', () => {
+    render(<Summary state={success('currency', { refillMode: 'reset' })} />);
+    expect(screen.getByTestId('balance-refill')).toHaveTextContent('Resets to $5.00 in 3 days');
   });
 
   it('flags an empty balance', () => {

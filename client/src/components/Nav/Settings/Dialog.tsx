@@ -74,13 +74,13 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                 /** Headless UI panel, so it bypasses the shared dialog primitives
                  *  and needs the contrast edge declared here. `shadow-2xl` is a
                  *  black shadow with nothing to separate against on a black canvas. */
-                'bg-surface-dialog high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none rounded-theme-surface flex max-h-[85vh] w-full flex-col overflow-hidden shadow-2xl',
+                'bg-surface-dialog border-border-light high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none rounded-theme-surface flex max-h-[85vh] w-full flex-col overflow-hidden border-(length:--theme-dialog-stroke) shadow-2xl',
                 !isSmallScreen && 'h-[85vh] w-[56.25rem] max-w-[calc(100vw-4rem)]',
               )}
             >
               <DialogTitle
                 as="div"
-                className="border-border-light flex items-center justify-between border-b p-5"
+                className="border-border-inset flex items-center justify-between border-b p-5"
               >
                 {inDetail ? (
                   <button

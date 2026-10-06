@@ -47,7 +47,7 @@ const FilterInput: React.ForwardRefExoticComponent<
           placeholder=" "
           aria-label={label}
           className={cn(
-            'peer border-border-light text-text-primary ring-offset-surface-primary placeholder:text-text-secondary flex h-9 w-full rounded-lg border bg-transparent px-3 py-2 text-sm focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
+            'peer border-border-control text-text-primary ring-offset-surface-primary placeholder:text-text-secondary flex h-9 w-full rounded-lg border bg-transparent px-3 py-2 text-sm focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50',
             disabledFillClasses,
             className,
           )}

@@ -276,7 +276,7 @@ export default function FilePreviewDialog({
               <button
                 type="button"
                 onClick={handleDownload}
-                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy inline-flex shrink-0 items-center gap-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle inline-flex shrink-0 items-center gap-1 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 aria-label={`${localize('com_ui_download')} ${fileName}`}
               >
                 <Download className="size-3" aria-hidden="true" />
