@@ -281,10 +281,14 @@ describe.each([
         [`rgb-status-${hue}-subtle` as keyof IThemeRGB],
       ),
     );
-    const held = name === 'clickhouse light' ? ['rgb-status-success ', 'rgb-status-info '] : [];
-    expect(failures.filter((failure) => !held.some((role) => failure.startsWith(role)))).toEqual(
-      [],
-    );
+    const held =
+      name === 'clickhouse light'
+        ? [
+            'rgb-status-success on rgb-status-success-subtle: 4.27:1',
+            'rgb-status-info on rgb-status-info-subtle: 3.32:1',
+          ]
+        : [];
+    expect(failures.filter((failure) => !held.includes(failure))).toEqual([]);
   });
 });
 
