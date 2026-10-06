@@ -10,6 +10,7 @@ import {
   THEME_CACHE_KEY,
   THEME_CACHE_VERSION,
 } from '../themeCache';
+import { THEME_CACHE_VERSION_PLACEHOLDER, injectThemeCacheVersion } from '../bootVersion';
 
 /** The inline shell script in `client/index.html`, run as the browser runs it. */
 const bootScript = (() => {
@@ -19,7 +20,7 @@ const bootScript = (() => {
   if (!script) {
     throw new Error('client/index.html has no deployment theme boot script');
   }
-  return script.replace('__THEME_CACHE_VERSION__', THEME_CACHE_VERSION);
+  return injectThemeCacheVersion(script);
 })();
 
 const acme: ThemeDefinition = {
@@ -103,7 +104,7 @@ describe('index.html deployment theme boot script', () => {
   );
 
   it('leaves the placeholder out of the script the build serves', () => {
-    expect(bootScript).not.toContain('__THEME_CACHE_VERSION__');
+    expect(bootScript).not.toContain(THEME_CACHE_VERSION_PLACEHOLDER);
     expect(bootScript).toContain(`'${THEME_CACHE_VERSION}'`);
   });
 

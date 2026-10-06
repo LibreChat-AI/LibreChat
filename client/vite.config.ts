@@ -4,11 +4,11 @@ import path from 'path';
 import { constants } from 'zlib';
 import { defineConfig } from 'vite';
 import { createRequire } from 'module';
-import { themeRoleFingerprint } from 'librechat-data-provider';
 import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
+import { injectThemeCacheVersion } from './src/Providers/bootVersion';
 
 const require = createRequire(import.meta.url);
 
@@ -465,7 +465,7 @@ export default defineConfig(({ command }) => ({
 export function themeCacheVersion(): Plugin {
   return {
     name: 'theme-cache-version',
-    transformIndexHtml: (html) => html.replace('__THEME_CACHE_VERSION__', themeRoleFingerprint()),
+    transformIndexHtml: injectThemeCacheVersion,
   };
 }
 
