@@ -179,6 +179,11 @@ export function toConversationPullRequest(
   };
 }
 
+/** GitHub asks for at least a minute when a secondary limit names no wait. */
+const SECONDARY_LIMIT_WAIT_MS = 60_000;
+const SECONDARY_LIMIT_MESSAGE = /secondary rate limit|abuse detection/i;
+const MAX_ERROR_BODY_CHARS = 2_000;
+
 function isRateLimited(response: Response): boolean {
   return (
     response.status === 429 ||
@@ -186,6 +191,20 @@ function isRateLimited(response: Response): boolean {
       (response.headers.get('x-ratelimit-remaining') === '0' ||
         response.headers.get('retry-after') != null))
   );
+}
+
+/**
+ * A secondary limit can arrive as a 403 with neither limiting header, told apart only by its
+ * message. The body is read bounded and only matched, never stored or returned.
+ */
+async function isSecondaryLimit(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+  try {
+    const text = (await response.text()).slice(0, MAX_ERROR_BODY_CHARS);
+    return SECONDARY_LIMIT_MESSAGE.test(text);
+  } catch {
+    return false;
+  }
 }
 
 /** How long GitHub asked callers to wait: `retry-after` seconds, else the quota reset time. */
@@ -257,6 +276,9 @@ export function createGitHubPullRequestSource({
     }
     if (isRateLimited(response)) {
       throw new PullRequestSourceError('RATE_LIMITED', retryAfterMs(response));
+    }
+    if (await isSecondaryLimit(response)) {
+      throw new PullRequestSourceError('RATE_LIMITED', SECONDARY_LIMIT_WAIT_MS);
     }
     /** A repository the token cannot see is indistinguishable from one without pull requests. */
     if (response.status === 404 || absent.includes(response.status)) return null;

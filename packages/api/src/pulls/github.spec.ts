@@ -645,3 +645,35 @@ describe('a pull request whose head is in a fork', () => {
     expect(fetchFn.mock.calls.some(([url]) => String(url).includes('/commits/'))).toBe(false);
   });
 });
+
+describe('a secondary rate limit without limiting headers', () => {
+  const secondary = () =>
+    new Response(
+      JSON.stringify({ message: 'You have exceeded a secondary rate limit. Please wait.' }),
+      { status: 403 },
+    );
+
+  it('is a rate limit that waits at least a minute', async () => {
+    const { source } = sourceFor({ '/pulls?state=open': secondary });
+    const error = await find(source).catch((caught) => caught);
+    expect(error.code).toBe('RATE_LIMITED');
+    expect(error.retryAfterMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('leaves an ordinary 403 as an upstream error', async () => {
+    const { source } = sourceFor({
+      '/pulls?state=open': () =>
+        new Response(JSON.stringify({ message: 'Resource not accessible by token' }), {
+          status: 403,
+        }),
+    });
+    await expect(find(source)).rejects.toMatchObject({ code: 'UPSTREAM_ERROR' });
+  });
+
+  it('does not put the response text in the error', async () => {
+    const { source } = sourceFor({ '/pulls?state=open': secondary });
+    const error = await find(source).catch((caught) => caught);
+    expect(JSON.stringify(error)).not.toContain('secondary rate limit');
+    expect(String(error.message)).not.toContain('secondary');
+  });
+});
