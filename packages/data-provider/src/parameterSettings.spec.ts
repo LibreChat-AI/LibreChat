@@ -1,3 +1,4 @@
+import type { TModelReasoning, TReasoningCapabilityMap } from './types';
 import type { SettingDefinition } from './generate';
 import {
   paramSettings,
@@ -6,9 +7,10 @@ import {
   isReasoningOverrideSupported,
   applyModelAwareDefaults,
   getModelReasoning,
+  effectiveModelReasoning,
+  isOpenRouterEffortSupported,
   resolveDropParamsUIKeys,
 } from './parameterSettings';
-import type { TModelReasoning, TReasoningCapabilityMap } from './types';
 import { BedrockProviders, EModelEndpoint, Providers } from './types';
 import { ReasoningEffort, ReasoningParameterFormat } from './schemas';
 
@@ -507,8 +509,9 @@ describe('per-model OpenRouter reasoning efforts', () => {
   const effortOptions = (
     modelReasoning?: TModelReasoning | null,
     endpoint: string = Providers.OPENROUTER,
+    forModel: string = model,
   ) =>
-    applyModelAwareDefaults(openRouterSettings, endpoint, model, undefined, modelReasoning).find(
+    applyModelAwareDefaults(openRouterSettings, endpoint, forModel, undefined, modelReasoning).find(
       (setting) => setting.key === 'reasoning_effort',
     )?.options;
   const target = (modelReasoning?: TModelReasoning | null) =>
@@ -557,6 +560,36 @@ describe('per-model OpenRouter reasoning efforts', () => {
     expect(effortOptions({ efforts: ['low'] }, EModelEndpoint.openAI)).toContain(
       ReasoningEffort.max,
     );
+  });
+
+  it('keeps a model family list inside the efforts the provider reports', () => {
+    expect(
+      effortOptions({ efforts: ['low', 'max'] }, Providers.OPENROUTER, 'x-ai/grok-4.7'),
+    ).toEqual([ReasoningEffort.unset, ReasoningEffort.low]);
+  });
+
+  it('keeps an administrator-defined reasoning_effort when the model reports no reasoning', () => {
+    const setting = resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model,
+      defaultParamsEndpoint: Providers.OPENROUTER,
+      paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+      modelReasoning: null,
+    });
+
+    expect(setting?.options).toEqual(['low', 'max']);
+  });
+
+  it('does not narrow an administrator-defined reasoning_effort', () => {
+    const setting = resolveReasoningSettingForTarget({
+      endpoint: EModelEndpoint.custom,
+      model,
+      defaultParamsEndpoint: Providers.OPENROUTER,
+      paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+      modelReasoning: { efforts: ['high'] },
+    });
+
+    expect(setting?.options).toEqual(['low', 'max']);
   });
 
   it('narrows the composer setting for an OpenRouter custom endpoint', () => {
@@ -608,5 +641,45 @@ describe('getModelReasoning', () => {
 
   it('reports no reasoning for a model the provider does not list', () => {
     expect(getModelReasoning(capabilities, 'OpenRouter', 'meta/unlisted')).toBeNull();
+  });
+});
+
+describe('isOpenRouterEffortSupported', () => {
+  it('accepts anything while the model capabilities are unknown', () => {
+    expect(isOpenRouterEffortSupported('max', undefined)).toBe(true);
+  });
+
+  it('always accepts Auto, which sends no effort', () => {
+    expect(isOpenRouterEffortSupported('', null)).toBe(true);
+    expect(isOpenRouterEffortSupported(ReasoningEffort.unset, { efforts: ['low'] })).toBe(true);
+  });
+
+  it('accepts a reported effort and rejects an unreported one', () => {
+    expect(isOpenRouterEffortSupported('low', { efforts: ['low', 'high'] })).toBe(true);
+    expect(isOpenRouterEffortSupported('max', { efforts: ['low', 'high'] })).toBe(false);
+  });
+
+  it('rejects none for a model whose reasoning is mandatory', () => {
+    expect(isOpenRouterEffortSupported('none', { efforts: ['none', 'low'], mandatory: true })).toBe(
+      false,
+    );
+  });
+
+  it('rejects any effort for a model the provider reports no reasoning for', () => {
+    expect(isOpenRouterEffortSupported('low', null)).toBe(false);
+  });
+});
+
+describe('effectiveModelReasoning', () => {
+  const reported = { efforts: ['low'] };
+
+  it('passes the reported efforts through without an explicit definition', () => {
+    expect(effectiveModelReasoning(reported, undefined)).toBe(reported);
+    expect(effectiveModelReasoning(null, [{ key: 'promptCache' }])).toBeNull();
+  });
+
+  it('ignores the reported efforts when the administrator defines reasoning_effort', () => {
+    expect(effectiveModelReasoning(reported, [{ key: 'reasoning_effort' }])).toBeUndefined();
+    expect(effectiveModelReasoning(null, [{ key: 'reasoning_effort' }])).toBeUndefined();
   });
 });

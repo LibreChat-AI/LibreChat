@@ -14,6 +14,7 @@ import type {
   AnthropicModelOptions,
   ProviderInitializeParams,
 } from '~/types';
+import { withSupportedEffort, getReasoningCapabilityDeps } from '~/endpoints/reasoning';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { resolveModelTransportTimeouts } from '~/agents/config';
 import { extractDefaultParams } from '~/endpoints/openai/llm';
@@ -317,7 +318,11 @@ export async function initializeCustom(
     ...customOptions,
   };
 
-  const modelOptions = { ...(model_parameters ?? {}), user: userId };
+  const modelOptions = await withSupportedEffort(
+    { ...(model_parameters ?? {}), user: userId },
+    endpointConfig as TEndpoint,
+    getReasoningCapabilityDeps(),
+  );
 
   let options: InitializeResultBase;
   if (endpointConfig.provider === EModelEndpoint.anthropic) {

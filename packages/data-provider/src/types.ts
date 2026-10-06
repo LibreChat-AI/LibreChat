@@ -735,6 +735,7 @@ export type TConfig = {
     includeReasoningContent?: boolean;
     includeReasoningHistory?: boolean;
     paramDefinitions?: Partial<SettingDefinition>[];
+    reasoningCatalogTimeoutMs?: number;
   };
 };
 

@@ -26,6 +26,16 @@ jest.mock('~/endpoints/models', () => ({
   fetchModels: jest.fn(),
 }));
 
+const mockWithSupportedEffort = jest.fn(
+  async (modelOptions: Record<string, unknown>, _endpoint?: unknown, _deps?: unknown) =>
+    modelOptions,
+);
+jest.mock('~/endpoints/reasoning', () => ({
+  withSupportedEffort: (modelOptions: Record<string, unknown>, endpoint: unknown, deps: unknown) =>
+    mockWithSupportedEffort(modelOptions, endpoint, deps),
+  getReasoningCapabilityDeps: () => ({}),
+}));
+
 jest.mock('~/cache', () => ({
   standardCache: jest.fn(() => ({ get: jest.fn().mockResolvedValue(null) })),
   tokenConfigCache: jest.fn(() => ({ get: jest.fn().mockResolvedValue(null) })),
@@ -723,5 +733,28 @@ describe('initializeCustom – native Anthropic provider', () => {
     );
     expect(options.useLegacyContent).toBe(true);
     expect(options.provider).toBeUndefined();
+  });
+});
+
+describe('initializeCustom: stored reasoning effort', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockWithSupportedEffort.mockImplementation(async (modelOptions) => modelOptions);
+  });
+
+  it('builds the client from the model options the effort check returns', async () => {
+    const params = createParams({ baseURL: 'https://openrouter.ai/api/v1' });
+    params.model_parameters = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
+    mockWithSupportedEffort.mockResolvedValueOnce({ model: 'openai/gpt-6.1-sol', user: 'user-1' });
+
+    await initializeCustom(params);
+
+    expect(mockWithSupportedEffort).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' }),
+      expect.objectContaining({ baseURL: 'https://openrouter.ai/api/v1' }),
+      expect.anything(),
+    );
+    const finalOptions = mockGetOpenAIConfig.mock.calls[0][1];
+    expect(finalOptions.modelOptions).not.toHaveProperty('reasoning_effort');
   });
 });

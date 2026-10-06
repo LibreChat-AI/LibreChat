@@ -48,6 +48,24 @@ describe('useModelReasoning', () => {
     expect(result.current.modelReasoning).toBeNull();
   });
 
+  it('ignores the provider efforts when the administrator defined reasoning_effort', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low'] } } };
+    const endpoints = {
+      OpenRouter: {
+        order: 0,
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          paramDefinitions: [{ key: 'reasoning_effort', options: ['low', 'max'] }],
+        },
+      },
+    } as TEndpointsConfig;
+
+    const { result } = renderHook(() => useModelReasoning(endpoints, 'OpenRouter', model));
+
+    expect(result.current.modelReasoning).toBeUndefined();
+  });
+
   it('does not request capabilities for an endpoint that is not OpenRouter', () => {
     const endpoints = {
       Local: { order: 0, type: 'custom', customParams: { defaultParamsEndpoint: 'custom' } },

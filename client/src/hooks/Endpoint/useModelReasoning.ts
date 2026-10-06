@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Providers, getModelReasoning } from 'librechat-data-provider';
+import { Providers, getModelReasoning, effectiveModelReasoning } from 'librechat-data-provider';
 import type { TEndpointsConfig, TModelReasoning } from 'librechat-data-provider';
 import { useReasoningCapabilitiesQuery } from '~/data-provider';
 
@@ -25,9 +25,16 @@ export function useModelReasoning(
 ): { modelReasoning: TModelReasoning | null | undefined } {
   const enabled = isOpenRouterEndpoint(endpointsConfig, endpoint);
   const { data: capabilities } = useReasoningCapabilitiesQuery({ enabled });
+  const paramDefinitions = endpointsConfig?.[endpoint]?.customParams?.paramDefinitions;
   const modelReasoning = useMemo(
-    () => (enabled && model ? getModelReasoning(capabilities, endpoint, model) : undefined),
-    [capabilities, enabled, endpoint, model],
+    () =>
+      enabled && model
+        ? effectiveModelReasoning(
+            getModelReasoning(capabilities, endpoint, model),
+            paramDefinitions,
+          )
+        : undefined,
+    [capabilities, enabled, endpoint, model, paramDefinitions],
   );
   return { modelReasoning };
 }

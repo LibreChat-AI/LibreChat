@@ -5,6 +5,7 @@ import {
   ReasoningParameterFormat,
   ThinkingLevel,
   type TReasoningOverride,
+  type TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import {
   parseReasoningOverrideRequest,
@@ -530,7 +531,7 @@ describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
   const model = 'openai/gpt-6.1-sol';
   const openRouterInput = (
     value: ReasoningEffort,
-    reasoningCapabilities: ReasoningOverrideInput['reasoningCapabilities'],
+    capabilities: TReasoningCapabilityMap,
   ): Partial<ReasoningOverrideInput> => ({
     reasoningOverride: { key: 'reasoning_effort', value },
     endpoint: 'OpenRouter',
@@ -547,7 +548,7 @@ describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
         },
       },
     },
-    reasoningCapabilities,
+    reasoningCapabilities: capabilities,
   });
 
   it('accepts an effort the model supports', async () => {
@@ -596,34 +597,42 @@ describe('resolveReasoningOverride: OpenRouter per-model efforts', () => {
 });
 
 describe('applyRequestReasoningOverride: capability loading', () => {
-  const makeReq = () => ({
-    body: {
-      endpointOption: { model_parameters: { model: 'gpt-5.1' }, agent: null },
-    },
+  const makeReq = (model = 'openai/gpt-6.1-sol') => ({
+    body: { endpointOption: { model_parameters: { model }, agent: null } },
   });
-  const input = {
-    endpoint: EModelEndpoint.openAI,
+  const openRouter = {
+    endpoint: 'OpenRouter',
+    endpointType: EModelEndpoint.custom,
     isAgent: false,
-    endpointsConfig: {},
+    endpointsConfig: {
+      OpenRouter: {
+        order: 0,
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: ReasoningParameterFormat.reasoningEffort,
+        },
+      },
+    },
   };
+  const effort = { key: 'reasoning_effort', value: ReasoningEffort.high };
 
   it('does not load capabilities for a request without an override', async () => {
     const load = jest.fn(async () => ({}));
 
     await applyRequestReasoningOverride(makeReq(), {
-      ...input,
+      ...openRouter,
       loadReasoningCapabilities: load,
     });
 
     expect(load).not.toHaveBeenCalled();
   });
 
-  it('loads capabilities once for a request that carries an override', async () => {
+  it('loads capabilities once for an OpenRouter effort override', async () => {
     const load = jest.fn(async () => ({}));
 
     const applied = await applyRequestReasoningOverride(makeReq(), {
-      ...input,
-      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      ...openRouter,
+      reasoningOverride: effort,
       loadReasoningCapabilities: load,
     });
 
@@ -631,11 +640,38 @@ describe('applyRequestReasoningOverride: capability loading', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it('does not load capabilities when the target is not OpenRouter', async () => {
+    const load = jest.fn(async () => ({}));
+
+    const applied = await applyRequestReasoningOverride(makeReq('gpt-5.1'), {
+      endpoint: EModelEndpoint.openAI,
+      isAgent: false,
+      endpointsConfig: {},
+      reasoningOverride: effort,
+      loadReasoningCapabilities: load,
+    });
+
+    expect(applied).toBe(true);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('does not load capabilities for an override that is not an effort', async () => {
+    const load = jest.fn(async () => ({}));
+
+    await applyRequestReasoningOverride(makeReq(), {
+      ...openRouter,
+      reasoningOverride: { key: 'thinkingBudget', value: 2048 },
+      loadReasoningCapabilities: load,
+    });
+
+    expect(load).not.toHaveBeenCalled();
+  });
+
   it('does not load capabilities for a malformed override', async () => {
     const load = jest.fn(async () => ({}));
 
     const applied = await applyRequestReasoningOverride(makeReq(), {
-      ...input,
+      ...openRouter,
       reasoningOverride: { key: 'nope', value: 1 },
       loadReasoningCapabilities: load,
     });

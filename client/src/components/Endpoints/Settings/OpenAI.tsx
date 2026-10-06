@@ -27,17 +27,21 @@ export default function OpenAISettings({
     if (!settings) {
       return undefined;
     }
+    /** A custom endpoint's own parameter set (e.g. OpenRouter's) decides its model-aware defaults. */
+    const paramsKey =
+      endpointsConfig?.[conversation?.endpoint ?? '']?.customParams?.defaultParamsEndpoint ??
+      endpointKey;
     return {
       col1: applyModelAwareDefaults(
         settings.col1,
-        endpointKey,
+        paramsKey,
         conversation?.model ?? undefined,
         endpointsConfig?.[conversation?.endpoint ?? '']?.responsesApiRouting,
         modelReasoning,
       ),
       col2: applyModelAwareDefaults(
         settings.col2,
-        endpointKey,
+        paramsKey,
         conversation?.model ?? undefined,
         endpointsConfig?.[conversation?.endpoint ?? '']?.responsesApiRouting,
         modelReasoning,

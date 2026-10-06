@@ -1,6 +1,6 @@
+import type { ResponsesApiRouting, TModelReasoning, TReasoningCapabilityMap } from './types';
 import type { SettingDefinition, SettingsConfiguration } from './generate';
 import type { TReasoningOverride } from './schemas';
-import type { ResponsesApiRouting, TModelReasoning, TReasoningCapabilityMap } from './types';
 import {
   Verbosity,
   ImageDetail,
@@ -1506,7 +1506,7 @@ export function resolveReasoningSettingForTarget({
     effectiveDefaultParamsEndpoint,
     model,
     undefined,
-    modelReasoning,
+    effectiveModelReasoning(modelReasoning, paramDefinitions),
   ).map((setting) => {
     const override = customSettingsByKey.get(setting.key);
     return override == null ? setting : { ...setting, ...override };
@@ -1565,6 +1565,41 @@ export function isReasoningOverrideSupported(
 }
 
 const knownReasoningEfforts: ReadonlySet<string> = new Set(Object.values(ReasoningEffort));
+
+/**
+ * Whether a stored or submitted effort is acceptable for a model, by the same
+ * rules {@link narrowOpenRouterEfforts} uses to build the control: anything is
+ * accepted while the capabilities are unknown, Auto always is (it sends no
+ * effort), and otherwise the effort must be one the provider reports, with
+ * `none` refused for a model whose reasoning is mandatory.
+ */
+export function isOpenRouterEffortSupported(
+  effort: string,
+  modelReasoning: TModelReasoning | null | undefined,
+): boolean {
+  if (modelReasoning === undefined || effort === ReasoningEffort.unset) {
+    return true;
+  }
+  if (modelReasoning === null) {
+    return false;
+  }
+  if (modelReasoning.mandatory === true && effort === ReasoningEffort.none) {
+    return false;
+  }
+  return modelReasoning.efforts.includes(effort);
+}
+
+/**
+ * An administrator-defined `reasoning_effort` is authoritative for its endpoint,
+ * so the provider's per-model efforts must not narrow or remove it.
+ */
+export function effectiveModelReasoning(
+  modelReasoning: TModelReasoning | null | undefined,
+  paramDefinitions?: Partial<SettingDefinition>[] | null,
+): TModelReasoning | null | undefined {
+  const explicit = paramDefinitions?.some((setting) => setting.key === 'reasoning_effort') === true;
+  return explicit ? undefined : modelReasoning;
+}
 
 /**
  * Looks one model up in an endpoint's provider-reported reasoning efforts, for
@@ -1631,11 +1666,10 @@ export function applyModelAwareDefaults(
   responsesApiRouting?: ResponsesApiRouting,
   modelReasoning?: TModelReasoning | null,
 ): SettingsConfiguration {
-  const scoped =
-    model && endpoint === Providers.OPENROUTER && modelReasoning !== undefined
-      ? narrowOpenRouterEfforts(settings, modelReasoning)
-      : settings;
-  return applyModelFamilyDefaults(scoped, endpoint, model, responsesApiRouting);
+  const resolved = applyModelFamilyDefaults(settings, endpoint, model, responsesApiRouting);
+  return model && endpoint === Providers.OPENROUTER && modelReasoning !== undefined
+    ? narrowOpenRouterEfforts(resolved, modelReasoning)
+    : resolved;
 }
 
 function applyModelFamilyDefaults(

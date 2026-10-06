@@ -383,6 +383,27 @@ describe('endpointSchema addParams validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a reasoning catalog timeout within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: 8000 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogTimeoutMs).toBe(8000);
+    }
+  });
+
+  it.each([0, 100, 60000, 1.5])('rejects reasoning catalog timeout %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts custom reasoning response key config', () => {
     const result = endpointSchema.safeParse({
       ...validEndpoint,

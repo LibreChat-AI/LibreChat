@@ -12,6 +12,7 @@ import {
   EModelEndpoint,
   getEndpointField,
   getModelReasoning,
+  effectiveModelReasoning,
   isAgentsEndpoint,
   parseCompactConvo,
   replaceSpecialVars,
@@ -547,12 +548,15 @@ export default function useChatFunctions({
               modelReasoning:
                 effectiveModel == null
                   ? undefined
-                  : getModelReasoning(
-                      queryClient.getQueryData<TReasoningCapabilityMap>([
-                        QueryKeys.reasoningCapabilities,
-                      ]),
-                      effectiveEndpoint,
-                      effectiveModel,
+                  : effectiveModelReasoning(
+                      getModelReasoning(
+                        queryClient.getQueryData<TReasoningCapabilityMap>([
+                          QueryKeys.reasoningCapabilities,
+                        ]),
+                        effectiveEndpoint,
+                        effectiveModel,
+                      ),
+                      customParams?.paramDefinitions,
                     ),
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {

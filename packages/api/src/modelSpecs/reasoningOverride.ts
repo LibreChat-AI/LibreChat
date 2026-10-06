@@ -1,5 +1,7 @@
 import {
+  Providers,
   getModelReasoning,
+  effectiveModelReasoning,
   isReasoningOverrideSupported,
   reasoningOverrideSchema,
   ReasoningParameterFormat,
@@ -127,7 +129,10 @@ export async function resolveReasoningOverride({
     modelReasoning:
       effectiveModel == null
         ? undefined
-        : getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
+        : effectiveModelReasoning(
+            getModelReasoning(reasoningCapabilities, customEndpointKey, effectiveModel),
+            customParams?.paramDefinitions,
+          ),
   });
 
   if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
@@ -160,6 +165,30 @@ export async function resolveReasoningOverride({
       ...(enablesThinking && { thinking: true }),
     },
   };
+}
+
+/**
+ * The provider's per-model efforts, loaded only when the override is an effort on an
+ * OpenRouter endpoint: any other target is validated without the catalog, so an
+ * unavailable OpenRouter never delays an unrelated request.
+ */
+async function loadCapabilitiesFor(
+  override: TReasoningOverride,
+  endpointOption: EndpointOption,
+  input: Omit<RequestReasoningOverrideInput, 'reasoningOverride' | 'loadReasoningCapabilities'>,
+  load?: () => Promise<TReasoningCapabilityMap>,
+): Promise<TReasoningCapabilityMap | undefined> {
+  if (load == null || override.key !== 'reasoning_effort') {
+    return undefined;
+  }
+  const loadedAgent = await endpointOption.agent;
+  const endpointKey = input.isAgent
+    ? (loadedAgent?.provider ?? endpointOption.endpointType ?? input.endpointType ?? input.endpoint)
+    : input.endpoint;
+  const paramsEndpoint =
+    input.endpointsConfig?.[endpointKey]?.customParams?.defaultParamsEndpoint ??
+    input.defaultParamsEndpoint;
+  return paramsEndpoint === Providers.OPENROUTER ? load() : undefined;
 }
 
 export type RequestReasoningOverrideInput = Omit<
@@ -242,7 +271,12 @@ export async function applyRequestReasoningOverride<T extends EndpointOption>(
   }
   const resolution = await resolveReasoningOverride({
     ...input,
-    reasoningCapabilities: await loadReasoningCapabilities?.(),
+    reasoningCapabilities: await loadCapabilitiesFor(
+      request.reasoningOverride,
+      req.body.endpointOption,
+      input,
+      loadReasoningCapabilities,
+    ),
     reasoningOverride: request.reasoningOverride,
     endpointOption: req.body.endpointOption,
     reasoningOverrideBase: req.reasoningOverrideBase,

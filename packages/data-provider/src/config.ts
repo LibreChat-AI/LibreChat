@@ -2071,6 +2071,11 @@ export const endpointSchema = baseEndpointSchema.merge(
         /** Also reconstructs `reasoning_content` from persisted history across turns (implies `includeReasoningContent`). */
         includeReasoningHistory: z.boolean().optional(),
         paramDefinitions: z.array(paramDefinitionSchema).optional(),
+        /**
+         * Milliseconds to wait for each request when reading an OpenRouter endpoint's
+         * per-model reasoning efforts. Omission keeps 5000.
+         */
+        reasoningCatalogTimeoutMs: z.number().int().min(500).max(30000).optional(),
       })
       .strict()
       .optional(),
