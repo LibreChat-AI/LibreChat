@@ -8,11 +8,19 @@ import store from '~/store';
 
 const mockSubmitAnswer = jest.fn();
 const mockSetAnswerText = jest.fn();
+const mockInsertTextAtCursor = jest.fn();
 let mockPopoverVisible = false;
 let mockCollapsed = false;
 let mockLiveActionId: string | null = null;
 let mockChecked: number[] = [];
 let mockAnswerText = '';
+
+/** jsdom has no execCommand, so the newline path is observed through the mock. */
+jest.mock('~/utils/textarea', () => ({
+  ...jest.requireActual('~/utils/textarea'),
+  forceResize: jest.fn(),
+  insertTextAtCursor: (...args: unknown[]) => mockInsertTextAtCursor(...args),
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => {
@@ -134,10 +142,11 @@ describe('AskUserQuestion', () => {
       expect(mockSubmitAnswer).toHaveBeenCalledTimes(2);
     });
 
-    test('plain Enter does not submit when Enter-to-send is off', () => {
+    test('plain Enter writes a newline instead of submitting when Enter-to-send is off', () => {
       render(liveTree(false));
       fireEvent.keyDown(answerBox(), { key: 'Enter' });
       expect(mockSubmitAnswer).not.toHaveBeenCalled();
+      expect(mockInsertTextAtCursor).toHaveBeenCalledWith(answerBox(), '\n');
     });
 
     test('Shift+Enter never submits', () => {

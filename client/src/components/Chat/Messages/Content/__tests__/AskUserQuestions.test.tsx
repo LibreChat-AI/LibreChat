@@ -255,14 +255,143 @@ describe('AskUserQuestions', () => {
     expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
   });
 
-  test('Enter moves focus to the next question', () => {
+  test('Enter moves focus into the next question, ready to answer', () => {
     renderBatch('ask-enter-focus');
     const first = screen.getByRole('textbox', { name: /Where should this run/ });
     fireEvent.change(first, { target: { value: 'Locally' } });
     fireEvent.keyDown(first, { key: 'Enter' });
 
     expect(isShown('Which time window?')).toBe(true);
-    expect(screen.getByRole('group', { name: 'Which time window?' })).toHaveFocus();
+    expect(screen.getByRole('textbox', { name: /Which time window/ })).toHaveFocus();
+  });
+
+  test('Ctrl/Cmd+Enter confirm like Enter; Shift+Enter never does', () => {
+    renderBatch('ask-modifiers');
+    const first = screen.getByRole('textbox', { name: /Where should this run/ });
+    fireEvent.change(first, { target: { value: 'Locally' } });
+
+    fireEvent.keyDown(first, { key: 'Enter', shiftKey: true });
+    expect(isShown('Where should this run?')).toBe(true);
+
+    fireEvent.keyDown(first, { key: 'Enter', ctrlKey: true });
+    expect(isShown('Which time window?')).toBe(true);
+
+    const last = screen.getByRole('textbox', { name: /Which time window/ });
+    fireEvent.change(last, { target: { value: 'Today' } });
+    fireEvent.keyDown(last, { key: 'Enter', metaKey: true });
+    expect(mockSubmitAskAnswer).toHaveBeenCalledTimes(1);
+  });
+
+  describe('focus on arrival', () => {
+    afterEach(() => {
+      document.getElementById('prompt-textarea')?.remove();
+    });
+
+    test('lands on the first option when the question offers choices', () => {
+      renderBatch('ask-focus-option');
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
+    test('lands in the answer field when the question has no choices', () => {
+      renderBatch('ask-focus-field', [{ id: 'window', question: 'Which time window?' }]);
+      expect(screen.getByRole('textbox', { name: /Which time window/ })).toHaveFocus();
+    });
+
+    test('takes focus from the empty composer that sent the turn', () => {
+      const composer = document.createElement('textarea');
+      composer.id = 'prompt-textarea';
+      document.body.appendChild(composer);
+      composer.focus();
+
+      renderBatch('ask-focus-composer');
+      expect(screen.getByRole('button', { name: /Staging/ })).toHaveFocus();
+    });
+
+    test('leaves focus alone while the user is drafting in the composer', () => {
+      const composer = document.createElement('textarea');
+      composer.id = 'prompt-textarea';
+      composer.value = 'half a thought';
+      document.body.appendChild(composer);
+      composer.focus();
+
+      renderBatch('ask-focus-draft');
+      expect(composer).toHaveFocus();
+    });
+  });
+
+  describe('option keyboard', () => {
+    /** A keyboard Enter on a button is its click; jsdom does not synthesize
+     *  that, so the click fires only when the handler leaves Enter alone. */
+    const pressEnter = (option: HTMLElement) => {
+      if (fireEvent.keyDown(option, { key: 'Enter' })) {
+        fireEvent.click(option);
+      }
+    };
+
+    test('Enter on an option mid-batch picks it and moves to the next question', () => {
+      renderBatch('ask-option-enter');
+
+      pressEnter(screen.getByRole('button', { name: /Production/ }));
+
+      expect(isShown('Which time window?')).toBe(true);
+      expect(screen.getByRole('textbox', { name: /Which time window/ })).toHaveFocus();
+    });
+
+    test('on the last question, Enter picks an option and a second Enter submits', () => {
+      renderBatch('ask-option-submit', [
+        { id: 'window', question: 'Which time window?' },
+        {
+          id: 'environment',
+          question: 'Where should this run?',
+          options: [
+            { label: 'Staging', value: 'staging' },
+            { label: 'Production', value: 'production' },
+          ],
+        },
+      ]);
+      fireEvent.change(screen.getByRole('textbox', { name: /Which time window/ }), {
+        target: { value: 'Today' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+      const staging = screen.getByRole('button', { name: /Staging/ });
+      pressEnter(staging);
+      expect(staging).toHaveAttribute('aria-pressed', 'true');
+      expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
+
+      pressEnter(staging);
+      expect(mockSubmitAskAnswer).toHaveBeenCalledWith(
+        'ask-option-submit',
+        { window: 'Today', environment: 'staging' },
+        expect.objectContaining({ onSuccess: expect.any(Function) }),
+      );
+    });
+
+    test('Enter on a multi-select option toggles it and never submits', () => {
+      renderBatch('ask-option-multi', [
+        {
+          id: 'regions',
+          question: 'Which regions?',
+          multiSelect: true,
+          options: [
+            { label: 'us-east', value: 'us-east' },
+            { label: 'eu-west', value: 'eu-west' },
+          ],
+        },
+      ]);
+      const usEast = screen.getByRole('checkbox', { name: /us-east/ });
+      fireEvent.click(usEast);
+
+      pressEnter(usEast);
+      pressEnter(screen.getByRole('checkbox', { name: /eu-west/ }));
+
+      expect(usEast).toHaveAttribute('aria-checked', 'false');
+      expect(screen.getByRole('checkbox', { name: /eu-west/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      );
+      expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
+    });
   });
 
   test('retains partial answers and the current step across surface remounts', () => {
