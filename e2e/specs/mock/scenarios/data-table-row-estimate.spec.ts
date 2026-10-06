@@ -26,14 +26,23 @@ async function compactRowHeight(page: Page): Promise<number> {
   }, COMPACT_CELL_CLASSES);
 }
 
+/** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+const CASES = [
+  {
+    title: 'a compact row measures the estimate below sm @scenario:data-table-row-estimate-375',
+    width: 375,
+    expected: 24,
+  },
+  {
+    title: 'a compact row measures the estimate from sm up @scenario:data-table-row-estimate-1024',
+    width: 1024,
+    expected: 36,
+  },
+] as const;
+
 test.describe('DataTable compact row estimate', () => {
-  for (const [name, width, expected] of [
-    ['below sm', 375, 24],
-    ['from sm up', 1024, 36],
-  ] as const) {
-    test(`a compact row measures the estimate ${name} @scenario:data-table-row-estimate-${width}`, async ({
-      page,
-    }) => {
+  for (const { title, width, expected } of CASES) {
+    test(title, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
       await page.goto(NEW_CHAT_PATH, { timeout: 15000 });
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible({
