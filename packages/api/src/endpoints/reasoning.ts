@@ -171,6 +171,7 @@ async function readCatalog(
    *  ordinary object would set its prototype instead of creating an entry. */
   const models: CatalogModels = Object.create(null);
   const origin = new URL(baseURL).origin;
+  const configuredQuery = new URL(baseURL).searchParams;
   const seen = new Set<string>();
   let url: string | null = catalogURL(baseURL);
 
@@ -210,6 +211,13 @@ async function readCatalog(
     const nextURL: URL = new URL(next, url);
     if (nextURL.origin !== origin) {
       return undefined;
+    }
+    /** A next link carries pagination, not the query the administrator configured on the base URL
+     *  (a signature, a key): each page needs it, and a parameter the link sets itself wins. */
+    for (const [name, value] of configuredQuery) {
+      if (!nextURL.searchParams.has(name)) {
+        nextURL.searchParams.append(name, value);
+      }
     }
     url = nextURL.toString();
   }

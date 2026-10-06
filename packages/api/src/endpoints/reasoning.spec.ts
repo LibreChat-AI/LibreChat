@@ -1401,3 +1401,57 @@ describe('model ids that name Object.prototype members', () => {
     await expect(withSupportedEffort(stored, endpoint(), deps)).resolves.toBe(stored);
   });
 });
+
+describe('configured query parameters across catalog pages', () => {
+  const base = 'https://openrouter.ai/api/v1?signature=abc';
+  const page = (id: string, next: string | null) => ({
+    data: [{ id, reasoning: { supported_efforts: ['low'] } }],
+    links: { next },
+  });
+  const urlsFor = async (next: string) => {
+    const { deps, fetchSpy } = makeDeps(async ({ url }) =>
+      url.includes('offset=100') ? page('b/second', null) : page('a/first', next),
+    );
+    const result = await loadReasoningCapabilities([endpoint({ baseURL: base })], deps);
+    return { result, urls: fetchSpy.mock.calls.map(([params]) => params.url) };
+  };
+
+  it('keeps the configured query on a next link that has its own query', async () => {
+    const { result, urls } = await urlsFor('/api/v1/models?offset=100&limit=100');
+
+    expect(urls[1]).toBe('https://openrouter.ai/api/v1/models?offset=100&limit=100&signature=abc');
+    expect(result.unavailable).toEqual([]);
+  });
+
+  it('keeps it on a next link that is only a query', async () => {
+    const { urls } = await urlsFor('?offset=100');
+
+    expect(new URL(urls[1]).searchParams.get('signature')).toBe('abc');
+  });
+
+  it('lets a pagination parameter override a configured one of the same name', async () => {
+    const { deps, fetchSpy } = makeDeps(async ({ url }) =>
+      url.includes('offset=100')
+        ? page('b/second', null)
+        : page('a/first', '/api/v1/models?offset=100&signature=server'),
+    );
+
+    await loadReasoningCapabilities([endpoint({ baseURL: base })], deps);
+
+    expect(new URL(fetchSpy.mock.calls[1][0].url).searchParams.getAll('signature')).toEqual([
+      'server',
+    ]);
+  });
+
+  it('adds nothing when the base URL has no query', async () => {
+    const { deps, fetchSpy } = makeDeps(async ({ url }) =>
+      url.includes('offset=100')
+        ? page('b/second', null)
+        : page('a/first', '/api/v1/models?offset=100'),
+    );
+
+    await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(fetchSpy.mock.calls[1][0].url).toBe('https://openrouter.ai/api/v1/models?offset=100');
+  });
+});

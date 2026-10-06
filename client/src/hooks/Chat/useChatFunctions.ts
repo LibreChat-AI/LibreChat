@@ -537,13 +537,21 @@ export default function useChatFunctions({
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
       const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
-      /* A failed or running refresh leaves the previous data cached, but the efforts are then
-         unknown, as they are in the editors. */
+      /* A failed or running refresh leaves the previous data cached, and so does an entry that is
+         past its lifetime while its refetch has not started (a throttled background tab): the
+         efforts are unknown in all three, as they are in the editors. */
       const capabilitiesState = queryClient.getQueryState(capabilitiesKey);
+      const cachedCapabilities =
+        queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey);
+      const capabilitiesExpired =
+        cachedCapabilities != null &&
+        Date.now() - (capabilitiesState?.dataUpdatedAt ?? 0) >= cachedCapabilities.expiresInMs;
       const capabilitiesData =
-        capabilitiesState?.status === 'error' || capabilitiesState?.fetchStatus === 'fetching'
+        capabilitiesState?.status === 'error' ||
+        capabilitiesState?.fetchStatus === 'fetching' ||
+        capabilitiesExpired
           ? undefined
-          : queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey)?.capabilities;
+          : cachedCapabilities?.capabilities;
       /* Auto sends no effort, so no catalog can refuse it and a restored one is always kept. */
       const clearsEffort =
         reasoningOverride.key === 'reasoning_effort' &&
