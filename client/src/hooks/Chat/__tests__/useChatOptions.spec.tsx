@@ -14,7 +14,10 @@ const mockState = {
   route: 'convo-1' as string | undefined,
   activeJobs: [] as string[],
   startupConfig: undefined as Record<string, unknown> | undefined,
+  projects: undefined as { _id: string; name: string }[] | undefined,
+  projectsError: false,
 };
+const mockProjectsConfig: { current?: { enabled?: boolean } } = {};
 const mockClient: { current: QueryClient | null } = { current: null };
 const mockCloseMenu = jest.fn();
 const mockPin = jest.fn();
@@ -52,9 +55,16 @@ jest.mock('~/data-provider', () => ({
   useArchiveConvoMutation: () => ({ mutate: mockArchive }),
   useAssignConversationToProjectMutation: () => ({ mutate: mockAssign }),
   useDuplicateConversationMutation: () => ({ mutate: mockDuplicate }),
-}));
-jest.mock('~/components/Conversations/ConvoOptions', () => ({
-  ProjectButton: () => <div data-testid="project-dialog" />,
+  useProjectsInfiniteQuery: (_params: unknown, config?: { enabled?: boolean }) => {
+    mockProjectsConfig.current = config;
+    return {
+      data: mockState.projects && { pages: [{ projects: mockState.projects }] },
+      isError: mockState.projectsError,
+      hasNextPage: false,
+      fetchNextPage: jest.fn(),
+      isFetchingNextPage: false,
+    };
+  },
 }));
 const mockDeleteProps: {
   current?: {
@@ -107,6 +117,9 @@ describe('useChatOptions', () => {
     mockState.route = 'convo-1';
     mockState.activeJobs = [];
     mockState.startupConfig = undefined;
+    mockState.projects = undefined;
+    mockState.projectsError = false;
+    mockProjectsConfig.current = undefined;
   });
 
   it('lists share and export first, then the sidebar actions for the open chat', () => {
@@ -133,7 +146,7 @@ describe('useChatOptions', () => {
   it('keeps the dialog-opening items open and anchored so their dialogs can restore focus', () => {
     const { result } = setup();
 
-    for (const label of ['com_ui_rename', 'com_ui_change_project', 'com_ui_delete']) {
+    for (const label of ['com_ui_rename', 'com_ui_delete']) {
       const item = find(result.current.items, label);
       expect(item.hideOnClick).toBe(false);
       expect(item.ref).toBeDefined();
@@ -149,13 +162,81 @@ describe('useChatOptions', () => {
     );
   });
 
-  it('offers removal from a project only when the chat is in one', () => {
-    const { result, rerender } = setup();
-    expect(labels(result.current.items)).not.toContain('com_ui_remove_from_project');
-
+  it('folds project removal into the change project submenu instead of a top-level item', () => {
     mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-1' };
+    const { result } = setup();
+
+    expect(labels(result.current.items)).not.toContain('com_ui_remove_from_project');
+    expect(labels(find(result.current.items, 'com_ui_change_project').subItems ?? [])).toContain(
+      'com_ui_remove_from_project',
+    );
+  });
+
+  it('offers removal inside the submenu only when the chat is in a project', () => {
+    const { result } = setup();
+
+    expect(
+      labels(find(result.current.items, 'com_ui_change_project').subItems ?? []),
+    ).not.toContain('com_ui_remove_from_project');
+  });
+
+  it('lists every project in the submenu and marks the current one', () => {
+    mockState.projects = [
+      { _id: 'project-1', name: 'Alpha' },
+      { _id: 'project-2', name: 'Beta' },
+    ];
+    mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-2' };
+    const { result } = setup();
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    expect(find(subItems, 'Alpha').ariaChecked).toBe(false);
+    expect(find(subItems, 'Beta')).toMatchObject({ ariaChecked: true, disabled: true });
+  });
+
+  it('assigns the picked project and mirrors it into the open chat', () => {
+    mockState.projects = [{ _id: 'project-1', name: 'Alpha' }];
+    const { result } = setup();
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+
+    act(() => find(subItems, 'Alpha').onClick?.({} as never));
+    act(() => mockAssign.mock.calls[0][1].onSuccess());
+
+    expect(mockAssign.mock.calls[0][0]).toEqual({
+      conversationId: 'convo-1',
+      projectId: 'project-1',
+    });
+    const [updater] = mockSetConversation.mock.calls[0];
+    expect(updater({ conversationId: 'convo-1' })).toEqual({
+      conversationId: 'convo-1',
+      chatProjectId: 'project-1',
+    });
+  });
+
+  it('fetches the project list only while the menu is open', () => {
+    const { rerender } = renderHook(
+      ({ isMenuOpen }) =>
+        useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, isMenuOpen }),
+      { initialProps: { isMenuOpen: false } },
+    );
+    expect(mockProjectsConfig.current?.enabled).toBe(false);
+
+    rerender({ isMenuOpen: true });
+    expect(mockProjectsConfig.current?.enabled).toBe(true);
+  });
+
+  it('shows a loading row, then an empty row, then a failed row in the submenu', () => {
+    const { result, rerender } = setup();
+    const rows = () => find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    expect(rows()[0]).toMatchObject({ label: 'com_ui_loading', disabled: true });
+
+    mockState.projects = [];
     rerender();
-    expect(labels(result.current.items)).toContain('com_ui_remove_from_project');
+    expect(rows()[0]).toMatchObject({ label: 'com_ui_no_projects', disabled: true });
+
+    mockState.projects = undefined;
+    mockState.projectsError = true;
+    rerender();
+    expect(rows()[0]).toMatchObject({ label: 'com_ui_projects_load_error', disabled: true });
   });
 
   it('pins an unpinned chat', () => {
@@ -198,7 +279,8 @@ describe('useChatOptions', () => {
     mockState.cached = { conversationId: 'convo-1', chatProjectId: 'project-1' };
     const { result } = setup();
 
-    act(() => find(result.current.items, 'com_ui_remove_from_project').onClick?.({} as never));
+    const subItems = find(result.current.items, 'com_ui_change_project').subItems ?? [];
+    act(() => find(subItems, 'com_ui_remove_from_project').onClick?.({} as never));
     act(() => mockAssign.mock.calls[0][1].onSuccess());
 
     expect(mockAssign.mock.calls[0][0]).toEqual({ conversationId: 'convo-1', projectId: null });
@@ -276,10 +358,6 @@ describe('useChatOptions', () => {
       ariaHasPopup: 'dialog',
       ariaControls: 'rename-conversation-dialog',
     });
-    expect(find(result.current.items, 'com_ui_change_project')).toMatchObject({
-      ariaHasPopup: 'dialog',
-      ariaControls: 'project-conversation-dialog',
-    });
     expect(find(result.current.items, 'com_ui_delete')).toMatchObject({
       ariaHasPopup: 'dialog',
       ariaControls: 'delete-conversation-dialog',
@@ -311,20 +389,6 @@ describe('useChatOptions', () => {
     render(<>{result.current.dialogs}</>);
 
     expect(screen.queryByTestId('delete-dialog')).not.toBeInTheDocument();
-  });
-
-  it('renders no mutating dialog once the thread turns read-only', () => {
-    let readOnly = false;
-    const { result, rerender } = renderHook(() =>
-      useChatOptions({ isSharedButtonEnabled: true, closeMenu: mockCloseMenu, readOnly }),
-    );
-
-    act(() => find(result.current.items, 'com_ui_change_project').onClick?.({} as never));
-    readOnly = true;
-    rerender();
-    render(<>{result.current.dialogs}</>);
-
-    expect(screen.queryByTestId('project-dialog')).not.toBeInTheDocument();
   });
 
   it('tells the delete dialog which chat is open when the request settles', () => {

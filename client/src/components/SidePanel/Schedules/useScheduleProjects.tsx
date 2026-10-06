@@ -4,8 +4,8 @@ import type { TChatProject } from 'librechat-data-provider';
 import type { OptionWithIcon } from '~/common';
 import { useProjectsInfiniteQuery } from '~/data-provider';
 
-/** Shared with `ProjectButton`, so every project surface reads one cached page set
- *  instead of each card and dialog opening its own list. */
+/** Shared with `useProjectMenuItem`, so every project surface reads one cached page set
+ *  instead of each card and menu opening its own list. */
 const PROJECT_LIST_PARAMS = {
   sortBy: 'name',
   sortDirection: 'asc',

@@ -62,6 +62,7 @@ export default function HeaderMenu({
   const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
     readOnly,
+    isMenuOpen: isOpen,
     closeMenu: () => setIsOpen(false),
   });
 

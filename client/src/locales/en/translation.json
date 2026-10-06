@@ -2303,6 +2303,7 @@
   "com_ui_project_update_error": "Failed to update project assignment",
   "com_ui_project_updated": "Project assignment updated",
   "com_ui_projects": "Projects",
+  "com_ui_projects_load_error": "Could not load projects",
   "com_ui_prompt": "Prompt",
   "com_ui_prompt_category_selector_aria": "Prompt's category selector",
   "com_ui_prompt_delete_confirm": "Are you sure you want to delete the '{{0}}' prompt?",

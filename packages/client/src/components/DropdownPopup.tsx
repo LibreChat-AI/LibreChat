@@ -36,7 +36,10 @@ type MenuProps = Omit<
   DropdownProps,
   'trigger' | 'isOpen' | 'setIsOpen' | 'focusLoop' | 'mountByState'
 > &
-  Ariakit.MenuProps;
+  Ariakit.MenuProps & {
+    /** Closes the outermost menu, so a pick made inside a submenu does not leave its parent open. */
+    hideAll?: () => void;
+  };
 
 const DropdownPopup: React.FC<DropdownProps> = ({
   trigger,
@@ -53,18 +56,19 @@ const DropdownPopup: React.FC<DropdownProps> = ({
       menu.setAutoFocusOnShow(true);
     }
   }, [isOpen, autoFocusOnShow, menu]);
+  const hideAll = () => menu.hide();
   if (mountByState) {
     return (
       <Ariakit.MenuProvider store={menu}>
         {trigger}
-        {isOpen && <Menu {...props} autoFocusOnShow={autoFocusOnShow} />}
+        {isOpen && <Menu {...props} hideAll={hideAll} autoFocusOnShow={autoFocusOnShow} />}
       </Ariakit.MenuProvider>
     );
   }
   return (
     <Ariakit.MenuProvider store={menu}>
       {trigger}
-      <Menu {...props} autoFocusOnShow={autoFocusOnShow} />
+      <Menu {...props} hideAll={hideAll} autoFocusOnShow={autoFocusOnShow} />
     </Ariakit.MenuProvider>
   );
 };
@@ -84,10 +88,10 @@ const Menu: React.FC<MenuProps> = ({
   finalFocus,
   unmountOnHide,
   preserveTabOrder,
+  hideAll,
   style,
   ...props
 }) => {
-  const menuStore = Ariakit.useMenuStore();
   const menu = Ariakit.useMenuContext();
   const zIndex = usePopoverZIndex();
   return (
@@ -124,43 +128,15 @@ const Menu: React.FC<MenuProps> = ({
           }
           if (subItems && subItems.length > 0) {
             return (
-              <Ariakit.MenuProvider
-                store={menuStore}
-                key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}-provider`}
-              >
-                <Ariakit.MenuButton
-                  className={cn(
-                    'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
-                    disabledInkClasses,
-                    itemClassName,
-                  )}
-                  disabled={item.disabled}
-                  id={item.id}
-                  render={item.render}
-                  ref={item.ref}
-                  // hideOnClick={item.hideOnClick}
-                >
-                  <span className="flex items-center gap-2">
-                    {item.icon != null && (
-                      <span
-                        className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
-                        aria-hidden="true"
-                      >
-                        {item.icon}
-                      </span>
-                    )}
-                    {item.label}
-                  </span>
-                  <Ariakit.MenuButtonArrow className="stroke-1 text-base opacity-75" />
-                </Ariakit.MenuButton>
-                <Menu
-                  items={subItems}
-                  menuId={`${menuId}-${index}`}
-                  key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
-                  gutter={12}
-                  portal={true}
-                />
-              </Ariakit.MenuProvider>
+              <SubMenuItem
+                key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
+                item={item}
+                subItems={subItems}
+                menuId={`${menuId}-${index}`}
+                hideAll={hideAll ?? (() => menu?.hide())}
+                iconClassName={iconClassName}
+                itemClassName={itemClassName}
+              />
             );
           }
 
@@ -191,6 +167,10 @@ const Menu: React.FC<MenuProps> = ({
                 if (item.hideOnClick === false) {
                   return;
                 }
+                if (hideAll) {
+                  hideAll();
+                  return;
+                }
                 menu?.hide();
               }}
             >
@@ -212,6 +192,56 @@ const Menu: React.FC<MenuProps> = ({
           );
         })}
     </Ariakit.Menu>
+  );
+};
+
+/** Owns its store: sharing one across siblings would open every submenu of a menu together. */
+const SubMenuItem: React.FC<{
+  item: t.MenuItemProps;
+  subItems: t.MenuItemProps[];
+  menuId: string;
+  hideAll: () => void;
+  iconClassName?: string;
+  itemClassName?: string;
+}> = ({ item, subItems, menuId, hideAll, iconClassName, itemClassName }) => {
+  const store = Ariakit.useMenuStore();
+  return (
+    <Ariakit.MenuProvider store={store}>
+      {/* A submenu trigger is a MenuItem and a MenuButton in one element: as a bare
+          MenuButton it is not part of the parent menu's arrow-key order. */}
+      <Ariakit.MenuItem
+        className={cn(
+          'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+          disabledInkClasses,
+          itemClassName,
+        )}
+        disabled={item.disabled}
+        id={item.id}
+        ref={item.ref}
+        render={item.render ?? <Ariakit.MenuButton />}
+      >
+        <span className="flex items-center gap-2">
+          {item.icon != null && (
+            <span
+              className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+              aria-hidden="true"
+            >
+              {item.icon}
+            </span>
+          )}
+          {item.label}
+        </span>
+        <Ariakit.MenuButtonArrow className="stroke-1 text-base opacity-75" />
+      </Ariakit.MenuItem>
+      <Menu
+        items={subItems}
+        menuId={menuId}
+        gutter={20}
+        portal={true}
+        hideAll={hideAll}
+        style={{ maxHeight: 'min(24rem, var(--popover-available-height, 24rem))' }}
+      />
+    </Ariakit.MenuProvider>
   );
 };
 
