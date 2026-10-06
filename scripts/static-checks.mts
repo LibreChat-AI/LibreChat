@@ -57,7 +57,6 @@ import {
 } from 'node:fs';
 
 import type { Dirent } from 'node:fs';
-import { CSS_COLOR_ALLOWED_FILES, CSS_COLOR_ALLOWED_RULES, scanCssColors } from './css-colors.mts';
 import { isTranslationReferenced } from './i18n.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1829,22 +1828,20 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
 // --------------------------------------------------------------- CSS colours
 
 function checkCssColors(): CheckOutcome {
-  const findings = scanCssColors(ROOT);
+  const script = resolve(ROOT, 'scripts/css-colors.mts');
+  if (!existsSync(script)) {
+    return { ok: false, output: 'scripts/css-colors.mts is missing' };
+  }
+  const scan = runCommand({ command: process.execPath, args: [script] }, []);
   const scannerTests = runCommand(
     { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/css-colors.test.mts')] },
     [],
   );
   return {
-    ok: findings.length === 0 && scannerTests.status === 0,
-    output: [...findings, ...(scannerTests.status === 0 ? [] : [scannerTests.output])].join('\n'),
-    hints: [
-      'Use a theme variable, for example rgb(var(--black) / 0.1), instead of a colour literal.',
-      `Only ${CSS_COLOR_ALLOWED_FILES.join(', ')} and the ${Object.entries(CSS_COLOR_ALLOWED_RULES)
-        .map(
-          ([file, rules]) => `${rules.map(({ selector }) => selector).join(', ')} rule in ${file}`,
-        )
-        .join(', ')} may hold one; see packages/client/src/theme/allowlist.md.`,
-    ],
+    ok: scan.status === 0 && scannerTests.status === 0,
+    output: [scan.output, scannerTests.status === 0 ? '' : scannerTests.output]
+      .filter(Boolean)
+      .join('\n'),
   };
 }
 

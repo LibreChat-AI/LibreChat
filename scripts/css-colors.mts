@@ -6,7 +6,8 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
 
 export interface CssColorFinding {
@@ -137,4 +138,22 @@ export function scanCssColors(root: string): string[] {
         CSS_COLOR_ALLOWED_RULES[path],
       ).map(({ line, literal }) => `${path}:${line} ${literal}`),
     );
+}
+
+/** `node scripts/css-colors.mts`: prints each finding and exits 1 when there is one. */
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const findings = scanCssColors(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+  if (findings.length > 0) {
+    const rules = Object.entries(CSS_COLOR_ALLOWED_RULES)
+      .map(([file, allowed]) => `${allowed.map(({ selector }) => selector).join(', ')} in ${file}`)
+      .join(', ');
+    console.error(findings.join('\n'));
+    console.error(
+      'Use a theme variable, for example rgb(var(--black) / 0.1), instead of a colour literal.',
+    );
+    console.error(
+      `Only ${CSS_COLOR_ALLOWED_FILES.join(', ')} and ${rules} may hold one; see packages/client/src/theme/allowlist.md.`,
+    );
+    process.exit(1);
+  }
 }
