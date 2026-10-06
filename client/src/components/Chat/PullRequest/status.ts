@@ -81,14 +81,6 @@ export function presentPullRequest(pr: TConversationPullRequest): PullRequestPre
   };
 }
 
-/** Semantic status roles only; there is no raw palette or `dark:` twin to maintain. */
-export const TONE_BADGE_CLASS: Record<PullRequestTone, string> = {
-  success: 'bg-status-success-subtle text-status-success border-status-success-border',
-  error: 'bg-status-error-subtle text-status-error border-status-error-border',
-  warning: 'bg-status-warning-subtle text-status-warning border-status-warning-border',
-  neutral: 'bg-status-neutral-subtle text-status-neutral border-status-neutral-border',
-};
-
 export const TONE_ICON_CLASS: Record<PullRequestTone, string> = {
   success: 'text-status-success',
   error: 'text-status-error',

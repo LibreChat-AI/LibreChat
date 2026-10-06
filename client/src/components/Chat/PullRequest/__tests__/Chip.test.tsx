@@ -8,6 +8,10 @@ import PullRequestChip from '../Chip';
 
 const mockGet = jest.fn();
 
+jest.mock('~/data-provider/Endpoints', () => ({
+  useGetStartupConfig: () => ({ data: { pullRequestsEnabled: true } }),
+}));
+
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -162,6 +166,16 @@ describe('PullRequestChip', () => {
     await userEvent.tab();
     expect(screen.getByTestId('header-pull-request-button')).toHaveFocus();
     expect(await screen.findByTestId('pull-request-card')).toBeInTheDocument();
+  });
+
+  it('shows the GitHub tooltip inside the open card, so it is not painted behind it', async () => {
+    mockGet.mockResolvedValue({ pullRequest: pr });
+    renderChip();
+    await userEvent.hover(await screen.findByTestId('header-pull-request-button'));
+    const card = await screen.findByTestId('pull-request-card');
+    const layer = card.closest('[role="dialog"]') as HTMLElement;
+    await userEvent.hover(screen.getByTestId('pull-request-github-link'));
+    expect(await within(layer).findByRole('tooltip')).toHaveTextContent('com_ui_pr_open_in_github');
   });
 
   it('opens a card with the number, line counts, badges and a safe GitHub link', async () => {

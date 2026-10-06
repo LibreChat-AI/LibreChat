@@ -5,6 +5,13 @@ import type { TConversationPullRequest } from 'librechat-data-provider';
 import { pullRequestRefetchInterval, useConversationPullRequestQuery } from './queries';
 
 const mockGet = jest.fn();
+const mockStartup: { current: { pullRequestsEnabled?: boolean } | undefined } = {
+  current: { pullRequestsEnabled: true },
+};
+
+jest.mock('../Endpoints', () => ({
+  useGetStartupConfig: () => ({ data: mockStartup.current }),
+}));
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -50,14 +57,42 @@ describe('pullRequestRefetchInterval', () => {
     expect(pullRequestRefetchInterval(undefined)).toBe(60_000);
   });
 
-  it('stops polling a merged or closed pull request', () => {
-    expect(pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'merged' } })).toBe(false);
-    expect(pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'closed' } })).toBe(false);
+  it('stops polling a merged or closed pull request once its checks are not running', () => {
+    for (const checks of ['passing', 'failing', 'none'] as const) {
+      expect(pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'merged', checks } })).toBe(
+        false,
+      );
+      expect(pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'closed', checks } })).toBe(
+        false,
+      );
+    }
+  });
+
+  it('keeps polling a merged or closed pull request while its checks are still running', () => {
+    expect(
+      pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'merged', checks: 'running' } }),
+    ).toBe(20_000);
+    expect(
+      pullRequestRefetchInterval({ pullRequest: { ...pr, state: 'closed', checks: 'running' } }),
+    ).toBe(20_000);
   });
 });
 
 describe('useConversationPullRequestQuery', () => {
-  beforeEach(() => mockGet.mockReset().mockResolvedValue({ pullRequest: pr }));
+  beforeEach(() => {
+    mockGet.mockReset().mockResolvedValue({ pullRequest: pr });
+    mockStartup.current = { pullRequestsEnabled: true };
+  });
+
+  it.each([
+    ['advertised off', { pullRequestsEnabled: false }],
+    ['not advertised', {}],
+    ['startup config not loaded', undefined],
+  ])('does not call the endpoint when the feature is %s', (_label, startup) => {
+    mockStartup.current = startup;
+    renderHook(() => useConversationPullRequestQuery('convo-1'), { wrapper: wrap() });
+    expect(mockGet).not.toHaveBeenCalled();
+  });
 
   it('fetches the pull request of a saved conversation', async () => {
     const { result } = renderHook(() => useConversationPullRequestQuery('convo-1'), {

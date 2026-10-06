@@ -8,6 +8,10 @@ import usePullRequestMenu from '../menu';
 
 const mockGet = jest.fn();
 
+jest.mock('~/data-provider/Endpoints', () => ({
+  useGetStartupConfig: () => ({ data: { pullRequestsEnabled: true } }),
+}));
+
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {

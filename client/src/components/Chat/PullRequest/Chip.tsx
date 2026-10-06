@@ -72,6 +72,7 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
     hideTimeout: 150,
   });
   const open = Ariakit.useStoreState(hovercard, 'open');
+  const cardElement = Ariakit.useStoreState(hovercard, 'contentElement');
   const { data, isError, refetch } = useConversationPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
 
@@ -117,6 +118,7 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
           pullRequest={pullRequest}
           refreshFailed={isError}
           onRetry={() => void refetch()}
+          portalElement={cardElement}
         />
       </Ariakit.Hovercard>
     </Ariakit.HovercardProvider>

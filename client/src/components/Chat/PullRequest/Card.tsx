@@ -1,21 +1,25 @@
 import { memo } from 'react';
-import { Button, GithubIcon, TooltipAnchor } from '@librechat/client';
+import { Button, Chip, GithubIcon, TooltipAnchor } from '@librechat/client';
 import type { TConversationPullRequest } from 'librechat-data-provider';
-import { TONE_BADGE_CLASS, presentPullRequest } from './status';
+import { presentPullRequest } from './status';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
-import { cn } from '~/utils';
-
-const badgeClass = 'rounded-md border px-2 py-0.5 text-xs font-medium';
 
 type CardProps = {
   pullRequest: TConversationPullRequest;
   /** A refresh failed; the last known pull request stays visible with a way to retry. */
   refreshFailed?: boolean;
   onRetry?: () => void;
+  /** The layer the card lives in, so its tooltip is not painted behind it. */
+  portalElement?: HTMLElement | null;
 };
 
-function PullRequestCard({ pullRequest, refreshFailed = false, onRetry }: CardProps) {
+function PullRequestCard({
+  pullRequest,
+  refreshFailed = false,
+  onRetry,
+  portalElement,
+}: CardProps) {
   const localize = useLocalize();
   const view = presentPullRequest(pullRequest);
   const openLabel = localize('com_ui_pr_open_in_github');
@@ -43,6 +47,7 @@ function PullRequestCard({ pullRequest, refreshFailed = false, onRetry }: CardPr
         </span>
         <TooltipAnchor
           description={openLabel}
+          portalElement={portalElement}
           render={
             <a
               href={pullRequest.url}
@@ -59,12 +64,12 @@ function PullRequestCard({ pullRequest, refreshFailed = false, onRetry }: CardPr
       </div>
       <p className="text-text-primary line-clamp-3 text-sm break-words">{pullRequest.title}</p>
       <div className="flex flex-wrap gap-2">
-        <span className={cn(badgeClass, TONE_BADGE_CLASS[view.stateTone])}>
+        <Chip tone={view.stateTone} shape="theme" data-testid="pull-request-state-badge">
           {localize('com_ui_pr_state', { 0: localize(view.stateKey) })}
-        </span>
-        <span className={cn(badgeClass, TONE_BADGE_CLASS[view.checksTone])}>
+        </Chip>
+        <Chip tone={view.checksTone} shape="theme" data-testid="pull-request-checks-badge">
           {localize('com_ui_pr_checks', { 0: localize(view.checksKey) })}
-        </span>
+        </Chip>
       </div>
       {refreshFailed && (
         <div role="status" className="text-status-warning flex items-center gap-2 text-xs">

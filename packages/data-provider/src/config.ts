@@ -3135,6 +3135,8 @@ export type TStartupConfig = {
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
   insightsEnabled?: boolean;
+  /** `endpoints.agents.pullRequests.enabled`; the header does not ask for a pull request without it. */
+  pullRequestsEnabled?: boolean;
   /** Manual context compaction, gated by the same `summarization.enabled`
    *  switch that governs the automatic detour. */
   compactionEnabled?: boolean;
