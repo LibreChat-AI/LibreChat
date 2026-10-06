@@ -535,8 +535,11 @@ export default function useChatFunctions({
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
       const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
+      /* A failed refresh leaves the previous data cached, but the efforts are then unknown. */
       const capabilitiesData =
-        queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey)?.capabilities;
+        queryClient.getQueryState(capabilitiesKey)?.status === 'error'
+          ? undefined
+          : queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey)?.capabilities;
       /* A replayed override is checked against the loaded per-model efforts. While they are
          unknown (never requested, in flight or failed) `resolveModelReasoning` offers nothing, so
          the override is omitted rather than sent and refused by the server. */

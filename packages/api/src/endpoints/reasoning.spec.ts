@@ -955,9 +955,14 @@ describe('successful catalog lifetime', () => {
 });
 
 describe('catalog request headers', () => {
+  /** A static model list: the headers do not shape what users are offered, so the catalog is read
+   *  and only the per-user headers are withheld. With `models.fetch` they would be skipped instead. */
   const headersSent = async (headers: Record<string, string>) => {
     const { deps, fetchSpy } = makeDeps();
-    await loadReasoningCapabilities([endpoint({ headers })], deps);
+    await loadReasoningCapabilities(
+      [endpoint({ headers, models: { default: ['seed/model'] } })],
+      deps,
+    );
     return fetchSpy.mock.calls[0][0].headers;
   };
 
@@ -1200,5 +1205,96 @@ describe('when the catalog entry expires', () => {
     const { expiresAt } = await loadReasoningCapabilities([endpoint()], deps);
 
     expect(expiresAt).toBeUndefined();
+  });
+});
+
+describe('malformed pagination metadata', () => {
+  const withLinks = (links: unknown) => ({
+    data: [{ id: 'a/first', reasoning: { supported_efforts: ['low'] } }],
+    links,
+  });
+
+  it.each([
+    ['a numeric next', { next: 2 }],
+    ['an object next', { next: { page: 2 } }],
+    ['a boolean next', { next: true }],
+    ['links that are not an object', 'next'],
+  ])('reports the endpoint unavailable for %s', async (_label, links) => {
+    const { deps, store } = makeDeps(async () => withLinks(links));
+
+    const result = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(result).toEqual({ capabilities: {}, unavailable: ['OpenRouter'] });
+    expect([...store.keys()].every((key) => key.endsWith(':failed'))).toBe(true);
+  });
+
+  it.each([
+    ['no links at all', undefined],
+    ['links without next', {}],
+    ['a null next', { next: null }],
+    ['an empty next', { next: '' }],
+  ])('accepts %s as the end of the catalog', async (_label, links) => {
+    const { deps } = makeDeps(async () => withLinks(links));
+
+    const result = await loadReasoningCapabilities([endpoint()], deps);
+
+    expect(result.unavailable).toEqual([]);
+    expect(result.capabilities.OpenRouter).toHaveProperty(['a/first']);
+  });
+});
+
+describe('catalogs whose model list is scoped to the requesting user', () => {
+  it('skips an endpoint that filters its fetched models by user id', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities(
+      [endpoint({ models: { fetch: true, userIdQuery: true, default: ['a/b'] } })],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ capabilities: {}, unavailable: [] });
+  });
+
+  it('skips an endpoint whose configured headers resolve per request', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    const result = await loadReasoningCapabilities(
+      [
+        endpoint({
+          models: { fetch: true, default: ['a/b'] },
+          headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ID_TOKEN}}' },
+        }),
+      ],
+      deps,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.unavailable).toEqual([]);
+  });
+
+  it('still reads an endpoint that fetches models for everyone alike', async () => {
+    const { deps, fetchSpy } = makeDeps();
+
+    await loadReasoningCapabilities(
+      [endpoint({ models: { fetch: true, default: ['a/b'] } })],
+      deps,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not check a stored effort on a user-scoped endpoint', async () => {
+    const { deps, fetchSpy } = makeDeps();
+    const stored = { model: 'openai/gpt-6.1-sol', reasoning_effort: 'max' };
+
+    const result = await withSupportedEffort(
+      stored,
+      endpoint({ models: { fetch: true, userIdQuery: true, default: ['a/b'] } }),
+      deps,
+    );
+
+    expect(result).toBe(stored);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

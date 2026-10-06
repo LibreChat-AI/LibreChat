@@ -38,8 +38,10 @@ export function useModelReasoning(
   model: string,
 ): { modelReasoning: TModelReasoning | null | undefined; pending: boolean } {
   const enabled = usesReasoningCapabilities(endpointsConfig, endpoint);
-  const { data } = useReasoningCapabilitiesQuery(endpoint, { enabled });
-  const capabilities = data?.capabilities;
+  const { data, isError } = useReasoningCapabilitiesQuery(endpoint, { enabled });
+  /** React Query keeps the previous data while a refresh fails, so the error state, not the data,
+   *  says whether the efforts are known. */
+  const capabilities = isError ? undefined : data?.capabilities;
   const paramDefinitions = endpointsConfig?.[endpoint]?.customParams?.paramDefinitions;
   const pending = enabled && capabilities == null;
   const modelReasoning = useMemo(

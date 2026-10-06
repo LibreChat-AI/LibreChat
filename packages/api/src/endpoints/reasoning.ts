@@ -43,7 +43,9 @@ const reasoningSchema = z.object({
 
 const pageSchema = z.object({
   data: z.array(z.object({ id: z.string(), reasoning: z.unknown().optional() })),
-  links: z.object({ next: z.string().nullable().optional() }).optional().catch(undefined),
+  /** Absent, `{}`, `{ next: null }` and `{ next: '' }` all end the catalog; anything else that is
+   *  not a string `next` is malformed and makes the whole catalog unreadable. */
+  links: z.object({ next: z.string().nullable().optional() }).optional(),
 });
 
 /** Models whose reasoning depends on the route a request takes, so no fixed efforts exist. */
@@ -252,14 +254,35 @@ function exposedCapabilities(
 }
 
 /**
+ * Whether the models a user is offered for this endpoint depend on who is asking: the model list
+ * is fetched with `models.userIdQuery`, or with configured headers that resolve per request.
+ */
+function hasUserScopedModelList(endpoint: TEndpoint): boolean {
+  if (endpoint.models?.userIdQuery === true) {
+    return true;
+  }
+  return (
+    endpoint.models?.fetch === true &&
+    Object.values(endpoint.headers ?? {}).some((value) => PER_REQUEST_PLACEHOLDER.test(value))
+  );
+}
+
+/**
  * The endpoint's catalog target, or nothing when it does not use the OpenRouter catalog (see
  * {@link usesOpenRouterCatalog}) or has no administrator credentials. A `directEndpoint` is skipped:
  * its base URL is the exact inference URL, so `/models` cannot be derived from it. So is an endpoint
  * that pins its model through `addParams.model`: every request goes to that one model, so the efforts
  * of the model a user selected say nothing about what is sent, and narrowing by them would be wrong.
+ * And so is an endpoint whose model list is filtered per user, by `models.userIdQuery` or by headers
+ * that resolve per request: this catalog is read once with the administrator's key and shared, so it
+ * could expose models the requesting user is not offered.
  */
 function resolveTarget(endpoint: TEndpoint): ResolvedTarget | undefined {
-  if (endpoint.directEndpoint === true || typeof endpoint.addParams?.model === 'string') {
+  if (
+    endpoint.directEndpoint === true ||
+    typeof endpoint.addParams?.model === 'string' ||
+    hasUserScopedModelList(endpoint)
+  ) {
     return undefined;
   }
   const name = normalizeEndpointName(endpoint.name);

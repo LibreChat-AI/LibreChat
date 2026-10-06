@@ -749,6 +749,16 @@ describe('useChatFunctions ask', () => {
       expect(replay()).toBeUndefined();
     });
 
+    it('omits the override when a refresh failed although the previous data is still cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
     it('keeps an override for a model the loaded catalog does not list', () => {
       mockCapabilitiesData.current = {
         capabilities: { OpenRouter: { 'meta/other': { efforts: ['low'] } } },

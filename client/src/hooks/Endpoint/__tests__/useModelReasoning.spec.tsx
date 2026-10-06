@@ -4,6 +4,7 @@ import { useModelReasoning } from '../useModelReasoning';
 
 /** `undefined` is a query that is loading or failed: both leave the hook without data. */
 let mockCapabilities: TReasoningCapabilityMap | undefined;
+let mockErrored = false;
 const mockQuery = jest.fn();
 jest.mock('~/data-provider', () => ({
   useReasoningCapabilitiesQuery: (endpoint: string, config: { enabled?: boolean }) => {
@@ -14,6 +15,7 @@ jest.mock('~/data-provider', () => ({
         enabled && mockCapabilities != null
           ? { capabilities: mockCapabilities, expiresInMs: 3_600_000 }
           : undefined,
+      isError: enabled && mockErrored,
     };
   },
 }));
@@ -39,6 +41,7 @@ const withDefinition = {
 
 beforeEach(() => {
   mockCapabilities = undefined;
+  mockErrored = false;
   mockQuery.mockClear();
 });
 
@@ -61,6 +64,31 @@ describe('useModelReasoning', () => {
     const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
 
     expect(result.current.pending).toBe(true);
+  });
+
+  it('hides the efforts when a refresh failed, although the previous data is still cached', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockErrored = true;
+
+    const { result } = renderHook(() => useModelReasoning(openRouter, 'OpenRouter', model));
+
+    expect(result.current.modelReasoning).toBeNull();
+    expect(result.current.pending).toBe(true);
+  });
+
+  it('shows the efforts again once the refresh succeeds', () => {
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockErrored = true;
+    const { result, rerender } = renderHook(() =>
+      useModelReasoning(openRouter, 'OpenRouter', model),
+    );
+    expect(result.current.pending).toBe(true);
+
+    mockErrored = false;
+    rerender();
+
+    expect(result.current.modelReasoning).toEqual({ efforts: ['low', 'high'] });
+    expect(result.current.pending).toBe(false);
   });
 
   it('returns the efforts of the selected model once loaded', () => {
