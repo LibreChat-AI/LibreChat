@@ -390,7 +390,8 @@ function Conversation({
           describedBy={projectBadgeProjectId ? projectLabelId : undefined}
         >
           {/* Status sits on the avatar so the row's trailing edge stays free for its badges
-              and menu. The ring is 34px around the 20px icon: offset by half the difference. */}
+              and menu. The ring is 2.125rem around the 1.25rem icon: offset by half the
+              difference. Both are rem so the ring follows the icon box at any UI scale. */}
           <span className="relative flex size-5 shrink-0 items-center justify-center">
             <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
             {isGenerating && (
@@ -398,7 +399,7 @@ function Conversation({
                 size={34}
                 strokeWidth={1.9}
                 bgOpacity={0.14}
-                className="pointer-events-none absolute -top-[7px] -left-[7px]"
+                className="pointer-events-none absolute -top-[0.4375rem] -left-[0.4375rem] size-[2.125rem]"
               />
             )}
             {isUnseen && !isGenerating && (
