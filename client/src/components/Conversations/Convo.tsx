@@ -13,6 +13,7 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
+import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -70,6 +71,8 @@ function Conversation({
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
   const projectLabelId = useId();
+  const pullRequestLabelId = useId();
+  const showPullRequest = startupConfig?.pullRequestsEnabled === true && !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
@@ -387,7 +390,14 @@ function Conversation({
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
-          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
+          describedBy={
+            [
+              projectBadgeProjectId ? projectLabelId : null,
+              showPullRequest ? pullRequestLabelId : null,
+            ]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
         >
           {/* Status sits on the avatar so the row's trailing edge stays free for its badges
               and menu. The ring is 2.125rem around the 1.25rem icon: offset by half the
@@ -447,6 +457,18 @@ function Conversation({
         {/* Only render ConvoOptions when user interacts (hover/focus) or for active conversation */}
         {actionContent}
       </div>
+      {/* After the action slot on purpose: that slot grows from zero on hover, and anything before
+          it slides left under the pointer, so the mark would move out from under the cursor that
+          is trying to reach it. The title is the only thing that gives way. */}
+      {showPullRequest && (
+        <span className="mr-1 flex shrink-0 items-center">
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        </span>
+      )}
     </div>
   );
 }

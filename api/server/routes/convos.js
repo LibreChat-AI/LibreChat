@@ -22,6 +22,7 @@ const {
   createConversationPullRequestHandler,
   createGitHubPullRequestSource,
   createPullRequestLookup,
+  createConversationPullRequestsHandler,
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
   createGeneratedTitleHandler,
@@ -170,10 +171,20 @@ const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
 const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
   registry: backgroundTaskRegistry,
 });
+/** One lookup, so the header's single route and the sidebar's batch route share its cache. */
+const pullRequestLookup = createPullRequestLookup({
+  source: createGitHubPullRequestSource({ fetchFn: fetch }),
+});
 const conversationPullRequestHandler = createConversationPullRequestHandler({
   getConvoLaneGit: db.getConvoLaneGit,
   getAppConfig,
-  lookup: createPullRequestLookup({ source: createGitHubPullRequestSource({ fetchFn: fetch }) }),
+  lookup: pullRequestLookup,
+  env: process.env,
+});
+const conversationPullRequestsHandler = createConversationPullRequestsHandler({
+  getConvosLaneGit: db.getConvosLaneGit,
+  getAppConfig,
+  lookup: pullRequestLookup,
   env: process.env,
 });
 router.use(requireJwtAuth);
@@ -248,6 +259,7 @@ router.post(
   subagentControlHandler,
 );
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
+router.post('/pull-requests', conversationPullRequestsHandler);
 router.get('/:conversationId/pull-request', conversationPullRequestHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(

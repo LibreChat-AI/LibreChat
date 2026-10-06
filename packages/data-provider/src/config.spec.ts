@@ -1135,6 +1135,7 @@ describe('agent pull request config', () => {
       maxHeadComparisons: 3,
       cacheMaxEntries: 500,
       cacheMaxCredentials: 256,
+      maxConcurrentLookups: 4,
     });
   });
 
@@ -1194,6 +1195,9 @@ describe('agent pull request config', () => {
     ['cacheMaxCredentials', 0],
     ['cacheMaxCredentials', 10_001],
     ['cacheMaxCredentials', 1.5],
+    ['maxConcurrentLookups', 0],
+    ['maxConcurrentLookups', 17],
+    ['maxConcurrentLookups', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1207,6 +1211,7 @@ describe('agent pull request config', () => {
         maxCandidatePullRequests: 100,
         maxHeadComparisons: 20,
         cacheMaxEntries: 100_000,
+        maxConcurrentLookups: 16,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);

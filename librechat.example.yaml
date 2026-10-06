@@ -944,6 +944,8 @@ endpoints:
   #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
   #     # past it. When principals configure different values, the largest applies.
   #     cacheMaxCredentials: 256
+  #     # Lookups one sidebar request runs at once (1 to 16); each is a few GitHub requests.
+  #     maxConcurrentLookups: 4
   #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)

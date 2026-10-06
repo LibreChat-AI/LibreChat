@@ -22,6 +22,20 @@ export type TConversationPullRequest = {
   checks: PullRequestChecks;
 };
 
+/** Most conversations one batch lookup may name. It bounds the fan-out to GitHub of a single
+ *  request; the lookups themselves stay governed by the configured limits and cache. */
+export const PULL_REQUEST_BATCH_MAX = 50;
+
+export type TConversationPullRequestsRequest = { conversationIds: string[] };
+
+/** One conversation's answer: its pull request (null when it has none), or a stable failure code. */
+export type TConversationPullRequestsEntry =
+  | { conversationId: string; pullRequest: TConversationPullRequest | null }
+  | { conversationId: string; error: { code: string } };
+
+/** An array rather than an object keyed by id, so no client-supplied id is ever a property name. */
+export type TConversationPullRequestsResponse = { results: TConversationPullRequestsEntry[] };
+
 /** `pullRequest` is null when the conversation has no pull request, which is not an error. */
 export type TConversationPullRequestResponse = {
   pullRequest: TConversationPullRequest | null;

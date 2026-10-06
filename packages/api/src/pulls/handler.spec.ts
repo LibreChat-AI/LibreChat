@@ -1,7 +1,11 @@
 import type { TConversationPullRequest } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
-import { createConversationPullRequestHandler, resolveTokenReference } from './handler';
+import {
+  createConversationPullRequestHandler,
+  createConversationPullRequestsHandler,
+  resolveTokenReference,
+} from './handler';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -279,5 +283,201 @@ describe('createConversationPullRequestHandler', () => {
     const { run, res } = setup();
     await run();
     expect(JSON.stringify(res.json.mock.calls)).not.toContain('ghp_secret');
+  });
+});
+
+describe('createConversationPullRequestsHandler', () => {
+  type Row = {
+    conversationId: string;
+    laneGit: { branch: string | null; head: string | null; repo?: string };
+  };
+  const lane = (conversationId: string, repo = 'o/r', branch = `feat/${conversationId}`): Row => ({
+    conversationId,
+    laneGit: { branch, head: null, repo },
+  });
+
+  function batch(
+    options: {
+      settings?: Record<string, unknown> | null;
+      lanes?: Row[];
+      lookup?: jest.Mock;
+      env?: Record<string, string | undefined>;
+    } = {},
+  ) {
+    const settings = options.settings === undefined ? enabled : (options.settings ?? undefined);
+    const lanes = options.lanes ?? [lane('a'), lane('b')];
+    const lookup = options.lookup ?? jest.fn().mockResolvedValue({ ok: true, value: pr });
+    const getConvosLaneGit = jest.fn().mockResolvedValue(lanes);
+    const handler = createConversationPullRequestsHandler({
+      getConvosLaneGit,
+      getAppConfig: jest.fn().mockResolvedValue(configWith(settings)),
+      lookup,
+      env: options.env ?? { GH_TOKEN: 'ghp_secret' },
+    });
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const run = (...args: [body?: unknown, user?: string | null]) => {
+      /** Read by count, so an explicit `undefined` is a real "none" and not the default. */
+      const body = args.length > 0 ? args[0] : { conversationIds: ['a', 'b'] };
+      const user = args.length > 1 ? args[1] : 'u1';
+      return handler(
+        { user: user ? { id: user } : undefined, body } as unknown as ServerRequest,
+        res as unknown as Response,
+      );
+    };
+    return { run, res, lookup, getConvosLaneGit };
+  }
+
+  it('answers each conversation in the order asked, from one owner-scoped read', async () => {
+    const { run, res, getConvosLaneGit, lookup } = batch();
+    await run({ conversationIds: ['b', 'a'] });
+    expect(getConvosLaneGit).toHaveBeenCalledTimes(1);
+    expect(getConvosLaneGit).toHaveBeenCalledWith('u1', ['b', 'a']);
+    expect(lookup).toHaveBeenCalledTimes(2);
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'b', pullRequest: pr },
+        { conversationId: 'a', pullRequest: pr },
+      ],
+    });
+  });
+
+  it('answers no pull request for a conversation without a stored lane, without a lookup', async () => {
+    const { run, res, lookup } = batch({ lanes: [lane('a')] });
+    await run({ conversationIds: ['a', 'ghost'] });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', pullRequest: pr },
+        { conversationId: 'ghost', pullRequest: null },
+      ],
+    });
+  });
+
+  it('never looks up a repository the administrator did not allow', async () => {
+    const { run, res, lookup } = batch({ lanes: [lane('a', 'o/r'), lane('b', 'evil/secret')] });
+    await run();
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ repo: 'o/r' }));
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', pullRequest: pr },
+        { conversationId: 'b', pullRequest: null },
+      ],
+    });
+  });
+
+  it('keeps one failure from hiding the others and exposes only its code', async () => {
+    const lookup = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false, error: { code: 'RATE_LIMITED' } })
+      .mockResolvedValueOnce({ ok: true, value: pr });
+    const { run, res } = batch({ lookup });
+    await run();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', error: { code: 'RATE_LIMITED' } },
+        { conversationId: 'b', pullRequest: pr },
+      ],
+    });
+  });
+
+  it('answers no pull request for everything, and reads no token, when the feature is off', async () => {
+    const { run, res, lookup } = batch({ settings: { ...enabled, enabled: false } });
+    await run();
+    expect(lookup).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({
+      results: [
+        { conversationId: 'a', pullRequest: null },
+        { conversationId: 'b', pullRequest: null },
+      ],
+    });
+  });
+
+  it('is not configured only when something would have been looked up', async () => {
+    const withoutLane = batch({ env: {}, lanes: [] });
+    await withoutLane.run();
+    expect(withoutLane.res.status).toHaveBeenCalledWith(200);
+    const withLane = batch({ env: {} });
+    await withLane.run();
+    expect(withLane.res.status).toHaveBeenCalledWith(503);
+    expect(withLane.res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'NOT_CONFIGURED' }),
+    );
+  });
+
+  it('collapses duplicate ids so one conversation is looked up once', async () => {
+    const { run, lookup, getConvosLaneGit } = batch({ lanes: [lane('a')] });
+    await run({ conversationIds: ['a', 'a', 'a'] });
+    expect(getConvosLaneGit).toHaveBeenCalledWith('u1', ['a']);
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs no more lookups at once than configured', async () => {
+    let active = 0;
+    let peak = 0;
+    const lookup = jest.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return { ok: true, value: pr };
+    });
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const { run } = batch({
+      lookup,
+      settings: { ...enabled, maxConcurrentLookups: 2 },
+      lanes: ids.map((id) => lane(id)),
+    });
+    await run({ conversationIds: ids });
+    expect(lookup).toHaveBeenCalledTimes(6);
+    expect(peak).toBe(2);
+  });
+
+  it.each([
+    ['no body', undefined],
+    ['no list', {}],
+    ['an empty list', { conversationIds: [] }],
+    ['a list that is not an array', { conversationIds: 'a' }],
+    ['a non-string id', { conversationIds: ['a', 7] }],
+    ['a blank id', { conversationIds: ['a', '  '] }],
+    ['an overlong id', { conversationIds: ['x'.repeat(257)] }],
+    ['more ids than the bound', { conversationIds: Array.from({ length: 51 }, (_, i) => `c${i}`) }],
+  ])('rejects %s before reading anything', async (_label, body) => {
+    const { run, res, getConvosLaneGit, lookup } = batch();
+    await run(body);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(getConvosLaneGit).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('accepts exactly the bound', async () => {
+    const ids = Array.from({ length: 50 }, (_, i) => `c${i}`);
+    const { run, res } = batch({ lanes: [] });
+    await run({ conversationIds: ids });
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('rejects an unauthenticated request', async () => {
+    const { run, res, getConvosLaneGit } = batch();
+    await run({ conversationIds: ['a'] }, null);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(getConvosLaneGit).not.toHaveBeenCalled();
+  });
+
+  it('answers 500 without the error text when the read fails', async () => {
+    const { run, res, getConvosLaneGit } = batch();
+    getConvosLaneGit.mockRejectedValue(new Error('mongodb://u:secret@h'));
+    await run();
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(JSON.stringify((res.json as jest.Mock).mock.calls)).not.toContain('secret');
+  });
+
+  it('uses the same lookup input as the single route', async () => {
+    const single = setup({ laneGit: { branch: 'feat/a', head: null, repo: 'o/r' } });
+    await single.run();
+    const many = batch({ lanes: [lane('a')] });
+    await many.run({ conversationIds: ['a'] });
+    expect(many.lookup.mock.calls[0][0]).toEqual(single.lookup.mock.calls[0][0]);
   });
 });

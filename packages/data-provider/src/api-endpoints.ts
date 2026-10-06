@@ -171,6 +171,8 @@ export const backgroundTasksCancel = (conversationId: string) =>
 export const conversationPullRequest = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
 
+export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
+
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 

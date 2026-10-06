@@ -1233,6 +1233,12 @@ export function getConversationPullRequest(
   return request.get(endpoints.conversationPullRequest(conversationId));
 }
 
+export function getConversationPullRequests(
+  conversationIds: string[],
+): Promise<t.TConversationPullRequestsResponse> {
+  return request.post(endpoints.conversationPullRequests(), { conversationIds });
+}
+
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {
   return request.get(endpoints.getPrompt(id));
 }

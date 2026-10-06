@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
 import type { TConversationPullRequestResponse } from 'librechat-data-provider';
 import type { UseQueryOptions } from '@tanstack/react-query';
+import { createPullRequestBatcher } from './batch';
 import { useGetStartupConfig } from '../Endpoints';
 
 const SETTLED_REFRESH_MS = 60_000;
@@ -23,6 +24,11 @@ export const pullRequestRefetchInterval = (
   return pr.mergeable === 'unknown' ? ACTIVE_REFRESH_MS : SETTLED_REFRESH_MS;
 };
 
+const isSavedConversation = (conversationId: string) =>
+  conversationId !== '' &&
+  conversationId !== Constants.NEW_CONVO &&
+  conversationId !== Constants.PENDING_CONVO;
+
 /**
  * Asks only when the deployment advertises the feature and the conversation is a saved one, so a
  * default installation never calls the endpoint. The server answers no pull request for a chat
@@ -37,17 +43,37 @@ export const useConversationPullRequestQuery = (
     [QueryKeys.conversationPullRequest, conversationId],
     () => dataService.getConversationPullRequest(conversationId),
     {
-      enabled:
-        startupConfig?.pullRequestsEnabled === true &&
-        conversationId !== '' &&
-        conversationId !== Constants.NEW_CONVO &&
-        conversationId !== Constants.PENDING_CONVO,
+      enabled: startupConfig?.pullRequestsEnabled === true && isSavedConversation(conversationId),
       staleTime: 15_000,
       retry: false,
       refetchOnWindowFocus: true,
       refetchInterval: pullRequestRefetchInterval,
       refetchIntervalInBackground: false,
       ...config,
+    },
+  );
+};
+
+/** One batcher for the app: every sidebar row mounted in the same moment shares one request. */
+const rowBatcher = createPullRequestBatcher({
+  fetchMany: (conversationIds) => dataService.getConversationPullRequests(conversationIds),
+});
+
+/**
+ * The pull request of a sidebar row. It shares its cache entry with the header's query, so the
+ * open conversation is never fetched twice, but it never polls: a list of rows would otherwise
+ * poll GitHub once per row. A row's answer is as fresh as the last time the list was opened.
+ */
+export const useRowPullRequestQuery = (conversationId: string) => {
+  const { data: startupConfig } = useGetStartupConfig();
+  return useQuery<TConversationPullRequestResponse>(
+    [QueryKeys.conversationPullRequest, conversationId],
+    () => rowBatcher.load(conversationId),
+    {
+      enabled: startupConfig?.pullRequestsEnabled === true && isSavedConversation(conversationId),
+      staleTime: SETTLED_REFRESH_MS,
+      retry: false,
+      refetchOnWindowFocus: false,
     },
   );
 };

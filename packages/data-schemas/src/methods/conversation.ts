@@ -79,6 +79,9 @@ function stripActorCheckpointFields(record: Record<string, unknown>): void {
 /** Written only by the lane methods, so no save, unset or import may reach them. */
 const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as const;
 
+/** The lane state a reader may see; the sequence number that fences writes stays private. */
+export type ConvoLaneGitView = Omit<NonNullable<IConversation['laneGit']>, 'seq'>;
+
 /** What a lane recorder needs to place and fence its writes, read once when its tool is created. */
 export type ConvoLaneContext = {
   subagentThread?: IConversation['subagentThread'] | null;
@@ -367,6 +370,10 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
   ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null>;
+  getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>>;
   addConvoToolApprovalAllows(input: {
     user: string;
     conversationId: string;
@@ -3214,6 +3221,32 @@ export function createConversationMethods(
     return { branch, head, ...(repo ? { repo } : {}) };
   }
 
+  /**
+   * The last reported lane state of each of the owner's conversations that has one, in one query.
+   * A conversation that is missing, expired, another owner's or has no lane is simply absent, so a
+   * caller cannot tell them apart.
+   */
+  async function getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>> {
+    if (conversationIds.length === 0) return [];
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.find({
+      user,
+      conversationId: { $in: conversationIds },
+      laneGit: { $exists: true, $ne: null },
+      ...activeExpirationFilter<IConversation>(),
+    })
+      .select('conversationId laneGit')
+      .lean<Array<Pick<IConversation, 'conversationId' | 'laneGit'>>>();
+    return stored.flatMap(({ conversationId, laneGit }) => {
+      if (laneGit == null || conversationId == null) return [];
+      const { branch, head, repo } = laneGit;
+      return [{ conversationId, laneGit: { branch, head, ...(repo ? { repo } : {}) } }];
+    });
+  }
+
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     return withoutMeiliIndexing(
@@ -4452,6 +4485,7 @@ export function createConversationMethods(
     reserveConvoLaneGitSeq,
     setConvoLaneGit,
     getConvoLaneGit,
+    getConvosLaneGit,
     getConvoLaneContext,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,

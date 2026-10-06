@@ -5,31 +5,10 @@ import { useAgentsMapContext, useChatContext } from '~/Providers';
 import { TONE_DOT_CLASS, presentPullRequest } from './status';
 import { URLIcon } from '~/components/Endpoints/URLIcon';
 import { summarizePullRequest } from './summary';
+import PullRequestPanel from './Panel';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
-import PullRequestCard from './Card';
-import { cn } from '~/utils';
-
-/** Slides in from the chip's side, left to right, and fades; reduced motion only fades. */
-const cardClass = cn(
-  'border-border-light bg-surface-secondary text-text-primary z-[200] w-80 max-w-[calc(100vw-2rem)] rounded-xl border shadow-lg focus:outline-none',
-  'origin-left -translate-x-3 opacity-0 transition duration-200 ease-out',
-  'data-[enter]:translate-x-0 data-[enter]:opacity-100',
-  'data-[leave]:-translate-x-3 data-[leave]:opacity-0',
-  'motion-reduce:translate-x-0 motion-reduce:transition-opacity',
-);
-
-function CiDot({ dotClass }: { dotClass: string }) {
-  return (
-    <span
-      data-testid="pull-request-ci-dot"
-      className={cn(
-        'ring-presentation absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
-        dotClass,
-      )}
-    />
-  );
-}
+import CiDot from './CiDot';
 
 /** The agent's picture with the CI dot on its corner. */
 function AgentAvatar({
@@ -72,7 +51,6 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
     hideTimeout: 150,
   });
   const open = Ariakit.useStoreState(hovercard, 'open');
-  const cardElement = Ariakit.useStoreState(hovercard, 'contentElement');
   const { data, isError, refetch } = useConversationPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
 
@@ -108,21 +86,12 @@ function PullRequestChip({ conversationId }: { conversationId: string }) {
           </Ariakit.Button>
         }
       />
-      <Ariakit.Hovercard
-        gutter={8}
-        portal
-        unmountOnHide
-        autoFocusOnShow={false}
-        aria-label={localize('com_ui_pull_request')}
-        className={cardClass}
-      >
-        <PullRequestCard
-          pullRequest={pullRequest}
-          refreshFailed={isError}
-          onRetry={() => void refetch()}
-          portalElement={cardElement}
-        />
-      </Ariakit.Hovercard>
+      <PullRequestPanel
+        store={hovercard}
+        pullRequest={pullRequest}
+        refreshFailed={isError}
+        onRetry={() => void refetch()}
+      />
     </Ariakit.HovercardProvider>
   );
 }
