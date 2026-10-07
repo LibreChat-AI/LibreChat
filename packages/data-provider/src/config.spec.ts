@@ -2052,6 +2052,13 @@ describe('allowedAddressesSchema', () => {
 });
 
 describe('webSearchSchema', () => {
+  it('accepts a reranker timeout and rejects invalid values', () => {
+    expect(webSearchSchema.parse({ rerankerTimeout: 30000 }).rerankerTimeout).toBe(30000);
+    expect(webSearchSchema.parse({}).rerankerTimeout).toBeUndefined();
+    expect(() => webSearchSchema.parse({ rerankerTimeout: -1 })).toThrow();
+    expect(() => webSearchSchema.parse({ rerankerTimeout: 1.5 })).toThrow();
+  });
+
   it('accepts Tavily string modes for answer and raw content options', () => {
     const result = webSearchSchema.parse({
       tavilySearchOptions: {

@@ -2512,6 +2512,7 @@ describe('web.ts', () => {
 
       expect(result.authenticated).toBe(true);
       expect(result.authResult.scraperTimeout).toBe(7500); // Should use default timeout
+      expect(result.authResult.rerankerTimeout).toBeUndefined();
       expect(result.authResult.firecrawlOptions).toEqual({
         includeTags: ['p'],
         formats: ['markdown'],
@@ -2733,6 +2734,34 @@ describe('web.ts', () => {
       expect(result.authenticated).toBe(true);
       expect(result.authResult.scraperTimeout).toBe(7500); // Should use default timeout
       expect(result.authResult.firecrawlOptions).toBeUndefined(); // Should be undefined
+    });
+
+    it('should pass rerankerTimeout through to the auth result', async () => {
+      const webSearchConfig = {
+        serperApiKey: '${SERPER_API_KEY}',
+        firecrawlApiKey: '${FIRECRAWL_API_KEY}',
+        jinaApiKey: '${JINA_API_KEY}',
+        safeSearch: SafeSearchTypes.MODERATE,
+        rerankerTimeout: 30000,
+      } as TCustomConfig['webSearch'];
+
+      mockLoadAuthValues.mockImplementation(({ authFields }) => {
+        const result: Record<string, string> = {};
+        authFields.forEach((field: string) => {
+          result[field] = 'test-api-key';
+        });
+        return Promise.resolve(result);
+      });
+
+      const result = await loadWebSearchAuth({
+        userId,
+        webSearchConfig,
+        loadAuthValues: mockLoadAuthValues,
+      });
+
+      expect(result.authenticated).toBe(true);
+      expect(result.authResult.rerankerType).toBe(RerankerTypes.JINA);
+      expect(result.authResult.rerankerTimeout).toBe(30000);
     });
   });
 
