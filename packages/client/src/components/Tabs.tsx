@@ -1,6 +1,7 @@
 import * as React from 'react';
 import * as TabsPrimitive from '@radix-ui/react-tabs';
 import { cn, disabledInkClasses } from '~/utils';
+import { focusRing } from './Focus';
 
 const Tabs: React.ForwardRefExoticComponent<
   TabsPrimitive.TabsProps & React.RefAttributes<HTMLDivElement>
@@ -35,6 +36,7 @@ const TabsTrigger: React.ForwardRefExoticComponent<
     className={cn(
       'text-text-secondary data-[state=active]:bg-surface-primary data-[state=active]:text-text-primary rounded-theme-tab min-w-theme-tab inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50',
       disabledInkClasses,
+      focusRing,
       className,
     )}
     {...props}

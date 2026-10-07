@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cva } from 'class-variance-authority';
+import { focusRingInset } from './Focus';
 import { cn } from '~/utils';
 
 interface TableProps extends React.HTMLAttributes<HTMLTableElement> {
@@ -86,6 +87,7 @@ const TableRow: React.ForwardRefExoticComponent<
         /** Rows are separated by their own padding and the hover fill, not by rules:
          *  a ruled table reads as a grid, and a list of records rarely needs one. */
         'hover:bg-surface-hover data-[state=selected]:bg-surface-hover transition-colors',
+        focusRingInset,
         className,
       )}
       {...props}

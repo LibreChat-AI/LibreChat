@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useRef } from 'react';
 import * as Ariakit from '@ariakit/react';
 import type { ElementRef } from 'react';
 import { cn, disabledInkClasses } from '~/utils';
+import { focusRing } from './Focus';
 import './AnimatedTabs.css';
 import { JSX } from 'react/jsx-runtime';
 
@@ -61,8 +62,9 @@ const Tab = forwardRef<ElementRef<typeof Ariakit.Tab>, Ariakit.TabProps>(functio
       }}
       {...props}
       className={cn(
-        'animated-tab aria-selected:text-text-primary flex items-center justify-center gap-2 border-none text-sm font-medium whitespace-nowrap outline-hidden transition-colors select-none aria-disabled:opacity-50',
+        'animated-tab aria-selected:text-text-primary flex items-center justify-center gap-2 border-none text-sm font-medium whitespace-nowrap transition-colors select-none aria-disabled:opacity-50',
         disabledInkClasses,
+        focusRing,
         props.className,
       )}
     />

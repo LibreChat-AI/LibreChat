@@ -3,6 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import type * as t from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
 import { cn, disabledInkClasses } from '~/utils';
+import { focusRingInset } from './Focus';
 import './Dropdown.css';
 
 interface DropdownProps {
@@ -155,7 +156,8 @@ const Menu: React.FC<MenuProps> = ({
               key={itemKey(item, index)}
               id={item.id}
               className={cn(
-                'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+                'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm md:px-2.5 md:py-2',
+                focusRingInset,
                 disabledInkClasses,
                 itemClassName,
                 item.className,
@@ -229,7 +231,8 @@ const SubMenuItem: React.FC<{
           MenuButton it is not part of the parent menu's arrow-key order. */}
       <Ariakit.MenuItem
         className={cn(
-          'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+          'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm md:px-2.5 md:py-2',
+          focusRingInset,
           disabledInkClasses,
           itemClassName,
         )}

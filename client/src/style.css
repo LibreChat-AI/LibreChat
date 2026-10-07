@@ -2002,7 +2002,10 @@ html[data-input-modality='keyboard']
   }
 }
 
-.dark :focus-visible {
+/* A control that declares its own focus outline utility (`focus-visible:outline-hidden`,
+ * `focus-visible:outline-2 focus-visible:outline-focus-subtle`) keeps it: this rule is unlayered,
+ * so it would otherwise outrank every outline utility and repaint the global role over them. */
+.dark :focus-visible:not([class*='focus-visible:outline-'], [class*='focus:outline-']) {
   outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
   outline-offset: var(--theme-focus-ring-offset, 2px);
 }
