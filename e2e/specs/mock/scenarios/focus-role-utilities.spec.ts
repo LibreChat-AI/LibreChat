@@ -145,6 +145,9 @@ test.describe('focus outline utilities', () => {
       expect(role).toEqual(global);
 
       /** The real non-field Dropdown trigger, with the classes the primitive ships. */
+      if (test.info().project.name === 'mobile') {
+        await page.getByTestId('header-open-sidebar-button').click();
+      }
       await page.getByTestId('nav-user').click();
       await page.getByRole('menuitem', { name: 'Settings' }).click();
       const trigger = page.getByTestId('theme-selector');
