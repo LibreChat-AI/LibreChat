@@ -137,7 +137,7 @@ export async function getSignedUrl({
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },
-  };
+  }; 
 
   const signedUrlTarget = `${baseURL}/files/${fileId}/url?expiry=${expiry}`;
   applyAxiosProxyConfig(config, signedUrlTarget);
@@ -505,7 +505,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
 
     return {
       filename: context.file.originalname,
-      bytes: text.length * 4,
+      bytes: context.file.size,
       filepath: FileSources.mistral_ocr,
       text,
       images,
@@ -574,7 +574,7 @@ export const uploadAzureMistralOCR = async (
 
     return {
       filename: context.file.originalname,
-      bytes: text.length * 4,
+      bytes: context.file.size,
       filepath: FileSources.azure_mistral_ocr,
       text,
       images,
@@ -814,7 +814,7 @@ export const uploadGoogleVertexMistralOCR = async (
 
     return {
       filename: context.file.originalname,
-      bytes: text.length * 4,
+      bytes: context.file.size,
       filepath: FileSources.vertexai_mistral_ocr as string,
       text,
       images,
