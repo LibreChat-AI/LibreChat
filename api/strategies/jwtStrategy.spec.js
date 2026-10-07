@@ -15,6 +15,10 @@ jest.mock('passport-jwt', () => ({
   },
 }));
 
+jest.mock('@librechat/api', () => ({
+  createJwtExtractor: jest.fn(() => 'mock-configured-extractor'),
+}));
+
 jest.mock('@librechat/data-schemas', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
 }));
@@ -25,6 +29,7 @@ jest.mock('~/models', () => ({
 }));
 
 const jwtLogin = require('./jwtStrategy');
+const { createJwtExtractor } = require('@librechat/api');
 const { getUserById, updateUser } = require('~/models');
 
 function invokeVerify(payload) {
@@ -89,39 +94,18 @@ describe('jwtStrategy token extraction', () => {
     }
   });
 
-  it('reads the Authorization header when JWT_AUTH_HEADER is unset', () => {
-    delete process.env.JWT_AUTH_HEADER;
-    jwtLogin();
-    expect(capturedStrategyOptions.jwtFromRequest).toBe('mock-extractor');
-  });
-
-  it('ignores an empty JWT_AUTH_HEADER', () => {
-    process.env.JWT_AUTH_HEADER = '';
-    jwtLogin();
-    expect(capturedStrategyOptions.jwtFromRequest).toBe('mock-extractor');
-  });
-
-  it('lowercases the configured name, since node lowercases incoming headers', () => {
+  it('builds the extractor from JWT_AUTH_HEADER with Authorization as the fallback', () => {
     process.env.JWT_AUTH_HEADER = 'X-Original-Authorization';
     jwtLogin();
-    expect(capturedStrategyOptions.jwtFromRequest).toEqual([
-      'mock-header-extractor:x-original-authorization',
-      'mock-extractor',
-    ]);
+
+    expect(createJwtExtractor).toHaveBeenCalledWith('X-Original-Authorization', 'mock-extractor');
+    expect(capturedStrategyOptions.jwtFromRequest).toBe('mock-configured-extractor');
   });
 
-  it('ignores a whitespace-only JWT_AUTH_HEADER', () => {
-    process.env.JWT_AUTH_HEADER = '   ';
+  it('passes an unset value through, leaving the decision to the extractor', () => {
+    delete process.env.JWT_AUTH_HEADER;
     jwtLogin();
-    expect(capturedStrategyOptions.jwtFromRequest).toBe('mock-extractor');
-  });
 
-  it('prefers JWT_AUTH_HEADER and keeps Authorization as the fallback', () => {
-    process.env.JWT_AUTH_HEADER = 'x-original-authorization';
-    jwtLogin();
-    expect(capturedStrategyOptions.jwtFromRequest).toEqual([
-      'mock-header-extractor:x-original-authorization',
-      'mock-extractor',
-    ]);
+    expect(createJwtExtractor).toHaveBeenCalledWith(undefined, 'mock-extractor');
   });
 });
