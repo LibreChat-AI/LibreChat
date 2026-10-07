@@ -1,6 +1,12 @@
 const path = require('path');
 const mongoose = require('mongoose');
-const { User } = require('@librechat/data-schemas').createModels(mongoose);
+const {
+  createModels,
+  tenantStorage,
+  isValidTenantId,
+  SYSTEM_TENANT_ID,
+} = require('@librechat/data-schemas');
+const { User } = createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { registerUser } = require('~/server/services/AuthService');
 const { askQuestion, silentExit } = require('./helpers');
@@ -15,18 +21,21 @@ const connect = require('./connect');
 
   if (process.argv.length < 5) {
     console.orange(
-      'Usage: npm run create-user -- <email> <name> <username> [--email-verified=false]',
+      'Usage: npm run create-user -- <email> <name> <username> [--email-verified=false] [--tenant=<tenantId>]',
     );
     console.orange('Note: if you do not pass in the arguments, you will be prompted for them.');
     console.orange(
       'If you really need to pass in the password, you can do so as the 4th argument (not recommended for security).',
     );
     console.orange('Use --email-verified=false to set emailVerified to false. Default is true.');
+    console.orange(
+      'Use --tenant=<tenantId> to create the user in that tenant (multi-tenant deployments).',
+    );
     console.purple('--------------------------');
   }
 
   // Parse command line arguments
-  let email, password, name, username, emailVerified, provider;
+  let email, password, name, username, emailVerified, provider, tenantId;
   for (let i = 2; i < process.argv.length; i++) {
     if (process.argv[i].startsWith('--email-verified=')) {
       emailVerified = process.argv[i].split('=')[1].toLowerCase() !== 'false';
@@ -35,6 +44,11 @@ const connect = require('./connect');
 
     if (process.argv[i].startsWith('--provider=')) {
       provider = process.argv[i].split('=')[1];
+      continue;
+    }
+
+    if (process.argv[i].startsWith('--tenant=')) {
+      tenantId = process.argv[i].slice('--tenant='.length).trim();
       continue;
     }
 
@@ -48,6 +62,11 @@ const connect = require('./connect');
       console.red('Warning: password passed in as argument, this is not secure!');
       password = process.argv[i];
     }
+  }
+
+  if (tenantId !== undefined && (tenantId === SYSTEM_TENANT_ID || !isValidTenantId(tenantId))) {
+    console.red('Error: Invalid tenant ID!');
+    silentExit(1);
   }
 
   if (email === undefined) {
@@ -99,6 +118,13 @@ or the user will need to attempt logging in to have a verification link sent to 
     }
   }
 
+  // Inside a tenant context, lookups are scoped to the tenant and the new user is stamped
+  // with it, so the account can be bound where a tenant is required (e.g. Agent Management).
+  const inTenant = (fn) => (tenantId ? tenantStorage.run({ tenantId }, fn) : fn());
+  await inTenant(() => createAccount({ email, password, name, username, emailVerified, provider }));
+})();
+
+async function createAccount({ email, password, name, username, emailVerified, provider }) {
   const userExists = await User.findOne({ $or: [{ email }, { username }] });
   if (userExists) {
     console.red('Error: A user with that email or username already exists!');
@@ -123,10 +149,14 @@ or the user will need to attempt logging in to have a verification link sent to 
   const userCreated = await User.findOne({ $or: [{ email }, { username }] });
   if (userCreated) {
     console.green('User created successfully!');
+    console.green(`User ID: ${userCreated._id}`);
     console.green(`Email verified: ${userCreated.emailVerified}`);
+    if (userCreated.tenantId) {
+      console.green(`Tenant: ${userCreated.tenantId}`);
+    }
     silentExit(0);
   }
-})();
+}
 
 process.on('uncaughtException', (err) => {
   if (!err.message.includes('fetch failed')) {
