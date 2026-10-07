@@ -449,6 +449,81 @@ function sanitizeOperationId(input: string) {
   return input.replace(/[^a-zA-Z0-9_-]/g, '');
 }
 
+/** Valid HTTP method names in OpenAPI 3. Used to skip non-operation path-item keys. */
+const HTTP_METHODS = new Set(['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace']);
+
+/**
+ * Recursively resolves `$ref` and flattens `allOf` in a schema into a single merged object schema.
+ * Later allOf members win on property key collisions, matching JSON Schema merge semantics.
+ * @param schema - The schema or reference to flatten.
+ * @param components - The OpenAPI components section for resolving `$ref`s.
+ * @param seen - Tracks visited `$ref`s to prevent infinite loops.
+ */
+function flattenAllOf(
+  schema: OpenAPIV3.SchemaObject | OpenAPIV3.ReferenceObject,
+  components?: OpenAPIV3.ComponentsObject,
+  seen: Set<string> = new Set(),
+): OpenAPIV3.SchemaObject {
+  // Resolve any top-level $ref, guarding against cycles
+  if ('$ref' in schema) {
+    const ref = schema.$ref;
+    if (seen.has(ref)) {
+      return {};
+    }
+    seen = new Set(seen).add(ref);
+    schema = resolveRef(schema, components) as OpenAPIV3.SchemaObject;
+  }
+
+  if (!schema.allOf) {
+    return schema as OpenAPIV3.SchemaObject;
+  }
+
+  // Merge each allOf member into a single schema
+  const merged: OpenAPIV3.SchemaObject = {
+    type: 'object',
+    properties: {},
+    required: [],
+  };
+
+  // Preserve any properties/required defined alongside allOf on the outer schema
+  const { allOf: _, ...outerRest } = schema as OpenAPIV3.SchemaObject & { allOf: unknown[] };
+
+  for (const member of schema.allOf) {
+    const flat = flattenAllOf(
+      member as OpenAPIV3.SchemaObject | OpenAPIV3.ReferenceObject,
+      components,
+      seen,
+    );
+    merged.properties = { ...merged.properties, ...flat.properties };
+    if (flat.required) {
+      const existing = new Set(merged.required as string[]);
+      for (const r of flat.required) {
+        if (!existing.has(r)) {
+          (merged.required as string[]).push(r);
+        }
+      }
+    }
+    if (flat.type && flat.type !== 'object') {
+      (merged as OpenAPIV3.SchemaObject & { type?: string }).type = flat.type;
+    }
+  }
+
+  // Merge outer-level properties last (they take precedence over allOf members)
+  if (outerRest.properties) {
+    merged.properties = { ...merged.properties, ...outerRest.properties };
+  }
+  if (outerRest.required) {
+    const existing = new Set(merged.required as string[]);
+    for (const r of outerRest.required) {
+      if (!existing.has(r)) {
+        (merged.required as string[]).push(r);
+      }
+    }
+  }
+
+  return merged;
+}
+
 /**
  * Converts an OpenAPI spec to function signatures and request builders.
  */
@@ -466,8 +541,18 @@ export function openapiToFunction(
   const baseUrl = openapiSpec.servers?.[0]?.url ?? '';
 
   // Iterate over each path and method in the OpenAPI spec
-  for (const [path, methods] of Object.entries(openapiSpec.paths)) {
-    for (const [method, operation] of Object.entries(methods as OpenAPIV3.PathsObject)) {
+  for (const [path, pathItem] of Object.entries(openapiSpec.paths)) {
+    const methods = pathItem as OpenAPIV3.PathItemObject;
+    // Path-item-level parameters are shared across all operations on this path.
+    // We collect them here and merge them into each operation's own parameters below,
+    // with operation-level parameters taking precedence on (name, in) collisions.
+    const pathItemParameters = methods.parameters ?? [];
+
+    for (const [method, operation] of Object.entries(methods)) {
+      // Skip non-operation keys (parameters, summary, description, servers, $ref, etc.)
+      if (!HTTP_METHODS.has(method)) {
+        continue;
+      }
       const paramLocations: Record<string, 'query' | 'path' | 'header' | 'body'> = {};
       const operationObj = operation as OpenAPIV3.OperationObject & {
         'x-openai-isConsequential'?: boolean;
@@ -487,8 +572,24 @@ export function openapiToFunction(
         required: [],
       };
 
-      if (operationObj.parameters) {
-        for (const param of operationObj.parameters ?? []) {
+      // Merge path-item-level parameters with operation-level parameters.
+      // Operation-level parameters win when (name, in) collides (per OpenAPI 3.0 §4.8.9).
+      const operationParamKeys = new Set(
+        (operationObj.parameters ?? []).map((p) => {
+          const resolved = resolveRef(p, openapiSpec.components) as OpenAPIV3.ParameterObject;
+          return `${resolved.name}:${resolved.in}`;
+        }),
+      );
+      const mergedParameters = [
+        ...pathItemParameters.filter((p) => {
+          const resolved = resolveRef(p, openapiSpec.components) as OpenAPIV3.ParameterObject;
+          return !operationParamKeys.has(`${resolved.name}:${resolved.in}`);
+        }),
+        ...(operationObj.parameters ?? []),
+      ];
+
+      if (mergedParameters.length > 0) {
+        for (const param of mergedParameters) {
           const resolvedParam = resolveRef(
             param,
             openapiSpec.components,
@@ -525,7 +626,10 @@ export function openapiToFunction(
         const content = requestBody.content;
         contentType = Object.keys(content ?? {})[0];
         const schema = content?.[contentType]?.schema;
-        const resolvedSchema = resolveRef(
+        // Use flattenAllOf so that request bodies defined with `allOf` (a common pattern
+        // for merging a shared options schema with required fields) are fully expanded.
+        // resolveRef alone only unwraps $ref and leaves allOf untouched.
+        const resolvedSchema = flattenAllOf(
           schema as OpenAPIV3.ReferenceObject | OpenAPIV3.SchemaObject,
           openapiSpec.components,
         );
