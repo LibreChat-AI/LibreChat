@@ -1,11 +1,5 @@
+import { libreChatTheme, clickHouseTheme } from '@librechat/client';
 import { themeRoleFingerprint, THEME_CACHE_EPOCH } from 'librechat-data-provider';
-import {
-  darkTheme,
-  defaultTheme,
-  clickHouseTheme,
-  highContrastDarkTheme,
-  highContrastLightTheme,
-} from '@librechat/client';
 import type { ThemeCacheEntry } from '../themeCache';
 import {
   themeOwner,
@@ -162,9 +156,11 @@ describe('theme cache storage', () => {
 
 /**
  * The cache version keys on the role set and a hand-bumped epoch, so a release that changes what
- * the built-in themes (default, dark, high contrast, ClickHouse) or an empty definition's fallbacks resolve to (a palette value, a fallback, an emitted attribute) without
- * adding a role would replay stale styling at boot. This pin makes that change fail here: bump
- * `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
+ * a cacheable theme resolves to (a palette value, a fallback, an emitted attribute) without
+ * adding a role would replay stale styling at boot. The pin covers exactly the definitions that
+ * can enter the cache: `librechat`, `clickhouse` and an inline definition's fallbacks. The
+ * high-contrast palettes are not replayed by the boot script, so they are not pinned. A change
+ * fails here: bump `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
  */
 describe('resolver output pin', () => {
   const digest = (text: string): string => {
@@ -176,19 +172,21 @@ describe('resolver output pin', () => {
   };
 
   it('moves only together with THEME_CACHE_EPOCH', () => {
-    const { modes } = buildThemeCache(OWNER, 'clickhouse', clickHouseTheme);
-    const { modes: bare } = buildThemeCache(OWNER, 'bare', {
-      version: 1,
-      name: 'bare',
-      modes: { light: {}, dark: {} },
-    });
-    const builtIns = [darkTheme, defaultTheme, highContrastDarkTheme, highContrastLightTheme];
+    const resolved = [
+      buildThemeCache(OWNER, 'librechat', libreChatTheme).modes,
+      buildThemeCache(OWNER, 'clickhouse', clickHouseTheme).modes,
+      buildThemeCache(OWNER, 'inline', {
+        version: 1,
+        name: 'inline',
+        modes: { light: {}, dark: {} },
+      }).modes,
+    ];
     expect({
       epoch: THEME_CACHE_EPOCH,
-      digest: digest(JSON.stringify([modes, bare, builtIns])),
+      digest: digest(JSON.stringify(resolved)),
     }).toEqual({
       epoch: 1,
-      digest: '1an27zl',
+      digest: 'er00w0',
     });
   });
 });
