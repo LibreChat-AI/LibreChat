@@ -17,3 +17,17 @@ export const fieldBase: string = `lc-field flex w-full rounded-lg border border-
 
 /** A single-line control sized to sit in a form row, matching `Input`. */
 export const fieldControl: string = `${fieldBase} h-theme-field bg-transparent`;
+
+/** A field that sits inside a frame which owns the border and the focus indicator, so it draws neither. */
+export const fieldFlush: string =
+  'border-0 focus-visible:ring-0 theme-field-border:focus-visible:ring-0';
+
+/** A field marked `aria-invalid` draws its border in the destructive role, over the caller's border colour. */
+export const fieldInvalid: string = 'aria-invalid:border-border-destructive';
+
+/** A field set into a list or popover edge to edge, filling its row and leaving the frame to the host. */
+export const fieldEmbedded: string = 'bg-surface-tertiary-alt border-0 p-2 rounded-none text-sm';
+
+/** A caller-owned field inside a rounded frame of its own, such as a prompt or message editor. */
+export const fieldFramed: string =
+  'rounded-xl border border-border-medium bg-transparent text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring-primary';

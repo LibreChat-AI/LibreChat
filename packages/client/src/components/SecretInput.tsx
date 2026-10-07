@@ -1,17 +1,18 @@
 import * as React from 'react';
 import { useState, useCallback } from 'react';
 import { Eye, EyeOff, Copy, Check } from 'lucide';
-import { floatingField, floatingLabel, floatingSecretButton } from './floating';
+import { floatingLabel, floatingSecretButton } from './floating';
 import { cn, disabledInkClasses } from '~/utils';
 import { MorphIcon } from './MorphIcon';
 import './Field.css';
-import { fieldControl } from './Field';
+import { fieldControl, fieldInvalid } from './Field';
+import { INPUT_VARIANTS } from './Input';
 
 export interface SecretInputProps
   extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type'> {
   colorTransition?: boolean;
-  /** `floating` is the sign-in form field whose label rests inside it and lifts on focus. */
-  variant?: 'default' | 'floating';
+  /** Follows the `Input` variants; `floating` is the sign-in form field whose label rests inside it. */
+  variant?: keyof typeof INPUT_VARIANTS;
   /** Show the built-in copy button */
   showCopy?: boolean;
   /** Custom copy control rendered inside the input, in place of the built-in one */
@@ -92,7 +93,8 @@ const SecretInput: React.ForwardRefExoticComponent<
           className={cn(
             fieldControl,
             colorTransition && 'transition-colors',
-            isFloating && floatingField,
+            fieldInvalid,
+            INPUT_VARIANTS[variant],
             className ?? '',
             copyButton != null || showCopy ? 'pr-20' : 'pr-11',
           )}
