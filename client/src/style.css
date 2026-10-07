@@ -386,16 +386,6 @@ html.high-contrast.dark .btn-neutral:hover {
   }
 }
 
-.reset-rc-number-input input {
-  width: 100%;
-  border: none !important;
-  background: transparent;
-}
-
-.reset-rc-number-input-text-right input {
-  text-align: right;
-}
-
 p > small {
   opacity: 0;
   animation: fadein 3s forwards;

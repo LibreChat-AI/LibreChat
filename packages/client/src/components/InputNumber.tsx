@@ -6,6 +6,7 @@ import RCInputNumber from 'rc-input-number';
 import * as InputNumberPrimitive from 'rc-input-number';
 import type { ValueType } from '@rc-component/mini-decimal';
 import { cn, disabledWithinFillClasses } from '~/utils';
+import './InputNumber.css';
 
 // TODO help needed
 // React.ElementRef<typeof LabelPrimitive.Root>,
