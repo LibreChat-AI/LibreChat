@@ -106,11 +106,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Footer.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/AskUserQuestionPopover.tsx": {
     "shadcn/no-restyle": {
       "count": 6
@@ -140,14 +135,9 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Input/Files/FileRow.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 7
-    }
-  },
   "client/src/components/Chat/Input/Files/FileUpload.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 3
     },
     "shadcn/require-static-classes": {
       "count": 2
@@ -191,11 +181,6 @@
       "count": 13
     }
   },
-  "client/src/components/Chat/Input/HeaderOptions.tsx": {
-    "shadcn/no-restyle": {
-      "count": 9
-    }
-  },
   "client/src/components/Chat/Input/MCPConfigDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 17
@@ -203,25 +188,20 @@
   },
   "client/src/components/Chat/Input/Mention.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/Chat/Input/OptionsPopover.tsx": {
-    "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/Chat/Input/PopoverButtons.tsx": {
     "shadcn/no-restyle": {
-      "count": 22
+      "count": 11
     },
     "shadcn/require-static-classes": {
-      "count": 7
+      "count": 3
     }
   },
   "client/src/components/Chat/Input/PromptsCommand.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 4
     }
   },
   "client/src/components/Chat/Input/QuoteButton.tsx": {
@@ -231,22 +211,12 @@
   },
   "client/src/components/Chat/Input/SkillsCommand.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/Chat/Input/StreamAudio.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
+      "count": 4
     }
   },
   "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
-    }
-  },
-  "client/src/components/Chat/Input/TokenUsage/index.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 10
     }
   },
   "client/src/components/Chat/Landing.tsx": {
@@ -744,37 +714,19 @@
       "count": 3
     }
   },
-  "client/src/components/Chat/Trace/Inspector.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Trace/Ledger.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-inline-styles": {
       "count": 4
     }
   },
-  "client/src/components/Chat/Trace/Timeline.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Trace/Viewer.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/Chat/approval/Review.tsx": {
     "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
-  "client/src/components/Chat/ask/options.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
+      "count": 5
     }
   },
   "client/src/components/Conversations/Convo.tsx": {
