@@ -94,6 +94,15 @@ jobs:
               - 'scripts/static-checks.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
+            # Stylesheets are outside the design lint, which reads JSX.
+            css_colors:
+              - 'client/src/**/*.css'
+              - 'packages/client/src/**/*.css'
+              - 'packages/client/src/theme/allowlist.md'
+              - 'scripts/css-colors.mts'
+              - 'scripts/css-colors.test.mts'
+              - 'scripts/static-checks.mts'
+              - '.github/workflows/static-checks.yml'
             config:
               - 'api/**'
               - 'config/**'
@@ -309,6 +318,14 @@ jobs:
           # the diff rather than one file name.
           BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
           node scripts/static-checks.mts --against "$BASE_SHA" --only suppressions
+
+      - name: Check CSS colour literals
+        id: css_colors
+        if: always() && steps.paths.outputs.css_colors == 'true'
+        continue-on-error: true
+        run: |
+          BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
+          node scripts/static-checks.mts --against "$BASE_SHA" --only css-colors
 
       - name: Restore data-provider build cache
         if: always() && steps.paths.outputs.config == 'true'
@@ -653,6 +670,7 @@ jobs:
           ESLINT_CONFIG_OUTCOME: ${{ steps.eslint_config.outcome }}
           DESIGN_RULES_BUILD_OUTCOME: ${{ steps.design_rules_build.outcome }}
           SUPPRESSIONS_OUTCOME: ${{ steps.suppressions.outcome }}
+          CSS_COLORS_OUTCOME: ${{ steps.css_colors.outcome }}
           PRETTIER_OUTCOME: ${{ steps.prettier.outcome }}
           IMPORT_SORT_OUTCOME: ${{ steps.import_sort.outcome }}
           RUNNER_OUTCOME: ${{ steps.runner.outcome }}
@@ -692,6 +710,7 @@ jobs:
           record_failure "ESLint config validation" "$ESLINT_CONFIG_OUTCOME"
           record_failure "Client-package build for the design rules" "$DESIGN_RULES_BUILD_OUTCOME"
           record_failure "Design-rule suppressions" "$SUPPRESSIONS_OUTCOME"
+          record_failure "CSS colour literals" "$CSS_COLORS_OUTCOME"
           record_failure "Prettier" "$PRETTIER_OUTCOME"
           record_failure "Import sorting" "$IMPORT_SORT_OUTCOME"
           record_failure "Local static-checks runner" "$RUNNER_OUTCOME"

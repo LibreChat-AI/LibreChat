@@ -134,7 +134,7 @@ export default function PendingTurn({
           <Container message={message}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light text-text-primary w-full break-words',
+                'markdown prose message-content light text-text-primary w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
               )}
             >

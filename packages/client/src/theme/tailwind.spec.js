@@ -116,6 +116,7 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-field', '--theme-field-height', defaultAppearance.fieldHeight],
       ['py-theme-field-y', '--theme-field-padding-y', defaultAppearance.fieldPaddingY],
       ['font-theme-control', '--theme-control-font-weight', defaultAppearance.controlFontWeight],
+      ['px-theme-button-x', '--theme-button-padding-x', defaultAppearance.buttonPaddingX],
       ['px-theme-dialog-x', '--theme-dialog-padding-x', defaultAppearance.dialogPaddingX],
       [
         'font-theme-dialog-title-weight',
@@ -158,6 +159,13 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.largeSurfaceRadius,
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
+      ['rounded-theme-popover', '--theme-popover-radius', defaultAppearance.popoverRadius],
+      ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
+      [
+        'rounded-theme-composer-action',
+        '--theme-composer-action-radius',
+        defaultAppearance.composerActionRadius,
+      ],
       ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
       ['min-w-theme-list', '--theme-list-min-width', defaultAppearance.listMinWidth],
       ['max-h-theme-list', '--theme-list-max-height', defaultAppearance.listMaxHeight],
@@ -285,6 +293,9 @@ describe('LibreChat Tailwind preset', () => {
       dialogTitleSize: 'textLg',
       dialogTitleFontFamily: 'displayFontFamily',
       menuShadow: 'shadowLg',
+      popoverRadius: 'radius2xl',
+      menuPanelRadius: 'radiusXl',
+      composerActionRadius: 'roundControlRadius',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]

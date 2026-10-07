@@ -102,7 +102,7 @@ function MorphHeight({ open, children }: { open: boolean; children: ReactNode })
       className={cn(
         'overflow-hidden',
         animate &&
-          'transition-[height] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'transition-[height] duration-(--resize-dur) ease-(--resize-ease) motion-reduce:transition-none',
       )}
     >
       {/** Spacing lives inside the measured box so it collapses away with it. */}

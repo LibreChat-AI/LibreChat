@@ -1,4 +1,5 @@
 import { clickHouseTheme } from '@librechat/client';
+import { themeRoleFingerprint } from 'librechat-data-provider';
 import type { ThemeCacheEntry } from '../themeCache';
 import {
   themeOwner,
@@ -8,6 +9,7 @@ import {
   clearThemeCache,
   writeThemeCache,
   THEME_CACHE_KEY,
+  THEME_CACHE_VERSION,
   reconcileThemeCache,
 } from '../themeCache';
 
@@ -75,8 +77,25 @@ describe('reconcileThemeCache', () => {
   it('keeps the uncached behavior when nothing is cached', () => {
     expect(reconcileThemeCache({})).toEqual({ theme: undefined, cache: 'keep' });
     expect(
-      reconcileThemeCache({ owner: OWNER, answer: { theme: 'clickhouse', current: false } }),
+      reconcileThemeCache({
+        owner: OWNER,
+        answer: { theme: 'clickhouse', current: false, signedOut: true },
+      }),
     ).toEqual({ theme: 'clickhouse', cache: 'keep' });
+  });
+
+  it('paints no previous answer that came from another signed-in key', () => {
+    expect(
+      reconcileThemeCache({ owner: OWNER, answer: { theme: 'clickhouse', current: false } }),
+    ).toEqual({ theme: undefined, cache: 'keep' });
+    expect(
+      reconcileThemeCache({ answer: { theme: 'clickhouse', current: false, signedOut: false } }),
+    ).toEqual({ theme: undefined, cache: 'keep' });
+  });
+
+  it('stamps entries with a version derived from the registry roles', () => {
+    expect(cached.v).toBe(themeRoleFingerprint());
+    expect(THEME_CACHE_VERSION).toBe(themeRoleFingerprint());
   });
 });
 

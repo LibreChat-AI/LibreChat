@@ -173,10 +173,15 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
   return variables;
 }
 
+/** The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as it. */
+function canonicalAppearance(key: keyof IThemeAppearance, value: string): string {
+  return key === 'chromeBorderAlpha' && Number(value) === 0 ? '0' : value;
+}
+
 function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   return Object.entries(themeAppearanceProperties).map(([key, property]) => [
     property,
-    appearance[key as keyof IThemeAppearance],
+    canonicalAppearance(key as keyof IThemeAppearance, appearance[key as keyof IThemeAppearance]),
   ]);
 }
 

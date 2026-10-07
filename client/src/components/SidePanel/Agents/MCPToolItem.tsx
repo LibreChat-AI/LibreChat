@@ -172,7 +172,7 @@ export default function MCPToolItem({
       <div
         id={detailsId}
         className={cn(
-          'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'resize-rows grid motion-reduce:transition-none',
           expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
         )}
       >

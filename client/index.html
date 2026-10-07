@@ -105,7 +105,7 @@
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
             const boot =
-              cached && cached.v === 2 && cached.modes && cached.modes[dark ? 'dark' : 'light'];
+              cached && cached.v === '__THEME_CACHE_VERSION__' && cached.modes && cached.modes[dark ? 'dark' : 'light'];
             if (boot && Array.isArray(boot.properties)) {
               let surface;
               let canvas;

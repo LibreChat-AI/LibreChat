@@ -135,6 +135,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
     tool_resources,
     requestBody,
     codeExecutionContext,
+    attachedEnvironmentOptOut,
     accessibleMcpServerNames,
   }) {
     const agent = { id: agentId, tools, provider, model, tool_options };
@@ -147,6 +148,7 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         requestBody,
         tool_resources,
         codeExecutionContext,
+        attachedEnvironmentOptOut,
         agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
         accessibleMcpServerNames,

@@ -192,7 +192,7 @@ const PhaseLabel = memo(function PhaseLabel({
           key={`retired-${lines.retired}`}
           className={cn(
             'absolute inset-x-0 top-0 block truncate',
-            'animate-out fade-out-0 slide-out-to-top-5 fill-mode-forwards',
+            'animate-out fade-out-0 slide-out-to-top-5 [animation-fill-mode:forwards]',
             FOLD_EASING,
             failed && 'text-text-warning',
           )}

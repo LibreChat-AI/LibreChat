@@ -116,7 +116,8 @@ const SteerPart = memo(function SteerPart({
   return (
     <div
       id={steerId ? `steer-${steerId}` : undefined}
-      className="steer-render group relative my-5 flex w-full justify-end"
+      data-steer-render
+      className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
       <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
@@ -150,7 +151,7 @@ const SteerPart = memo(function SteerPart({
           <CollapsibleText enabled={collapseLongUserMessages}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words',
+                'markdown prose message-content light w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
                 'text-text-primary',
               )}

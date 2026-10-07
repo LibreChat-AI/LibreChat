@@ -1,13 +1,11 @@
 import { memo, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { Ellipsis, FolderInput, FolderX, Trash2 } from 'lucide-react';
-import { Spinner, DropdownPopup, buttonVariants, useToastContext } from '@librechat/client';
+import { Ellipsis, Trash2 } from 'lucide-react';
+import { DropdownPopup, buttonVariants } from '@librechat/client';
 import type { TConversation } from 'librechat-data-provider';
 import type { MenuItemProps } from '~/common';
-import ProjectButton from '~/components/Conversations/ConvoOptions/ProjectButton';
 import DeleteButton from '~/components/Conversations/ConvoOptions/DeleteButton';
-import { useAssignConversationToProjectMutation } from '~/data-provider';
-import { NotificationSeverity } from '~/common';
+import useProjectMenuItem from '~/hooks/Chat/useProjectMenuItem';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -21,15 +19,18 @@ const noop = () => {};
 
 function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: ProjectChatOptionsProps) {
   const localize = useLocalize();
-  const { showToast } = useToastContext();
   const menuId = useId();
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [showProjectDialog, setShowProjectDialog] = useState(false);
 
   const conversationId = conversation.conversationId ?? '';
   const chatProjectId = conversation.chatProjectId ?? null;
-  const assignConversationToProject = useAssignConversationToProjectMutation();
+  const projectItem = useProjectMenuItem({
+    conversationId,
+    chatProjectId,
+    enabled: isMenuOpen && conversationId !== '',
+    onAssigned: () => setIsMenuOpen(false),
+  });
 
   const menuItems = useMemo<MenuItemProps[]>(() => {
     if (!conversationId) {
@@ -37,48 +38,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
     }
 
     return [
-      {
-        label: localize('com_ui_change_project'),
-        onClick: () => setShowProjectDialog(true),
-        icon: <FolderInput className="text-text-secondary size-4" aria-hidden="true" />,
-        /** Hiding the menu here restores focus to the trigger, which the dialog
-         *  mounting alongside it reads as an outside interaction and closes on.
-         *  Both dialogs receive setIsMenuOpen and close the menu themselves. */
-        hideOnClick: false,
-        render: (props) => <button {...props} />,
-      },
-      {
-        label: localize('com_ui_remove_from_project'),
-        show: Boolean(chatProjectId),
-        onClick: () => {
-          assignConversationToProject.mutate(
-            { conversationId, projectId: null },
-            {
-              onSuccess: () => {
-                setIsMenuOpen(false);
-                showToast({
-                  message: localize('com_ui_project_updated'),
-                  severity: NotificationSeverity.SUCCESS,
-                  showIcon: true,
-                });
-              },
-              onError: () => {
-                showToast({
-                  message: localize('com_ui_project_update_error'),
-                  severity: NotificationSeverity.ERROR,
-                  showIcon: true,
-                });
-              },
-            },
-          );
-        },
-        hideOnClick: false,
-        icon: assignConversationToProject.isLoading ? (
-          <Spinner className="size-4" />
-        ) : (
-          <FolderX className="text-text-secondary size-4" aria-hidden="true" />
-        ),
-      },
+      projectItem,
       {
         label: localize('com_ui_delete'),
         onClick: () => setShowDeleteDialog(true),
@@ -87,14 +47,7 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
         icon: <Trash2 className="text-text-secondary size-4" aria-hidden="true" />,
       },
     ];
-  }, [
-    assignConversationToProject,
-    chatProjectId,
-    conversationId,
-    localize,
-    setIsMenuOpen,
-    showToast,
-  ]);
+  }, [conversationId, localize, projectItem]);
 
   return (
     <>
@@ -123,16 +76,6 @@ function ProjectChatOptions({ conversation, isMenuOpen, setIsMenuOpen }: Project
         }
         items={menuItems}
       />
-      {showProjectDialog ? (
-        <ProjectButton
-          conversationId={conversationId}
-          chatProjectId={chatProjectId}
-          setMenuOpen={setIsMenuOpen}
-          triggerRef={menuButtonRef}
-          showProjectDialog={showProjectDialog}
-          setShowProjectDialog={setShowProjectDialog}
-        />
-      ) : null}
       {showDeleteDialog ? (
         <DeleteButton
           title={conversation.title ?? ''}

@@ -18,13 +18,15 @@ const themedControls = [
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],
   ['CodeWorkspaceMenu.tsx', ['chipClasses', 'infoChipClasses']],
+  /** The dictation mic and its send share the submit slot's corner. */
+  ['Composer/Bar.tsx', ['shape="composer"']],
 ] as const;
 
 describe('Composer appearance tokens', () => {
   it.each(submitControls)('%s composes the shared submit-slot control', (file) => {
     const contents = source(file);
 
-    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="theme"'].forEach((token) =>
+    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="composer"'].forEach((token) =>
       expect(contents).toContain(token),
     );
   });

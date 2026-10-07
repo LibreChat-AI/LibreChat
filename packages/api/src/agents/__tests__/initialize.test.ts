@@ -3361,6 +3361,9 @@ describe('initializeAgent — execute_code capability expansion', () => {
     const primeCall = primeResources.mock.calls[primeResources.mock.calls.length - 1][0];
     expect(primeCall.enabledToolResources.has(EToolResources.execute_code)).toBe(false);
     expect(primeCall.tool_resources).not.toHaveProperty(EToolResources.execute_code);
+    expect(loadTools).toHaveBeenLastCalledWith(
+      expect.objectContaining({ attachedEnvironmentOptOut: true }),
+    );
   });
 
   it('does not disable managed code tools for the without-attached decision', async () => {
@@ -3407,6 +3410,9 @@ describe('initializeAgent — execute_code capability expansion', () => {
     expect(result.codeEnvAvailable).toBe(true);
     expect(result.toolDefinitions?.map(({ name }) => name)).toEqual(
       expect.arrayContaining(['bash_tool', 'read_file']),
+    );
+    expect(loadTools).toHaveBeenLastCalledWith(
+      expect.objectContaining({ attachedEnvironmentOptOut: false }),
     );
   });
 

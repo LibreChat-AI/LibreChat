@@ -788,7 +788,7 @@ export default function InsightsView() {
                         ? localize('com_ui_clear_all')
                         : localize('com_insights_select_all_agents')
                     }
-                    className="text-text-primary hover:bg-surface-hover h-10 w-full justify-start gap-2 rounded-none px-4 font-medium"
+                    className="text-text-primary h-10 w-full justify-start rounded-none px-4 font-medium"
                     onClick={() =>
                       handleAgentSelection(
                         displayedAgentIds.length > 0 ? [] : agentItems.map((agent) => agent.value),

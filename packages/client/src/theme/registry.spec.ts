@@ -14,6 +14,7 @@ import {
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
@@ -258,6 +259,46 @@ describe('theme registry', () => {
     );
 
     expect(resolved.colors['rgb-link-prose']).toBe('4 5 6');
+  });
+
+  it('keeps the prose marker, quote bar and code chip on the roles they read before', () => {
+    const colors = {
+      'rgb-border-light': '1 1 1',
+      'rgb-border-medium': '2 2 2',
+      'rgb-surface-active-alt': '3 3 3',
+      'rgb-surface-hover-alt': '4 4 4',
+    };
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'prose-roles-reference',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const light = resolveTheme(theme, 'light').colors;
+    const dark = resolveTheme(theme, 'dark').colors;
+
+    expect([light['rgb-prose-bullet'], light['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
+    expect(light['rgb-surface-code-inline']).toBe('3 3 3');
+    expect([dark['rgb-prose-bullet'], dark['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
+    expect(dark['rgb-surface-code-inline']).toBe('4 4 4');
+  });
+
+  it('keeps the popover, selector and send corners on the scale steps a theme names', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'corner-reference',
+        modes: {
+          light: {
+            appearance: { radius2xl: '3px', radiusXl: '5px', roundControlRadius: '7px' },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.appearance.popoverRadius).toBe('3px');
+    expect(resolved.appearance.menuPanelRadius).toBe('5px');
+    expect(resolved.appearance.composerActionRadius).toBe('7px');
   });
 
   it('derives omitted chart widget colors from the previous panel roles', () => {
@@ -2106,4 +2147,42 @@ describe('theme registry', () => {
     expect(validateThemeDefinition(definition as ThemeDefinition)).toContain(expectedError);
     expect(() => resolveTheme(definition as ThemeDefinition, 'light')).toThrow(TypeError);
   });
+});
+
+describe('appearance families substitute through the emitted variables', () => {
+  const reference: ThemeDefinition = {
+    version: 1,
+    name: 'family-reference',
+    modes: {
+      light: {
+        appearance: {
+          radiusLg: '0.125rem',
+          fontFamily: 'Georgia, serif',
+          shadowMd: '0 1px 2px 0 rgb(0 0 0 / 0.3)',
+          controlHeight: '3rem',
+          spaceNormal: '1rem',
+        },
+      },
+    },
+  };
+  const emitted = (theme: ThemeDefinition) =>
+    new Map(describeResolvedTheme(resolveTheme(theme, 'light')).properties);
+
+  it.each([
+    ['radius', '--theme-radius-lg', '0.125rem'],
+    ['font', '--theme-font-family', 'Georgia, serif'],
+    ['shadow', '--theme-shadow-md', '0 1px 2px 0 rgb(0 0 0 / 0.3)'],
+    ['density (control height)', '--theme-control-height', '3rem'],
+    ['density (spacing)', '--theme-space-normal', '1rem'],
+  ])(
+    'changes the %s variable and only restates it for a reference theme',
+    (_family, property, value) => {
+      const base = emitted(libreChatTheme);
+      const themed = emitted(reference);
+
+      expect(base.get(property)).toBeDefined();
+      expect(themed.get(property)).toBe(value);
+      expect(themed.get(property)).not.toBe(base.get(property));
+    },
+  );
 });

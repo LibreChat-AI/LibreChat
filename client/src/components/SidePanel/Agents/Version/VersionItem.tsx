@@ -180,7 +180,7 @@ export default function VersionItem({
                 className="max-w-[28.125rem]"
                 main={
                   <div className="flex w-full flex-col gap-3 text-sm">
-                    <Label className="text-text-primary text-left font-medium">
+                    <Label className="text-left font-medium">
                       {localize('com_ui_agent_version_restore_description')}
                     </Label>
                     <div className="border-border-light bg-surface-secondary rounded-lg border px-3 py-2">

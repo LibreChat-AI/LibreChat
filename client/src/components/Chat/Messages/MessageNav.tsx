@@ -80,10 +80,10 @@ export function buildEntry(id: string, msg: TMessage, node?: HTMLElement): Messa
 }
 
 const USER_TURN_SELECTOR = '.user-turn';
-const STEER_RENDER_CLASS = 'steer-render';
+const STEER_RENDER_ATTRIBUTE = 'data-steer-render';
 /** One query, document order: steer nodes interleave at their in-thread
  *  position INSIDE the response that absorbed them. */
-const ENTRY_NODE_SELECTOR = `.message-render, .${STEER_RENDER_CLASS}`;
+const ENTRY_NODE_SELECTOR = `.message-render, [${STEER_RENDER_ATTRIBUTE}]`;
 
 /** Rail-relevant node: a message row or an in-thread steer part. The mutation
  *  filter must match BOTH — a steer node swap (optimistic → persisted) or
@@ -91,7 +91,7 @@ const ENTRY_NODE_SELECTOR = `.message-render, .${STEER_RENDER_CLASS}`;
 function isEntryNode(node: HTMLElement): boolean {
   return (
     node.classList?.contains('message-render') === true ||
-    node.classList?.contains(STEER_RENDER_CLASS) === true
+    node.hasAttribute?.(STEER_RENDER_ATTRIBUTE) === true
   );
 }
 
@@ -165,7 +165,7 @@ function getMessageEntries(root: ParentNode, messagesById: Map<string, TMessage>
       continue;
     }
     seen.add(id);
-    if (node.classList.contains(STEER_RENDER_CLASS)) {
+    if (node.hasAttribute(STEER_RENDER_ATTRIBUTE)) {
       entries.push(buildSteerEntry(node, id));
       continue;
     }
@@ -1651,8 +1651,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
         onKeyDown={handleColumnKeyDown}
         onScroll={handleColumnScroll}
         data-message-nav-column=""
-        className="relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        className="hide-scrollbar relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
       >
         {messageEntries.map((entry) => {
           const label = localize(
@@ -1711,13 +1710,12 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
             ref={tipElRef}
             role="tooltip"
             style={{
-              position: 'fixed',
               top: tip.top,
               right: tip.right,
               transform: 'translateY(-50%)',
               zIndex: 999,
             }}
-            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none max-w-[17.5rem] rounded-xl border px-3 py-2 shadow-lg"
+            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none fixed max-w-[17.5rem] rounded-xl border px-3 py-2 shadow-lg"
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,

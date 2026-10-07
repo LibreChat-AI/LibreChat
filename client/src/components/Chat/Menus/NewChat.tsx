@@ -22,11 +22,8 @@ export default function NewChat({ className }: { className?: string }) {
         <Button
           asChild
           size="icon"
-          variant="outline"
-          className={cn(
-            'bg-presentation hover:bg-surface-active-alt size-9 shrink-0 rounded-xl',
-            className,
-          )}
+          variant="header-action"
+          className={cn('size-9 shrink-0', className)}
         >
           <a
             href="/c/new"

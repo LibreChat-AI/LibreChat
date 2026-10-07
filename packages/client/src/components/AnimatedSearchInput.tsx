@@ -66,7 +66,7 @@ const AnimatedSearchInput = ({
       >
         <div className="absolute inset-0">
           <div
-            className={`bg-gradient-radial from-accent-primary/10 absolute inset-0 to-transparent transition-opacity duration-700 ease-in-out ${isSearching && hasValue ? 'animate-pulse-slow opacity-100' : 'opacity-0'} `}
+            className={`absolute inset-0 transition-opacity duration-700 ease-in-out ${isSearching && hasValue ? 'animate-pulse-slow opacity-100' : 'opacity-0'} `}
           />
           <div
             className={`from-accent-primary/5 via-accent-primary/10 to-accent-primary/5 absolute inset-0 bg-gradient-to-r blur-xl transition-all duration-700 ease-in-out ${isSearching && hasValue ? 'animate-gradient-x opacity-100' : 'opacity-0'} `}

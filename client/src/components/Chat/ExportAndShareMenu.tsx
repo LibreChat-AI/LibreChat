@@ -19,6 +19,7 @@ export default function ExportAndShareMenu({
   const { show, items, hasSharedLink, dialogs } = useChatOptions({
     isSharedButtonEnabled,
     readOnly,
+    isMenuOpen: isPopoverActive,
     closeMenu: () => setIsPopoverActive(false),
   });
 

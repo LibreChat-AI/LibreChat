@@ -42,7 +42,7 @@ export default function ApiKeys() {
           ref={contentRef}
           tabIndex={-1}
           onOpenAutoFocus={handleOpenAutoFocus}
-          className="bg-surface-dialog text-text-primary w-11/12 max-w-2xl shadow-2xl"
+          className="text-text-primary w-11/12 max-w-2xl shadow-2xl"
           aria-describedby={undefined}
         >
           <OGDialogHeader className="space-y-0 pr-8 text-left">

@@ -166,7 +166,7 @@ export default function ShareButton({
                   <Label
                     id="share-files-label"
                     htmlFor="share-files-switch"
-                    className="text-text-primary cursor-pointer text-sm font-medium"
+                    className="cursor-pointer text-sm font-medium"
                   >
                     {localize('com_ui_share_files')}
                   </Label>

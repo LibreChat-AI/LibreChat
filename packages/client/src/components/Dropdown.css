@@ -15,8 +15,8 @@
   /* The `menuShadow` role, whose light default is this literal. */
   box-shadow: var(
     --theme-menu-shadow,
-    0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1)
+    0 10px 15px -3px rgb(var(--black) / 0.1),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
   );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
@@ -59,8 +59,8 @@ html.high-contrast .popover-ui {
   color: rgb(var(--text-secondary));
   box-shadow: var(
     --theme-menu-shadow,
-    0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1)
+    0 10px 15px -3px rgb(var(--black) / 0.25),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
   );
 }
 
