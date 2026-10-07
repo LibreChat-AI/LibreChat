@@ -27,11 +27,14 @@ const handlers = createSkillManagementHandlers({
 });
 router.use(requireAgentManagementAuth, checkBan, configMiddleware);
 router.get('/', handlers.list);
+router.post('/', handlers.create);
 router.get('/:id', handlers.get);
 router.patch('/:id', handlers.update);
+router.delete('/:id', handlers.delete);
 router.get('/:id/files', handlers.listFiles);
 router.get('/:id/files/*relativePath', handlers.getFile);
 router.put('/:id/files/*relativePath', handlers.updateFile);
+router.delete('/:id/files/*relativePath', handlers.deleteFile);
 router.use((_req, res) => {
   const { status, body } = mapAgentManagementError('not_found');
   body.error.message = 'Skill or file not found';

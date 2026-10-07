@@ -1249,6 +1249,140 @@
             }
           }
         }
+      },
+      "post": {
+        "operationId": "createSkill",
+        "summary": "Create a skill",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The created skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Skill"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The Skill name already exists, or the bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AccountDeletionConflict"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/skills/{id}": {
@@ -1524,6 +1658,134 @@
             }
           }
         }
+      },
+      "delete": {
+        "operationId": "deleteSkill",
+        "summary": "Delete a skill",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The skill was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillDeleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/skills/{id}/files": {
@@ -1695,6 +1957,143 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SkillFileContent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or a malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/JsonParseError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMessage"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission denied, the caller is banned, or the request fails tenant isolation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MessageError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The bound account is being deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error. Errors normalized by the route use JSON; the final application error controller sends a text body with the text/html media type.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMessage"
+                    }
+                  ]
+                }
+              },
+              "text/html": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "An unknown error occurred.",
+                    "Processing error in ErrorController."
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSkillFile",
+        "summary": "Delete a skill's file",
+        "tags": [
+          "Skills"
+        ],
+        "security": [
+          {
+            "oidcBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "description": "The skill id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "relativePath",
+            "description": "The file path within the skill",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SkillFileDeleted"
                 }
               }
             }
@@ -3807,6 +4206,41 @@
           "after"
         ]
       },
+      "SkillCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "displayTitle": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SkillFrontmatterValue"
+            }
+          },
+          "category": {
+            "type": "string"
+          },
+          "alwaysApply": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "body"
+        ],
+        "additionalProperties": false
+      },
       "SkillUpdateRequest": {
         "type": "object",
         "properties": {
@@ -3844,6 +4278,26 @@
         ],
         "additionalProperties": false,
         "minProperties": 2
+      },
+      "SkillDeleted": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f\\d]{24}$"
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          },
+          "cleanupComplete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ]
       },
       "SkillFile": {
         "type": "object",
@@ -3947,6 +4401,27 @@
         "required": [
           "relativePath",
           "bytes"
+        ]
+      },
+      "SkillFileDeleted": {
+        "type": "object",
+        "properties": {
+          "skillId": {
+            "type": "string",
+            "pattern": "^[a-f\\d]{24}$"
+          },
+          "relativePath": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "skillId",
+          "relativePath",
+          "deleted"
         ]
       },
       "ErrorMessage": {
