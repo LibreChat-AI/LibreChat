@@ -954,7 +954,7 @@ pre[class*='language-'] {
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: rgb(var(--surface-secondary));
-  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity));
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 0.1));
   border-width: 1px;
   color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
   font-size: 0.875rem;
@@ -976,7 +976,7 @@ pre[class*='language-'] {
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: transparent;
-  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity));
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 1));
   color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
 }
 
