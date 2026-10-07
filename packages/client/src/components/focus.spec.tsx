@@ -144,7 +144,8 @@ describe('shared control keyboard focus', () => {
       screen.getByTestId('choice'),
     ].forEach((node) => {
       expect(node).toHaveClass(...roleClasses);
-      expect(node).not.toHaveClass('outline-hidden', 'outline-none');
+      expect(node).not.toHaveClass('outline-hidden');
+      expect(node).not.toHaveClass('outline-none');
     });
   });
 });
