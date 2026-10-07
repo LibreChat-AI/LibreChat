@@ -1,30 +1,20 @@
 {
-  "client/src/a11y/MessageBlock.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 7
-    }
-  },
   "client/src/components/Agents/AgentCard.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 3
+      "count": 1
     }
   },
   "client/src/components/Agents/AgentDetailContent.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 4
+      "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 10
     }
   },
   "client/src/components/Agents/AgentGrid.tsx": {
     "shadcn/no-restyle": {
       "count": 1
-    }
-  },
-  "client/src/components/Agents/CategoryTabs.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
     }
   },
   "client/src/components/Agents/Marketplace.tsx": {
@@ -42,11 +32,6 @@
       "count": 7
     }
   },
-  "client/src/components/Agents/VirtualizedAgentGrid.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
   "client/src/components/Artifacts/ArtifactCodeEditor.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
@@ -56,16 +41,8 @@
     "shadcn/no-arbitrary-values": {
       "count": 2
     },
-    "shadcn/no-inline-styles": {
-      "count": 4
-    },
     "shadcn/no-restyle": {
       "count": 2
-    }
-  },
-  "client/src/components/Audio/TTS.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 6
     }
   },
   "client/src/components/Auth/TwoFactorScreen.tsx": {
@@ -76,11 +53,6 @@
   "client/src/components/Bookmarks/BookmarkForm.tsx": {
     "shadcn/no-restyle": {
       "count": 11
-    }
-  },
-  "client/src/components/Bookmarks/BookmarkItem.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
     }
   },
   "client/src/components/Bookmarks/DeleteBookmarkButton.tsx": {
@@ -609,11 +581,6 @@
       "count": 2
     }
   },
-  "client/src/components/Conversations/PinnedSection.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Conversations/ProjectsSection.tsx": {
     "shadcn/no-restyle": {
       "count": 9
@@ -770,7 +737,7 @@
       "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/Messages/Content/Mermaid/MermaidDialog.tsx": {
@@ -778,7 +745,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 30
+      "count": 28
     }
   },
   "client/src/components/Messages/Content/RunCode.tsx": {
@@ -897,16 +864,6 @@
       "count": 9
     }
   },
-  "client/src/components/Plugins/Store/PluginPagination.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
-  "client/src/components/Projects/ProjectChatList.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Projects/ProjectChatOptions.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -999,11 +956,6 @@
   "client/src/components/Prompts/sidebar/GroupSidePanel.tsx": {
     "shadcn/no-restyle": {
       "count": 5
-    }
-  },
-  "client/src/components/Share/MessagesView.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "client/src/components/Share/ShareArtifacts.tsx": {
@@ -1588,11 +1540,6 @@
       "count": 3
     }
   },
-  "client/src/components/ui/CustomIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 9
-    }
-  },
   "client/src/components/ui/LocalizedDateRangePicker.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -1618,32 +1565,19 @@
       "count": 3
     }
   },
-  "client/src/routes/Search.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "packages/client/src/components/Avatar.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/Combobox.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 1
     }
   },
   "packages/client/src/components/DataTable.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 6
+      "count": 4
     }
   },
   "packages/client/src/components/DataTable/DataTable.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 7
+      "count": 1
     }
   },
   "packages/client/src/components/DataTable/DataTableComponents.tsx": {
@@ -1651,17 +1585,7 @@
       "count": 1
     }
   },
-  "packages/client/src/components/FileUpload.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "packages/client/src/components/HoverCard.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "packages/client/src/components/PixelCard.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -1678,22 +1602,12 @@
   },
   "packages/client/src/components/SplitText.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 7
-    }
-  },
-  "packages/client/src/components/Toast.tsx": {
-    "shadcn/no-inline-styles": {
       "count": 1
     }
   },
   "packages/client/src/icons/provider/Avatar.tsx": {
     "shadcn/no-inline-styles": {
       "count": 2
-    }
-  },
-  "packages/client/src/svgs/SendMessageIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   }
 }
