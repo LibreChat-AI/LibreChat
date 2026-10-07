@@ -191,6 +191,7 @@ type Rgb = [number, number, number];
 const canvasSurfaces: Array<keyof IThemeRGB> = [
   'rgb-surface-primary',
   'rgb-surface-primary-alt',
+  'rgb-surface-sidebar',
   'rgb-surface-secondary',
   'rgb-surface-dialog',
   'rgb-surface-chat',

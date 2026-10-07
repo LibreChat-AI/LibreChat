@@ -107,9 +107,11 @@ const solidFills: Array<keyof IThemeRGB> = [
  *  outlines inputs such as `Select` and `InputNumber`: that one sits at 1.24:1
  *  here and 1.52:1 in the LibreChat palette, a gap the registry has no
  *  control-boundary role to close, so it is left to a follow-up rather than
- *  asserted. */
+ *  asserted. `border-control` is asserted and pinned: Click UI's field stroke sits
+ *  below the floor by owner decision. */
 const boundaryTokens: Array<keyof IThemeRGB> = [
   'rgb-border-xheavy',
+  'rgb-border-control',
   'rgb-border-destructive',
   'rgb-ring-primary',
 ];
@@ -201,6 +203,10 @@ const clickUiBelowFloor: Record<ThemeMode, string[]> = {
     'rgb-border-xheavy on rgb-surface-secondary: 1.90:1 (needs 3:1)',
     'rgb-border-xheavy on rgb-surface-tertiary: 1.90:1 (needs 3:1)',
     'rgb-border-xheavy on rgb-surface-dialog: 2.03:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-primary: 1.24:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-secondary: 1.16:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-tertiary: 1.16:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-dialog: 1.24:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-surface-chat: 2.03:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-surface-primary: 2.03:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-presentation: 2.03:1 (needs 3:1)',
@@ -233,12 +239,17 @@ const clickUiBelowFloor: Record<ThemeMode, string[]> = {
     'rgb-series-7 on rgb-surface-chat: 1.95:1 (needs 3:1)',
     'rgb-series-7 on rgb-surface-dialog: 1.95:1 (needs 3:1)',
     'rgb-series-7 on rgb-text-on-status: 1.95:1 (needs 3:1)',
+    'rgb-switch-unchecked on rgb-switch-thumb: 1.56:1 (needs 3:1)',
   ],
   dark: [
     'rgb-border-xheavy on rgb-surface-primary: 1.62:1 (needs 3:1)',
     'rgb-border-xheavy on rgb-surface-secondary: 1.44:1 (needs 3:1)',
     'rgb-border-xheavy on rgb-surface-tertiary: 1.44:1 (needs 3:1)',
     'rgb-border-xheavy on rgb-surface-dialog: 1.62:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-primary: 1.50:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-secondary: 1.34:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-tertiary: 1.34:1 (needs 3:1)',
+    'rgb-border-control on rgb-surface-dialog: 1.50:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-surface-chat: 1.62:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-surface-primary: 1.62:1 (needs 3:1)',
     'rgb-prose-bullet on rgb-presentation: 1.62:1 (needs 3:1)',
@@ -247,6 +258,7 @@ const clickUiBelowFloor: Record<ThemeMode, string[]> = {
     'rgb-prose-quote-bar on rgb-surface-primary: 1.62:1 (needs 3:1)',
     'rgb-prose-quote-bar on rgb-presentation: 1.62:1 (needs 3:1)',
     'rgb-prose-quote-bar on rgb-surface-user-message: 1.26:1 (needs 3:1)',
+    'rgb-switch-unchecked on rgb-switch-thumb: 2.90:1 (needs 3:1)',
   ],
 };
 
@@ -421,6 +433,18 @@ describe.each(modes)('clickhouse %s palette', (mode, theme) => {
         'rgb-surface-tertiary',
         'rgb-surface-dialog',
       ]),
+    ).toEqual([]);
+  });
+
+  it('keeps the unchecked switch track at the 3:1 floor against the thumb and the checked fill', () => {
+    expect(
+      belowPinned(
+        mode,
+        theme,
+        WCAG_NON_TEXT,
+        ['rgb-switch-unchecked'],
+        ['rgb-switch-thumb', 'rgb-surface-inverted'],
+      ),
     ).toEqual([]);
   });
 
