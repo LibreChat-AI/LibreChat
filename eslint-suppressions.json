@@ -219,49 +219,19 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Menus/Endpoints/components/EndpointModelItem.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Menus/Endpoints/components/GroupIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Menus/Endpoints/components/ModelSpecItem.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Menus/Endpoints/components/SearchResults.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Menus/HeaderMenu.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Menus/NewChat.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Chat/Menus/Presets/EditPresetDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 3
     }
   },
   "client/src/components/Chat/Menus/Presets/PresetItems.tsx": {
     "shadcn/no-restyle": {
-      "count": 44
+      "count": 21
     }
   },
   "client/src/components/Chat/Menus/PresetsMenu.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/ActivityPhaseGroup.tsx": {
@@ -676,7 +646,7 @@
   },
   "client/src/components/Endpoints/SaveAsPresetDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 2
     }
   },
   "client/src/components/Endpoints/Settings/Advanced.tsx": {
@@ -697,7 +667,7 @@
   },
   "client/src/components/Endpoints/Settings/Examples.tsx": {
     "shadcn/no-restyle": {
-      "count": 24
+      "count": 20
     }
   },
   "client/src/components/Endpoints/URLIcon.tsx": {
@@ -826,11 +796,6 @@
       "count": 3
     }
   },
-  "client/src/components/Nav/ExportConversation/ExportModal.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
   "client/src/components/Nav/KeyboardShortcutsDialog.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 4
@@ -846,7 +811,7 @@
   },
   "client/src/components/Nav/Settings/Dialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 3
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/Avatar.tsx": {
@@ -854,39 +819,24 @@
       "count": 3
     }
   },
-  "client/src/components/Nav/SettingsTabs/Account/BackupCodesItem.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Nav/SettingsTabs/Account/DeleteAccount.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 13
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorAuthentication.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/BackupPhase.tsx": {
     "shadcn/no-restyle": {
       "count": 1
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/DisablePhase.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 4
     }
   },
   "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/QRPhase.tsx": {
     "shadcn/no-restyle": {
       "count": 3
-    }
-  },
-  "client/src/components/Nav/SettingsTabs/Account/TwoFactorPhases/VerifyPhase.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Nav/SettingsTabs/ApiKeys/Admin.tsx": {
@@ -896,12 +846,12 @@
   },
   "client/src/components/Nav/SettingsTabs/ApiKeys/ApiKeys.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 3
     }
   },
   "client/src/components/Nav/SettingsTabs/ApiKeys/List.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Nav/SettingsTabs/ApiKeys/Reveal.tsx": {
@@ -932,14 +882,9 @@
       "count": 1
     }
   },
-  "client/src/components/Nav/SettingsTabs/Integrations/LangfuseConnection.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Nav/SettingsTabs/ProviderKeys/ProviderKeys.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/Nav/SettingsTabs/Speech/STT/AutoSendTextSelector.tsx": {
@@ -1003,7 +948,7 @@
   },
   "client/src/components/Prompts/buttons/AutoSendPrompt.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 3
     }
   },
   "client/src/components/Prompts/dialogs/SharePrompt.tsx": {
@@ -1013,22 +958,12 @@
   },
   "client/src/components/Prompts/dialogs/VariableDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Prompts/display/PromptActions.tsx": {
-    "shadcn/no-restyle": {
       "count": 1
     }
   },
   "client/src/components/Prompts/display/PromptTextCard.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Prompts/display/PromptVariables.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 5
+      "count": 1
     }
   },
   "client/src/components/Prompts/editor/PromptEditor.tsx": {
@@ -1037,9 +972,6 @@
     }
   },
   "client/src/components/Prompts/editor/VariablesDropdown.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 2
     }
@@ -1056,12 +988,12 @@
   },
   "client/src/components/Prompts/fields/PromptName.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 9
     }
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 16
+      "count": 15
     }
   },
   "client/src/components/Prompts/forms/PromptForm.tsx": {
@@ -1080,11 +1012,6 @@
       "count": 2
     }
   },
-  "client/src/components/Prompts/lists/ListCard.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Prompts/sidebar/FilterPrompts.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -1095,12 +1022,7 @@
   },
   "client/src/components/Prompts/sidebar/GroupSidePanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 7
-    }
-  },
-  "client/src/components/Prompts/utils/SkeletonForm.tsx": {
-    "shadcn/no-restyle": {
-      "count": 3
+      "count": 5
     }
   },
   "client/src/components/Share/MessagesView.tsx": {
@@ -1558,22 +1480,12 @@
       "count": 1
     }
   },
-  "client/src/components/Skills/buttons/SkillToggle.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Skills/dialogs/CreateSkillDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 36
+      "count": 26
     }
   },
   "client/src/components/Skills/display/SkillDetail.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/Skills/display/SkillFileViewer.tsx": {
     "shadcn/no-restyle": {
       "count": 1
     }
@@ -1583,29 +1495,19 @@
       "count": 1
     }
   },
-  "client/src/components/Skills/display/SkillState.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Skills/forms/CreateSkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 17
+      "count": 14
     }
   },
   "client/src/components/Skills/forms/SkillContentEditor.tsx": {
     "shadcn/no-restyle": {
-      "count": 13
+      "count": 11
     }
   },
   "client/src/components/Skills/forms/SkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 18
-    }
-  },
-  "client/src/components/Skills/layouts/SkillsView.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
+      "count": 14
     }
   },
   "client/src/components/Skills/lists/SkillListItem.tsx": {
@@ -1615,18 +1517,18 @@
   },
   "client/src/components/Skills/tree/SkillFileEditor.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 3
+      "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 18
+      "count": 13
     }
   },
   "client/src/components/Skills/tree/SkillFilePreview.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 3
+      "count": 2
     },
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 2
     }
   },
   "client/src/components/Tools/AssistantToolsDialog.tsx": {
