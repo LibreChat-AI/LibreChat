@@ -2,6 +2,7 @@ import '@testing-library/jest-dom';
 import { render, screen } from '@testing-library/react';
 import { TextareaAutosize } from './TextareaAutosize';
 import { SecretInput } from './SecretInput';
+import { floatingLabel } from './floating';
 import { Textarea } from './Textarea';
 import { Input } from './Input';
 import { cn } from '~/utils';
@@ -107,5 +108,10 @@ describe('field variants', () => {
   it('SecretInput follows the Input variants', () => {
     render(<SecretInput aria-label="key" variant="flush" />);
     expect(screen.getByLabelText('key')).toHaveClass(...FLUSH);
+  });
+
+  it('paints the floating label chip in the field fill when the theme fills fields', () => {
+    expect(floatingLabel).toContain('bg-surface-primary');
+    expect(floatingLabel).toContain('theme-field-fill:bg-field-fill');
   });
 });

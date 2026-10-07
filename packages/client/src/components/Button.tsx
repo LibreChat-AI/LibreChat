@@ -27,6 +27,7 @@ type ButtonVariantOptions =
         | 'inline-link'
         | 'carousel-nav'
         | 'toolbar'
+        | 'nav'
         | 'media'
         | 'row-action'
         | 'row-action-reveal'
@@ -125,6 +126,9 @@ const buttonVariantRecipe = cva(
         /** A compact text action in a toolbar, quiet until hovered. */
         toolbar:
           'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',
+        /** A destination in a navigation rail. The fills are the theme's navigation roles, and the
+         *  current destination is marked with `aria-pressed`, so a caller sets no class for it. */
+        nav: 'text-text-secondary hover:bg-surface-nav-hover hover:text-text-primary hover:active:bg-surface-pressed aria-pressed:bg-surface-nav-selected aria-pressed:text-text-primary aria-pressed:hover:bg-surface-nav-selected',
         /**
          * A control drawn over the user's own media (a lightbox toolbar, an image preview's close):
          * ghost-shaped, with the media ink and a tint of it on hover, so it stays legible on the

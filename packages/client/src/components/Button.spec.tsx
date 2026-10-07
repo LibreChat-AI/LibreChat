@@ -40,6 +40,15 @@ describe('Button', () => {
     expect(ghost).not.toContain('text-text-secondary');
   });
 
+  it('marks the current nav destination with aria-pressed and the theme navigation roles', () => {
+    const nav = cn(buttonVariants({ variant: 'nav', size: 'icon' }));
+    expect(nav).toContain('text-text-secondary');
+    expect(nav).toContain('hover:bg-surface-nav-hover');
+    expect(nav).toContain('aria-pressed:bg-surface-nav-selected');
+    expect(nav).toContain('aria-pressed:text-text-primary');
+    expect(nav).toContain('size-theme-button');
+  });
+
   it('offers the message, link, carousel and toolbar roles as variants', () => {
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('text-text-secondary-alt');
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('p-1.5');
