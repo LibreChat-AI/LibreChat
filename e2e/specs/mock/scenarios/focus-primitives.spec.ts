@@ -11,6 +11,15 @@ import { NEW_CHAT_PATH } from '../helpers';
 
 type Mode = 'light' | 'dark';
 
+type Check = 'role' | 'hidden' | 'utility' | 'global';
+
+const RING_CLASSES =
+  'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-control';
+const HIDDEN_CLASSES =
+  'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control';
+const UTILITY_CLASSES =
+  'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2';
+
 const PROBE = 'focus-primitives-probe';
 
 async function openChat(page: Page, mode: Mode) {
@@ -59,50 +68,82 @@ async function keyboardFocus(page: Page, classes: string) {
   });
 }
 
-for (const mode of ['light', 'dark'] as const) {
-  test.describe(`${mode} primitives focus ring`, () => {
-    test(`the ring role equals the primary ink in the default theme @scenario:focus-primitives-role-default-${mode}`, async ({
-      page,
-    }) => {
-      await openChat(page, mode);
-      const { focusControl, textPrimary } = await keyboardFocus(
-        page,
-        'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus-control',
-      );
-      expect(focusControl).not.toBe('');
-      expect(focusControl).toBe(textPrimary);
-    });
+/** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+const CASES: Array<{ title: string; mode: Mode; check: Check }> = [
+  {
+    title:
+      'the ring role equals the primary ink in the default light theme @scenario:focus-primitives-role-default-light',
+    mode: 'light',
+    check: 'role',
+  },
+  {
+    title:
+      'the ring role equals the primary ink in the default dark theme @scenario:focus-primitives-role-default-dark',
+    mode: 'dark',
+    check: 'role',
+  },
+  {
+    title:
+      'an outline-hidden control draws no global outline in light @scenario:focus-primitives-outline-hidden-light',
+    mode: 'light',
+    check: 'hidden',
+  },
+  {
+    title:
+      'an outline-hidden control draws no global outline in dark @scenario:focus-primitives-outline-hidden-dark',
+    mode: 'dark',
+    check: 'hidden',
+  },
+  {
+    title:
+      'a control with its own outline utility keeps it in light @scenario:focus-primitives-outline-utility-light',
+    mode: 'light',
+    check: 'utility',
+  },
+  {
+    title:
+      'a control with its own outline utility keeps it in dark @scenario:focus-primitives-outline-utility-dark',
+    mode: 'dark',
+    check: 'utility',
+  },
+  {
+    title:
+      'a bare control keeps the global outline role in light @scenario:focus-primitives-global-outline-light',
+    mode: 'light',
+    check: 'global',
+  },
+  {
+    title:
+      'a bare control keeps the global outline role in dark @scenario:focus-primitives-global-outline-dark',
+    mode: 'dark',
+    check: 'global',
+  },
+];
 
-    test(`an outline-hidden control draws no global outline @scenario:focus-primitives-outline-hidden-${mode}`, async ({
-      page,
-    }) => {
+test.describe('primitives focus ring', () => {
+  for (const { title, mode, check } of CASES) {
+    test(title, async ({ page }) => {
       await openChat(page, mode);
-      const { outlineStyle } = await keyboardFocus(
-        page,
-        'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control',
-      );
-      expect(outlineStyle).toBe('none');
-    });
 
-    test(`a control with its own outline utility keeps it @scenario:focus-primitives-outline-utility-${mode}`, async ({
-      page,
-    }) => {
-      await openChat(page, mode);
-      const { outlineStyle, outlineColor } = await keyboardFocus(
-        page,
-        'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
-      );
-      expect(outlineStyle).toBe('solid');
-      expect(outlineColor).toBe(mode === 'dark' ? 'rgb(89, 89, 89)' : 'rgb(153, 150, 150)');
-    });
-
-    test(`a bare control keeps the global outline role @scenario:focus-primitives-global-outline-${mode}`, async ({
-      page,
-    }) => {
-      await openChat(page, mode);
+      if (check === 'role') {
+        const { focusControl, textPrimary } = await keyboardFocus(page, RING_CLASSES);
+        expect(focusControl).not.toBe('');
+        expect(focusControl).toBe(textPrimary);
+        return;
+      }
+      if (check === 'hidden') {
+        expect((await keyboardFocus(page, HIDDEN_CLASSES)).outlineStyle).toBe('none');
+        return;
+      }
+      if (check === 'utility') {
+        const { outlineStyle, outlineColor } = await keyboardFocus(page, UTILITY_CLASSES);
+        expect(outlineStyle).toBe('solid');
+        expect(outlineColor).toBe(mode === 'dark' ? 'rgb(89, 89, 89)' : 'rgb(153, 150, 150)');
+        return;
+      }
       const { outlineStyle, outlineColor } = await keyboardFocus(page, '');
       expect(outlineStyle).toBe('solid');
       expect(outlineColor).toBe(mode === 'dark' ? 'rgb(255, 255, 255)' : 'rgb(0, 0, 0)');
     });
-  });
-}
+  }
+});
