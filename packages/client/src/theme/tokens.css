@@ -29,6 +29,16 @@
   --color-illustration-subtle: rgb(var(--illustration-subtle));
   --color-illustration: rgb(var(--illustration));
   --color-illustration-strong: rgb(var(--illustration-strong));
+  --color-scrollbar-thumb: rgb(var(--scrollbar-thumb));
+  --color-page-canvas: rgb(var(--page-canvas));
+  --color-select-fill: rgb(var(--select-fill));
+  --color-select-edge: rgb(var(--select-edge));
+  --color-button-neutral-border: rgb(var(--button-neutral-border));
+  --color-button-neutral-text: rgb(var(--button-neutral-text));
+  --color-button-neutral-hover: rgb(var(--button-neutral-hover));
+  --color-link-inline: rgb(var(--link-inline));
+  --color-toast-edge: rgb(var(--toast-edge));
+  --color-stroke-ink: rgb(var(--stroke-ink));
   --color-file-document: rgb(var(--file-document));
   --color-file-sheet: rgb(var(--file-sheet));
   --color-file-code: rgb(var(--file-code));

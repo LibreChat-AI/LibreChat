@@ -311,6 +311,7 @@ function MyComponent() {
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
 - `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
+- `scrollbar-thumb`, `page-canvas`, `select-fill`, `select-edge`, `button-neutral-border`, `button-neutral-text`, `button-neutral-hover`, `link-inline`, `toast-edge`, `stroke-ink` - The stylesheet-level colour roles, read by the stylesheet as `rgb(var(--name))`: the scrollbar thumb, the dark page behind the app, a native `select`, the legacy `.btn-neutral`, inline links on mobile, the toast's shadow tint and the avatar's translucent ring. Their opacities stay in CSS, except the neutral border's, which is the `buttonNeutralBorderOpacity` appearance role (10% in light, solid in dark)
 
 ### Border Colors
 

@@ -170,6 +170,16 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-scrollbar-thumb': '0 0 0', // #000000 (no Click UI counterpart; the stock role)
+  'rgb-page-canvas': '255 255 255', // #ffffff (background.default)
+  'rgb-select-fill': '251 252 255', // #fbfcff (field.color.background.default)
+  'rgb-select-edge': '230 231 233', // #e6e7e9 (field.color.stroke.default)
+  'rgb-button-neutral-border': '230 231 233', // #e6e7e9 (button.basic.color.secondary.stroke.default)
+  'rgb-button-neutral-text': '22 21 23', // #161517 (text.default, matching text-primary)
+  'rgb-button-neutral-hover': '230 231 233', // #e6e7e9 (matching surface-hover)
+  'rgb-link-inline': '29 100 236', // #1d64ec (palette.info.500, matching link)
+  'rgb-toast-edge': '67 90 111', // #435a6f (no Click UI counterpart; the stock role)
+  'rgb-stroke-ink': '0 0 0', // #000000 at 10% (no Click UI counterpart; the stock role)
   'rgb-file-document': '16 78 198', // #104ec6 (palette.info.600)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
@@ -351,6 +361,16 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
+  'rgb-scrollbar-thumb': '255 255 255', // #ffffff (no Click UI counterpart; the stock role)
+  'rgb-page-canvas': '31 31 28', // #1f1f1c (background.default)
+  'rgb-select-fill': '45 45 45', // #2d2d2d (field.color.background.default)
+  'rgb-select-edge': '60 60 60', // #3c3c3c (field.color.stroke.default)
+  'rgb-button-neutral-border': '65 65 65', // #414141 (button.basic.color.secondary.stroke.default)
+  'rgb-button-neutral-text': '255 255 255', // #ffffff (text.default, matching text-primary)
+  'rgb-button-neutral-hover': '50 50 50', // #323232 (matching surface-hover)
+  'rgb-link-inline': '250 255 105', // #faff69 (text.link.default)
+  'rgb-toast-edge': '67 90 111', // #435a6f (no Click UI counterpart; the stock role)
+  'rgb-stroke-ink': '255 255 255', // #ffffff at 30% (no Click UI counterpart; the stock role)
   'rgb-file-document': '16 78 198', // #104ec6 (palette.info.600)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
@@ -517,6 +537,7 @@ const clickHouseShape = {
   scrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   alertScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
   modalScrimOpacity: '0.75', // dialog.color.opaqueBackground alpha
+  buttonNeutralBorderOpacity: '1', // button.basic.color.secondary.stroke.default is opaque
   /** Click UI paints disabled controls in fixed fills (`#dfdfdf` / `#414141`) rather than fading them. */
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width

@@ -106,10 +106,10 @@ html {
   --link-hover: var(--blue-700);
   --scrollbar-thumb: var(--black);
   --scrollbar-thumb-alpha: 0.1;
+  --page-canvas: var(--surface-primary);
   --select-fill: var(--white);
   --select-edge: 142 142 160;
   --button-neutral-border: var(--black);
-  --button-neutral-border-alpha: 0.1;
   --button-neutral-text: 64 65 79;
   --button-neutral-hover: var(--gray-20);
   --link-inline: 0 102 204;
@@ -311,6 +311,7 @@ html {
   --theme-scrim-opacity: 0.8;
   --theme-alert-scrim-opacity: 0.9;
   --theme-modal-scrim-opacity: 0.65;
+  --theme-button-neutral-border-opacity: 0.1;
   --theme-font-family: Inter, sans-serif;
   --theme-display-font-family: Inter, sans-serif;
   --theme-text-xs: 0.75rem;
@@ -408,7 +409,6 @@ html {
   --scrollbar-thumb: var(--white);
   --page-canvas: var(--gray-850);
   --button-neutral-border: var(--gray-600);
-  --button-neutral-border-alpha: 1;
   --button-neutral-text: 255 255 240;
   --button-neutral-hover: var(--gray-600);
   --link-inline: 82 160 255;
@@ -551,6 +551,7 @@ html {
   /* The appearance defaults that differ in dark mode (`darkAppearanceDefaults`). */
   --theme-menu-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   --theme-tooltip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --theme-button-neutral-border-opacity: 1;
 }
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in

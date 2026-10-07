@@ -296,6 +296,7 @@ export const themeAppearanceProperties: Readonly<
   scrimOpacity: '--theme-scrim-opacity',
   alertScrimOpacity: '--theme-alert-scrim-opacity',
   modalScrimOpacity: '--theme-modal-scrim-opacity',
+  buttonNeutralBorderOpacity: '--theme-button-neutral-border-opacity',
   elevationSurface: '--theme-elevation-surface',
   elevationDrag: '--theme-elevation-drag',
   shadow2xs: '--theme-shadow-2xs',
@@ -401,6 +402,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   scrimOpacity: '0.8',
   alertScrimOpacity: '0.9',
   modalScrimOpacity: '0.65',
+  buttonNeutralBorderOpacity: '0.1',
   elevationSurface: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   elevationDrag: '0 10px 25px rgb(0 0 0 / 0.1)',
   shadow2xs: '0 1px rgb(0 0 0 / 0.05)',
@@ -427,6 +429,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
 export const darkAppearanceDefaults: Readonly<Partial<IThemeAppearance>> = Object.freeze({
   menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   tooltipShadow: '0 1px 2px 0 rgb(0 0 0 / 0.35)',
+  buttonNeutralBorderOpacity: '1',
 });
 
 /** Every appearance default in `mode`. */

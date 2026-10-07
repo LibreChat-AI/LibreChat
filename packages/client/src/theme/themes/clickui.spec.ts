@@ -176,6 +176,12 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
+    'rgb-page-canvas': 'global.color.background.default',
+    'rgb-select-fill': 'click.field.color.background.default',
+    'rgb-select-edge': 'click.field.color.stroke.default',
+    'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
+    'rgb-button-neutral-text': 'global.color.text.default',
+    'rgb-link-inline': 'palette.info.500',
     'rgb-file-document': 'palette.info.600',
     'rgb-file-sheet': 'palette.success.700',
     'rgb-file-code': 'palette.warning.600',
@@ -329,6 +335,12 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
+    'rgb-page-canvas': 'global.color.background.default',
+    'rgb-select-fill': 'click.field.color.background.default',
+    'rgb-select-edge': 'click.field.color.stroke.default',
+    'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
+    'rgb-button-neutral-text': 'global.color.text.default',
+    'rgb-link-inline': 'global.color.text.link.default',
     'rgb-file-document': 'palette.info.600',
     'rgb-file-sheet': 'palette.success.700',
     'rgb-file-code': 'palette.warning.600',
@@ -366,10 +378,22 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
 /** Values the theme sets on purpose without a Click UI source, and why. */
 const MEDIA_OVERLAY_REASON =
   'Click UI has no media scrim; the image frame stays black in both modes';
+const STYLESHEET_ROLE_REASON =
+  'Click UI has no scrollbar, secondary button fill or toast edge; the theme keeps the stock role';
+const STROKE_INK_REASON =
+  'Click UI avatars draw no edge ink of their own; the theme keeps the stock ring tint';
+
+const STYLESHEET_ROLES: Partial<Record<keyof IThemeRGB, string>> = {
+  'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+  'rgb-scrollbar-thumb': STYLESHEET_ROLE_REASON,
+  'rgb-button-neutral-hover': STYLESHEET_ROLE_REASON,
+  'rgb-toast-edge': STYLESHEET_ROLE_REASON,
+  'rgb-stroke-ink': STROKE_INK_REASON,
+};
 
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
-  light: { 'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON },
-  dark: { 'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON },
+  light: STYLESHEET_ROLES,
+  dark: STYLESHEET_ROLES,
 };
 
 /**
@@ -609,6 +633,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
+  buttonNeutralBorderOpacity: 'click.button.basic.color.secondary.stroke.default',
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
   checkboxSize: 'click.checkbox.size.all',
@@ -806,6 +831,7 @@ const scrimKeys: ReadonlySet<keyof IThemeAppearance> = new Set([
   'scrimOpacity',
   'alertScrimOpacity',
   'modalScrimOpacity',
+  'buttonNeutralBorderOpacity',
 ]);
 
 /** Roles read out of a Click UI `font` shorthand, and the part each one is. */

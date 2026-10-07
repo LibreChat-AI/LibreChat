@@ -195,6 +195,20 @@ export interface IThemeRGB {
   'rgb-illustration-subtle'?: string;
   'rgb-illustration'?: string;
   'rgb-illustration-strong'?: string;
+  /** The stylesheet-level roles: the webkit scrollbar thumb, the dark page behind the app, a native
+   *  `select`'s fill and edge, the legacy `.btn-neutral` border, ink and hover fill, inline links in
+   *  mobile.css, the toast's shadow tint, and the ink of the avatar's translucent ring. The opacities
+   *  of the thumb and ring stay in CSS; the neutral border's is `buttonNeutralBorderOpacity`. */
+  'rgb-scrollbar-thumb'?: string;
+  'rgb-page-canvas'?: string;
+  'rgb-select-fill'?: string;
+  'rgb-select-edge'?: string;
+  'rgb-button-neutral-border'?: string;
+  'rgb-button-neutral-text'?: string;
+  'rgb-button-neutral-hover'?: string;
+  'rgb-link-inline'?: string;
+  'rgb-toast-edge'?: string;
+  'rgb-stroke-ink'?: string;
   /** File-type tiles: one fill per kind of file and the ink of the glyph drawn on them. */
   'rgb-file-document'?: string;
   'rgb-file-sheet'?: string;
@@ -382,6 +396,16 @@ export interface IThemeVariables {
   '--illustration-subtle': string;
   '--illustration': string;
   '--illustration-strong': string;
+  '--scrollbar-thumb': string;
+  '--page-canvas': string;
+  '--select-fill': string;
+  '--select-edge': string;
+  '--button-neutral-border': string;
+  '--button-neutral-text': string;
+  '--button-neutral-hover': string;
+  '--link-inline': string;
+  '--toast-edge': string;
+  '--stroke-ink': string;
   '--file-document': string;
   '--file-sheet': string;
   '--file-code': string;
@@ -542,6 +566,16 @@ export interface IThemeColors {
   'illustration-subtle'?: string;
   illustration?: string;
   'illustration-strong'?: string;
+  'scrollbar-thumb'?: string;
+  'page-canvas'?: string;
+  'select-fill'?: string;
+  'select-edge'?: string;
+  'button-neutral-border'?: string;
+  'button-neutral-text'?: string;
+  'button-neutral-hover'?: string;
+  'link-inline'?: string;
+  'toast-edge'?: string;
+  'stroke-ink'?: string;
   'file-document'?: string;
   'file-sheet'?: string;
   'file-code'?: string;
@@ -711,6 +745,8 @@ export interface IThemeAppearance {
   scrimOpacity: string;
   alertScrimOpacity: string;
   modalScrimOpacity: string;
+  /** Opacity of the `.btn-neutral` border ink: a hairline tint by default, solid where a theme names its stroke. */
+  buttonNeutralBorderOpacity: string;
   elevationSurface: string;
   /** The lift a dragged badge takes while it is held. */
   elevationDrag: string;
