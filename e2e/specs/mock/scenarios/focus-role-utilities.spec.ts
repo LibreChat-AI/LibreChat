@@ -153,12 +153,20 @@ test.describe('focus outline utilities', () => {
       await trigger.focus();
       await expect(trigger).toBeFocused();
       expect(await trigger.evaluate((node) => node.matches(':focus-visible'))).toBe(true);
-      expect(
-        await trigger.evaluate((node) => {
-          const style = getComputedStyle(node);
-          return [style.outlineStyle, style.outlineWidth, style.outlineColor, style.outlineOffset];
-        }),
-      ).toEqual(global);
+      /** The trigger eases its properties in, so the outline is read once it has settled. */
+      await expect
+        .poll(() =>
+          trigger.evaluate((node) => {
+            const style = getComputedStyle(node);
+            return [
+              style.outlineStyle,
+              style.outlineWidth,
+              style.outlineColor,
+              style.outlineOffset,
+            ];
+          }),
+        )
+        .toEqual(global);
       if (width) {
         expect(role[1]).toBe(width);
       }
