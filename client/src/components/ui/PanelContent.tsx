@@ -72,7 +72,7 @@ const PanelContent = React.forwardRef<
       <div
         aria-hidden="true"
         className={cn(
-          'from-surface-primary-alt pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
+          'from-surface-sidebar pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent transition-opacity duration-200 motion-reduce:transition-none',
           hasMore ? 'opacity-100' : 'opacity-0',
         )}
       />
