@@ -68,14 +68,6 @@
       "count": 6
     }
   },
-  "client/src/components/Auth/Footer.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Auth/TwoFactorScreen.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -258,11 +250,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 2
-    }
-  },
-  "client/src/components/Chat/Menus/Endpoints/components/EndpointItem.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Menus/Endpoints/components/EndpointModelItem.tsx": {
@@ -828,17 +815,11 @@
     }
   },
   "client/src/components/Endpoints/MessageEndpointIcon.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 3
     }
   },
   "client/src/components/Endpoints/MinimalIcon.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/require-static-classes": {
       "count": 1
     }
@@ -993,9 +974,6 @@
   "client/src/components/Nav/AccountSettings.tsx": {
     "shadcn/no-inline-styles": {
       "count": 3
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 2
     }
   },
   "client/src/components/Nav/ExportConversation/ExportModal.tsx": {
@@ -1005,7 +983,7 @@
   },
   "client/src/components/Nav/KeyboardShortcutsDialog.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 11
+      "count": 4
     },
     "shadcn/no-restyle": {
       "count": 9
@@ -1136,11 +1114,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 2
-    }
-  },
-  "client/src/components/Nav/ShortcutKeyCombo.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "client/src/components/Nav/ShortcutRecorder.tsx": {

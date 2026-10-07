@@ -398,7 +398,7 @@ function KeyboardShortcutsDialog() {
             >
               {localize('com_shortcut_keyboard_shortcuts')}
             </Label>
-            <p className="text-text-secondary text-[11.5px] mt-0.5">
+            <p className="text-text-secondary mt-0.5 text-[11.5px]">
               {localize('com_shortcut_enable_all_hint')}
             </p>
           </div>
