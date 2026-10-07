@@ -63,6 +63,8 @@ const twMerge = extendTailwindMerge({
       'font-weight': [{ font: ['theme-control', 'theme-dialog-title-weight', 'theme-label'] }],
       'font-family': [{ font: ['theme-dialog-title'] }],
       'font-size': [{ text: [...TYPE_STEPS] }],
+      'outline-w': [{ outline: ['theme-focus'] }],
+      'outline-offset': [{ 'outline-offset': ['theme-focus'] }],
     },
   },
 });

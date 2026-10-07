@@ -2,9 +2,13 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
+import { Table, TableBody, TableCell, TableRow } from './Table';
+import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
+import DropdownPopup from './DropdownPopup';
+import { focusOutlineRole } from './Focus';
 import MultiSearch from './MultiSearch';
 
 jest.mock('./MorphIcon', () => {
@@ -103,5 +107,36 @@ describe('shared control keyboard focus', () => {
 
     await user.tab();
     expect(ringHost).not.toHaveClass('ring-focus-control');
+  });
+
+  it('names the global outline on the tab triggers, table rows and menu items', async () => {
+    const roleClasses = focusOutlineRole.split(' ');
+    render(
+      <>
+        <Tabs defaultValue="a">
+          <TabsList>
+            <TabsTrigger value="a">One</TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Table>
+          <TableBody>
+            <TableRow data-testid="row">
+              <TableCell>cell</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+        <DropdownPopup
+          menuId="menu"
+          isOpen
+          setIsOpen={jest.fn()}
+          trigger={<button type="button">Open</button>}
+          items={[{ label: 'First', onClick: jest.fn() }]}
+        />
+      </>,
+    );
+
+    expect(screen.getByRole('tab', { name: 'One' })).toHaveClass(...roleClasses);
+    expect(screen.getByTestId('row')).toHaveClass(...roleClasses);
+    expect(await screen.findByRole('menuitem', { name: 'First' })).toHaveClass(...roleClasses);
   });
 });

@@ -146,6 +146,13 @@ module.exports = {
         'theme-surface':
           'var(--theme-elevation-surface, 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1))',
       },
+      /** The width and offset of the keyboard focus outline, the `focusRingWidth` and `focusRingOffset` roles. */
+      outlineWidth: {
+        'theme-focus': 'var(--theme-focus-ring-width, 2px)',
+      },
+      outlineOffset: {
+        'theme-focus': 'var(--theme-focus-ring-offset, 2px)',
+      },
       transitionDuration: {
         'theme-fast': 'var(--theme-motion-fast, 150ms)',
         'theme-normal': 'var(--theme-motion-normal, 200ms)',
