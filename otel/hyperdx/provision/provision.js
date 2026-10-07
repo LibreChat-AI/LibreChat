@@ -5,8 +5,10 @@
  *
  * HyperDX applies DEFAULT_SOURCES only to a team that has no sources yet, and
  * its own dashboard provisioner needs the team's source ids, which differ per
- * installation. So the files name their source ("Usage timeline") and their
- * connection ("ClickHouse"), and this script resolves those names per team.
+ * installation. So the files name their source ("Usage timeline"), their
+ * connection ("ClickHouse") and the sources a source links to (its
+ * traceSourceId, logSourceId, ...), and this script resolves those names per
+ * team.
  *
  * Runs on the HyperDX image (terraform/hyperdx.tf, and the
  * hyperdx-provision service in docker-compose.override.yml), with HyperDX's own
@@ -26,6 +28,9 @@ const { Source } = require(`${BUILD}/models/source`);
 const { SavedSearch } = require(`${BUILD}/models/savedSearch`);
 const { readDashboardFiles, syncDashboards } = require(`${BUILD}/tasks/provisionDashboards`);
 const { SourceSchema } = require('/app/node_modules/@hyperdx/common-utils/dist/types');
+
+/** Fields of a source that link it to another source, by id. */
+const SOURCE_LINKS = ['logSourceId', 'traceSourceId', 'metricSourceId', 'sessionSourceId'];
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -133,12 +138,31 @@ async function upsertSearch(teamId, search, sourceIds) {
   await SavedSearch.updateOne({ team: teamId, name: search.name }, { $set: fields }, { upsert: true, runValidators: true });
 }
 
-async function provisionTeam(teamId, input) {
-  for (const definition of input.sources) {
-    await upsertSource(teamId, definition);
-  }
+async function findSourceIds(teamId) {
   const sources = await Source.find({ team: teamId }, { name: 1 }).lean();
-  const sourceIds = new Map(sources.map((source) => [source.name, source._id.toString()]));
+  return new Map(sources.map((source) => [source.name, source._id.toString()]));
+}
+
+async function provisionTeam(teamId, input) {
+  // Sources link to each other by id, so they are written first without their
+  // links, then again with each linked source's name resolved to its id.
+  const unlinked = (definition) =>
+    Object.fromEntries(Object.entries(definition).filter(([key]) => !SOURCE_LINKS.includes(key)));
+  for (const definition of input.sources) {
+    await upsertSource(teamId, unlinked(definition));
+  }
+  const sourceIds = await findSourceIds(teamId);
+  for (const definition of input.sources) {
+    const links = SOURCE_LINKS.filter((key) => definition[key] != null);
+    if (links.length === 0) {
+      continue;
+    }
+    const where = `Source "${definition.name}"`;
+    await upsertSource(teamId, {
+      ...definition,
+      ...Object.fromEntries(links.map((key) => [key, resolveSource(sourceIds, definition[key], where)])),
+    });
+  }
 
   for (const search of input.searches) {
     await upsertSearch(teamId, search, sourceIds);
