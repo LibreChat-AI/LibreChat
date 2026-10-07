@@ -3,7 +3,7 @@
  * Langfuse's LANGFUSE_INIT_* bootstrap only creates that user, so without this a
  * rotated secret holds a password the existing admin does not have.
  *
- * Run as a one-off ECS task on the Langfuse web image (infra/terraform/langfuse.tf),
+ * Run as a one-off ECS task on the Langfuse web image (terraform/langfuse.tf),
  * which ships the Prisma client for its own database and the bcryptjs library it
  * hashes passwords with; the hash below matches Langfuse's own (bcryptjs, cost 12).
  */

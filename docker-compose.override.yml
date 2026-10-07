@@ -216,7 +216,7 @@ services:
   # ---------------------------------------------------------------------------
   # Observability (profile `observability`): Langfuse for GenAI traces and
   # HyperDX for browser activity, on one shared ClickHouse. The services mirror
-  # infra/terraform/{clickhouse,langfuse,hyperdx}.tf so the AWS wiring can be
+  # terraform/{clickhouse,langfuse,hyperdx}.tf so the AWS wiring can be
   # exercised locally. The api does not depend on them: exports fail open.
   #
   #   docker compose --profile observability up -d
@@ -366,7 +366,7 @@ services:
     image: docker.hyperdx.io/hyperdx/hyperdx:2
     ports:
       - "${HYPERDX_PORT:-8080}:8080"
-    # DEFAULT_SOURCES: the tables HyperDX reads, shared with infra/terraform/hyperdx.tf.
+    # DEFAULT_SOURCES: the tables HyperDX reads, shared with terraform/hyperdx.tf.
     env_file:
       - ./otel/hyperdx/sources.env
     environment:
@@ -389,7 +389,7 @@ services:
   # saved search and the dashboards in otel/hyperdx/provision to every HyperDX
   # team. With no account registered yet it changes nothing, so after
   # registering run `docker compose run --rm hyperdx-provision`. Mirrors the
-  # hyperdx-provision task in infra/terraform/hyperdx.tf.
+  # hyperdx-provision task in terraform/hyperdx.tf.
   hyperdx-provision:
     image: docker.hyperdx.io/hyperdx/hyperdx:2
     entrypoint: ["node", "/provision/provision.js"]
@@ -434,7 +434,7 @@ services:
   # One-shot: creates the content-free `analytics` views
   # (otel/clickhouse/analytics.sql) that HyperDX's usage timeline reads, once
   # Langfuse and the collector have created their tables. Mirrors
-  # infra/terraform/analytics.tf.
+  # terraform/clickhouse.tf.
   clickhouse-analytics-init:
     image: clickhouse/clickhouse-server:25.12
     entrypoint: ["/bin/sh", "/analytics-init.sh"]

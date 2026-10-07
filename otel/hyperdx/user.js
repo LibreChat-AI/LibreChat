@@ -3,7 +3,7 @@
  * write the `hyperdx` database only, so HyperDX never holds the master
  * credentials that MONGO_URI carries.
  *
- * Run as a one-off ECS task on the app image (infra/terraform/hyperdx.tf),
+ * Run as a one-off ECS task on the app image (terraform/hyperdx.tf),
  * which already ships the MongoDB driver and the DocumentDB CA bundle.
  */
 const { MongoClient } = require('mongodb');

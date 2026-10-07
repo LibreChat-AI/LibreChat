@@ -8,7 +8,7 @@
   environment and is never written here.
 
   Mounted into /etc/clickhouse-server/users.d/ by docker-compose.override.yml and
-  embedded into the ClickHouse task by infra/terraform/clickhouse.tf.
+  embedded into the ClickHouse task by terraform/clickhouse.tf.
 -->
 <clickhouse>
   <users>

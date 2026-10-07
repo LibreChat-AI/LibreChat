@@ -4,7 +4,7 @@
 # The views read tables other services create: Langfuse's migrations and the
 # HyperDX collector's schema. This waits for them, then applies the SQL. It runs
 # as a one-shot Compose service locally and as a one-off ECS task on AWS
-# (infra/terraform/analytics.tf), on the ClickHouse image.
+# (terraform/clickhouse.tf), on the ClickHouse image.
 #
 # Environment: CLICKHOUSE_HOST, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, and the SQL
 # either inline in ANALYTICS_SQL (ECS has no bind mounts) or as a file at

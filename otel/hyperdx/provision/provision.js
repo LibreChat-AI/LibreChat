@@ -8,7 +8,7 @@
  * installation. So the files name their source ("Usage timeline") and their
  * connection ("ClickHouse"), and this script resolves those names per team.
  *
- * Runs on the HyperDX image (infra/terraform/hyperdx.tf, and the
+ * Runs on the HyperDX image (terraform/hyperdx.tf, and the
  * hyperdx-provision service in docker-compose.override.yml), with HyperDX's own
  * models and validation. Input is HYPERDX_PROVISION (the files as one JSON
  * document: { sources, searches, dashboards }) or HYPERDX_PROVISION_DIR.
