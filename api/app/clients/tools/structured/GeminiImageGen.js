@@ -4,7 +4,7 @@ const { v4 } = require('uuid');
 const { GoogleGenAI } = require('@google/genai');
 const { logger } = require('@librechat/data-schemas');
 const { tool } = require('@librechat/agents/langchain/tools');
-const { ContentTypes, EImageOutputType } = require('librechat-data-provider');
+const { ContentTypes, EImageOutputType, Providers } = require('librechat-data-provider');
 const {
   geminiToolkit,
   loadServiceKey,
@@ -316,7 +316,8 @@ function createGeminiImageTool(fields = {}) {
     throw new Error('This tool is only available for agents.');
   }
 
-  const { req, imageFiles = [], userId, fileStrategy, GEMINI_API_KEY, GOOGLE_KEY } = fields;
+  const { req, imageFiles = [], userId, fileStrategy, GEMINI_API_KEY, GOOGLE_KEY, provider } =
+    fields;
 
   const imageOutputType = fields.imageOutputType || EImageOutputType.PNG;
 
@@ -419,10 +420,38 @@ function createGeminiImageTool(fields = {}) {
       }
 
       const rawBuffer = Buffer.from(rawImageData, 'base64');
-      const { buffer: convertedBuffer, format: outputFormat } = await convertImageFormat(
+      logger.debug(`[GeminiImageGen] Raw image size: ${rawBuffer.length} bytes.`);
+      let { buffer: convertedBuffer, format: outputFormat } = await convertImageFormat(
         rawBuffer,
         imageOutputType,
       );
+
+      const maxBytes = 9.5 * 1024 * 1024;
+      const isAnthropic = provider === Providers.ANTHROPIC;
+      if (isAnthropic && convertedBuffer.length > maxBytes) {
+        logger.debug(`[GeminiImageGen] Image exceeds ${maxBytes} bytes, downscaling`);
+        let attempts = 0;
+        while (convertedBuffer.length > maxBytes && attempts < 5) {
+          const meta = await sharp(convertedBuffer).metadata();
+          const newWidth = Math.round(meta.width * 0.8);
+          const pipeline = sharp(convertedBuffer).resize({
+            width: newWidth,
+            withoutEnlargement: true,
+          });
+          if (outputFormat === 'jpeg') {
+            convertedBuffer = await pipeline.jpeg({ quality: 85 }).toBuffer();
+          } else if (outputFormat === 'webp') {
+            convertedBuffer = await pipeline.webp({ quality: 85 }).toBuffer();
+          } else {
+            convertedBuffer = await pipeline.png({ compressionLevel: 9 }).toBuffer();
+          }
+          attempts++;
+          logger.debug(
+            `[GeminiImageGen] Downscale attempt ${attempts}: ${newWidth}px wide, ${convertedBuffer.length} bytes`,
+          );
+        }
+      }
+
       const imageData = convertedBuffer.toString('base64');
       const mimeType = outputFormat === 'jpeg' ? 'image/jpeg' : `image/${outputFormat}`;
 
