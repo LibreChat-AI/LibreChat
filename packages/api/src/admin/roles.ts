@@ -46,7 +46,7 @@ function validateNameParam(name: string): string | null {
   return null;
 }
 
-function validateRoleName(name: unknown, required: boolean): string | null {
+export function validateRoleName(name: unknown, required: boolean): string | null {
   if (name === undefined) {
     return required ? 'name is required' : null;
   }
@@ -66,7 +66,7 @@ function validateRoleName(name: unknown, required: boolean): string | null {
   return null;
 }
 
-function validateDescription(description: unknown): string | null {
+export function validateDescription(description: unknown): string | null {
   if (description === undefined) {
     return null;
   }
