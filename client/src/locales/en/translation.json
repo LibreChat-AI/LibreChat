@@ -481,6 +481,7 @@
   "com_endpoint_config_bedrock_access_key_id": "AWS Access Key ID",
   "com_endpoint_config_bedrock_bearer_token": "AWS Bedrock API Key",
   "com_endpoint_config_bedrock_credentials_required": "Please provide either an AWS Bedrock API key or AWS access keys (Access Key ID + Secret Access Key)",
+  "com_endpoint_config_bedrock_region": "AWS Region",
   "com_endpoint_config_bedrock_secret_access_key": "AWS Secret Access Key",
   "com_endpoint_config_bedrock_session_token": "AWS Session Token",
   "com_endpoint_config_click_here": "Click Here",
