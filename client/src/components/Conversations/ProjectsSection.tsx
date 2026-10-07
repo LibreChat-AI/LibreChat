@@ -155,10 +155,10 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
       {hasMore && (
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="sm"
           onClick={onShowAll}
-          className="text-text-secondary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium"
+          className="mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium"
         >
           {localize('com_ui_show_all')}
         </Button>
@@ -455,7 +455,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     if (isLoading && projects.length === 0) {
       return (
         <div className="flex justify-start py-2 pl-2">
-          <Spinner className="text-text-secondary h-4 w-4" />
+          <Spinner tone="secondary" className="h-4 w-4" />
         </div>
       );
     }

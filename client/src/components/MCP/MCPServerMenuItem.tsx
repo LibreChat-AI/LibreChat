@@ -57,16 +57,16 @@ export default function MCPServerMenuItem({
       )}
     >
       {/* Server Icon with Status Dot */}
-      <div className="relative shrink-0">
+      <div className="text-text-primary relative shrink-0">
         {server.config?.iconPath ? (
           <CustomIcon
             src={server.config.iconPath}
-            className="text-text-primary h-8 w-8 rounded-lg object-cover"
+            className="h-8 w-8 rounded-lg object-cover"
             alt=""
           />
         ) : (
-          <div className="bg-surface-tertiary flex h-8 w-8 items-center justify-center rounded-lg">
-            <MCPIcon className="text-text-secondary h-5 w-5" />
+          <div className="bg-surface-tertiary text-text-secondary flex h-8 w-8 items-center justify-center rounded-lg">
+            <MCPIcon className="h-5 w-5" />
           </div>
         )}
         {/* Status dot - decorative, status is announced via aria-label on MenuItem */}

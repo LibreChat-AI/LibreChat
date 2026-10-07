@@ -161,7 +161,7 @@ function AssistantToolsDialog({
         style={{ minHeight: 'min(38.125rem, 90vh)' }}
       >
         <div>
-          <div className="border-border-medium flex items-center justify-between border-b-[1px] px-4 pt-5 pb-4 sm:p-6">
+          <div className="border-border-medium flex items-center justify-between border-b px-4 pt-5 pb-4 sm:p-6">
             <div className="flex items-center">
               <div className="text-center sm:text-left">
                 <OGDialogTitle className="text-lg leading-6 font-medium">
@@ -199,7 +199,7 @@ function AssistantToolsDialog({
                   onChange={handleSearch}
                   placeholder={localize('com_nav_tool_search')}
                   aria-label={localize('com_nav_tool_search')}
-                  className="border-border-medium text-text-primary max-w-64 min-w-0 flex-1 rounded border px-2 py-1"
+                  className="border-border-medium max-w-64 min-w-0 flex-1 rounded border px-2 py-1"
                 />
               </div>
               <div

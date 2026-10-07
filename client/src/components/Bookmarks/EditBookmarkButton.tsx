@@ -32,7 +32,7 @@ const EditBookmarkButton: FC<{
               onFocus={onFocus}
               onBlur={onBlur}
               onClick={() => setOpen(!open)}
-              className="h-8 w-8 p-0"
+              size="icon-sm"
             >
               <EditIcon />
             </Button>

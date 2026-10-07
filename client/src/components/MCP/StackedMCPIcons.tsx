@@ -66,7 +66,7 @@ export default function StackedMCPIcons({
           key={icon.key}
           title={icon.displayName}
           className={cn(
-            'relative flex items-center justify-center rounded-full border',
+            'text-text-primary relative flex items-center justify-center rounded-full border',
             colors.border,
             colors.bg,
             sizes.container,
@@ -78,10 +78,10 @@ export default function StackedMCPIcons({
             <CustomIcon
               src={icon.iconPath}
               alt={icon.displayName}
-              className={cn('text-text-primary rounded-full object-cover', sizes.icon)}
+              className={cn('rounded-full object-cover', sizes.icon)}
             />
           ) : (
-            <MCPIcon className={cn('text-text-primary', sizes.icon)} />
+            <MCPIcon className={sizes.icon} />
           )}
         </div>
       ))}

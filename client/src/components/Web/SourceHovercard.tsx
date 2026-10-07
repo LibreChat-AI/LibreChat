@@ -73,8 +73,9 @@ function FileHovercardContent({
         <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <Button
           variant="link"
+          size="bare"
           onClick={onClick}
-          className="h-auto min-w-0 justify-start truncate p-0 font-medium"
+          className="min-w-0 justify-start truncate font-medium"
         >
           {fileName}
         </Button>

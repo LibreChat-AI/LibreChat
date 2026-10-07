@@ -303,7 +303,7 @@ export default function GenericGrantAccessDialog({
           <Share2Icon className="icon-md h-4 w-4" />
         </span>
         {totalCurrentShares > 0 && (
-          <Label className="text-text-secondary cursor-pointer text-sm font-medium">
+          <Label variant="secondary" className="cursor-pointer text-sm font-medium">
             {totalCurrentShares}
           </Label>
         )}
@@ -449,7 +449,7 @@ export default function GenericGrantAccessDialog({
                       });
                     }}
                     disabled={isCopying}
-                    className={cn('shrink-0 gap-2', isCopying ? 'cursor-default' : '')}
+                    className={cn('shrink-0', isCopying ? 'cursor-default' : '')}
                     aria-label={localize('com_ui_copy_url_to_clipboard')}
                   >
                     <MorphIcon icon={isCopying ? CopyCheck : Link} className="size-4" />
