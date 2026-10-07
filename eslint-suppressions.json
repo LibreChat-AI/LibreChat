@@ -681,10 +681,10 @@
   },
   "client/src/components/Endpoints/Settings/Advanced.tsx": {
     "shadcn/no-restyle": {
-      "count": 34
+      "count": 18
     },
     "shadcn/require-static-classes": {
-      "count": 12
+      "count": 4
     }
   },
   "client/src/components/Endpoints/Settings/Assistants.tsx": {
@@ -940,30 +940,6 @@
   "client/src/components/Nav/SettingsTabs/ProviderKeys/ProviderKeys.tsx": {
     "shadcn/no-restyle": {
       "count": 6
-    }
-  },
-  "client/src/components/Nav/SettingsTabs/Speech/STT/AutoSendTextSelector.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
-    }
-  },
-  "client/src/components/Nav/SettingsTabs/Speech/STT/DecibelSelector.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
-    }
-  },
-  "client/src/components/Nav/SettingsTabs/Speech/TTS/PlaybackRate.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
     }
   },
   "client/src/components/Nav/ShortcutRecorder.tsx": {
