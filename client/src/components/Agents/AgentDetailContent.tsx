@@ -362,7 +362,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                   <Button
                     key={`${starter}-${index}`}
                     variant="outline"
-                    className="h-auto min-h-14 items-start justify-between gap-3 px-4 py-3 text-left whitespace-normal rtl:text-right"
+                    className="h-auto min-h-14 items-start justify-between gap-3 py-3 text-left whitespace-normal rtl:text-right"
                     aria-disabled={actionsDisabled || undefined}
                     onClick={() => {
                       if (!actionsDisabled) {

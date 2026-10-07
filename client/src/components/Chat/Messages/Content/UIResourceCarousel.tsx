@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { UIResource } from 'librechat-data-provider';
 import UIResourceRenderer, { isSupportedUIResource } from '~/components/MCPUIResource/Renderer';
 import { useOptionalMessagesOperations } from '~/Providers';
-import { handleUIAction } from '~/utils';
+import { cn, handleUIAction } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 interface UIResourceCarouselProps {
@@ -91,12 +91,12 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
 
       {showLeftArrow && (
         <Button
-          variant="ghost"
-          size="icon"
+          variant="carousel-nav"
           onClick={() => scroll('left')}
-          className={`bg-surface-fixed text-text-fixed hover:bg-surface-fixed-hover hover:text-text-fixed absolute top-1/2 left-2 z-20 h-auto w-auto -translate-y-1/2 rounded-xl p-2 shadow-lg transition-all duration-200 hover:scale-110 hover:shadow-xl active:scale-95 ${
-            isContainerHovered ? 'opacity-100' : 'pointer-events-none opacity-0'
-          }`}
+          className={cn(
+            'absolute top-1/2 left-2 z-20 -translate-y-1/2 transition-all duration-200 hover:scale-110 active:scale-95',
+            isContainerHovered ? 'opacity-100' : 'pointer-events-none opacity-0',
+          )}
           aria-label={localize('com_ui_scroll_left')}
         >
           <ChevronLeft className="h-5 w-5" />
@@ -137,12 +137,12 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
 
       {showRightArrow && (
         <Button
-          variant="ghost"
-          size="icon"
+          variant="carousel-nav"
           onClick={() => scroll('right')}
-          className={`bg-surface-fixed text-text-fixed hover:bg-surface-fixed-hover hover:text-text-fixed absolute top-1/2 right-2 z-20 h-auto w-auto -translate-y-1/2 rounded-xl p-2 shadow-lg transition-all duration-200 hover:scale-110 hover:shadow-xl active:scale-95 ${
-            isContainerHovered ? 'opacity-100' : 'pointer-events-none opacity-0'
-          }`}
+          className={cn(
+            'absolute top-1/2 right-2 z-20 -translate-y-1/2 transition-all duration-200 hover:scale-110 active:scale-95',
+            isContainerHovered ? 'opacity-100' : 'pointer-events-none opacity-0',
+          )}
           aria-label={localize('com_ui_scroll_right')}
         >
           <ChevronRight className="h-5 w-5" />

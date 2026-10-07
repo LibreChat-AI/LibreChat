@@ -297,16 +297,9 @@ export default function DataTable<TData, TValue>({
   const { rows } = table.getRowModel();
 
   /** The first guess for a row that has not rendered yet, from the columns it will carry: a
-   *  title cell's height when there is one, a compact row otherwise. Both follow the theme's cell
-   *  space and row rule, and rendered rows are measured. */
-  const hasTitleColumn = useMemo(
-    () =>
-      columns.some(
-        (column) =>
-          column.id === 'title' || ('accessorKey' in column && column.accessorKey === 'title'),
-      ),
-    [columns],
-  );
+   *  title cell's height when a visible leaf column is the title, a compact row otherwise. Both
+   *  follow the theme's cell space and row rule, and rendered rows are measured. */
+  const hasTitleColumn = table.getVisibleLeafColumns().some((column) => column.id === 'title');
   const rowHeight = useTableRowHeight(hasTitleColumn ? 'titled' : 'compact');
   const rowVirtualizer = useVirtualizer({
     count: rows.length,

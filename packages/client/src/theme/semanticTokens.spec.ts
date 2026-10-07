@@ -168,7 +168,11 @@ describe('shared field and dropdown interaction styles', () => {
     const roleOutline =
       ':focus-visible \\{\\s*outline: var\\(--theme-focus-ring-width, 2px\\) solid rgb\\(var\\(--focus-outline\\)\\);\\s*outline-offset: var\\(--theme-focus-ring-offset, 2px\\);';
     expect(appStyles).toMatch(new RegExp(`@layer base \\{\\s*${roleOutline}`));
-    expect(appStyles).toMatch(new RegExp(`\\.dark ${roleOutline}`));
+    expect(appStyles).toMatch(
+      new RegExp(
+        `\\.dark ${roleOutline.replace(':focus-visible ', ":focus-visible:not\\(\\[class\\*='focus-visible:outline-'\\], \\[class\\*='focus:outline-'\\]\\) ")}`,
+      ),
+    );
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
   });
 

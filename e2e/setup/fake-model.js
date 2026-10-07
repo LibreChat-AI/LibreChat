@@ -45,6 +45,7 @@ const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
 const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
+const PRE_TOKEN_REPLY_MARKER = 'E2E_PRE_TOKEN_REPLY:';
 /** A run that completes having produced no content at all: the shape a
  *  summarizer takes when it returns nothing for a manual compaction. */
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
@@ -752,6 +753,11 @@ function replyResponses(text) {
   const slowName = getMarkerValue(text, SLOW_REPLY_MARKER);
   if (slowName) {
     return slowReplyResponses(slowName);
+  }
+
+  const preTokenName = getMarkerValue(text, PRE_TOKEN_REPLY_MARKER);
+  if (preTokenName) {
+    return { responses: [`E2E pre-token reply ${preTokenName}`], sleep: 10_000 };
   }
 
   /** Keep a generation live after `created` without producing any content

@@ -96,7 +96,7 @@ function RecordContent({
       <>
         {placeholder}
         <div className="flex justify-center py-4" role="status">
-          <Spinner className="text-text-secondary size-4" />
+          <Spinner tone="secondary" className="size-4" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       </>

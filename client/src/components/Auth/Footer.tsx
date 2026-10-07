@@ -36,10 +36,10 @@ function Footer({ startupConfig }: { startupConfig: TStartupConfig | null | unde
   );
 
   return (
-    <div className="align-end m-4 flex justify-center gap-2" role="contentinfo">
+    <div className="m-4 flex justify-center gap-2" role="contentinfo">
       {privacyPolicyRender}
       {privacyPolicyRender && termsOfServiceRender && (
-        <div className="border-border-medium border-r-[1px]" />
+        <div className="border-border-medium border-r" />
       )}
       {termsOfServiceRender}
     </div>

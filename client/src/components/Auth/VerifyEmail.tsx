@@ -139,8 +139,8 @@ function RequestPasswordReset() {
           {statusText}
         </h1>
         {!verificationStatus && (
-          <div className="mt-4 flex justify-center">
-            <Spinner className="text-accent-primary h-8 w-8" />
+          <div className="text-accent-primary mt-4 flex justify-center">
+            <Spinner className="h-8 w-8" />
           </div>
         )}
         {verificationStatus && countdown > 0 && (
@@ -153,8 +153,9 @@ function RequestPasswordReset() {
             {localize('com_auth_email_verification_resend_prompt')}
             <Button
               type="button"
-              variant="link"
-              className="text-link ml-2 inline h-auto p-0"
+              variant="hyperlink"
+              size="bare"
+              className="ml-2 inline"
               onClick={handleResendEmail}
               disabled={resendEmailMutation.isLoading}
             >

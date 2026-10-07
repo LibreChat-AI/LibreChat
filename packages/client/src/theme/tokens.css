@@ -80,6 +80,9 @@
   --color-surface-chat: rgb(var(--surface-chat));
   --color-surface-code: rgb(var(--surface-code));
   --color-surface-code-body: rgb(var(--surface-code-body));
+  --color-surface-code-inline: rgb(var(--surface-code-inline));
+  --color-prose-bullet: rgb(var(--prose-bullet));
+  --color-prose-quote-bar: rgb(var(--prose-quote-bar));
   --color-surface-qr: rgb(var(--surface-qr));
   --color-surface-inverted: rgb(var(--surface-inverted));
   --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));
@@ -197,6 +200,18 @@
   --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
   --color-table-header-text: rgb(var(--table-header-text, var(--text-secondary)));
   --color-table-header-fill: rgb(var(--table-header-fill, var(--surface-dialog)));
+  /* The code-syntax palette and the shimmer animation are painted from stylesheets, so these carry no
+   * utility today; each is declared so the registry and this file name the same colors. */
+  --color-syntax-text: rgb(var(--syntax-text));
+  --color-syntax-comment: rgb(var(--syntax-comment));
+  --color-syntax-meta: rgb(var(--syntax-meta));
+  --color-syntax-builtin: rgb(var(--syntax-builtin));
+  --color-syntax-keyword: rgb(var(--syntax-keyword));
+  --color-syntax-string: rgb(var(--syntax-string));
+  --color-syntax-attr: rgb(var(--syntax-attr));
+  --color-syntax-title: rgb(var(--syntax-title));
+  --color-shimmer-base: rgb(var(--shimmer-base) / var(--shimmer-base-alpha, 1));
+  --color-shimmer-dip: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
@@ -227,6 +242,10 @@
   --text-xl--line-height: var(--theme-text-xl-leading);
   --text-2xl: var(--theme-text-2xl);
   --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --text-3xs: var(--theme-text-3xs);
+  --text-2xs: var(--theme-text-2xs);
+  --text-1xs: var(--theme-text-1xs);
+  --text-1sm: var(--theme-text-1sm);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);
@@ -278,6 +297,18 @@
  * disabled style, from the `--theme-destructive-style` property the nearest themed root carries. */
 @custom-variant theme-destructive-soft {
   @container style(--theme-destructive-style: soft) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `chromeBorderAlpha` is `0` draws no outline on chrome controls, so a control that
+ * floats over content or a bar that sits over a scrolling thread needs a surface in place of the
+ * edge. Read, like the disabled style, from the `--theme-border-chrome-alpha` property the nearest
+ * themed root carries. */
+@custom-variant theme-chrome-quiet {
+  @container style(--theme-border-chrome-alpha: 0) {
     &:is(:root *) {
       @slot;
     }

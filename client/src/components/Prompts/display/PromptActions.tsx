@@ -50,7 +50,7 @@ const PromptActions = ({ group, mainText, onUsePrompt }: PromptActionsProps) => 
         <Button
           variant="submit"
           onClick={handleUsePrompt}
-          className="flex-1 gap-2 sm:min-w-40 sm:flex-none"
+          className="flex-1 sm:min-w-40 sm:flex-none"
           aria-label={localize('com_ui_use_prompt')}
         >
           <Send className="h-4 w-4" aria-hidden="true" />

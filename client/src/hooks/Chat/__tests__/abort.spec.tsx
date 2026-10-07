@@ -180,10 +180,13 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     runEnd: null,
     drainAfterAbort: false,
   };
+  let currentSubmission: TSubmission | null = null;
 
   function setupStop(conversationId: string, generationCreatedAt: number | null = 41) {
     let setDrainAfterAbort: ((value: DrainAfterAbort | false) => void) | undefined;
+    const stoppedSubmission = submission('stopped-run');
     function RunEndProbe() {
+      currentSubmission = useRecoilValue(store.submissionByIndex(INDEX));
       observed.runEnd = useAtomValue(runEndByIndex(INDEX));
       observed.drainAfterAbort = useAtomValue(drainAfterAbortByIndex(INDEX));
       setDrainAfterAbort = useSetAtom(drainAfterAbortByIndex(INDEX));
@@ -194,6 +197,8 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       <QueryClientProvider client={queryClient}>
         <RecoilRoot
           initializeState={({ set }) => {
+            set(store.conversationKeysAtom, [INDEX]);
+            set(store.submissionByIndex(INDEX), stoppedSubmission);
             set(store.conversationByIndex(INDEX), {
               conversationId,
               endpoint: 'agents',
@@ -216,6 +221,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     );
     return {
       ...renderHook(() => useChatHelpers(INDEX), { wrapper }),
+      stoppedSubmission,
       setDrainAfterAbort: (value: DrainAfterAbort | false) => setDrainAfterAbort?.(value),
     };
   }
@@ -232,7 +238,27 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
     jest.restoreAllMocks();
   });
 
-  it('keeps chips and the drain signal on the new composer while claiming under the resolved id', async () => {
+  it.each([String(Constants.NEW_CONVO), 'convo-held'])(
+    'keeps the stopped submission attached for terminal reconciliation in %s',
+    async (conversationId) => {
+      mockAbortMutateAsync.mockResolvedValue({
+        success: true,
+        aborted: 'convo-resolved',
+        generationProtocolVersion: 2,
+      });
+      const { result, stoppedSubmission } = setupStop(conversationId);
+
+      await act(async () => {
+        await result.current.stopGenerating();
+      });
+
+      expect(currentSubmission).toBe(stoppedSubmission);
+      expect(observed.runEnd).toBeNull();
+      expect(observed.drainAfterAbort).toEqual({ conversationId, generationCreatedAt: 41 });
+    },
+  );
+
+  it('keeps chips on the new composer while waiting for FINAL to drain', async () => {
     const pendingSteers = [{ steerId: 's1', text: 'leftover words' }];
     mockAbortMutateAsync.mockResolvedValue({
       success: true,
@@ -262,11 +288,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
         generationProtocolVersion: 2,
       },
     );
-    expect(observed.runEnd).toMatchObject({
-      conversationId: String(Constants.NEW_CONVO),
-      outcome: 'aborted',
-      generationCreatedAt: 41,
-    });
+    expect(observed.runEnd).toBeNull();
   });
 
   it('prefers the response resolved id over the client-held id for an existing conversation', async () => {
@@ -288,11 +310,7 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       claimConversationId: 'convo-resolved',
       generationProtocolVersion: 2,
     });
-    expect(observed.runEnd).toMatchObject({
-      conversationId: 'convo-resolved',
-      outcome: 'aborted',
-      generationCreatedAt: 41,
-    });
+    expect(observed.runEnd).toBeNull();
   });
 
   it('fences abort to the attached generation epoch', async () => {
@@ -373,12 +391,13 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       terminalStatus: 'complete',
       generationProtocolVersion: 2,
     });
-    const { result } = setupStop('convo-held');
+    const { result, stoppedSubmission } = setupStop('convo-held');
 
     await act(async () => {
       await result.current.stopGenerating();
     });
 
+    expect(currentSubmission).toBe(stoppedSubmission);
     expect(mockConvertSteersToQueued).not.toHaveBeenCalled();
     expect(observed.runEnd).toBeNull();
     expect(observed.drainAfterAbort).toBe(false);
@@ -464,6 +483,6 @@ describe('useChatHelpers stopGenerating (abort steer targeting)', () => {
       claimConversationId: 'convo-held',
       generationProtocolVersion: 2,
     });
-    expect(observed.runEnd).toMatchObject({ conversationId: 'convo-held', outcome: 'aborted' });
+    expect(observed.runEnd).toBeNull();
   });
 });

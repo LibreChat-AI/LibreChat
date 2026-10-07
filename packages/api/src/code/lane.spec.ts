@@ -466,6 +466,41 @@ describe('createLaneGitRecorder target conversation', () => {
     });
   });
 
+  it('fences an ordinary conversation by the epoch of the snapshot the run was admitted on', async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 2 });
+    const { record, setConvoLaneGit } = build({ getConvoLaneContext, admittedEpoch: 0 });
+    await record(laneGit);
+    expect(written(setConvoLaneGit)[0].workspace.epoch).toBe(0);
+  });
+
+  it('keeps an admitted epoch of zero, rather than reading a newer one in its place', async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 5 });
+    const { record, setConvoLaneGit } = build({ getConvoLaneContext, admittedEpoch: 0 });
+    await record(laneGit);
+    expect(written(setConvoLaneGit)[0].workspace.epoch).toBe(0);
+  });
+
+  it('falls back to the route read when the admitted decision carried no epoch', async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 3 });
+    const { record, setConvoLaneGit } = build({ getConvoLaneContext });
+    await record(laneGit);
+    expect(written(setConvoLaneGit)[0].workspace.epoch).toBe(3);
+  });
+
+  it("fences a subagent thread by its root's epoch, which the admitted decision cannot know", async () => {
+    const getConvoLaneContext = jest.fn().mockResolvedValue({
+      subagentThread: { rootConversationId: 'visible-root' },
+      codeAttachmentEpoch: 6,
+    });
+    const { record, setConvoLaneGit } = build({
+      conversationId: 'child-thread',
+      getConvoLaneContext,
+      admittedEpoch: 1,
+    });
+    await record(laneGit);
+    expect(written(setConvoLaneGit)[0].workspace.epoch).toBe(6);
+  });
+
   it('records an ordinary conversation on itself', async () => {
     const getConvoLaneContext = jest.fn().mockResolvedValue({ codeAttachmentEpoch: 0 });
     const { record, setConvoLaneGit } = build({ conversationId: 'plain', getConvoLaneContext });

@@ -44,7 +44,7 @@ export default function AddedConvo({
             conversation={addedConvo}
             endpointsConfig={endpointsConfig}
             agentsMap={agentsMap}
-            containerClassName="shadow-stroke overflow-hidden rounded-full"
+            containerClassName="avatar-stroke overflow-hidden rounded-full"
             context="menu-item"
             size={20}
           />

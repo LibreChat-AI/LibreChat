@@ -112,10 +112,7 @@ function AuthLayout({
           )}
         >
           {!hasStartupConfigError && !isFetching && header && (
-            <h1
-              className="text-text-primary mb-4 text-center text-3xl font-semibold"
-              style={{ userSelect: 'none' }}
-            >
+            <h1 className="text-text-primary mb-4 text-center text-3xl font-semibold select-none">
               {header}
             </h1>
           )}

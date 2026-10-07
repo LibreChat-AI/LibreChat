@@ -104,6 +104,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-chat': 'global.color.background.default',
     'rgb-surface-code': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.lightMode.color.background.default',
+    'rgb-surface-code-inline': 'palette.slate.200',
+    'rgb-prose-bullet': 'palette.slate.700',
+    'rgb-prose-quote-bar': 'palette.slate.700',
     'rgb-surface-qr': 'palette.neutral.0',
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'palette.neutral.900',
@@ -248,6 +251,9 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-chat': 'global.color.background.default',
     'rgb-surface-code': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.darkMode.color.background.default',
+    'rgb-surface-code-inline': 'palette.neutral.700',
+    'rgb-prose-bullet': 'palette.neutral.500',
+    'rgb-prose-quote-bar': 'palette.neutral.500',
     'rgb-surface-qr': 'palette.neutral.0',
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
@@ -455,6 +461,18 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       status: 'mismatch',
       reason: 'stroke.intense is 2.03:1 on white, under the 3:1 a heavy edge carries',
     },
+    'rgb-prose-bullet': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason:
+        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (2.03:1 on white) misses',
+    },
+    'rgb-prose-quote-bar': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason:
+        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (2.03:1 on white) misses',
+    },
     'rgb-border-control': {
       counterpart: 'click.field.color.stroke.default',
       status: 'mismatch',
@@ -507,6 +525,18 @@ const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>>
       counterpart: 'global.color.stroke.intense',
       status: 'mismatch',
       reason: 'stroke.intense is 1.62:1 on the canvas, under the 3:1 a heavy edge carries',
+    },
+    'rgb-prose-bullet': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason:
+        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (1.62:1 on the canvas) misses',
+    },
+    'rgb-prose-quote-bar': {
+      counterpart: 'global.color.stroke.intense',
+      status: 'mismatch',
+      reason:
+        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (1.62:1 on the canvas) misses',
     },
     'rgb-border-control': {
       counterpart: 'click.field.color.stroke.default',
@@ -694,6 +724,10 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   spaceCompact: 'spaces.2',
   spaceNormal: 'spaces.3',
   menuRadius: 'click.genericMenu.panel.radii.all',
+  popoverRadius: 'click.genericMenu.panel.radii.all',
+  menuPanelRadius: 'click.genericMenu.panel.radii.all',
+  composerActionRadius: 'click.button.radii.all',
+  inlineCodeWeight: 'typography.font.weights.2',
   tooltipRadius: 'click.tooltip.radii.all',
   tooltipPaddingX: 'click.tooltip.space.x',
   tooltipPaddingY: 'click.tooltip.space.y',
@@ -725,6 +759,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   elevationDrag: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
+  buttonPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
   controlFontWeight: 'click.button.basic.typography.label.default',
   dialogStroke: 'click.dialog.stroke.default',
@@ -1558,7 +1593,11 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
     'theme-button-sm': 'buttonHeightSm',
   },
   py: { 'theme-table-cell': 'tableCellSpaceY', 'theme-field-y': 'fieldPaddingY' },
-  px: { 'theme-control-x': 'controlPaddingX', 'theme-dialog-x': 'dialogPaddingX' },
+  px: {
+    'theme-button-x': 'buttonPaddingX',
+    'theme-control-x': 'controlPaddingX',
+    'theme-dialog-x': 'dialogPaddingX',
+  },
   gap: { 'theme-control-gap': 'controlGap' },
 };
 

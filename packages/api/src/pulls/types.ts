@@ -32,6 +32,9 @@ export type PullRequestLookupLimits = {
   maxCandidatePullRequests?: number;
   /** Most candidates compared with the recorded commit before the search gives up. */
   maxHeadComparisons?: number;
+  /** Pages of candidates read per state, so a branch name reused more than one page of times
+   *  can still reach an older pull request. One page is what the feature shipped with. */
+  maxCandidatePages?: number;
 };
 
 export type PullRequestFindInput = {
@@ -42,6 +45,9 @@ export type PullRequestFindInput = {
   head?: string | null;
   token: string;
   limits?: PullRequestLookupLimits;
+  /** The repositories the token may be used for. A pull request from a fork has its checks read
+   *  from the fork only when the fork is named here, so the token never reaches an unlisted one. */
+  allowedRepositories?: readonly string[];
 };
 
 /** Finds the pull request for a branch. Null is a documented absence, not a failure. */

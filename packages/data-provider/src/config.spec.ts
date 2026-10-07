@@ -1132,9 +1132,12 @@ describe('agent pull request config', () => {
       lookupTimeoutSeconds: 30,
       maxCheckRunPages: 10,
       maxCandidatePullRequests: 10,
+      maxCandidatePages: 1,
       maxHeadComparisons: 3,
       cacheMaxEntries: 500,
       cacheMaxCredentials: 256,
+      maxConcurrentLookups: 4,
+      batchTimeoutSeconds: 20,
     });
   });
 
@@ -1185,6 +1188,8 @@ describe('agent pull request config', () => {
     ['maxCheckRunPages', 1.5],
     ['maxCandidatePullRequests', 0],
     ['maxCandidatePullRequests', 101],
+    ['maxCandidatePages', 0],
+    ['maxCandidatePages', 11],
     ['maxHeadComparisons', -1],
     ['maxHeadComparisons', 21],
     ['maxHeadComparisons', 1.5],
@@ -1194,6 +1199,12 @@ describe('agent pull request config', () => {
     ['cacheMaxCredentials', 0],
     ['cacheMaxCredentials', 10_001],
     ['cacheMaxCredentials', 1.5],
+    ['maxConcurrentLookups', 0],
+    ['maxConcurrentLookups', 17],
+    ['maxConcurrentLookups', 1.5],
+    ['batchTimeoutSeconds', 0],
+    ['batchTimeoutSeconds', 121],
+    ['batchTimeoutSeconds', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1205,8 +1216,11 @@ describe('agent pull request config', () => {
         lookupTimeoutSeconds: 120,
         maxCheckRunPages: 50,
         maxCandidatePullRequests: 100,
+        maxCandidatePages: 10,
         maxHeadComparisons: 20,
         cacheMaxEntries: 100_000,
+        maxConcurrentLookups: 16,
+        batchTimeoutSeconds: 120,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);

@@ -86,7 +86,7 @@ function WakeupTaskCard({
         )}
       </div>
       {hasResult && (
-        <div className="markdown prose prose-sm message-content light dark:prose-invert text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pr-1 break-words">
+        <div className="markdown prose prose-sm message-content light text-text-primary mt-2 max-h-96 w-full max-w-none overflow-y-auto pr-1 break-words">
           <MarkdownLite content={task.result} codeExecution={false} />
         </div>
       )}

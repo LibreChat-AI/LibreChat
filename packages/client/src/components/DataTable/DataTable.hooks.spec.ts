@@ -471,7 +471,26 @@ describe('DataTable Hooks', () => {
 });
 
 describe('useTableRowHeight', () => {
+  const originalMatchMedia = window.matchMedia;
+  let listeners: Array<() => void>;
+  let wide: boolean;
+
+  beforeEach(() => {
+    listeners = [];
+    wide = true;
+    window.matchMedia = jest.fn().mockImplementation(() => ({
+      get matches() {
+        return wide;
+      },
+      addEventListener: (_: string, listener: () => void) => listeners.push(listener),
+      removeEventListener: (_: string, listener: () => void) => {
+        listeners = listeners.filter((l) => l !== listener);
+      },
+    }));
+  });
+
   afterEach(() => {
+    window.matchMedia = originalMatchMedia;
     document.documentElement.style.removeProperty('--theme-table-cell-space-y');
     document.documentElement.style.removeProperty('--theme-table-row-stroke');
   });
@@ -494,5 +513,30 @@ describe('useTableRowHeight', () => {
     await waitFor(() => expect(result.current).toBe(37));
     /** The title cell's fixed height is a border box, so the rule sits inside it. */
     expect(titled.result.current).toBe(32);
+  });
+
+  describe('below the sm breakpoint', () => {
+    beforeEach(() => {
+      wide = false;
+    });
+
+    it('is 24px compact on a narrow screen, where the cells carry a quarter of the space', () => {
+      expect(renderHook(() => useTableRowHeight('compact')).result.current).toBe(24);
+      expect(renderHook(() => useTableRowHeight('titled')).result.current).toBe(48);
+    });
+
+    it('re-reads when the viewport crosses sm', () => {
+      const { result, unmount } = renderHook(() => useTableRowHeight('compact'));
+      expect(result.current).toBe(24);
+
+      act(() => {
+        wide = true;
+        listeners.forEach((listener) => listener());
+      });
+      expect(result.current).toBe(36);
+
+      unmount();
+      expect(listeners).toHaveLength(0);
+    });
   });
 });

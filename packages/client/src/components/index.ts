@@ -96,3 +96,4 @@ export type {
   DataTableSearchProps,
   DataTableProps as VirtualizedDataTableProps,
 } from './DataTable/DataTable.types';
+export { floatingLabel } from './floating';

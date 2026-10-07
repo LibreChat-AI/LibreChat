@@ -82,14 +82,14 @@ function Examples({ readonly, examples, setExample, addExample, removeExample }:
       <div className="flex justify-center">
         <Button
           type="button"
-          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 mr-2 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
+          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 mr-2 h-auto items-center justify-center bg-transparent px-3 text-xs font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={removeExample}
         >
           <Minus className="w-[1rem]" aria-hidden="true" />
         </Button>
         <Button
           type="button"
-          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 h-auto items-center justify-center bg-transparent px-3 py-2 text-xs font-medium font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
+          className="text-text-primary hover:bg-surface-hover hover:text-text-primary mt-1 h-auto items-center justify-center bg-transparent px-3 text-xs font-normal focus:ring-0 focus:ring-offset-0 dark:focus:ring-offset-0"
           onClick={addExample}
         >
           <Plus className="w-[1rem]" aria-hidden="true" />
