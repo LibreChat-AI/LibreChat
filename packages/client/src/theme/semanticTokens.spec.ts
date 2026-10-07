@@ -170,7 +170,7 @@ describe('shared field and dropdown interaction styles', () => {
     expect(appStyles).toMatch(new RegExp(`@layer base \\{\\s*${roleOutline}`));
     expect(appStyles).toMatch(
       new RegExp(
-        `\\.dark ${roleOutline.replace(':focus-visible ', ':focus-visible:not\\([^)]*\\) ')}`,
+        `\\.dark ${roleOutline.replace(':focus-visible ', ":focus-visible:not\\(\\[class\\*='focus-visible:outline-'\\], \\[class\\*='focus:outline-'\\]\\) ")}`,
       ),
     );
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
