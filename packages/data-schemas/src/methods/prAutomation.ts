@@ -33,10 +33,14 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   settlePRAutomationRound: (
     params: t.SettlePRAutomationRoundParams,
   ) => Promise<t.IPRAutomation | null>;
-  stopPRAutomation: (
-    key: t.PRAutomationKey,
-    stopCode: PRAutomationStopCode,
-  ) => Promise<t.IPRAutomation | null>;
+  stopPRAutomation: {
+    (key: t.PRAutomationKey, stopCode: 'user_stopped'): Promise<t.IPRAutomation | null>;
+    (
+      key: t.PRAutomationKey,
+      stopCode: PRAutomationStopCode,
+      binding: t.PRAutomationBinding,
+    ): Promise<t.IPRAutomation | null>;
+  };
   stopPRAutomations: (
     userId: string,
     stopCode: PRAutomationStopCode,
@@ -53,7 +57,11 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     maxBots: number,
     repository: string,
   ) => Promise<t.PRAutomationBotResult>;
-  removePRAutomationBot: (key: t.PRAutomationKey, botId: number) => Promise<t.IPRAutomation | null>;
+  removePRAutomationBot: (
+    key: t.PRAutomationKey,
+    botId: number,
+    repository: string,
+  ) => Promise<t.IPRAutomation | null>;
 } {
   let indexesPromise: Promise<void> | null = null;
 
@@ -172,9 +180,17 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return record;
   }
 
+  /**
+   * A deletion fence is not removed here. It belongs to the delete that wrote it, and removing
+   * it early would let an overlapping enable recreate an idle record while that delete is still
+   * in progress.
+   */
   async function disablePRAutomation(key: t.PRAutomationKey): Promise<{ removed: boolean }> {
     const PRAutomation = mongoose.models.PRAutomation;
-    const result = await PRAutomation.deleteOne(keyFilter(key));
+    const result = await PRAutomation.deleteOne({
+      ...keyFilter(key),
+      stopCode: { $nin: DELETION_STOP_CODES },
+    });
     return { removed: result.deletedCount > 0 };
   }
 
@@ -221,21 +237,22 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       return { ok: false, error: { code } };
     }
 
-    /** The window opens at the first claim attempt on an active record, once. */
-    await PRAutomation.updateOne(
-      { ...filter, state: { $in: CLAIMABLE_STATES }, startedAt: { $exists: false } },
-      { $set: { startedAt: now } },
-    );
-
+    /**
+     * The window opens with the first round that is actually claimed. `$min` sets `startedAt`
+     * only when it is missing and keeps the earlier time otherwise, so the window is part of the
+     * same atomic write: a claim that fails or is abandoned leaves nothing behind to count
+     * against `maxMinutes`.
+     */
     const claimed = await PRAutomation.findOneAndUpdate(
       {
         ...filter,
         state: { $in: CLAIMABLE_STATES },
         round: { $lt: maxRounds },
-        startedAt: { $gte: cutoff },
+        $or: [{ startedAt: { $exists: false } }, { startedAt: { $gte: cutoff } }],
         claimedHeads: { $ne: headSha },
       },
       {
+        $min: { startedAt: now },
         $inc: { round: 1 },
         $set: { state: 'fixing', lastHeadSha: headSha, runId },
         $push: { claimedHeads: headSha },
@@ -295,19 +312,27 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   }
 
   /**
-   * Stops the automation whatever round is running, so a user stop is never
-   * lost to a race. A stop code is required: the client maps it to the reason
-   * it shows. The first stop wins, and a stopped record leaves that state only
-   * through `enablePRAutomation`.
+   * Stops the automation whatever round is running. A stop code is required: the client
+   * maps it to the reason it shows. The first stop wins, and a stopped record leaves that
+   * state only through `enablePRAutomation`.
+   *
+   * A user stop is unconditional, so it is never lost to a race. Every other code comes from
+   * an event about one pull request, and a delayed one must not stop the run that replaced
+   * it, so it names the pull request it is for and applies only while the record is still
+   * bound to it.
    */
   async function stopPRAutomation(
     key: t.PRAutomationKey,
     stopCode: PRAutomationStopCode,
+    binding?: t.PRAutomationBinding,
   ): Promise<t.IPRAutomation | null> {
     assertStopCode(stopCode);
+    if (stopCode !== 'user_stopped' && binding == null) {
+      throw new RangeError('An event-driven stop must name the pull request it is for');
+    }
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
-      { ...keyFilter(key), state: { $ne: 'stopped' } },
+      { ...keyFilter(key), ...binding, state: { $ne: 'stopped' } },
       { $set: { state: 'stopped', stopCode } },
       { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();
@@ -408,13 +433,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return { ok: false, error: { code: 'bot_limit' } };
   }
 
+  /** Names the repository like an approval does, so a delayed removal cannot delete a newer approval. */
   async function removePRAutomationBot(
     key: t.PRAutomationKey,
     botId: number,
+    repository: string,
   ): Promise<t.IPRAutomation | null> {
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
-      keyFilter(key),
+      { ...keyFilter(key), repository },
       { $pull: { trustedBots: { id: botId } } },
       { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();

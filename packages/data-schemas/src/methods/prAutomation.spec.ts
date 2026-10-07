@@ -160,7 +160,7 @@ describe('a record stopped by a deletion fence', () => {
     'is not revived by enabling the same pull request (%s)',
     async (code) => {
       await enable(pullOne);
-      await methods.stopPRAutomation(key, code);
+      await methods.stopPRAutomation(key, code, pullOne);
       expect(await enable(pullOne)).toMatchObject({ state: 'stopped', stopCode: code });
     },
   );
@@ -169,7 +169,7 @@ describe('a record stopped by a deletion fence', () => {
     'is not revived by another pull request in the repository (%s)',
     async (code) => {
       await enable(pullOne);
-      await methods.stopPRAutomation(key, code);
+      await methods.stopPRAutomation(key, code, pullOne);
       expect(await enable(pullTwo)).toMatchObject({
         state: 'stopped',
         stopCode: code,
@@ -180,7 +180,7 @@ describe('a record stopped by a deletion fence', () => {
 
   test.each(deletionCodes)('is not revived or rebound to another repository (%s)', async (code) => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code);
+    await methods.stopPRAutomation(key, code, pullOne);
     expect(await enable(otherRepository)).toMatchObject({
       state: 'stopped',
       stopCode: code,
@@ -190,7 +190,7 @@ describe('a record stopped by a deletion fence', () => {
 
   test.each(deletionCodes)('is not revived without a binding (%s)', async (code) => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code);
+    await methods.stopPRAutomation(key, code, pullOne);
     expect(await methods.enablePRAutomation(key)).toMatchObject({
       state: 'stopped',
       stopCode: code,
@@ -199,7 +199,7 @@ describe('a record stopped by a deletion fence', () => {
 
   test.each(deletionCodes)('still refuses a claim (%s)', async (code) => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code);
+    await methods.stopPRAutomation(key, code, pullOne);
     await enable(pullOne);
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_active' } });
   });
@@ -416,6 +416,35 @@ describe('claimPRAutomationRound', () => {
     expect(await claim(1)).toEqual(mismatch);
   });
 
+  test('does not open the time window when the claim is refused', async () => {
+    await enable(pullOne);
+    const refused = await methods.claimPRAutomationRound({
+      ...key,
+      binding: pullOne,
+      maxRounds: 0,
+      maxMinutes: limits.maxMinutes,
+      headSha: head(1),
+    });
+    expect(refused).toEqual({ ok: false, error: { code: 'round_cap' } });
+    expect((await methods.getPRAutomation(key))?.startedAt).toBeUndefined();
+  });
+
+  test('opens the time window with the first round that is claimed', async () => {
+    await enable(pullOne);
+    const start = new Date('2026-01-01T00:00:00Z');
+    await claim(1, { now: start });
+    expect((await methods.getPRAutomation(key))?.startedAt).toEqual(start);
+  });
+
+  test('keeps the first start when a later round is claimed', async () => {
+    await enable(pullOne);
+    const start = new Date('2026-01-01T00:00:00Z');
+    await claim(1, { now: start });
+    await toWaiting();
+    await claim(2, { now: new Date(start.getTime() + 10 * 60_000) });
+    expect((await methods.getPRAutomation(key))?.startedAt).toEqual(start);
+  });
+
   test('does not open the time window for a delivery it rejected', async () => {
     await enable(pullOne);
     await enable(pullTwo);
@@ -547,7 +576,7 @@ describe('settlePRAutomationRound', () => {
 describe('stopPRAutomation', () => {
   test('records the stop code', async () => {
     await enable();
-    expect(await methods.stopPRAutomation(key, 'round_cap')).toMatchObject({
+    expect(await methods.stopPRAutomation(key, 'round_cap', pullOne)).toMatchObject({
       state: 'stopped',
       stopCode: 'round_cap',
     });
@@ -564,7 +593,7 @@ describe('stopPRAutomation', () => {
 
   test('keeps the first stop code when it is stopped again', async () => {
     await enable();
-    await methods.stopPRAutomation(key, 'round_cap');
+    await methods.stopPRAutomation(key, 'round_cap', pullOne);
     expect(await methods.stopPRAutomation(key, 'user_stopped')).toBeNull();
     expect((await methods.getPRAutomation(key))?.stopCode).toBe('round_cap');
   });
@@ -572,12 +601,55 @@ describe('stopPRAutomation', () => {
   test('rejects a code outside the stop code list', async () => {
     await enable();
     await expect(
-      methods.stopPRAutomation(key, 'because' as unknown as PRAutomationStopCode),
+      methods.stopPRAutomation(key, 'because' as unknown as PRAutomationStopCode, pullOne),
     ).rejects.toThrow();
   });
 
   test('returns null for a conversation with no record', async () => {
     expect(await methods.stopPRAutomation(key, 'user_stopped')).toBeNull();
+  });
+
+  test('ignores an event-driven stop for a pull request the record was rebound away from', async () => {
+    await enable(pullOne);
+    await enable(pullTwo);
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', pullOne)).toBeNull();
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'idle', pullNumber: 2 });
+  });
+
+  test('ignores an event-driven stop for another repository', async () => {
+    await enable(pullOne);
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', otherRepository)).toBeNull();
+    expect((await methods.getPRAutomation(key))?.state).toBe('idle');
+  });
+
+  test('applies an event-driven stop for the pull request the record is bound to', async () => {
+    await enable(pullOne);
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', pullOne)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'pull_request_closed',
+    });
+  });
+
+  test('refuses an event-driven stop that names no pull request', async () => {
+    await enable(pullOne);
+    await expect(
+      (
+        methods.stopPRAutomation as (
+          target: typeof key,
+          code: PRAutomationStopCode,
+        ) => Promise<unknown>
+      )(key, 'pull_request_closed'),
+    ).rejects.toThrow(RangeError);
+    expect((await methods.getPRAutomation(key))?.state).toBe('idle');
+  });
+
+  test('lets a user stop win even after the record was rebound', async () => {
+    await enable(pullOne);
+    await enable(pullTwo);
+    expect(await methods.stopPRAutomation(key, 'user_stopped')).toMatchObject({
+      state: 'stopped',
+      stopCode: 'user_stopped',
+    });
   });
 });
 
@@ -675,8 +747,25 @@ describe('approved bots', () => {
     await enable();
     await addBot(1);
     await addBot(2);
-    const record = await methods.removePRAutomationBot(key, 1);
+    const record = await methods.removePRAutomationBot(key, 1, 'acme/one');
     expect(record?.trustedBots).toEqual([{ id: 2 }]);
+  });
+
+  test('keeps an approval made for another repository when a removal is delayed', async () => {
+    await enable(pullOne);
+    await addBot(7);
+    await enable(otherRepository);
+    await addBot(7, undefined, maxBots, 'acme/two');
+    const record = await methods.removePRAutomationBot(key, 7, 'acme/one');
+    expect(record).toBeNull();
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([{ id: 7 }]);
+  });
+
+  test('removes an approval for the repository the record is bound to', async () => {
+    await enable(pullOne);
+    await addBot(7);
+    const record = await methods.removePRAutomationBot(key, 7, 'acme/one');
+    expect(record?.trustedBots).toEqual([]);
   });
 
   test('keeps each conversation allowlist separate', async () => {
@@ -697,5 +786,34 @@ describe('disablePRAutomation', () => {
 
   test('reports nothing removed when there was no record', async () => {
     expect(await methods.disablePRAutomation(key)).toEqual({ removed: false });
+  });
+
+  test.each(['conversation_deleting', 'account_deleting'] as const)(
+    'does not remove a deletion fence (%s)',
+    async (code) => {
+      await enable(pullOne);
+      await methods.stopPRAutomations(userId, code, [key.conversationId]);
+      expect(await methods.disablePRAutomation(key)).toEqual({ removed: false });
+      expect(await methods.getPRAutomation(key)).toMatchObject({
+        state: 'stopped',
+        stopCode: code,
+      });
+    },
+  );
+
+  test('keeps an overlapping enable from recreating a record under a deletion fence', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
+    await methods.disablePRAutomation(key);
+    expect(await enable(pullOne)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'conversation_deleting',
+    });
+  });
+
+  test('still removes a record a user stopped', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomation(key, 'user_stopped');
+    expect(await methods.disablePRAutomation(key)).toEqual({ removed: true });
   });
 });

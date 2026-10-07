@@ -2123,20 +2123,48 @@ describe('User Methods - Database Tests', () => {
 });
 
 describe('PR automation cleanup on account deletion', () => {
-  it('keeps the records, stopped, when the account delete fails', async () => {
+  it('keeps the account and the records, stopped, when the cleanup fails, so deletion is retried', async () => {
     const user = await User.create({ email: 'delete-pr-fail@example.com', provider: 'local' });
     const id = user._id.toString();
     const PRAutomation = mongoose.models.PRAutomation;
     await PRAutomation.create({ user: id, conversationId: 'chat-a' });
-    const deletion = jest.spyOn(User, 'deleteOne').mockRejectedValueOnce(new Error('db down'));
+    const cleanup = jest
+      .spyOn(PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await expect(methods.deleteUserById(id)).rejects.toThrow('synthetic cleanup failure');
+      expect(deletion).not.toHaveBeenCalled();
+      expect(await User.exists({ _id: user._id })).not.toBeNull();
+      expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
+        state: 'stopped',
+        stopCode: 'account_deleting',
+      });
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await User.exists({ _id: user._id })).toBeNull();
+      expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
+  });
 
-    await expect(methods.deleteUserById(id)).rejects.toThrow('db down');
-    deletion.mockRestore();
-
-    expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
-      state: 'stopped',
-      stopCode: 'account_deleting',
-    });
+  it('removes the records before it deletes the account', async () => {
+    const user = await User.create({ email: 'delete-pr-order@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const cleanup = jest.spyOn(PRAutomation, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await methods.deleteUserById(id);
+      expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(
+        deletion.mock.invocationCallOrder[0],
+      );
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
   });
 
   it('removes the records of an account that no longer exists', async () => {
