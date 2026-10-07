@@ -17,14 +17,13 @@ test('reports hex, numeric colour functions and named colours in values', () => 
   assert.deepEqual(literals(css), ['#0066cc', 'rgba(0', 'hsl(1', 'white', '#FFF']);
 });
 
-test('accepts theme variables, channel triplets, comments, urls and selectors', () => {
+test('accepts theme variables, comments, urls and selectors', () => {
   const css = [
     '/* was #0066cc and rgba(0, 0, 0, 0.1) */',
     '#fade, #root { color: rgb(var(--text-primary)); }',
     'a {',
     '  background: rgb(var(--black) / 0.1);',
     '  box-shadow: 0 1px 2px rgb(var(--slate-ink) / 0.3);',
-    '  --text-muted: 105 110 121;',
     '  --on-white: var(--white);',
     '  border-color: theme(colors.gray.200);',
     "  background-image: url('sprite.svg#fff');",
@@ -154,4 +153,25 @@ test('reads fixed channels in relative colours but not pure relative forms', () 
 test('reads numeric fallbacks inside a colour function var()', () => {
   assert.equal(literals('a { color: rgb(var(--brand, 255 0 0)); }').length, 1);
   assert.deepEqual(literals('a { color: rgb(var(--c) / var(--a, 1)); }'), []);
+});
+
+test('reads fixed channels in color(from) and every colour channel of a relative function', () => {
+  assert.equal(literals('a { color: color(from var(--base) srgb r g 0); }').length, 1);
+  assert.equal(literals('a { color: rgb(from var(--base) r 128 b); }').length, 1);
+  assert.equal(literals('a { color: hsl(from var(--base) h none l); }').length, 1);
+  assert.equal(literals('a { color: rgb(from var(--base) r g calc(255)); }').length, 1);
+  assert.deepEqual(literals('a { color: color(from var(--base) srgb r g b / 0.5); }'), []);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) calc(r + 10) g b / 0.5); }'), []);
+});
+
+test('reads a channel triplet in a custom property', () => {
+  assert.deepEqual(literals('a { --x: 255 0 0; }'), ['255 0 0']);
+  assert.deepEqual(literals('a { --x: 0.5 0.2 1 / 0.4; }'), ['0.5 0.2 1 / 0.4']);
+  assert.deepEqual(literals('a { --x: var(--a); --y: 1 2; --z: 0.5; }'), []);
+  assert.deepEqual(literals('a { margin: 1 2 3; }'), []);
+});
+
+test('a token source exempts its custom properties only', () => {
+  const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
+  assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);
 });

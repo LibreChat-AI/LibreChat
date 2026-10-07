@@ -8,8 +8,9 @@ block in `eslint.config.mjs` (the brand and decorative marks named below) or by 
 checks), so the count there is the exception, not debt. Everything else
 is invisible to the lint (strings passed to a canvas or an iframe), so this list is the record.
 Stylesheets are the exception: `scripts/css-colors.mts` fails `npm run static-checks` on a colour
-literal in any `.css` under `client/src` or `packages/client/src` except `defaults.css` and `tokens.css`
-(entry 1) the `.azure-bg-color` rule in `client/src/mobile.css` (entry 2) and the `select` rule in `client/src/style.css` (entry 9).
+literal, or a bare channel triplet in a custom property, in any `.css` under `client/src` or
+`packages/client/src`, except in the custom properties of `defaults.css` and `tokens.css`
+(entry 1), the `.azure-bg-color` rule in `client/src/mobile.css` (entry 2) and the `select` rule in `client/src/style.css` (entry 9).
 
 Adding an entry needs the same bar: if a theme author would reasonably want to recolour it, it
 is a role, not an exception. Keep the list to ten entries or fewer; a new kind of exception that

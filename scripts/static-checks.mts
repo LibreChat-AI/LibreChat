@@ -115,6 +115,9 @@ const FILTERS = {
     'client/src/**/*.css',
     'packages/client/src/**/*.css',
     'packages/client/src/theme/allowlist.md',
+    /** The scanner parses with postcss: an upgrade changes what it reads. */
+    'package.json',
+    'package-lock.json',
     'scripts/css-colors.test.mts',
     'scripts/css-colors.mts',
     'scripts/static-checks.mts',
