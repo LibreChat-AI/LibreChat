@@ -7,7 +7,6 @@ import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
-import { focusOutlineRole } from './Focus';
 import MultiSearch from './MultiSearch';
 import Dropdown from './Dropdown';
 
@@ -110,7 +109,11 @@ describe('shared control keyboard focus', () => {
   });
 
   it('names the global outline on the tab triggers, table rows and dropdown trigger', () => {
-    const roleClasses = focusOutlineRole.split(' ');
+    const roleClasses = [
+      'focus-visible:outline-theme-focus',
+      'focus-visible:outline-offset-theme-focus',
+      'focus-visible:outline-focus-outline',
+    ];
     render(
       <>
         <Tabs defaultValue="a">
