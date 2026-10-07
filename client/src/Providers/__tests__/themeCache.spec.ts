@@ -158,7 +158,7 @@ describe('theme cache storage', () => {
  * The cache version keys on the role set and a hand-bumped epoch, so a release that changes what
  * a cacheable theme resolves to (a palette value, a fallback, an emitted attribute) without
  * adding a role would replay stale styling at boot. The pin covers exactly the definitions that
- * can enter the cache: `librechat`, `clickhouse` and an inline definition's fallbacks. The
+ * can enter the cache: `librechat`, `clickhouse` and an inline definition with role overrides and the fallbacks around them. The
  * high-contrast palettes are not replayed by the boot script, so they are not pinned. A change
  * fails here: bump `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
  */
@@ -178,7 +178,10 @@ describe('resolver output pin', () => {
       buildThemeCache(OWNER, 'inline', {
         version: 1,
         name: 'inline',
-        modes: { light: {}, dark: {} },
+        modes: {
+          light: { colors: { 'rgb-text-primary': '10 20 30' } },
+          dark: { colors: { 'rgb-text-primary': '230 220 210' } },
+        },
       }).modes,
     ];
     expect({
@@ -186,7 +189,7 @@ describe('resolver output pin', () => {
       digest: digest(JSON.stringify(resolved)),
     }).toEqual({
       epoch: 1,
-      digest: 'er00w0',
+      digest: 'f37285',
     });
   });
 });
