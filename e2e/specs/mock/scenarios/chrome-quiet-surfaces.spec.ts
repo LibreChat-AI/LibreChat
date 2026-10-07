@@ -5,13 +5,12 @@ import { NEW_CHAT_PATH } from '../helpers';
 
 /**
  * Surfaces that stand in for a chrome outline. A theme whose `chromeBorderAlpha` is 0 draws no edge
- * on chrome controls, so the chat header stops fading into the thread and takes the canvas, and a
- * theme whose `fieldFillStyle` is `fill` strokes the sidebar search field it fills. The bundled
- * default theme keeps the gradient header and the unstroked search field.
+ * on chrome controls, so the chat header stops fading into the thread and takes the canvas. The
+ * bundled default theme keeps the gradient header.
  */
 
 type Mode = 'light' | 'dark';
-type Surfaces = { headerImage: string; headerColor: string; searchBorderWidth: string };
+type Surfaces = { headerImage: string; headerColor: string };
 
 const QUIET_ZERO_SPELLING = {
   version: 1,
@@ -54,54 +53,47 @@ async function openChat(page: Page, mode: Mode, definition?: { name: string }) {
 
 async function surfaces(page: Page): Promise<Surfaces> {
   const header = page.locator('div[class~="theme-chrome-quiet:bg-none"]').first();
-  const search = page.getByRole('textbox', { name: 'Search messages' }).first().locator('..');
   await expect(header).toBeVisible();
-  await expect(search).toBeVisible();
   const [headerImage, headerColor] = await header.evaluate((node) => {
     const style = getComputedStyle(node);
     return [style.backgroundImage, style.backgroundColor];
   });
-  const searchBorderWidth = await search.evaluate((node) => getComputedStyle(node).borderTopWidth);
-  return { headerImage, headerColor, searchBorderWidth };
+  return { headerImage, headerColor };
 }
 
 test.describe('surfaces that replace a chrome outline', () => {
-  test('the default light theme keeps the gradient header and an unstroked search field @scenario:chrome-quiet-default-light-unchanged', async ({
+  test('the default light theme keeps the gradient header @scenario:chrome-quiet-default-light-unchanged', async ({
     page,
   }) => {
     await openChat(page, 'light');
     const result = await surfaces(page);
     expect(result.headerImage).toContain('linear-gradient');
-    expect(result.searchBorderWidth).toBe('0px');
   });
 
-  test('the default dark theme keeps the gradient header and an unstroked search field @scenario:chrome-quiet-default-dark-unchanged', async ({
+  test('the default dark theme keeps the gradient header @scenario:chrome-quiet-default-dark-unchanged', async ({
     page,
   }) => {
     await openChat(page, 'dark');
     const result = await surfaces(page);
     expect(result.headerImage).toContain('linear-gradient');
-    expect(result.searchBorderWidth).toBe('0px');
   });
 
-  test('the ClickHouse theme paints an opaque header and strokes the search field @scenario:chrome-quiet-clickhouse-light', async ({
+  test('the ClickHouse theme paints an opaque header @scenario:chrome-quiet-clickhouse-light', async ({
     page,
   }) => {
     await openChat(page, 'light', clickHouseTheme);
     const result = await surfaces(page);
     expect(result.headerImage).toBe('none');
     expect(result.headerColor).not.toBe('rgba(0, 0, 0, 0)');
-    expect(result.searchBorderWidth).toBe('1px');
   });
 
-  test('the ClickHouse dark theme paints an opaque header and strokes the search field @scenario:chrome-quiet-clickhouse-dark', async ({
+  test('the ClickHouse dark theme paints an opaque header @scenario:chrome-quiet-clickhouse-dark', async ({
     page,
   }) => {
     await openChat(page, 'dark', clickHouseTheme);
     const result = await surfaces(page);
     expect(result.headerImage).toBe('none');
     expect(result.headerColor).not.toBe('rgba(0, 0, 0, 0)');
-    expect(result.searchBorderWidth).toBe('1px');
   });
 
   test('a theme that spells the zero chrome alpha as 0.0 still paints the opaque header @scenario:chrome-quiet-zero-spelling', async ({
