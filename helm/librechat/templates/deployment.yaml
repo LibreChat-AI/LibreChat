@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "librechat.fullname" $ }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "librechat.labels" . | nindent 4 }}
     {{- with .Values.deploymentLabels }}

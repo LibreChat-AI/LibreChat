@@ -3,6 +3,7 @@ apiVersion: {{ include "librechat.hpa.apiVersion" $ }}
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "librechat.fullname" $ }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "librechat.labels" . | nindent 4 }}
 spec:

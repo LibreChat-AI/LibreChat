@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: "{{ include "librechat.fullname" . }}-test-connection"
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "librechat.labels" . | nindent 4 }}
   annotations:
