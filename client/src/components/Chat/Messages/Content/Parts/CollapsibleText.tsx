@@ -113,10 +113,11 @@ const CollapsibleText = memo(function CollapsibleText({
         <Button
           type="button"
           variant="link"
+          size="bare"
           onClick={() => setExpanded((prev) => !prev)}
           aria-expanded={expanded}
           aria-controls={contentId}
-          className="mt-1 h-auto gap-1 p-0 text-xs"
+          className="mt-1 gap-1 text-xs"
         >
           {expanded ? (
             <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />

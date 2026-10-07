@@ -89,7 +89,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
         data-artifact-trigger={artifactId}
         onClick={onOpen}
         className={cn(
-          'inline-flex h-auto min-w-0 flex-1 items-center justify-start gap-2.5 rounded-none p-0',
+          'min-w-0 flex-1 gap-2.5',
           'hover:text-text-primary focus-visible:ring-text-primary focus-visible:ring-offset-0',
           isSelected && 'text-text-primary',
         )}
@@ -107,7 +107,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
             the streaming cursor and a call header can trade places without
             moving what is under them, and a taller child here would push
             past that box. */}
-        <span className="text-text-tertiary ring-border-light shrink-0 rounded px-1.5 text-[10px] leading-5 font-medium tracking-wide uppercase ring-1 ring-inset">
+        <span className="text-text-tertiary ring-border-light text-3xs shrink-0 rounded px-1.5 leading-5 font-medium tracking-wide uppercase ring-1 ring-inset">
           {label}
         </span>
         {/* The glyph's tint is the visual half of the preview/source split
@@ -124,11 +124,11 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
       {onDownload != null && (
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={onDownload}
           aria-label={`${localize('com_ui_download')} ${title}`}
-          className="text-text-secondary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>

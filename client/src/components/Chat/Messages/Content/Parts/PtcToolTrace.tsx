@@ -142,7 +142,7 @@ export default function PtcToolTrace({
    *  intended separation under a custom theme. */
   return (
     <div className={cn('p-4 text-xs', className)}>
-      <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+      <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
         {localize('com_ui_ptc_trace_title')}
       </div>
       <ol

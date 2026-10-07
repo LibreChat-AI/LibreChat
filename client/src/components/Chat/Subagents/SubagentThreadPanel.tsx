@@ -1666,11 +1666,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                           key={action.key}
                           type="button"
                           size="icon"
-                          variant="ghost"
+                          variant="quiet"
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="text-text-secondary size-9 rounded-full"
+                          className="size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>

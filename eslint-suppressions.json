@@ -250,11 +250,8 @@
     }
   },
   "client/src/components/Chat/Landing.tsx": {
-    "shadcn/no-raw-colors": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 16
+      "count": 14
     },
     "shadcn/require-static-classes": {
       "count": 2
@@ -319,9 +316,6 @@
     }
   },
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     },
@@ -345,9 +339,6 @@
     },
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 5
     }
   },
   "client/src/components/Chat/Messages/Content/EditContentParts.tsx": {
@@ -381,25 +372,19 @@
   "client/src/components/Chat/Messages/Content/MessageContent.tsx": {
     "shadcn/no-restyle": {
       "count": 2
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/ArtifactRow.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 7
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/Attachment.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 9
+      "count": 5
     },
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/BashCall.tsx": {
@@ -409,23 +394,10 @@
   },
   "client/src/components/Chat/Messages/Content/Parts/CollapsibleText.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/DiffView.tsx": {
-    "shadcn/no-arbitrary-values": {
       "count": 2
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/EmptyText.tsx": {
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/ExecuteCode.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     }
@@ -435,23 +407,8 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/LogContent.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/MemoryCall.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/PendingSkillCall.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/PtcToolTrace.tsx": {
-    "shadcn/no-arbitrary-values": {
       "count": 1
     }
   },
@@ -469,15 +426,7 @@
     }
   },
   "client/src/components/Chat/Messages/Content/Parts/SkillCall.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
     "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/SteerPart.tsx": {
-    "shadcn/no-unknown-classes": {
       "count": 1
     }
   },
@@ -489,14 +438,9 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 16
+      "count": 9
     },
     "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/Parts/Text.tsx": {
-    "shadcn/no-unknown-classes": {
       "count": 1
     }
   },
@@ -505,34 +449,16 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Content/Parts/ToolMermaidArtifact.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/Content/Parts/WorkspaceChanges.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/Chat/Messages/Content/ProgressText.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 5
     }
   },
   "client/src/components/Chat/Messages/Content/RetrievalCall.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/Content/SearchContent.tsx": {
-    "shadcn/no-unknown-classes": {
       "count": 1
     }
   },
@@ -561,12 +487,12 @@
   },
   "client/src/components/Chat/Messages/Content/ToolCallLimitNotice.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/ToolIcon.tsx": {
@@ -579,7 +505,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 24
+      "count": 8
     }
   },
   "client/src/components/Chat/Messages/Content/Wakeup.tsx": {
@@ -589,22 +515,16 @@
     "shadcn/no-restyle": {
       "count": 2
     },
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    },
     "shadcn/require-static-classes": {
       "count": 1
     }
   },
   "client/src/components/Chat/Messages/Content/WebSearch.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 4
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 12
     }
   },
   "client/src/components/Chat/Messages/Content/animate.tsx": {
@@ -613,27 +533,21 @@
     }
   },
   "client/src/components/Chat/Messages/Content/verticals.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 4
-    },
     "shadcn/no-inline-styles": {
       "count": 1
     }
   },
   "client/src/components/Chat/Messages/Feedback.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 11
     },
     "shadcn/require-static-classes": {
       "count": 3
     }
   },
   "client/src/components/Chat/Messages/Fork.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 2
-    },
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     },
     "shadcn/require-static-classes": {
       "count": 1
@@ -647,37 +561,24 @@
   "client/src/components/Chat/Messages/MessageNav.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 3
     }
   },
   "client/src/components/Chat/Messages/MessagesView.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Messages/MinimalHoverButtons.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 2
     },
     "shadcn/require-static-classes": {
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/MinimalMessages.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/PendingTurn.tsx": {
-    "shadcn/no-unknown-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/SiblingSwitch.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 2
     }
   },
   "client/src/components/Chat/Messages/styles.ts": {
@@ -710,7 +611,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 4
     }
   },
   "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
@@ -721,9 +622,6 @@
   "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
     "shadcn/no-restyle": {
       "count": 12
-    },
-    "shadcn/no-unknown-classes": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
@@ -736,7 +634,7 @@
   },
   "client/src/components/Chat/Subagents/SubagentThreadPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 7
     }
   },
   "client/src/components/Chat/Trace/Button.tsx": {

@@ -20,7 +20,7 @@ const EmptyTextPart = memo(({ underHeaderIcon = false }: EmptyTextPartProps) => 
       data-message-text
       className="flex min-h-[1.25rem] flex-col items-start gap-3 overflow-visible"
     >
-      <div className="markdown prose dark:prose-invert light w-full break-words">
+      <div className="markdown prose light w-full break-words">
         <div className={cn('absolute', underHeaderIcon && 'ps-1.5')}>
           <p className="submitting relative">
             <span className="result-thinking" />

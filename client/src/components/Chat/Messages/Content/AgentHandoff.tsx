@@ -212,7 +212,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
               <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
                 <span
                   id={headingId}
-                  className="text-text-secondary text-[11px] font-semibold tracking-wide uppercase"
+                  className="text-text-secondary text-2xs font-semibold tracking-wide uppercase"
                 >
                   {localize('com_ui_handoff_instructions')}
                 </span>

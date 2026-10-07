@@ -1651,8 +1651,7 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
         onKeyDown={handleColumnKeyDown}
         onScroll={handleColumnScroll}
         data-message-nav-column=""
-        className="relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
-        style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        className="hide-scrollbar relative flex min-h-0 w-14 cursor-pointer touch-none flex-col items-stretch gap-1.5 overflow-y-auto select-none [&::-webkit-scrollbar]:hidden"
       >
         {messageEntries.map((entry) => {
           const label = localize(
@@ -1711,13 +1710,12 @@ function MessageNav({ scrollableRef }: { scrollableRef: React.RefObject<HTMLDivE
             ref={tipElRef}
             role="tooltip"
             style={{
-              position: 'fixed',
               top: tip.top,
               right: tip.right,
               transform: 'translateY(-50%)',
               zIndex: 999,
             }}
-            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none max-w-[17.5rem] rounded-xl border px-3 py-2 shadow-lg"
+            className="border-border-light bg-surface-secondary text-text-secondary pointer-events-none fixed max-w-[17.5rem] rounded-xl border px-3 py-2 shadow-lg"
           >
             <p className="line-clamp-3 text-xs">{tipText}</p>
           </div>,

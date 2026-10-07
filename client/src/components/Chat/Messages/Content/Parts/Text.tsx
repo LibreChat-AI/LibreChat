@@ -45,7 +45,7 @@ const TextPart = memo(function TextPart({ text, isCreatedByUser, showCursor }: T
         className={cn(
           isSubmitting ? 'submitting' : '',
           showCursorState && !!text.length ? 'result-streaming' : '',
-          'markdown prose message-content dark:prose-invert light w-full break-words',
+          'markdown prose message-content light w-full break-words',
           isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',
           'text-text-primary',
         )}

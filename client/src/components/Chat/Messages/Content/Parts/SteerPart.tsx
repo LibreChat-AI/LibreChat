@@ -151,7 +151,7 @@ const SteerPart = memo(function SteerPart({
           <CollapsibleText enabled={collapseLongUserMessages}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words',
+                'markdown prose message-content light w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
                 'text-text-primary',
               )}
