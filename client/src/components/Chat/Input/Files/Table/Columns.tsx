@@ -90,7 +90,7 @@ export const columns: ColumnDef<TFile>[] = [
           render={
             <Button
               variant="ghost"
-              className="hover:bg-surface-hover px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
+              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
               onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
               aria-sort={ariaSort}
               aria-label={localize('com_ui_name_sort')}
@@ -150,7 +150,7 @@ export const columns: ColumnDef<TFile>[] = [
             <Button
               variant="ghost"
               onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
-              className="hover:bg-surface-hover px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
+              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
               aria-sort={ariaSort}
               aria-label={localize('com_ui_date_sort')}
               aria-hidden="true"
@@ -268,7 +268,7 @@ export const columns: ColumnDef<TFile>[] = [
           render={
             <Button
               variant="ghost"
-              className="hover:bg-surface-hover px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
+              className="px-2 py-0 text-xs sm:px-2 sm:py-2 sm:text-sm"
               onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
               aria-sort={ariaSort}
               aria-label={localize('com_ui_size_sort')}

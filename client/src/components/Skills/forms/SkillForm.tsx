@@ -196,7 +196,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                     id="skill-name"
                     type="text"
                     readOnly={readOnly}
-                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
+                    className="peer border-border-medium text-text-primary mr-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -287,7 +287,8 @@ export default function SkillForm({ skillId }: SkillFormProps) {
               <div className="flex flex-col">
                 <Label
                   htmlFor="skill-description"
-                  className="text-text-secondary mb-1 text-sm font-medium"
+                  variant="secondary"
+                  className="mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
                   <span className="text-text-destructive ml-0.5">*</span>
@@ -333,7 +334,6 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                 variant="outline"
                 onClick={() => reset(values)}
                 disabled={!isDirty}
-                className={cn(!isDirty && 'opacity-50')}
               >
                 {localize('com_ui_reset')}
               </Button>
@@ -341,7 +341,7 @@ export default function SkillForm({ skillId }: SkillFormProps) {
                 type="submit"
                 disabled={saveDisabled}
                 aria-disabled={saveDisabled || undefined}
-                className={cn('w-full sm:w-auto', saveDisabled && 'opacity-50')}
+                className="w-full sm:w-auto"
               >
                 {localize('com_ui_save')}
               </Button>

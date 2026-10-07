@@ -4,7 +4,11 @@ import { Link2 } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
 import { Spinner, useToastContext, useMediaQuery } from '@librechat/client';
-import { Constants, supportsConversationTitleOwnership } from 'librechat-data-provider';
+import {
+  Constants,
+  PULL_REQUEST_BATCH_VERSION,
+  supportsConversationTitleOwnership,
+} from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationDragItem } from './dnd';
 import {
@@ -13,6 +17,7 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
+import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -70,6 +75,13 @@ function Conversation({
   const sharedLinksEnabled = startupConfig?.sharedLinksEnabled === true;
   const isSharedBadgeVisible = conversation.isShared === true && sharedLinksEnabled;
   const projectLabelId = useId();
+  const pullRequestLabelId = useId();
+  /** The mark owns the description text; the row points at it only while it is in the page. */
+  const [pullRequestDescribed, setPullRequestDescribed] = useState(false);
+  const showPullRequest =
+    startupConfig?.pullRequestsEnabled === true &&
+    startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+    !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
   const isShiftHeld = useShiftKey();
@@ -387,10 +399,18 @@ function Conversation({
           isSmallScreen={isSmallScreen}
           localize={localize}
           keyShortcuts={keyShortcuts}
-          describedBy={projectBadgeProjectId ? projectLabelId : undefined}
+          describedBy={
+            [
+              projectBadgeProjectId ? projectLabelId : null,
+              showPullRequest && pullRequestDescribed ? pullRequestLabelId : null,
+            ]
+              .filter(Boolean)
+              .join(' ') || undefined
+          }
         >
           {/* Status sits on the avatar so the row's trailing edge stays free for its badges
-              and menu. The ring is 34px around the 20px icon: offset by half the difference. */}
+              and menu. The ring is 2.125rem around the 1.25rem icon: offset by half the
+              difference. Both are rem so the ring follows the icon box at any UI scale. */}
           <span className="relative flex size-5 shrink-0 items-center justify-center">
             <ConversationEndpointIcon conversation={conversation} size={20} context="menu-item" />
             {isGenerating && (
@@ -398,7 +418,7 @@ function Conversation({
                 size={34}
                 strokeWidth={1.9}
                 bgOpacity={0.14}
-                className="pointer-events-none absolute -top-[7px] -left-[7px]"
+                className="pointer-events-none absolute -top-[0.4375rem] -left-[0.4375rem] size-[2.125rem]"
               />
             )}
             {isUnseen && !isGenerating && (
@@ -446,6 +466,19 @@ function Conversation({
         {/* Only render ConvoOptions when user interacts (hover/focus) or for active conversation */}
         {actionContent}
       </div>
+      {/* After the action slot on purpose: that slot grows from zero on hover, and anything before
+          it slides left under the pointer, so the mark would move out from under the cursor that
+          is trying to reach it. The title is the only thing that gives way. */}
+      {showPullRequest && (
+        <span className="flex shrink-0 items-center">
+          <PullRequestRowMark
+            conversationId={conversationId ?? ''}
+            labelId={pullRequestLabelId}
+            onDescribed={setPullRequestDescribed}
+            selected={isActiveConvo || isPopoverActive}
+          />
+        </span>
+      )}
     </div>
   );
 }

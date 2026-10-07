@@ -70,7 +70,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
         onClick={handleFavoriteClick}
         aria-label={isFavorite ? localize('com_ui_unpin') : localize('com_ui_pin')}
         className={cn(
-          'hover:bg-surface-hover focus-visible:ring-ring-primary rounded-md p-1 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
+          'hover:bg-surface-hover focus-visible:ring-ring-primary text-text-secondary rounded-md p-1 focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset',
           isFavorite
             ? 'visible'
             : // Visible by default so it's tappable on touch (no hover to
@@ -81,7 +81,7 @@ export function ModelSpecItem({ spec, isSelected, posInSet, setSize }: ModelSpec
               'group-focus-within:visible group-hover:visible group-data-[active-item]:visible [@media(hover:hover)]:invisible',
         )}
       >
-        <MorphIcon icon={isFavorite ? PinOff : Pin} className="text-text-secondary h-4 w-4" />
+        <MorphIcon icon={isFavorite ? PinOff : Pin} className="h-4 w-4" />
       </button>
       {isSelected && (
         <>

@@ -99,7 +99,6 @@ jest.mock('react-router-dom', () => {
   };
 });
 
-jest.mock('../ProjectButton', () => () => null);
 jest.mock('../DeleteButton', () => () => null);
 jest.mock('../ShareButton', () => () => null);
 

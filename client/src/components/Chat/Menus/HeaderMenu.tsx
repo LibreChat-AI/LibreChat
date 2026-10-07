@@ -7,6 +7,7 @@ import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucid
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { TraceControl } from '~/components/Chat/Trace';
 import type * as t from '~/common';
+import { usePullRequestMenu } from '~/components/Chat/PullRequest';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
 import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
 import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
@@ -26,12 +27,15 @@ export default function HeaderMenu({
   trace,
   className,
   readOnly = false,
+  pullRequestConversationId,
 }: {
   startupConfig?: TStartupConfig;
   /** A read-only subagent thread offers share and export but no edits to the chat. */
   readOnly?: boolean;
   /** Owned by the header, which also renders the desktop trace button from it. */
   trace?: TraceControl;
+  /** The saved conversation whose pull request this menu offers; none for a new chat or a child thread. */
+  pullRequestConversationId?: string;
   className?: string;
 }) {
   const localize = useLocalize();
@@ -51,12 +55,14 @@ export default function HeaderMenu({
     permission: Permissions.USE,
   });
 
+  const pullRequest = usePullRequestMenu(pullRequestConversationId ?? '');
   const multiConvo = useMultiConvo();
   const temporary = useTemporaryChat();
   const bookmarks = useBookmarkItems({ enabled: hasAccessToBookmarks === true });
   const exportShare = useChatOptions({
     isSharedButtonEnabled: startupConfig?.sharedLinksEnabled ?? false,
     readOnly,
+    isMenuOpen: isOpen,
     closeMenu: () => setIsOpen(false),
   });
 
@@ -104,6 +110,10 @@ export default function HeaderMenu({
       icon: <ChartNoAxesGantt className="text-text-secondary size-4" />,
       onClick: trace.open,
     });
+  }
+
+  if (pullRequest.item != null) {
+    pushGroup(pullRequest.item);
   }
 
   if (exportShare.show) {
@@ -159,11 +169,8 @@ export default function HeaderMenu({
                 render={
                   <Button
                     size="icon"
-                    variant="outline"
-                    className={cn(
-                      'bg-presentation hover:bg-surface-active-alt relative size-9 shrink-0 rounded-xl',
-                      className,
-                    )}
+                    variant="header-action"
+                    className={cn('relative size-9 shrink-0', className)}
                   />
                 }
               >
@@ -182,6 +189,7 @@ export default function HeaderMenu({
       />
       {showBookmarks && bookmarks.dialog}
       {exportShare.dialogs}
+      {pullRequest.dialog}
     </BookmarkContext.Provider>
   );
 }

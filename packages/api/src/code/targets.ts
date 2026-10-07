@@ -8,6 +8,7 @@ import type {
 import type { SubagentExecutionContext } from '@librechat/agents';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { CodeCapabilityConfigLoader } from './capabilities';
+import type { RequestBody } from '~/types';
 import {
   resolveCodeExecutionContext,
   isExecutableAttachedEnvironment,
@@ -17,6 +18,7 @@ import { CodeWorkspaceSelectionError, describeCodeWorkspaceUnavailableSubagent }
 import { resolveCodeExecutionWorkspaceContext } from './capabilities';
 import { guardUnavailableSubagent } from '~/agents/lazySubagents';
 import { isCodeEnvironmentSelectionEnabled } from './protocol';
+import { runsWithoutAttachedCodeEnvironments } from './agent';
 import { createConcurrencyLimiter } from '~/utils/promise';
 
 /** Subagent call property naming the attached machine the child runs on. */
@@ -114,6 +116,8 @@ export interface SubagentCodeTargetParams {
   /** The child's saved machine allowlist. */
   environmentIds?: readonly string[];
   allowEnvironmentSelection?: boolean;
+  /** The conversation's admitted mode; "No workspace" admits no attached machine. */
+  codeEnvironmentMode?: RequestBody['codeEnvironmentMode'];
   /** The conversation's sealed decision; authoritative over the request. */
   persistedSelections?: unknown;
   requestedSelections?: unknown;
@@ -233,7 +237,7 @@ async function resolveCandidate(
 export async function resolveSubagentCodeTargets(
   params: SubagentCodeTargetParams,
 ): Promise<SubagentCodeTargets> {
-  if (!params.statefulSessions) {
+  if (!params.statefulSessions || runsWithoutAttachedCodeEnvironments(params)) {
     return NO_TARGETS;
   }
   const selections = params.persistedSelections ?? params.requestedSelections;

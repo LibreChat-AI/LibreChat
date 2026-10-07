@@ -174,7 +174,7 @@ export default function CustomUserVarsSection({
       <div className="flex justify-end gap-2">
         <Button
           type="button"
-          variant="destructive"
+          variant="destructive-soft"
           disabled={isSubmitting}
           onClick={handleRevokeClick}
         >

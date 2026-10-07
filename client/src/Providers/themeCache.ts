@@ -1,3 +1,4 @@
+import { themeRoleFingerprint } from 'librechat-data-provider';
 import { resolveTheme, describeResolvedTheme } from '@librechat/client';
 import type { ResolvedThemeStyle, ThemeDefinition } from '@librechat/client';
 import type { TInterfaceConfig, TUser } from 'librechat-data-provider';
@@ -10,10 +11,14 @@ type DeploymentThemeValue = TInterfaceConfig['theme'];
  * replays `modes` before the bundle runs, so its key and shape must stay in step.
  */
 export const THEME_CACHE_KEY = 'deployment-theme';
-export const THEME_CACHE_VERSION = 2;
+/**
+ * Derived from the registry's role set, so adding a role retires the entries stored before it.
+ * `client/vite.config.ts` writes the same value into the boot script's version check.
+ */
+export const THEME_CACHE_VERSION = themeRoleFingerprint();
 
 export type ThemeCacheEntry = {
-  v: typeof THEME_CACHE_VERSION;
+  v: string;
   /** `tenantId:userId` of the identity the theme was served to. */
   owner: string;
   /** The raw `interface.theme`, which the app resolves itself until the config answers. */
@@ -30,8 +35,12 @@ export type ThemeCacheEntry = {
  */
 export type ThemeCacheAction = 'keep' | 'clear' | 'disown' | 'write';
 
-/** A config answer; `current` is false while `keepPreviousData` shows another identity's answer. */
-export type ThemeAnswer = { theme: DeploymentThemeValue; current: boolean };
+/**
+ * A config answer; `current` is false while `keepPreviousData` shows the answer of another
+ * query key. Only the signed-out answer of the same deployment is a safe stand-in, so
+ * `signedOut` marks it.
+ */
+export type ThemeAnswer = { theme: DeploymentThemeValue; current: boolean; signedOut?: boolean };
 
 /**
  * Routes that render without the viewer's signed-in config: the auth pages, and shared
@@ -133,7 +142,9 @@ export function writeThemeCache(entry: ThemeCacheEntry): void {
  * - with no current answer, the cache stands in, unless the signed-in identity is
  *   known and is not the one it was served to: then nothing paints until that
  *   identity's own answer arrives, since a previous answer may be the other one's;
- * - otherwise the previous answer, if any, keeps painting as before.
+ * - otherwise the previous answer keeps painting while it is the signed-out one, which is
+ *   the same deployment's; one from another signed-in key may be another identity's, so
+ *   nothing paints until the current answer arrives.
  * A theme that turns out invalid is cleared by the caller, which resolves it.
  */
 export function reconcileThemeCache({
@@ -159,6 +170,9 @@ export function reconcileThemeCache({
   }
   if (cached) {
     return { theme: cached.source, cache: 'keep' };
+  }
+  if (answer && !answer.current && !answer.signedOut) {
+    return { theme: undefined, cache: 'keep' };
   }
   return { theme: answer?.theme, cache: 'keep' };
 }

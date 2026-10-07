@@ -22,6 +22,29 @@ export type TConversationPullRequest = {
   checks: PullRequestChecks;
 };
 
+/** Most conversations one batch lookup may name. It bounds the fan-out to GitHub of a single
+ *  request; the lookups themselves stay governed by the configured limits and cache. */
+export const PULL_REQUEST_BATCH_MAX = 50;
+
+/** Version of the batch lookup route. The server advertises it with `pullRequestsEnabled`, and a
+ *  client that lists conversations asks for batches only when it matches, so during a rolling
+ *  upgrade it never sends a batch to a replica that does not have the route yet. */
+export const PULL_REQUEST_BATCH_VERSION = 1 as const;
+
+/** The most a deployment may set `batchTimeoutSeconds` to. The server answers by its own deadline,
+ *  so a client that waits just past this never gives up before the server does. */
+export const PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS = 120;
+
+export type TConversationPullRequestsRequest = { conversationIds: string[] };
+
+/** One conversation's answer: its pull request (null when it has none), or a stable failure code. */
+export type TConversationPullRequestsEntry =
+  | { conversationId: string; pullRequest: TConversationPullRequest | null }
+  | { conversationId: string; error: { code: string } };
+
+/** An array rather than an object keyed by id, so no client-supplied id is ever a property name. */
+export type TConversationPullRequestsResponse = { results: TConversationPullRequestsEntry[] };
+
 /** `pullRequest` is null when the conversation has no pull request, which is not an error. */
 export type TConversationPullRequestResponse = {
   pullRequest: TConversationPullRequest | null;

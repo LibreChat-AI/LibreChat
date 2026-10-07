@@ -37,6 +37,7 @@ import {
 import {
   useGetRole,
   useGetUserQuery,
+  endPullRequestSession,
   useLoginUserMutation,
   useLogoutUserMutation,
   useRefreshTokenMutation,
@@ -64,6 +65,7 @@ const endSessionClientState = (): void => {
   getDefaultStore().set(resetFacetsAtom);
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
+  endPullRequestSession();
 };
 /**
  * Only recognized codes override the HTTP status used by the login error translation.

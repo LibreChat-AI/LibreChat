@@ -85,11 +85,11 @@ const PreviewPlaceholderRow = memo(
         <span className="min-w-0 shrink-[100] truncate text-xs font-normal">{subtitleText}</span>
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>
@@ -150,14 +150,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return (
       <div
         className={cn(
-          'file-attachment-container',
-          'transition-all duration-300 ease-out',
+          'subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         <PreviewPlaceholderRow
@@ -171,14 +169,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   return (
     <div
       className={cn(
-        'file-attachment-container',
-        'transition-all duration-300 ease-out',
+        'subpixel-antialiased transition-all duration-300 ease-out',
         isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <FileContainer
@@ -364,14 +360,13 @@ const TextAttachment = memo(
     return (
       <div
         className={cn(
-          'text-attachment-container flex w-full flex-col gap-1.5',
-          'transition-all duration-300 ease-out',
+          'flex w-full flex-col gap-1.5',
+          'subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         {attachment.filepath && showFileChip && (
@@ -446,14 +441,12 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   return (
     <div
       className={cn(
-        'image-attachment-container',
-        'transition-all duration-500 ease-out',
+        'subpixel-antialiased transition-all duration-500 ease-out',
         isLoaded ? 'scale-100 opacity-100' : 'scale-[0.98] opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <Image

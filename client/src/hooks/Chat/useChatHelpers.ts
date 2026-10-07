@@ -52,15 +52,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     [index, queueStore],
   );
 
-  /**
-   * Interrupt & send fallback: clearing submissions below can tear down the
-   * SSE before its aborted-final event is processed, and only that event
-   * writes the run-end signal the queue drain consumes. When the one-shot
-   * interrupt flag is armed and no run-end has landed yet, write it here from
-   * the abort response so the queued follow-up still auto-sends. If the SSE
-   * final DOES arrive later, its signal finds the flag already consumed and
-   * an `aborted` outcome drains nothing, so there is no double fire.
-   */
+  /** A missing job cannot deliver FINAL, so release its armed interrupt queue. */
   const signalInterruptDrain = useCallback(
     (convoId: string, generationCreatedAt: number, armedConversationId = convoId) => {
       const armed = queueStore.get(drainAfterAbortByIndex(index));
@@ -266,7 +258,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
             refetchType: 'all',
           });
           queryClient.invalidateQueries({ queryKey: ['streamStatus', conversationId] });
-          clearSubmissionsUnlessReplaced(submissionAtAbort);
           return;
         }
         if (canUseV2AbortResponse && response?.persistenceFailed === true) {
@@ -292,11 +283,12 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
           conversationId,
           resolvedId: response?.aborted,
         });
-        // Steers the run never injected ride the abort response. Consume them
-        // here as well as on the SSE final event: clearing submissions below
-        // can close the stream before that event lands, and conversion
-        // dedupes by steer id so double delivery is a no-op. `claimParked`
-        // reconciles the replayable parked copy if the final raced this response.
+        /** Keep the submission attached until FINAL/status reconciles history.
+         * Clearing on the ACK can close SSE during terminal authorization and
+         * strand the preliminary response as an unsaved follow-up parent.
+         * Only terminal reconciliation may release the interrupt queue. */
+        // Restore uninjected steers from the ACK as well as FINAL. Conversion
+        // dedupes by steer id; `claimParked` reconciles the replayable copy.
         if (Array.isArray(response?.pendingSteers)) {
           convertSteersToQueued(chipConvoId, response.pendingSteers, {
             claimParked: true,
@@ -304,10 +296,6 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
             generationProtocolVersion: canUseV2AbortResponse ? 2 : 1,
           });
         }
-        signalInterruptDrain(chipConvoId, activeGenerationCreatedAt, conversationId);
-        // The SSE will receive a `done` event with `aborted: true` and clean up
-        // We still clear submissions as a fallback
-        clearSubmissionsUnlessReplaced(submissionAtAbort);
       } catch (error) {
         console.error('[useChatHelpers] Abort failed:', error);
         const errorData = (

@@ -213,7 +213,7 @@ export default function ExecuteCode({
                   code && 'border-border-inset border-t',
                 )}
               >
-                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div

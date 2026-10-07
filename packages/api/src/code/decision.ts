@@ -20,7 +20,12 @@ export interface ConversationCodeEnvironmentDecision {
 export type StoredConversationDecision = Pick<
   TConversation,
   'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
-> & { codeEnvironmentRevision?: number };
+> & {
+  codeEnvironmentRevision?: number;
+  /** Read in the same snapshot as the workspaces, so a lane report can be fenced by exactly the
+   *  attachment the run was admitted on. Absent when the read did not carry it. */
+  codeAttachmentEpoch?: number;
+};
 
 function canonicalSelections(selections: CodeWorkspaceSelection[]): CodeWorkspaceSelection[] {
   return canonicalizeCodeWorkspaceSelections(selections);

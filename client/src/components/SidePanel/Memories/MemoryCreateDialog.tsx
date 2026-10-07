@@ -113,7 +113,7 @@ export default function MemoryCreateDialog({
         main={
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="memory-key" className="text-text-primary text-sm font-medium">
+              <Label htmlFor="memory-key" className="text-sm font-medium">
                 {localize('com_ui_key')}
               </Label>
               <Input
@@ -135,7 +135,7 @@ export default function MemoryCreateDialog({
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="memory-value" className="text-text-primary text-sm font-medium">
+              <Label htmlFor="memory-value" className="text-sm font-medium">
                 {localize('com_ui_value')}
               </Label>
               <Textarea

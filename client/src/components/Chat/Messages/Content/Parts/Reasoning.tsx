@@ -97,7 +97,7 @@ export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
           /** Fixed-height window the text scrolls through. The one-line top pad
            *  keeps the first streaming line below the top fade (a blank line
            *  above it) instead of jammed against the faded edge. */
-          'text-text-primary h-[5.5rem] overflow-hidden pt-[26px] leading-[26px] break-words whitespace-pre-wrap',
+          'text-text-primary h-[5.5rem] overflow-hidden pt-6.5 leading-6.5 break-words whitespace-pre-wrap',
           fontSize,
         )}
         style={{ maskImage: PEEK_FADE, WebkitMaskImage: PEEK_FADE }}
@@ -426,9 +426,7 @@ export const ReasoningCompact = memo(
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
               <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
-                <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>
-                  {reasoningText}
-                </p>
+                <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{reasoningText}</p>
                 <FloatingThinkingBar
                   isVisible={isBarVisible && isExpanded && !headerInViewport}
                   isExpanded={isExpanded}

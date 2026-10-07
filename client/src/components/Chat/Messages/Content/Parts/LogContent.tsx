@@ -210,7 +210,7 @@ const LogContent: React.FC<LogContentProps> = ({ output = '', renderImages, atta
               className="bg-surface-secondary rounded-lg p-3"
             >
               {file.filename && (
-                <div className="text-text-secondary mb-1 truncate text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary text-3xs mb-1 truncate font-medium tracking-wide uppercase">
                   {file.filepath ? (
                     <LogLink
                       href={file.filepath}

@@ -174,7 +174,7 @@ const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffR
     if (!text) {
       return <div className="border-border-light mx-3 my-1.5 border-t" />;
     }
-    return <div className="text-text-tertiary px-3 py-0.5 text-[11px] select-none">{text}</div>;
+    return <div className="text-text-tertiary text-2xs px-3 py-0.5 select-none">{text}</div>;
   }
   return (
     <div
@@ -185,7 +185,7 @@ const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffR
       )}
     >
       {hasLineNumbers && (
-        <span className="text-text-tertiary w-9 shrink-0 pr-1 text-right text-[11px] select-none">
+        <span className="text-text-tertiary text-2xs w-9 shrink-0 pr-1 text-right select-none">
           {num ?? ''}
         </span>
       )}

@@ -72,11 +72,12 @@ const PresetsMenu: FC = () => {
             <Button
               size="icon"
               variant="outline"
+              shape="theme"
               tabIndex={0}
               id="presets-button"
               data-testid="presets-button"
               aria-label={localize('com_endpoint_examples')}
-              className="rounded-theme-control bg-presentation hover:bg-surface-hover h-9 w-9 shrink-0 duration-0"
+              className="bg-presentation h-9 w-9 shrink-0 duration-0"
             >
               <BookCopy className="icon-md" aria-hidden="true" />
             </Button>

@@ -41,19 +41,13 @@ export default function MinimalHoverButtons({ message, searchResults, variant }:
         }
         render={
           <Button
-            variant="ghost"
-            size="icon"
+            variant="message-action"
             aria-label={
               isCopied
                 ? localize('com_ui_copied_to_clipboard')
                 : localize('com_ui_copy_to_clipboard')
             }
-            className={cn(
-              'text-text-secondary-alt ml-0 flex size-auto items-center gap-1.5 rounded-lg p-1.5 text-xs',
-              'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-text-primary focus-visible:ring-2',
-              revealOnRowHoverClasses,
-            )}
+            className={cn('ml-0 flex items-center gap-1.5 text-xs', revealOnRowHoverClasses)}
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >

@@ -148,6 +148,34 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--theme-motion-fast')).toBe('80ms');
   });
 
+  it.each(['0', '.0', '0.0', '0.00'])('writes a chrome border alpha of %s as 0', (alpha) => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: alpha } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0',
+    );
+  });
+
+  it('leaves a non-zero chrome border alpha as written', () => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'faint-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0.5' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0.5',
+    );
+  });
+
   /** The plain `rounded-*`, `font-sans` and `font-mono` utilities read these properties, so a
    *  theme reaches every call site only if the adapter writes them and a reset removes them. */
   it('applies and clears the radius and shadow scales and the mono family', () => {

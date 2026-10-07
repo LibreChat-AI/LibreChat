@@ -88,6 +88,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #ffffff (background.default)
   'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
+  'rgb-surface-code-inline': '204 207 211', // #cccfd3 (palette.slate.200, distinct from the page and from the user message bubble, slate.100)
+  'rgb-prose-bullet': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble; stroke.default is 1.24:1)
+  'rgb-prose-quote-bar': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -269,6 +272,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-chat': '31 31 28', // #1f1f1c (background.default)
   'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
+  'rgb-surface-code-inline': '65 65 65', // #414141 (palette.neutral.700, distinct from the user message bubble, neutral.712)
+  'rgb-prose-bullet': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas; stroke.default is 1.29:1)
+  'rgb-prose-quote-bar': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
@@ -418,6 +424,10 @@ const clickHouseShape = {
   largeSurfaceRadius: '0.75rem',
   roundControlRadius: '9999px',
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
+  popoverRadius: '0.25rem', // genericMenu.panel.radii.all, the panel the composer popovers are
+  menuPanelRadius: '0.25rem', // genericMenu.panel.radii.all
+  composerActionRadius: '0.25rem', // button.radii.all, Click UI draws its icon buttons square
+  inlineCodeWeight: '500', // typography.font.weights.2
   tooltipRadius: '0.25rem', // tooltip.radii.all
   tooltipPaddingX: '0.75rem', // tooltip.space.x
   tooltipPaddingY: '0.5rem', // tooltip.space.y
@@ -459,6 +469,7 @@ const clickHouseShape = {
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
   controlPaddingX: '1rem', // button.basic.space.x
+  buttonPaddingX: '1rem', // button.basic.space.x
   controlGap: '0.5rem', // button.basic.space.gap
   controlFontWeight: '400', // button.basic.typography.label.default
   /** Click UI's button is sized by its content: 0.2813rem of space.y on both sides of a

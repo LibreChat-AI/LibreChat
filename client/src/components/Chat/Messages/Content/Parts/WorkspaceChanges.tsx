@@ -109,7 +109,7 @@ export default function WorkspaceChanges({
         aria-controls={panelId}
         aria-label={`${localize('com_ui_workspace_changes')}: ${countLabel}`}
         onClick={() => setIsExpanded((previous) => !previous)}
-        className="text-text-secondary h-auto max-w-full justify-start py-1 pr-2 pl-0 font-normal"
+        className="text-text-secondary max-w-full py-1 pr-2 font-normal"
       >
         <Files className="size-4 shrink-0" aria-hidden="true" />
         <span className="shrink-0 font-medium">{localize('com_ui_workspace_changes')}</span>

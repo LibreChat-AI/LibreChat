@@ -12,3 +12,4 @@ export * from './inheritance';
 export * from './errors';
 export * from './instructions';
 export * from './targets';
+export * from './agent';
