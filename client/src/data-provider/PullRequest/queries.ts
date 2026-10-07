@@ -1,0 +1,130 @@
+import { useRecoilValue } from 'recoil';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Constants,
+  QueryKeys,
+  dataService,
+  PULL_REQUEST_BATCH_VERSION,
+} from 'librechat-data-provider';
+import type { TConversationPullRequestResponse } from 'librechat-data-provider';
+import type { UseQueryOptions } from '@tanstack/react-query';
+import { createBatchFetcher, createPullRequestBatcher } from './batch';
+import { useGetStartupConfig } from '../Endpoints';
+import store from '~/store';
+
+const SETTLED_REFRESH_MS = 60_000;
+/** Checks and conflict state change while a pull request is being worked on. */
+const ACTIVE_REFRESH_MS = 20_000;
+
+/**
+ * Poll faster only while something can still change. A closed or merged pull request has no
+ * mergeability left to settle, but its checks can still be running, so those keep the active
+ * interval until they finish; only then does polling stop.
+ */
+export const pullRequestRefetchInterval = (
+  response: TConversationPullRequestResponse | undefined,
+): number | false => {
+  const pr = response?.pullRequest;
+  if (pr == null) return SETTLED_REFRESH_MS;
+  if (pr.checks === 'running') return ACTIVE_REFRESH_MS;
+  if (pr.state !== 'open') return false;
+  return pr.mergeable === 'unknown' ? ACTIVE_REFRESH_MS : SETTLED_REFRESH_MS;
+};
+
+const isSavedConversation = (conversationId: string) =>
+  conversationId !== '' &&
+  conversationId !== Constants.NEW_CONVO &&
+  conversationId !== Constants.PENDING_CONVO;
+
+/**
+ * Asks only when the deployment advertises the feature and the conversation is a saved one, so a
+ * default installation never calls the endpoint. The server answers no pull request for a chat
+ * that has no code lane, which keeps a non-code chat to one cheap, slow poll.
+ */
+export const useConversationPullRequestQuery = (
+  conversationId: string,
+  config?: UseQueryOptions<TConversationPullRequestResponse>,
+) => {
+  const { data: startupConfig } = useGetStartupConfig();
+  return useQuery<TConversationPullRequestResponse>(
+    [QueryKeys.conversationPullRequest, conversationId],
+    () => dataService.getConversationPullRequest(conversationId),
+    {
+      enabled: startupConfig?.pullRequestsEnabled === true && isSavedConversation(conversationId),
+      staleTime: 15_000,
+      retry: false,
+      refetchOnWindowFocus: true,
+      refetchInterval: pullRequestRefetchInterval,
+      refetchIntervalInBackground: false,
+      ...config,
+    },
+  );
+};
+
+/** What the server last advertised, for a fallback that has no batch limiter to lean on. */
+let advertisedConcurrency: number | undefined;
+
+const fetchRows = createBatchFetcher({
+  fetchMany: (conversationIds, signal) =>
+    dataService.getConversationPullRequests(conversationIds, { signal }),
+  fetchOne: (conversationId, signal) =>
+    dataService.getConversationPullRequest(conversationId, { signal }),
+  concurrency: () => advertisedConcurrency,
+});
+
+type RowBatcher = ReturnType<typeof createPullRequestBatcher>;
+let rowBatcher: { userId: string; batcher: RowBatcher } | undefined;
+
+/**
+ * The batcher for the signed-in user: every sidebar row mounted in the same moment shares one
+ * request. It belongs to one identity, so when the user changes the old one is disposed, and ids
+ * it still held are neither sent under the next account's authorization nor made to wait ahead
+ * of that account's own rows.
+ */
+const batcherFor = (userId: string): RowBatcher => {
+  if (rowBatcher?.userId === userId) return rowBatcher.batcher;
+  rowBatcher?.batcher.dispose();
+  const batcher = createPullRequestBatcher({ fetchMany: fetchRows });
+  rowBatcher = { userId, batcher };
+  return batcher;
+};
+
+/**
+ * Ends the row queue with the session. Called wherever the session's client state is cleared, so
+ * signing back in as the same account starts a fresh queue and neither waits behind, nor sends,
+ * anything the previous session left.
+ */
+export const endPullRequestSession = (): void => {
+  rowBatcher?.batcher.dispose();
+  rowBatcher = undefined;
+};
+
+/**
+ * The pull request of a sidebar row. It shares its cache entry with the header's query, so the
+ * open conversation is never fetched twice, but it never polls: a list of rows would otherwise
+ * poll GitHub once per row. It refreshes when the window regains focus and a row's answer is
+ * older than a minute; every mounted row asks in the same moment, so the batcher turns that
+ * into one request for the whole list rather than one per row.
+ */
+export const useRowPullRequestQuery = (conversationId: string) => {
+  const { data: startupConfig } = useGetStartupConfig();
+  const userId = useRecoilValue(store.user)?.id ?? '';
+  return useQuery<TConversationPullRequestResponse>(
+    [QueryKeys.conversationPullRequest, conversationId],
+    ({ signal }) => {
+      advertisedConcurrency = startupConfig?.pullRequestsMaxConcurrentLookups;
+      return batcherFor(userId).load(conversationId, signal);
+    },
+    {
+      /** The batch route is newer than the flag: ask only a server that says it has it. */
+      enabled:
+        startupConfig?.pullRequestsEnabled === true &&
+        startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+        userId !== '' &&
+        isSavedConversation(conversationId),
+      staleTime: SETTLED_REFRESH_MS,
+      retry: false,
+      refetchOnWindowFocus: true,
+    },
+  );
+};

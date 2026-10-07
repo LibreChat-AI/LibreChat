@@ -228,9 +228,7 @@ test.describe('controlled theme paint', () => {
     const colors: IThemeRGB = clickHouseTheme.modes[dark ? 'dark' : 'light']?.colors ?? {};
     const roles = await paintRoles(page);
     expect(roles.link).toBe(rgb(colors['rgb-link-prose']));
-    expect(roles.codeFill).toBe(
-      rgb(dark ? colors['rgb-surface-hover-alt'] : colors['rgb-surface-active-alt']),
-    );
+    expect(roles.codeFill).toBe(rgb(colors['rgb-surface-code-inline']));
     expect(roles.qr).toBe(rgb(colors['rgb-surface-qr']));
   });
 

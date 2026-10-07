@@ -31,7 +31,7 @@ const MessageEndpointIcon: React.FC<IconProps> = (props) => {
           className={cn('overflow-hidden rounded-full', props.className ?? '')}
         >
           <img
-            className="shadow-stroke h-full w-full object-cover"
+            className="avatar-stroke h-full w-full object-cover"
             src={iconURL}
             alt={assistantName}
             style={{ height: '80', width: '80' }}
@@ -40,7 +40,7 @@ const MessageEndpointIcon: React.FC<IconProps> = (props) => {
       </div>
     ) : (
       <div className="h-6 w-6">
-        <div className="shadow-stroke flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
+        <div className="avatar-stroke flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
           <AssistantIcon className="text-text-tertiary h-2/3 w-2/3" />
         </div>
       </div>
@@ -60,7 +60,7 @@ const MessageEndpointIcon: React.FC<IconProps> = (props) => {
           className={cn('overflow-hidden rounded-full', props.className ?? '')}
         >
           <img
-            className="shadow-stroke h-full w-full object-cover"
+            className="avatar-stroke h-full w-full object-cover"
             src={iconURL}
             alt={agentName}
             style={{ height: '80', width: '80' }}
@@ -69,7 +69,7 @@ const MessageEndpointIcon: React.FC<IconProps> = (props) => {
       </div>
     ) : (
       <div className="h-6 w-6">
-        <div className="shadow-stroke flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
+        <div className="avatar-stroke flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
           <Feather className="text-text-tertiary h-2/3 w-2/3" aria-hidden="true" />
         </div>
       </div>
@@ -78,7 +78,7 @@ const MessageEndpointIcon: React.FC<IconProps> = (props) => {
   };
 
   const errorBadge = error === true && (
-    <span className="border-surface-primary bg-status-error-strong text-text-on-status absolute top-[1.25rem] right-0 -mr-2 flex h-3 w-3 items-center justify-center rounded-full border text-[10px]">
+    <span className="border-surface-primary bg-status-error-strong text-text-on-status text-3xs absolute top-[1.25rem] right-0 -mr-2 flex h-3 w-3 items-center justify-center rounded-full border">
       !
     </span>
   );

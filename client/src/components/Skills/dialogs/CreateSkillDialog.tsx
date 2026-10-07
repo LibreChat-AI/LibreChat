@@ -19,7 +19,6 @@ import type { TSkill } from 'librechat-data-provider';
 import type { FormEvent } from 'react';
 import { useCreateSkillMutation } from '~/data-provider';
 import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 interface CreateSkillDialogProps {
   isOpen: boolean;
@@ -171,7 +170,7 @@ export default function CreateSkillDialog({
 
           {/* Skill name */}
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="create-skill-name" className="text-text-secondary text-sm font-medium">
+            <Label htmlFor="create-skill-name" variant="secondary" className="text-sm font-medium">
               {localize('com_ui_name')}
             </Label>
             <Input
@@ -179,7 +178,7 @@ export default function CreateSkillDialog({
               placeholder={localize('com_ui_skill_name_placeholder')}
               aria-invalid={errors.name ? 'true' : 'false'}
               autoComplete="off"
-              className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary flex h-10 w-full rounded-xl border bg-transparent px-3 py-2 text-sm focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
+              className="border-border-medium text-text-primary focus-visible:ring-ring-primary flex h-10 w-full rounded-xl"
               {...register('name', {
                 required: localize('com_ui_skill_name_required'),
                 pattern: {
@@ -263,7 +262,6 @@ export default function CreateSkillDialog({
               variant="submit"
               disabled={submitDisabled}
               aria-busy={createSkill.isLoading}
-              className={cn(submitDisabled && 'opacity-50')}
             >
               {localize(createSkill.isLoading ? 'com_ui_creating' : 'com_ui_create')}
             </Button>

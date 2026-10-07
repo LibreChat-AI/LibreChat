@@ -36,7 +36,7 @@ function CompactAction({ compact, canCompact, isCompacting }: CompactActionProps
             disabled={!canCompact}
             aria-busy={isCompacting}
             aria-describedby={descriptionId}
-            className="h-8 w-full justify-center gap-2 text-sm"
+            className="h-8 w-full justify-center"
           >
             {isCompacting ? (
               <Spinner className="size-4" />

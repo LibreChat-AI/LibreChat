@@ -402,3 +402,44 @@ describe('cache capacity per credential', () => {
     expect(find).toHaveBeenCalledTimes(before);
   });
 });
+
+describe('cache capacity shared by principals with one token', () => {
+  it('keeps the largest capacity seen, so a smaller one does not trim what a larger keeps', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    for (const branch of ['a', 'b', 'c', 'd']) {
+      await lookup({ ...input, branch, cacheMaxEntries: 100 });
+    }
+    await lookup({ ...input, branch: 'e', cacheMaxEntries: 2 });
+    const before = find.mock.calls.length;
+    for (const branch of ['a', 'b', 'c', 'd']) {
+      await lookup({ ...input, branch, cacheMaxEntries: 2 });
+    }
+    expect(find).toHaveBeenCalledTimes(before);
+  });
+
+  it('does not let a larger capacity of one token raise the bound of another', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, token: 'big', branch: 'x', cacheMaxEntries: 100 });
+    for (const branch of ['a', 'b', 'c']) {
+      await lookup({ ...input, token: 'small', branch, cacheMaxEntries: 2 });
+    }
+    const before = find.mock.calls.length;
+    await lookup({ ...input, token: 'small', branch: 'a', cacheMaxEntries: 2 });
+    expect(find).toHaveBeenCalledTimes(before + 1);
+  });
+});
+
+describe('the repositories the credential may be used for', () => {
+  it('passes them to the source, and keeps answers for different lists apart', async () => {
+    const find = jest.fn().mockResolvedValue(value);
+    const lookup = createPullRequestLookup({ source: { find } });
+    await lookup({ ...input, allowedRepositories: ['o/r'] });
+    await lookup({ ...input, allowedRepositories: ['o/r', 'fork/*'] });
+    expect(find).toHaveBeenCalledTimes(2);
+    expect(find.mock.calls[1][0].allowedRepositories).toEqual(['o/r', 'fork/*']);
+    await lookup({ ...input, allowedRepositories: ['FORK/*', 'o/r'] });
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+});

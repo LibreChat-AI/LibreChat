@@ -473,7 +473,8 @@ describe('MessageNav', () => {
     ): HTMLDivElement {
       const steer = document.createElement('div');
       steer.id = `steer-${steerId}`;
-      steer.className = 'steer-render group relative';
+      steer.className = 'group relative';
+      steer.setAttribute('data-steer-render', '');
       const header = document.createElement('h2');
       header.textContent = 'Danny';
       const body = document.createElement('div');
@@ -743,7 +744,7 @@ describe('MessageNav', () => {
        *  two places short of the end while the reader sat at the very bottom. */
       const steer = document.createElement('div');
       steer.id = 'steer-s1';
-      steer.className = 'steer-render';
+      steer.setAttribute('data-steer-render', '');
       steer.textContent = 'mid-run steer';
       Object.defineProperty(steer, 'offsetTop', { value: 60, configurable: true });
       Object.defineProperty(steer, 'offsetHeight', { value: 40, configurable: true });

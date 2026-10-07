@@ -74,7 +74,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
         className={cn(
           parent ? 'animate-popover-left ml-3' : 'animate-popover',
           'z-40 flex max-h-[min(28.125rem,var(--popover-available-height))] w-full outline-hidden!',
-          'border-border-menu w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto rounded-xl border',
+          'border-border-menu rounded-theme-menu-panel w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto border',
           'bg-surface-menu text-text-primary text-sm shadow-lg',
           parent ? 'px-0.5 py-0.5' : 'px-3 py-2',
           'max-w-[calc(100vw-4rem)] sm:max-h-[calc(65vh)] sm:max-w-[25rem]',
@@ -92,7 +92,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
                     className={cn(
                       'peer flex h-10 w-full items-center justify-center rounded-lg border-none bg-transparent px-2 text-base',
                       'sm:h-8 sm:text-sm',
-                      'focus-visible:ring-text-primary focus:ring-0 focus:outline-hidden focus-visible:ring-2',
+                      'focus-visible:ring-focus-control focus:ring-0 focus:outline-hidden focus-visible:ring-2',
                     )}
                   />
                   {comboboxLabel && (

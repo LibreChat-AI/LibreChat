@@ -474,7 +474,7 @@ export default function McpSection({ item }: Props) {
          * and the auto-height dialog follows the grid-rows tween in one motion. */}
         <div
           className={cn(
-            'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+            'resize-rows grid motion-reduce:transition-none',
             isReadyForAgent ? 'grid-rows-[0fr]' : 'grid-rows-[1fr]',
           )}
         >

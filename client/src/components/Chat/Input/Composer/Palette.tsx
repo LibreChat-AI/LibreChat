@@ -1303,7 +1303,7 @@ function Palette({
             getAnchorRect={() => anchorRef.current?.getBoundingClientRect() ?? null}
             aria-label={localize('com_ui_composer_palette')}
             style={{ width: 'var(--popover-anchor-width)' }}
-            className="animate-composer-popover border-border-menu bg-surface-menu z-50 flex max-w-[95vw] flex-col overflow-hidden rounded-2xl border shadow-lg outline-hidden"
+            className="animate-composer-popover border-border-menu bg-surface-menu rounded-theme-popover z-50 flex max-w-[95vw] flex-col overflow-hidden border shadow-lg outline-hidden"
           >
             {/* The whole row is the search target, not just the input: the icon
                 and the padding around it read as part of the field, so clicking
@@ -1343,7 +1343,7 @@ function Palette({
                 onChange={(e) => setSearch(e.target.value)}
                 onKeyDown={handleKeyDown}
                 data-testid="composer-palette-search"
-                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-text-primary w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-primary placeholder:text-text-secondary focus-visible:ring-focus-control w-full rounded-md border-0 bg-transparent text-sm shadow-none ring-0 focus:border-0 focus:ring-0 focus:outline-hidden focus-visible:ring-2 focus-visible:outline-hidden"
               />
               <span id={helpId} className="sr-only">
                 {localize('com_ui_composer_palette_help', { 0: FAVORITE_MODIFIER })}

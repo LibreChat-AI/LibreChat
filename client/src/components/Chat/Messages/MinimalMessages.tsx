@@ -20,9 +20,9 @@ const MinimalMessages = React.forwardRef(
               <div className="relative h-full">
                 <div
                   ref={ref}
+                  className="overflow-y-auto"
                   style={{
                     height: '100%',
-                    overflowY: 'auto',
                     width: '100%',
                   }}
                 >

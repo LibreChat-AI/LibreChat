@@ -42,7 +42,7 @@ export default function ProviderKeys() {
           ref={contentRef}
           tabIndex={-1}
           onOpenAutoFocus={handleOpenAutoFocus}
-          className="bg-surface-dialog text-text-primary focus-visible:ring-text-primary w-11/12 max-w-2xl shadow-2xl focus-visible:ring-2 focus-visible:ring-inset"
+          className="text-text-primary focus-visible:ring-text-primary w-11/12 max-w-2xl shadow-2xl focus-visible:ring-2 focus-visible:ring-inset"
           aria-describedby={undefined}
         >
           <OGDialogHeader className="space-y-0 pr-8 text-left">

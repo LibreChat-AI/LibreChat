@@ -46,9 +46,7 @@ const Wrapper = ({
     return (
       <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
         <Popover.Trigger asChild>
-          <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-            {children}
-          </div>
+          <div className={contentClass}>{children}</div>
         </Popover.Trigger>
       </div>
     );
@@ -56,9 +54,7 @@ const Wrapper = ({
 
   return (
     <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
-      <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-        {children}
-      </div>
+      <div className={contentClass}>{children}</div>
     </div>
   );
 };
