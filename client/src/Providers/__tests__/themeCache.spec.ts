@@ -162,7 +162,7 @@ describe('theme cache storage', () => {
 
 /**
  * The cache version keys on the role set and a hand-bumped epoch, so a release that changes what
- * the built-in themes (default, dark, high contrast, ClickHouse) resolve to (a palette value, a fallback, an emitted attribute) without
+ * the built-in themes (default, dark, high contrast, ClickHouse) or an empty definition's fallbacks resolve to (a palette value, a fallback, an emitted attribute) without
  * adding a role would replay stale styling at boot. This pin makes that change fail here: bump
  * `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
  */
@@ -177,12 +177,18 @@ describe('resolver output pin', () => {
 
   it('moves only together with THEME_CACHE_EPOCH', () => {
     const { modes } = buildThemeCache(OWNER, 'clickhouse', clickHouseTheme);
+    const { modes: bare } = buildThemeCache(OWNER, 'bare', {
+      version: 1,
+      name: 'bare',
+      modes: { light: {}, dark: {} },
+    });
     const builtIns = [darkTheme, defaultTheme, highContrastDarkTheme, highContrastLightTheme];
-    expect({ epoch: THEME_CACHE_EPOCH, digest: digest(JSON.stringify([modes, builtIns])) }).toEqual(
-      {
-        epoch: 1,
-        digest: '4cd0v8',
-      },
-    );
+    expect({
+      epoch: THEME_CACHE_EPOCH,
+      digest: digest(JSON.stringify([modes, bare, builtIns])),
+    }).toEqual({
+      epoch: 1,
+      digest: '1an27zl',
+    });
   });
 });
