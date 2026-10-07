@@ -2011,6 +2011,33 @@ describe('OpenAIChatCompletionController', () => {
       expect(deps.bulkWriteOps).toHaveProperty('updateBalance', mockUpdateBalance);
     });
 
+    it('should report the collectedUsage breakdown as the non-streaming response usage', async () => {
+      const { buildNonStreamingResponse } = require('@librechat/api');
+
+      await OpenAIChatCompletionController(req, res);
+
+      const [, params] = mockRecordCollectedUsage.mock.calls[0];
+      expect(mockBuildCompletionUsage).toHaveBeenCalledWith(params.collectedUsage);
+      expect(buildNonStreamingResponse).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        mockCompletionUsage,
+      );
+    });
+
+    it('should report the collectedUsage breakdown in the final streamed chunk', async () => {
+      const { validateRequest, sendFinalChunk } = require('@librechat/api');
+      validateRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', messages: [], stream: true },
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(sendFinalChunk).toHaveBeenCalledWith(expect.anything(), 'stop', mockCompletionUsage);
+    });
+
     it('should include model from primaryConfig in recordCollectedUsage params', async () => {
       await OpenAIChatCompletionController(req, res);
 
