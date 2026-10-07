@@ -484,6 +484,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     reason:
       '2rem: Click UI sizes its field by content, field.space.y (0.2813rem) twice, a 0.875rem/1.5 value and a 1px stroke each side',
   },
+  fieldHeightLg: {
+    value: '3.6876rem',
+    status: 'match',
+    reason:
+      '3.6876rem: the title field is content-sized like fieldHeight, a 3rem line (typography.font.sizes.6 at line-height 1.5), field.space.y (0.2813rem) twice and a 1px stroke each side',
+  },
   fieldFocusStyle: {
     value: 'border',
     status: 'match',

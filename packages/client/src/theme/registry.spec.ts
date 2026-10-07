@@ -508,6 +508,17 @@ describe('theme registry', () => {
     expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
   });
 
+  it('draws the light drawer edge on the sidebar role when a theme sets it', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-surface-sidebar': '40 41 42' };
+    const theme = {
+      version: 1 as const,
+      name: 'sidebar-drawer-edge',
+      modes: { light: { colors } },
+    };
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('40 41 42');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {
