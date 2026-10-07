@@ -4,7 +4,18 @@ import {
   getRequestId,
   runAsSystem,
   scopedCacheKey,
+  isValidTenantId,
 } from './tenantContext';
+
+describe('isValidTenantId', () => {
+  it.each(['acme', 'tenant-1', 'a.b_c', 'x'.repeat(128), '__SYSTEM__'])('accepts %p', (id) => {
+    expect(isValidTenantId(id)).toBe(true);
+  });
+
+  it.each(['', 'bad/tenant', 'with space', 'x'.repeat(129)])('rejects %p', (id) => {
+    expect(isValidTenantId(id)).toBe(false);
+  });
+});
 
 describe('scopedCacheKey', () => {
   it('returns base key when no ALS context is set', () => {
