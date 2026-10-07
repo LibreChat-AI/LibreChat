@@ -1803,6 +1803,26 @@ describe('bedrockInputParser', () => {
   });
 
   describe('Model switching cleanup', () => {
+    test.each([
+      ['top-level', { useResponsesApi: true }],
+      ['additionalModelRequestFields', { additionalModelRequestFields: { useResponsesApi: true } }],
+    ])('should strip stale OpenAI useResponsesApi from %s', (_source, staleParameters) => {
+      const parsed = bedrockInputParser.parse({
+        model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+        ...staleParameters,
+      }) as Record<string, unknown>;
+      const parsedAmrf = parsed.additionalModelRequestFields as Record<string, unknown> | undefined;
+
+      expect(parsed.useResponsesApi).toBeUndefined();
+      expect(parsedAmrf?.useResponsesApi).toBeUndefined();
+
+      const output = bedrockOutputParser(parsed);
+      const outputAmrf = output.additionalModelRequestFields as Record<string, unknown> | undefined;
+
+      expect(output.useResponsesApi).toBeUndefined();
+      expect(outputAmrf?.useResponsesApi).toBeUndefined();
+    });
+
     test('should strip anthropic_beta when switching from Anthropic to non-Anthropic model', () => {
       const staleConversationData = {
         model: 'openai.gpt-oss-120b-1:0',

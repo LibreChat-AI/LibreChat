@@ -750,12 +750,14 @@ export const bedrockInputParser = s.tConversationSchema
     const isAnthropicModel =
       typeof typedData.model === 'string' && isBedrockClaudeModel(typedData.model);
 
-    /** Strip stale fields from previously-persisted additionalModelRequestFields */
+    /** Strip stale provider-specific fields from switched and persisted model parameters */
+    delete additionalFields.useResponsesApi;
     if (
       typeof typedData.additionalModelRequestFields === 'object' &&
       typedData.additionalModelRequestFields != null
     ) {
       const amrf = typedData.additionalModelRequestFields as Record<string, unknown>;
+      delete amrf.useResponsesApi;
       if (!isAnthropicModel) {
         delete amrf.anthropic_beta;
         delete amrf.thinking;
