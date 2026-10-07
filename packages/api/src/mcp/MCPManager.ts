@@ -2041,6 +2041,32 @@ Please follow these instructions when using tools from the respective MCP server
         // Deliberately use `request`: the typed wrapper also enforces the tool's output schema and
         // rejects task-required tools, which would turn a server response into a host-side failure.
         const requestedCredentialSetId = connection.getOAuthCredentialSetId?.();
+        /** Scheduled invocations must fail closed before any recovery or replay. */
+        const throwIfScheduledFailure = (error: unknown): void => {
+          if (error instanceof ScheduledMCPPolicyError) throw error;
+          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
+            if (isMCPTransportAuthenticationError(error)) {
+              const failure = createScheduledMCPTransportError(
+                error,
+                serverName,
+                scheduledBearerInvocation?.agentId,
+              );
+              rejectScheduledMCPBearer(
+                requestScopedConnections,
+                serverName,
+                failure.failure.reason,
+              );
+              throw failure;
+            }
+            throw error;
+          }
+          if (enforceSchedule) {
+            if (isMCPTransportAuthenticationError(error))
+              throw new MCPAuthenticationRejectedError(serverName, false, error);
+            throw error;
+          }
+        };
+
         /** Definite assignment: every path out of the elicitation loop below
          *  either assigns `result` or throws. */
         let result!: Awaited<ReturnType<typeof requestTool>>;
@@ -2055,6 +2081,7 @@ Please follow these instructions when using tools from the respective MCP server
             if (elicitationStart && extractUrlElicitation(error)) {
               throw error;
             }
+            throwIfScheduledFailure(error);
             /**
              * An OBO server rejecting the bearer mid-session is recoverable here and
              * nowhere else: the downstream token is minted from the upstream session
@@ -2113,28 +2140,7 @@ Please follow these instructions when using tools from the respective MCP server
             }
           }
         } catch (error) {
-          if (error instanceof ScheduledMCPPolicyError) throw error;
-          if (isScheduledMCPBearer(requestScopedConnections) && directBearerRecovery) {
-            if (isMCPTransportAuthenticationError(error)) {
-              const failure = createScheduledMCPTransportError(
-                error,
-                serverName,
-                scheduledBearerInvocation?.agentId,
-              );
-              rejectScheduledMCPBearer(
-                requestScopedConnections,
-                serverName,
-                failure.failure.reason,
-              );
-              throw failure;
-            }
-            throw error;
-          }
-          if (enforceSchedule) {
-            if (isMCPTransportAuthenticationError(error))
-              throw new MCPAuthenticationRejectedError(serverName, false, error);
-            throw error;
-          }
+          throwIfScheduledFailure(error);
           if (
             directBearerRecovery &&
             user &&
