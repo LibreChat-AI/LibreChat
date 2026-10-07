@@ -1077,12 +1077,6 @@ html[data-drawer-nav] body {
   overscroll-behavior: none;
 }
 
-.dark body,
-.dark html {
-  --tw-bg-opacity: 1;
-  background-color: rgb(var(--page-canvas) / var(--tw-bg-opacity));
-}
-
 #__next,
 #root {
   height: 100%;
@@ -1250,7 +1244,7 @@ html {
 }
 .dark body,
 .dark html {
-  background-color: rgb(var(--surface-primary-alt));
+  background-color: rgb(var(--page-canvas));
 }
 #__next,
 #root {

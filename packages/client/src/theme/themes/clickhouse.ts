@@ -362,7 +362,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
   'rgb-scrollbar-thumb': '255 255 255', // #ffffff (no Click UI counterpart; the stock role)
-  'rgb-page-canvas': '31 31 28', // #1f1f1c (background.default)
+  'rgb-page-canvas': '40 40 40', // #282828 (background.split, the dark canvas the page already paints)
   'rgb-select-fill': '45 45 45', // #2d2d2d (field.color.background.default)
   'rgb-select-edge': '60 60 60', // #3c3c3c (field.color.stroke.default)
   'rgb-button-neutral-border': '65 65 65', // #414141 (button.basic.color.secondary.stroke.default)
