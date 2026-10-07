@@ -226,6 +226,198 @@ describe('a record stopped by a deletion fence', () => {
   });
 });
 
+describe('a deletion fence written before any record exists', () => {
+  const fenceConversation = () =>
+    methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
+
+  test('is not replaced by an enable that was already in flight', async () => {
+    await fenceConversation();
+    expect(await enable(pullOne)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'conversation_deleting',
+    });
+  });
+
+  test('refuses a claim', async () => {
+    await fenceConversation();
+    await enable(pullOne);
+    expect((await claim(1)).ok).toBe(false);
+  });
+
+  test('is written once when the fence is written twice', async () => {
+    await fenceConversation();
+    await fenceConversation();
+    expect(await PRAutomation.countDocuments({ user: userId })).toBe(1);
+  });
+
+  test('does not touch another conversation', async () => {
+    await fenceConversation();
+    expect(await methods.getPRAutomation({ userId, conversationId: 'other-convo' })).toBeNull();
+  });
+});
+
+describe('releasing a deletion fence after an aborted deletion', () => {
+  const fence = () =>
+    methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
+
+  test('keeps a fence that only existed for the deletion restartable if the conversation survived', async () => {
+    await fence();
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'deletion_aborted',
+    });
+  });
+
+  test('removes a fence whose conversation was removed', async () => {
+    await fence();
+    await mongoose.models.Conversation.deleteMany({});
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
+  test('keeps the record of a conversation that survived, stopped and restartable', async () => {
+    await enable(pullOne);
+    await fence();
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'deletion_aborted',
+      repository: 'acme/one',
+    });
+  });
+
+  test('lets the user turn a released record back on', async () => {
+    await enable(pullOne);
+    await fence();
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await enable(pullOne)).toMatchObject({ state: 'idle' });
+  });
+
+  test('removes the record of a conversation the deletion did remove', async () => {
+    await enable(pullOne);
+    await fence();
+    await mongoose.models.Conversation.deleteMany({});
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
+  test('leaves a record that is not under a deletion fence alone', async () => {
+    await enable(pullOne);
+    await methods.releasePRAutomationFences(userId, [key.conversationId]);
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'idle' });
+  });
+
+  test('releases every fenced record of an account that survived', async () => {
+    await enable(pullOne);
+    await methods.stopPRAutomations(userId, 'account_deleting');
+    await methods.releasePRAutomationFences(userId);
+    expect(await methods.getPRAutomation(key)).toMatchObject({
+      state: 'stopped',
+      stopCode: 'deletion_aborted',
+    });
+  });
+});
+
+describe('claiming for a subagent thread whose root conversation is gone', () => {
+  const childKey = { userId, conversationId: 'child-1' };
+  const seedChild = () =>
+    mongoose.models.Conversation.create({
+      conversationId: childKey.conversationId,
+      user: userId,
+      endpoint: 'agents',
+      subagentThread: {
+        rootConversationId: key.conversationId,
+        parentConversationId: key.conversationId,
+        parentMessageId: 'message-1',
+        parentToolCallId: 'call-1',
+        subagentType: 'agent-child',
+        subagentKind: 'agent',
+        depth: 1,
+      },
+    });
+  const claimChild = () =>
+    methods.claimPRAutomationRound({
+      ...childKey,
+      ...limits,
+      binding: pullOne,
+      headSha: head(1),
+    });
+
+  test('rejects a claim for a child once its root was deleted', async () => {
+    await seedChild();
+    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await mongoose.models.Conversation.deleteOne({ conversationId: key.conversationId });
+    expect(await claimChild()).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+  });
+
+  test('removes the child record so nothing is left to claim later', async () => {
+    await seedChild();
+    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await mongoose.models.Conversation.deleteOne({ conversationId: key.conversationId });
+    await claimChild();
+    expect(await methods.getPRAutomation(childKey)).toBeNull();
+  });
+
+  test('rejects a claim for a child whose root passed its retention date', async () => {
+    await seedChild();
+    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await mongoose.models.Conversation.updateOne(
+      { conversationId: key.conversationId },
+      { $set: { expiredAt: new Date(Date.now() - 60_000) } },
+    );
+    expect(await claimChild()).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+  });
+
+  test('rejects a claim for a grandchild once its parent was deleted but its root remains', async () => {
+    await seedChild();
+    await mongoose.models.Conversation.create({
+      conversationId: 'grandchild-1',
+      user: userId,
+      endpoint: 'agents',
+      subagentThread: {
+        rootConversationId: key.conversationId,
+        parentConversationId: childKey.conversationId,
+        parentMessageId: 'message-2',
+        parentToolCallId: 'call-2',
+        subagentType: 'agent-child',
+        subagentKind: 'agent',
+        depth: 2,
+      },
+    });
+    const grandKey = { userId, conversationId: 'grandchild-1' };
+    await methods.enablePRAutomation({ ...grandKey, binding: pullOne });
+    await mongoose.models.Conversation.deleteOne({ conversationId: childKey.conversationId });
+    expect(
+      await methods.claimPRAutomationRound({
+        ...grandKey,
+        ...limits,
+        binding: pullOne,
+        headSha: head(1),
+      }),
+    ).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+  });
+
+  test('accepts a claim for a child while its root is active', async () => {
+    await seedChild();
+    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    expect((await claimChild()).ok).toBe(true);
+  });
+});
+
+describe('pull request numbers', () => {
+  test.each([1.5, 0.5, 2.0000001])('rejects %s as a pull request number', async (pullNumber) => {
+    await expect(enable({ repository: 'acme/one', pullNumber })).rejects.toThrow();
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
+  test('still accepts a whole pull request number', async () => {
+    expect(await enable({ repository: 'acme/one', pullNumber: 42 })).toMatchObject({
+      pullNumber: 42,
+    });
+  });
+});
+
 describe('index guarantees', () => {
   test('builds the unique index before the first write when automatic indexing is off', async () => {
     await PRAutomation.collection.dropIndexes();

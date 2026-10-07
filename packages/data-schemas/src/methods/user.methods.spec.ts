@@ -9,6 +9,7 @@ import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
 import { createPRAutomationModel } from '~/models/prAutomation';
+import { createConversationModel } from '~/models/convo';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -53,6 +54,7 @@ beforeAll(async () => {
   methods = createUserMethods(mongoose);
   createToolApprovalGrantModel(mongoose);
   createPRAutomationModel(mongoose);
+  createConversationModel(mongoose);
 });
 
 afterAll(async () => {
@@ -2123,33 +2125,50 @@ describe('User Methods - Database Tests', () => {
 });
 
 describe('PR automation cleanup on account deletion', () => {
-  it('keeps the account and the records, stopped, when the cleanup fails, so deletion is retried', async () => {
+  it('keeps the records, restartable, when the account delete fails', async () => {
     const user = await User.create({ email: 'delete-pr-fail@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await mongoose.models.Conversation.create({
+      conversationId: 'chat-a',
+      user: id,
+      endpoint: 'agents',
+    });
+    await PRAutomation.create({ user: id, conversationId: 'chat-a', repository: 'acme/one' });
+    const deletion = jest.spyOn(User, 'deleteOne').mockRejectedValueOnce(new Error('db down'));
+    try {
+      await expect(methods.deleteUserById(id)).rejects.toThrow('db down');
+      expect(await User.exists({ _id: user._id })).not.toBeNull();
+      expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
+        state: 'stopped',
+        stopCode: 'deletion_aborted',
+        repository: 'acme/one',
+      });
+    } finally {
+      deletion.mockRestore();
+    }
+  });
+
+  it('converges on a retry when the cleanup fails after the account was deleted', async () => {
+    const user = await User.create({ email: 'delete-pr-retry@example.com', provider: 'local' });
     const id = user._id.toString();
     const PRAutomation = mongoose.models.PRAutomation;
     await PRAutomation.create({ user: id, conversationId: 'chat-a' });
     const cleanup = jest
       .spyOn(PRAutomation, 'deleteMany')
       .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
-    const deletion = jest.spyOn(User, 'deleteOne');
     try {
       await expect(methods.deleteUserById(id)).rejects.toThrow('synthetic cleanup failure');
-      expect(deletion).not.toHaveBeenCalled();
-      expect(await User.exists({ _id: user._id })).not.toBeNull();
-      expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
-        state: 'stopped',
-        stopCode: 'account_deleting',
-      });
-      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
       expect(await User.exists({ _id: user._id })).toBeNull();
+      expect(await PRAutomation.countDocuments({ user: id })).toBe(1);
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 0 });
       expect(await PRAutomation.countDocuments({ user: id })).toBe(0);
     } finally {
       cleanup.mockRestore();
-      deletion.mockRestore();
     }
   });
 
-  it('removes the records before it deletes the account', async () => {
+  it('removes the records after the account delete committed, not before', async () => {
     const user = await User.create({ email: 'delete-pr-order@example.com', provider: 'local' });
     const id = user._id.toString();
     const PRAutomation = mongoose.models.PRAutomation;
@@ -2158,8 +2177,8 @@ describe('PR automation cleanup on account deletion', () => {
     const deletion = jest.spyOn(User, 'deleteOne');
     try {
       await methods.deleteUserById(id);
-      expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(
-        deletion.mock.invocationCallOrder[0],
+      expect(deletion.mock.invocationCallOrder[0]).toBeLessThan(
+        cleanup.mock.invocationCallOrder[0],
       );
     } finally {
       cleanup.mockRestore();

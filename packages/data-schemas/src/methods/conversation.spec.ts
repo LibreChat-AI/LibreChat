@@ -3749,11 +3749,11 @@ describe('Conversation Operations', () => {
         expect(await Conversation.exists({ conversationId })).not.toBeNull();
       });
 
-      it('stops the record so a webhook cannot claim it meanwhile', async () => {
+      it('leaves the record stopped, so a webhook cannot claim it, but not fenced for good', async () => {
         const { conversationId, automation } = await setup();
         expect(await automation.getPRAutomation({ userId: user, conversationId })).toMatchObject({
           state: 'stopped',
-          stopCode: 'conversation_deleting',
+          stopCode: 'deletion_aborted',
         });
         const claimed = await automation.claimPRAutomationRound({
           userId: user,
@@ -3764,6 +3764,17 @@ describe('Conversation Operations', () => {
           headSha: 'a'.repeat(40),
         });
         expect(claimed).toEqual({ ok: false, error: { code: 'not_active' } });
+      });
+
+      it('lets the user turn the automation back on for the conversation they kept', async () => {
+        const { conversationId, automation } = await setup();
+        expect(
+          await automation.enablePRAutomation({
+            userId: user,
+            conversationId,
+            binding: { repository: 'acme/one', pullNumber: 1 },
+          }),
+        ).toMatchObject({ state: 'idle' });
       });
     });
 

@@ -4125,14 +4125,27 @@ export function createConversationMethods(
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
         /** Fenced before the delete so a webhook cannot claim a record whose conversation is
-         * going away. The record itself is removed only once the delete has committed, so a
-         * failed delete keeps the stored state and a retry finds it. */
+         * going away, with a tombstone when none exists yet. Once the delete settles the fence
+         * is released: a record whose conversation is gone is removed, and one whose
+         * conversation survived becomes an ordinary stop the user can restart. */
         await prAutomation.stopPRAutomations(user, 'conversation_deleting', waveIds);
-        const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        let result: Awaited<ReturnType<typeof Conversation.deleteMany>>;
         try {
-          await prAutomation.deletePRAutomations(user, waveIds);
+          result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        } catch (error) {
+          await prAutomation.releasePRAutomationFences(user, waveIds).catch(() => {
+            logger.warn(
+              '[deleteConvos] PR automation fence release failed; the record stays stopped.',
+            );
+          });
+          throw error;
+        }
+        try {
+          await prAutomation.releasePRAutomationFences(user, waveIds);
         } catch {
-          logger.warn('[deleteConvos] PR automation cleanup failed; the record stays stopped.');
+          logger.warn(
+            '[deleteConvos] PR automation fence release failed; the record stays stopped.',
+          );
         }
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a

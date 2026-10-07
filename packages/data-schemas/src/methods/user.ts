@@ -605,13 +605,23 @@ export function createUserMethods(
     try {
       const User = mongoose.models.User;
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
-      /** Fenced first so a webhook cannot claim a record for an account that is going away,
-       * then removed before the account, like the grants above. A failed cleanup throws with the
-       * account intact, so the deletion is retried instead of reporting success and leaving the
-       * repository and bot metadata behind with nothing that would ever remove it. */
+      /** Fenced first so a webhook cannot claim a record for an account that is going away.
+       * The records are removed only once the account delete committed, so a delete that fails
+       * keeps the user's automation: the fence is released into an ordinary stop they can
+       * restart. A cleanup that fails after the commit throws, and the retry removes them. */
       await prAutomation.stopPRAutomations(userId, 'account_deleting');
+      let result: Awaited<ReturnType<typeof User.deleteOne>>;
+      try {
+        result = await User.deleteOne({ _id: userId });
+      } catch (error) {
+        await prAutomation.releasePRAutomationFences(userId).catch(() => {
+          logger.warn(
+            '[deleteUserById] PR automation fence release failed; the records stay stopped.',
+          );
+        });
+        throw error;
+      }
       await prAutomation.deletePRAutomations(userId);
-      const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }

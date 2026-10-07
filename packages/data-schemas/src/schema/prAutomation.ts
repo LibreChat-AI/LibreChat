@@ -30,7 +30,14 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
       maxlength: 256,
     },
     repository: { type: String, maxlength: 256 },
-    pullNumber: { type: Number, min: 1 },
+    pullNumber: {
+      type: Number,
+      min: 1,
+      validate: {
+        validator: Number.isInteger,
+        message: 'A pull request number is a whole number',
+      },
+    },
     state: {
       type: String,
       enum: PR_AUTOMATION_STATES,
