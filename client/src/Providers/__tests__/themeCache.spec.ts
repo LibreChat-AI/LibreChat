@@ -1,10 +1,5 @@
+import { themeRoleFingerprint, themeAppearanceTokens } from 'librechat-data-provider';
 import {
-  themeRoleFingerprint,
-  THEME_CACHE_EPOCH,
-  themeAppearanceTokens,
-} from 'librechat-data-provider';
-import {
-  resolveTheme,
   themeBrandTokens,
   themeColorTokens,
   libreChatTheme,
@@ -167,14 +162,15 @@ describe('theme cache storage', () => {
 });
 
 /**
- * The baseline the resolver's output is pinned to. The cache version keys on the role set and a
- * hand-bumped `THEME_CACHE_EPOCH`, so a release that changes what a cacheable theme resolves to
- * without adding a role would replay stale styling at boot. The digest covers `librechat`,
- * `clickhouse` (the definitions that can enter the cache; the boot script never replays one under
- * high contrast) and one definition per role that overrides only that role, so every fallback
- * path is covered and a new role joins on its own.
+ * The baseline the cache's persisted output is pinned to. The cache version keys on the role set
+ * and a hand-bumped `THEME_CACHE_EPOCH`, so a release that changes what a cacheable theme
+ * resolves to without adding a role would replay stale styling at boot. The digest covers what
+ * the cache persists (`buildThemeCache(...).modes`) for `librechat` and `clickhouse`, the
+ * definitions that can enter the cache (the boot script never replays one under high contrast),
+ * and for every role three definitions that override only that role: theme-wide, light only and
+ * dark only. Every fallback path is covered and a new role joins on its own.
  */
-const PIN = { roles: 'xbzud8', epoch: 1, digest: 'cjwevq' };
+const PIN = { fingerprint: '1.1.xbzud8', digest: 'upmlr6' };
 
 const digestOf = (text: string): string => {
   let hash = 5381;
@@ -202,85 +198,106 @@ const APPEARANCE_CANDIDATES = [
   'none',
 ];
 
-/** One definition per role, overriding only that role with a value no default uses. */
-function roleFixtures(): ThemeDefinition[] {
+type Scope = 'both' | 'light' | 'dark';
+const SCOPES: Scope[] = ['both', 'light', 'dark'];
+type Fixture = { key: string; theme: ThemeDefinition };
+
+const scoped = (scope: Scope, block: (mode: 'light' | 'dark') => object) => ({
+  light: scope === 'dark' ? {} : block('light'),
+  dark: scope === 'light' ? {} : block('dark'),
+});
+
+/** For every role, three definitions overriding only that role: theme-wide, light and dark. */
+function roleFixtures(): Fixture[] {
   const base = { version: 1 as const };
-  const colors = themeColorTokens.map((token) => ({
-    ...base,
-    name: token,
-    modes: {
-      light: { colors: { [token]: '1 2 3' } },
-      dark: { colors: { [token]: '4 5 6' } },
-    },
-  }));
-  const brands = themeBrandTokens.map((token) => ({
-    ...base,
-    name: token,
-    brands: { [token]: '#123456' },
-    modes: { light: {}, dark: {} },
-  }));
   const missing: string[] = [];
-  const appearance = themeAppearanceTokens.flatMap((token) => {
-    const valid = APPEARANCE_CANDIDATES.map((value) => ({
-      ...base,
-      name: token,
-      modes: {
-        light: { appearance: { [token]: value } },
-        dark: { appearance: { [token]: value } },
-      },
-    })).find((theme) => validateThemeDefinition(theme as ThemeDefinition).length === 0);
-    if (!valid) {
-      missing.push(token);
-    }
-    return valid ? [valid] : [];
-  });
+  const colors = themeColorTokens.flatMap((token) =>
+    SCOPES.map((scope) => ({
+      key: `color:${token}:${scope}`,
+      theme: {
+        ...base,
+        name: token,
+        modes: scoped(scope, (mode) => ({
+          colors: { [token]: mode === 'light' ? '1 2 3' : '4 5 6' },
+        })),
+      } as ThemeDefinition,
+    })),
+  );
+  const brands = themeBrandTokens.flatMap((token) => [
+    {
+      key: `brand:${token}:both`,
+      theme: {
+        ...base,
+        name: token,
+        brands: { [token]: '#123456' },
+        modes: { light: {}, dark: {} },
+      } as ThemeDefinition,
+    },
+    ...(['light', 'dark'] as const).map((scope) => ({
+      key: `brand:${token}:${scope}`,
+      theme: {
+        ...base,
+        name: token,
+        modes: scoped(scope, () => ({ brands: { [token]: '#123456' } })),
+      } as ThemeDefinition,
+    })),
+  ]);
+  const appearance = themeAppearanceTokens.flatMap((token) =>
+    SCOPES.flatMap((scope) => {
+      const valid = APPEARANCE_CANDIDATES.map(
+        (value) =>
+          ({
+            ...base,
+            name: token,
+            modes: scoped(scope, () => ({ appearance: { [token]: value } })),
+          }) as ThemeDefinition,
+      ).find((theme) => validateThemeDefinition(theme).length === 0);
+      if (!valid) {
+        missing.push(token);
+        return [];
+      }
+      return [{ key: `appearance:${token}:${scope}`, theme: valid }];
+    }),
+  );
   if (missing.length > 0) {
     throw new Error(`Add valid samples to APPEARANCE_CANDIDATES for: ${missing.join(', ')}`);
   }
-  return [...colors, ...brands, ...appearance] as ThemeDefinition[];
+  return [...colors, ...brands, ...appearance];
 }
 
-const resolvedOutput = () => {
-  const named: [string, ThemeDefinition][] = [
-    ['librechat', libreChatTheme],
-    ['clickhouse', clickHouseTheme],
-  ];
-  const definitions = [...named.map(([, theme]) => theme), ...roleFixtures()];
-  return definitions.map((theme) => ({
-    light: resolveTheme(theme, 'light'),
-    dark: resolveTheme(theme, 'dark'),
-  }));
+const persistedOutput = () => {
+  const fixtures: Fixture[] = [
+    { key: 'a:librechat', theme: libreChatTheme },
+    { key: 'a:clickhouse', theme: clickHouseTheme },
+    ...roleFixtures(),
+  ].sort((a, b) => a.key.localeCompare(b.key));
+  return fixtures.map(({ key, theme }) => [key, buildThemeCache(OWNER, key, theme).modes]);
 };
 
 /** What the contributor has to do, or an empty string when the pin is current. */
-function pinStatus(actual: { roles: string; epoch: number; digest: string }): string {
-  if (actual.roles !== PIN.roles) {
-    return `The role set changed, which already retires cached entries: do not bump THEME_CACHE_EPOCH. Set PIN to ${JSON.stringify({ roles: actual.roles, epoch: PIN.epoch, digest: actual.digest })}.`;
+function pinStatus(actual: { fingerprint: string; digest: string }): string {
+  const refreshed = JSON.stringify({ fingerprint: actual.fingerprint, digest: actual.digest });
+  if (actual.fingerprint !== PIN.fingerprint) {
+    return `The cache version changed (role set, theme version or epoch), which already retires cached entries: set PIN to ${refreshed}.`;
   }
   if (actual.digest !== PIN.digest) {
-    return `The resolved output changed without a role change: bump THEME_CACHE_EPOCH to ${PIN.epoch + 1} in packages/data-provider/src/theme.ts and set PIN to ${JSON.stringify({ roles: actual.roles, epoch: PIN.epoch + 1, digest: actual.digest })}.`;
-  }
-  if (actual.epoch !== PIN.epoch) {
-    return `THEME_CACHE_EPOCH is ${actual.epoch}; set PIN.epoch to match.`;
+    return `The persisted output changed without a version change: bump THEME_CACHE_EPOCH in packages/data-provider/src/theme.ts, then set PIN to the refreshed fingerprint and digest (digest ${actual.digest}).`;
   }
   return '';
 }
 
 describe('resolver output pin', () => {
-  const current = () => ({
-    roles: themeRoleFingerprint().split('.').pop() as string,
-    epoch: THEME_CACHE_EPOCH,
-    digest: digestOf(JSON.stringify(resolvedOutput())),
+  it('matches the persisted output of every cacheable definition and role fixture', () => {
+    const status = pinStatus({
+      fingerprint: themeRoleFingerprint(),
+      digest: digestOf(JSON.stringify(persistedOutput())),
+    });
+    expect(status).toBe('');
   });
 
-  it('matches the resolved output of every cacheable definition and role fixture', () => {
-    expect(pinStatus(current())).toBe('');
-  });
-
-  it('tells a role change from an output change', () => {
-    const actual = { ...PIN };
-    expect(pinStatus({ ...actual, roles: 'other' })).toMatch(/do not bump THEME_CACHE_EPOCH/);
-    expect(pinStatus({ ...actual, digest: 'other' })).toMatch(/bump THEME_CACHE_EPOCH to/);
-    expect(pinStatus({ ...actual, epoch: actual.epoch + 1 })).toMatch(/set PIN.epoch/);
+  it('tells a version change from an output change', () => {
+    expect(pinStatus({ ...PIN, fingerprint: 'other' })).toMatch(/cache version changed/);
+    expect(pinStatus({ ...PIN, digest: 'other' })).toMatch(/bump THEME_CACHE_EPOCH/);
+    expect(pinStatus(PIN)).toBe('');
   });
 });
