@@ -106,7 +106,7 @@ html {
   --link-hover: var(--blue-700);
   --scrollbar-thumb: var(--black);
   --scrollbar-thumb-alpha: 0.1;
-  --page-canvas: var(--surface-primary);
+  --page-canvas: var(--surface-primary-alt);
   --select-fill: var(--white);
   --select-edge: 142 142 160;
   --button-neutral-border: var(--black);

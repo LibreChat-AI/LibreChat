@@ -127,6 +127,7 @@ export const layerRoleSources: ReadonlyArray<
   readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
 > = [
   ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-page-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
   ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
   ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
   ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],

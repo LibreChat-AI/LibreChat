@@ -519,6 +519,27 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('40 41 42');
   });
 
+  it('keeps the page canvas on the surface a theme repaints, unless it sets the role', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-page-canvas',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-page-canvas',
+        modes: { dark: { colors: { ...colors, 'rgb-page-canvas': '1 2 3' } } },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'dark').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'light').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(explicit.colors['rgb-page-canvas']).toBe('1 2 3');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {
@@ -1131,6 +1152,7 @@ describe('theme registry', () => {
     it('names the legacy surface of each layer outright', () => {
       const legacy: Record<string, [string, string]> = {
         'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-page-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
         'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
         'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
         'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],

@@ -176,7 +176,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
-    'rgb-page-canvas': 'global.color.background.default',
+    'rgb-page-canvas': 'global.color.background.split',
     'rgb-select-fill': 'click.field.color.background.default',
     'rgb-select-edge': 'click.field.color.stroke.default',
     'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',

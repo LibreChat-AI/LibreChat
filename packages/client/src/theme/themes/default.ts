@@ -147,7 +147,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
   'rgb-scrollbar-thumb': '0 0 0', // #000000
-  'rgb-page-canvas': '255 255 255', // #ffffff
+  'rgb-page-canvas': '247 247 248', // #f7f7f8 (gray-50, matching surface-primary-alt)
   'rgb-select-fill': '255 255 255', // #ffffff
   'rgb-select-edge': '142 142 160', // #8e8ea0
   'rgb-button-neutral-border': '0 0 0', // #000000 at 10%

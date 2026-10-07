@@ -182,3 +182,12 @@ test('reads literal origins and fallbacks of a relative colour', () => {
   assert.deepEqual(literals('a { color: rgb(from var(--base, #fff) r g b); }'), ['#fff']);
   assert.deepEqual(literals('a { color: rgb(from var(--base) r g b); }'), []);
 });
+
+test('reads percentage channels and triplets inside a var() fallback', () => {
+  assert.deepEqual(literals('a { --brand: 100% 0% 0%; }'), ['100% 0% 0%']);
+  assert.deepEqual(literals('a { --brand: var(--configured, 255 0 0); }'), [
+    'var(--configured, 255 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: 255, 0, 0; }'), ['255, 0, 0']);
+  assert.deepEqual(literals('a { --offset: 0 1px 2px; --size: 1.5rem 2rem 3rem; }'), []);
+});

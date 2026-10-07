@@ -182,7 +182,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
   'rgb-scrollbar-thumb': '0 0 0', // #000000
-  'rgb-page-canvas': '255 255 255', // #ffffff
+  'rgb-page-canvas': '255 255 255', // #ffffff (matching surface-primary)
   'rgb-select-fill': '255 255 255', // #ffffff
   'rgb-select-edge': '142 142 160', // #8e8ea0
   'rgb-button-neutral-border': '0 0 0', // #000000 at 10%
@@ -393,7 +393,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
   'rgb-scrollbar-thumb': '255 255 255', // #ffffff
-  'rgb-page-canvas': '23 23 23', // #171717 (gray-850)
+  'rgb-page-canvas': '0 0 0', // #000000 (matching surface-primary)
   'rgb-select-fill': '255 255 255', // #ffffff
   'rgb-select-edge': '142 142 160', // #8e8ea0
   'rgb-button-neutral-border': '66 66 66', // #424242 (gray-600)

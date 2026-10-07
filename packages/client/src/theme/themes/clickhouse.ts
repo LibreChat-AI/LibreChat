@@ -171,7 +171,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
   'rgb-scrollbar-thumb': '0 0 0', // #000000 (no Click UI counterpart; the stock role)
-  'rgb-page-canvas': '255 255 255', // #ffffff (background.default)
+  'rgb-page-canvas': '246 247 250', // #f6f7fa (background.split)
   'rgb-select-fill': '251 252 255', // #fbfcff (field.color.background.default)
   'rgb-select-edge': '230 231 233', // #e6e7e9 (field.color.stroke.default)
   'rgb-button-neutral-border': '230 231 233', // #e6e7e9 (button.basic.color.secondary.stroke.default)
