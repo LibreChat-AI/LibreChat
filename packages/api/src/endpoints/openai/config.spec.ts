@@ -1577,13 +1577,14 @@ describe('getOpenAIConfig', () => {
           model: modelName,
           temperature: 0.7,
           maxTokens: 2048,
-          // topP is converted from top_p in modelOptions
+          topP: 0.9,
           frequencyPenalty: 0.1, // converted from frequency_penalty
           presencePenalty: 0.1, // converted from presence_penalty
           user: 'test-user-id',
           streaming: true, // default
           apiKey: mockApiKey,
         });
+        expect(result.llmConfig).not.toHaveProperty('top_p');
         expect(result.configOptions).toEqual({});
         expect(result.tools).toEqual([]);
       });
