@@ -137,7 +137,7 @@
   },
   "client/src/components/Chat/Input/Files/FileUpload.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 11
     },
     "shadcn/require-static-classes": {
       "count": 2

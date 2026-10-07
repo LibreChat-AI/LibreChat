@@ -74,10 +74,11 @@ const FileUpload: React.FC<FileUploadProps> = ({
     <>
       <Button
         type="button"
-        variant="toolbar"
+        variant="ghost"
+        size="sm"
         onClick={handleClick}
         className={cn(
-          'hover:text-status-success focus:ring-text-primary mr-1 flex cursor-pointer items-center rounded',
+          'text-text-secondary hover:bg-surface-hover hover:text-status-success focus:ring-text-primary mr-1 flex h-auto cursor-pointer items-center rounded bg-transparent px-2 py-1 text-xs font-normal transition-colors',
           statusColor,
           containerClassName,
         )}
