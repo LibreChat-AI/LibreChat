@@ -55,7 +55,7 @@ function PullRequestCard({
               rel="noopener noreferrer"
               aria-label={openLabel}
               data-testid="pull-request-github-link"
-              className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+              className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2 [&_svg]:size-4"
             >
               <GithubIcon />
             </a>

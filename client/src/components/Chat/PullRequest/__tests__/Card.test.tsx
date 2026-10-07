@@ -41,6 +41,19 @@ describe('PullRequestCard', () => {
     }
   });
 
+  it('gives the GitHub mark a viewBox, so shrinking the icon scales it instead of clipping it', () => {
+    render(<PullRequestCard pullRequest={pr} />);
+    const svg = screen.getByTestId('pull-request-github-link').querySelector('svg');
+    expect(svg).toHaveAttribute('viewBox', '0 0 25 25');
+  });
+
+  it('dims only the GitHub icon on hover, never the background behind it', () => {
+    render(<PullRequestCard pullRequest={pr} />);
+    const link = screen.getByTestId('pull-request-github-link');
+    expect(link).toHaveClass('hover:text-text-primary');
+    expect(link.className).not.toMatch(/hover:bg-/);
+  });
+
   it('puts the GitHub tooltip in the layer the card lives in, not behind it', async () => {
     const layer = document.createElement('div');
     document.body.appendChild(layer);
