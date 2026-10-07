@@ -10,6 +10,7 @@ on:
       - 'scripts/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.prettierrc'
       - 'eslint.config.mjs'
       # Both spellings: the trigger has to start the workflow for the root
       # baseline and for a nested one outside the source trees above, which is
@@ -114,6 +115,14 @@ jobs:
               - 'scripts/i18n*.mts'
               - 'scripts/static-checks.mts'
               - '.github/workflows/static-checks.yml'
+            import_tools:
+              - '.prettierrc'
+              - 'scripts/static-checks.mts'
+              - 'scripts/sort-imports.mts'
+              - 'scripts/imports/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/static-checks.yml'
             unused_packages:
               - 'api/**'
               - 'client/**'
@@ -151,6 +160,12 @@ jobs:
         continue-on-error: true
         run: npm run build:client-package
 
+      - name: Test and typecheck import cleanup tooling
+        if: always() && steps.paths.outputs.import_tools == 'true'
+        run: node scripts/static-checks.mts scripts/imports/compact.mts --only import-tools
+
+      # Checkout uses the synthetic PR merge. Its first parent is the tested dev
+      # baseline; the event's older base SHA can include unrelated upstream files.
       # Run ESLint on changed files within the api/, client/, and packages/ directories.
       - name: Run ESLint on changed files
         id: eslint
@@ -163,7 +178,7 @@ jobs:
 
           # Get changed files (only JS/TS files in api/, client/, or packages/)
           mapfile -d '' -t CHANGED_FILES < <(
-            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+            git diff -z --name-only --diff-filter=ACMRTUXB HEAD^1 HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
           )
 
@@ -205,7 +220,7 @@ jobs:
         run: |
           BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
-            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+            git diff -z --name-only --diff-filter=ACMRTUXB HEAD^1 HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
           )
 
@@ -238,7 +253,7 @@ jobs:
         run: |
           BASE_SHA=$(jq --raw-output .pull_request.base.sha "$GITHUB_EVENT_PATH")
           mapfile -d '' -t CHANGED_FILES < <(
-            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+            git diff -z --name-only --diff-filter=ACMRTUXB HEAD^1 HEAD |
               grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
           )
 

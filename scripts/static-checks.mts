@@ -34,7 +34,7 @@
  *     node scripts/static-checks.mts packages/api/src/index.ts
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
- * --list. Check ids: eslint, prettier, imports, eslint-config, json,
+ * --list. Check ids: eslint, prettier, imports, import-tools, eslint-config, json,
  * suppressions, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
@@ -79,6 +79,15 @@ const FILTERS = {
     '!**.md',
   ],
   eslint_config: ['eslint.config.mjs', '.github/workflows/static-checks.yml'],
+  import_tools: [
+    '.prettierrc',
+    'scripts/static-checks.mts',
+    'scripts/sort-imports.mts',
+    'scripts/imports/**',
+    'package.json',
+    'package-lock.json',
+    '.github/workflows/static-checks.yml',
+  ],
   // The design-rule backlog is data the lint reads, so a diff that only edits it
   // reaches no lintable file and would otherwise be checked by nothing.
   // Deleting or renaming a recorded file has to reach this group too: the entry
@@ -756,6 +765,36 @@ function checkImportOrder(context: CheckContext): CheckOutcome {
   };
 }
 
+async function checkImportTools(): Promise<CheckOutcome> {
+  const tsc = resolveBin('typescript', 'tsc');
+  if (!tsc) return missingBin('typescript');
+  const prettier = resolveBin('prettier');
+  if (!prettier) return missingBin('prettier');
+  const node: Executable = { command: process.execPath, args: [] };
+  const files = (await readdir(resolve(ROOT, 'scripts/imports')))
+    .filter((file) => file.endsWith('.mts'))
+    .sort()
+    .map((file) => `scripts/imports/${file}`);
+  const results = [
+    runCommand(node, ['--test', 'scripts/imports/compact.test.mts']),
+    runCommand(tsc, ['--noEmit', '--project', 'scripts/imports/tsconfig.json']),
+    runOnFiles(
+      prettier,
+      ['--check', '--'],
+      [
+        'scripts/static-checks.mts',
+        'scripts/sort-imports.mts',
+        ...files,
+        'scripts/imports/tsconfig.json',
+      ],
+    ),
+  ];
+  return {
+    ok: results.every((result) => result.status === 0),
+    output: results.map((result) => result.output).join('\n'),
+  };
+}
+
 /**
  * The changed-file lint never loads a changed root config: a config-only diff
  * matches no lintable files, so even a malformed eslint.config.mjs would pass.
@@ -923,7 +962,10 @@ function workflowFilters(text: string): { trigger: string[]; lane: string[] } {
       .split(new RegExp(`^ {0,${indent}}\\S`, 'm'))[0]
       .split('\n')
       .map((line) => new RegExp(`^ {${indent + 2}}- '([^']+)'$`).exec(line)?.[1])
-      .filter((pattern): pattern is string => Boolean(pattern) && !pattern.startsWith('!'));
+      .filter(
+        (pattern): pattern is string =>
+          pattern !== undefined && pattern !== '' && !pattern.startsWith('!'),
+      );
 
   return { trigger: list(/^ {4}paths:$/m, 4), lane: list(/^ {12}suppressions:$/m, 12) };
 }
@@ -2108,6 +2150,13 @@ async function findUnusedPackages(): Promise<CheckOutcome> {
 // --------------------------------------------------------------- runner
 
 const CHECKS: Check[] = [
+  {
+    id: 'import-tools',
+    title: 'Import tooling',
+    tier: 'fast',
+    group: 'import_tools',
+    run: checkImportTools,
+  },
   { id: 'eslint', title: 'ESLint', tier: 'fast', group: 'eslint', run: lintChangedFiles },
   { id: 'prettier', title: 'Prettier', tier: 'fast', group: 'eslint', run: checkFormatting },
   { id: 'imports', title: 'Import sorting', tier: 'fast', group: 'eslint', run: checkImportOrder },
