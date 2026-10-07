@@ -43,6 +43,45 @@ const { deleteUserPrompts } = require('~/models/Prompt');
 const { deleteUserAgents } = require('~/models/Agent');
 const { getLogStores } = require('~/cache');
 
+const LOCATION_KEYS = ['villageName', 'blockName', 'district', 'state'];
+
+const geocoding = async ({ villageName, blockName, district, state }) => {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (!key) return null;
+
+  // Most specific first, then fall back to coarser areas
+  const attempts = [
+    [villageName, blockName, district, state],
+    [blockName, district, state],
+    [district, state],
+    [state],
+  ]
+    .map((parts) => parts.filter(Boolean))
+    .filter((parts) => parts.length > 0);
+
+  for (const parts of attempts) {
+    const params = new URLSearchParams({
+      address: [...parts, 'India'].join(', '),
+      components: 'country:IN',
+      key,
+    });
+    const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?${params}`);
+    const data = await res.json();
+
+    if (data.status === 'OK' && data.results?.[0]) {
+      const { lat, lng } = data.results[0].geometry.location;
+      return { latitude: lat, longitude: lng };
+    }
+    // ZERO_RESULTS -> try a coarser address; anything else (quota, denied) -> stop
+    if (data.status !== 'ZERO_RESULTS') {
+      console.warn(`Geocoding failed: ${data.status} ${data.error_message ?? ''}`);
+      break;
+    }
+  }
+
+  return null;
+};
+
 const getUserController = async (req, res) => {
   const appConfig = await getAppConfig({ role: req.user?.role });
   /** @type {IUser} */
@@ -312,6 +351,46 @@ const saveFarmerProfileController = async (req, res) => {
       updateQuery.$set['farmerProfile.usesAgriApps'] = farmerProfile.usesAgriApps;
     }
 
+    let geocoded = null;
+
+    // If the client sent coordinates (e.g. registration with device GPS), trust those
+    if (farmerProfile.location === undefined) {
+
+      try {
+        const existing = await User.findById(req.user.id).select('farmerProfile').lean();
+        const stored = existing?.farmerProfile ?? {};
+
+        const hasCoords =
+          typeof stored.location?.latitude === 'number' &&
+          typeof stored.location?.longitude === 'number';
+        const touchesLocation = LOCATION_KEYS.some((k) => farmerProfile[k] !== undefined);
+
+        // Geocode when a place field changed, or when the user has no coordinates yet
+        if (touchesLocation || !hasCoords) {
+          const merged = {};
+          LOCATION_KEYS.forEach((k) => {
+            const v = farmerProfile[k] ?? stored[k] ?? '';
+            merged[k] = String(v).trim().toLowerCase();
+          });
+
+          if (merged.state) {
+            geocoded = await geocoding(merged);
+            if (geocoded) {
+              // Whole object: creates it if missing or null, replaces it if present
+              updateQuery.$set['farmerProfile.location'] = {
+                latitude: geocoded.latitude,
+                longitude: geocoded.longitude,
+              };
+            }
+          }
+        }
+      } catch (err) {
+        // Never block the profile save because geocoding failed
+        console.log('error', err);
+        logger.error('Geocoding error:', err);
+      }
+    }
+
     if (Object.keys(updateQuery.$set).length === 0) {
       return res.status(200).json({ message: 'No changes provided to save' });
     }
@@ -538,6 +617,31 @@ const resendVerificationController = async (req, res) => {
   }
 };
 
+const getUserByIdController = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!/^[a-f\d]{24}$/i.test(id)) {
+      return res.status(400).json({ message: 'Invalid user id' });
+    }
+
+    // Inclusion list: only what the bot needs, never password/tokens/etc.
+    const user = await User.findById(id).select('name email farmerProfile').lean();
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json({
+      id: String(user._id),
+      name: user.name,
+      farmerProfile: user.farmerProfile ?? null,
+    });
+  } catch (error) {
+    logger.error('Error fetching user for bot:', error);
+    res.status(500).json({ message: 'Error fetching user' });
+  }
+};
+
 /**
  * OAuth MCP specific uninstall logic
  */
@@ -652,4 +756,5 @@ module.exports = {
   verifyEmailController,
   updateUserPluginsController,
   resendVerificationController,
+  getUserByIdController,
 };

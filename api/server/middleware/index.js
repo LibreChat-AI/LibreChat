@@ -21,13 +21,14 @@ const uaParser = require('./uaParser');
 const checkBan = require('./checkBan');
 const noIndex = require('./noIndex');
 const roles = require('./roles');
-
+const requireInternalAuth = require('./requireInternalAuth');
 module.exports = {
   ...abortMiddleware,
   ...validate,
   ...limiters,
   ...roles,
   ...accessResources,
+  requireInternalAuth,
   noIndex,
   checkBan,
   uaParser,

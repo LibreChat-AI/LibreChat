@@ -52,6 +52,10 @@ export interface IFarmerProfile {
   highestEducatedPerson: string;
   numberOfSmartphones: number;
   platform?: string;
+  location: {
+    latitude: number;
+    longitude: number;
+  };
 }
 
 export type SaveFarmerProfileMutationOptions = MutationOptions<{ message: string }, IFarmerProfile>;

@@ -15,14 +15,16 @@ import ExportAndShareMenu from './ExportAndShareMenu';
 import BookmarkMenu from './Menus/BookmarkMenu';
 import { TemporaryChat } from './TemporaryChat';
 import AddMultiConvo from './AddMultiConvo';
-import { useHasAccess } from '~/hooks';
+import { useAuthContext, useHasAccess } from '~/hooks';
 import { cn } from '~/utils';
+import LocationMenu from './LocationMenu';
 
 const defaultInterface = getConfigDefaults().interface;
 
 export default function Header() {
   const { data: startupConfig } = useGetStartupConfig();
   const { navVisible } = useOutletContext<ContextType>();
+  const { user } = useAuthContext();
 
   const interfaceConfig = useMemo(
     () => startupConfig?.interface ?? defaultInterface,
@@ -57,8 +59,9 @@ export default function Header() {
   // ModelSelector moved into the chat input toolbar (left of the microphone button)
   const modelSelectorNodes = (
     <div className="flex items-center gap-1.5 sm:gap-2">
-      {interfaceConfig.presets === true && interfaceConfig.modelSelect && <PresetsMenu />}
-      {hasAccessToMultiConvo === true && <AddMultiConvo />}
+      {/* {interfaceConfig.presets === true && interfaceConfig.modelSelect && <PresetsMenu />}
+      {hasAccessToMultiConvo === true && <AddMultiConvo />} */}
+      <LocationMenu isSmallScreen={isSmallScreen}/>
     </div>
   );
 

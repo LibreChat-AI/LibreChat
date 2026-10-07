@@ -514,7 +514,6 @@ const startServer = async () => {
   app.use('/api/langgraph', routes.langgraph);
   app.use('/api/diagnostics', routes.diagnostics);
   app.use('/api/crops', routes.crops);
-  app.use('/api/answers', routes.answers);
 
   app.use(ErrorController);
 
