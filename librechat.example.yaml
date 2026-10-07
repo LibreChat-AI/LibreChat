@@ -1421,6 +1421,7 @@ endpoints:
 #   jinaApiUrl: '${JINA_API_URL}'  # Custom Jina API URL (optional, defaults to https://api.jina.ai/v1/rerank)
 #   # Other rerankers
 #   cohereApiKey: '${COHERE_API_KEY}'
+#   cohereApiUrl: '${COHERE_API_URL}'  # Custom Cohere-compatible API URL (optional, defaults to https://api.cohere.com/v2/rerank)
 #   # Search providers
 #   serperApiKey: '${SERPER_API_KEY}'
 #   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'

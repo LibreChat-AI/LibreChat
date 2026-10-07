@@ -29,6 +29,7 @@ const emptyForm = (): SearchApiKeyFormData => ({
   jinaApiKey: '',
   jinaApiUrl: '',
   cohereApiKey: '',
+  cohereApiUrl: '',
 });
 
 describe('useAuthSearchTool', () => {
@@ -41,6 +42,19 @@ describe('useAuthSearchTool', () => {
       pluginKey: Tools.web_search,
       action: 'install',
       auth: { keenableApiUrl: '' },
+      isEntityTool: true,
+    });
+  });
+
+  it('forwards an explicitly empty Cohere URL as a clear operation', () => {
+    const { result } = renderHook(() => useAuthSearchTool());
+
+    act(() => result.current.installTool(emptyForm(), { cohereApiUrl: true }));
+
+    expect(mockMutate).toHaveBeenCalledWith({
+      pluginKey: Tools.web_search,
+      action: 'install',
+      auth: { cohereApiUrl: '' },
       isEntityTool: true,
     });
   });
