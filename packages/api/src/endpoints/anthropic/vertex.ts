@@ -1,10 +1,19 @@
 import path from 'path';
 import { GoogleAuth } from 'google-auth-library';
+import type { AuthClient } from 'google-auth-library';
 import { AuthKeys } from 'librechat-data-provider';
 import { AnthropicVertex } from '@anthropic-ai/vertex-sdk';
 import type { ClientOptions } from '@anthropic-ai/sdk';
 import type { AnthropicCredentials, VertexAIClientOptions } from '~/types/anthropic';
 import { loadServiceKey } from '~/utils/key';
+
+/**
+ * Sentinel project_id used when Vertex traffic is routed through an AI gateway
+ * that handles provider authentication. The gateway is responsible for the
+ * Authorization header, but the SDK still needs a non-empty projectId to build
+ * the `/projects/<id>/locations/<region>/.../rawPredict` request path.
+ */
+export const VERTEX_GATEWAY_PLACEHOLDER_PROJECT = 'librechat-vertex-gateway';
 
 /**
  * Options for loading Vertex AI credentials
@@ -16,6 +25,15 @@ export interface VertexCredentialOptions {
   projectId?: string;
   /** Region for Vertex AI */
   region?: string;
+  /**
+   * Skip local Google service account auth entirely. Use when an AI gateway
+   * upstream (e.g., LiteLLM, Helicone, a corporate proxy) owns Vertex
+   * authentication and LibreChat just needs to format Anthropic Vertex requests
+   * (`rawPredict` / `streamRawPredict`, top-level `system`, `anthropic_version`).
+   * When set, `loadAnthropicVertexCredentials` will not require a service key
+   * file and will not call `GoogleAuth`.
+   */
+  skipAuth?: boolean;
 }
 
 /**
@@ -29,16 +47,32 @@ export interface VertexAIConfigInput {
   serviceKeyFile?: string;
   deploymentName?: string;
   models?: string[] | Record<string, boolean | { deploymentName?: string }>;
+  /** Skip local Google service-account auth when an upstream gateway handles it */
+  skipAuth?: boolean;
+  /** Override the Vertex API base URL (typically the gateway URL) */
+  baseURL?: string;
 }
 
 /**
  * Loads Google service account configuration for Vertex AI.
  * Supports both YAML configuration and environment variables.
+ *
+ * When `skipAuth` is true (gateway mode), returns a placeholder credential
+ * marker without loading any service key. The gateway upstream owns auth.
+ *
  * @param options - Optional configuration from YAML or other sources
  */
 export async function loadAnthropicVertexCredentials(
   options?: VertexCredentialOptions,
 ): Promise<AnthropicCredentials> {
+  if (options?.skipAuth) {
+    return {
+      [AuthKeys.GOOGLE_SERVICE_KEY]: {
+        project_id: options.projectId || VERTEX_GATEWAY_PLACEHOLDER_PROJECT,
+      },
+    };
+  }
+
   /** Path priority: options > env var > default location */
   const serviceKeyPath =
     options?.serviceKeyFile ||
@@ -67,6 +101,7 @@ export function getVertexCredentialOptions(config?: VertexAIConfigInput): Vertex
     serviceKeyFile: config?.serviceKeyFile,
     projectId: config?.projectId,
     region: config?.region,
+    skipAuth: config?.skipAuth,
   };
 }
 
@@ -75,6 +110,21 @@ export function getVertexCredentialOptions(config?: VertexAIConfigInput): Vertex
  */
 export function isAnthropicVertexCredentials(credentials: AnthropicCredentials): boolean {
   return !!credentials[AuthKeys.GOOGLE_SERVICE_KEY] && !credentials[AuthKeys.ANTHROPIC_API_KEY];
+}
+
+/**
+ * Builds an `AuthClient`-shaped object that satisfies the AnthropicVertex SDK
+ * without contacting Google's metadata server. Used in gateway mode where
+ * the upstream proxy handles Vertex authentication.
+ *
+ * The SDK only calls `.getRequestHeaders()` and reads `.projectId`. Returning
+ * an empty header map means no `Authorization` header is attached client-side.
+ */
+function createGatewayAuthClient(projectId: string): AuthClient {
+  return {
+    projectId,
+    getRequestHeaders: async () => ({}),
+  } as unknown as AuthClient;
 }
 
 /**
@@ -168,9 +218,17 @@ export function getVertexDeploymentName(
  * Creates and configures a Vertex AI client for Anthropic.
  * Supports both YAML configuration and environment variables for region/projectId.
  * The projectId is automatically extracted from the service key if not explicitly provided.
+ *
+ * When `vertexOptions.skipAuth` is true (gateway mode), the client uses a no-op
+ * auth client so no `Authorization` header is set locally; the upstream gateway
+ * specified by `vertexOptions.baseURL` is expected to inject provider auth.
+ * Request path construction (`rawPredict` / `streamRawPredict`, projectId,
+ * region) and body shape (top-level `system`, `anthropic_version`) are
+ * preserved so the gateway sees a native Anthropic Vertex request.
+ *
  * @param credentials - The Google service account credentials
  * @param options - SDK client options
- * @param vertexOptions - Vertex AI specific options (region, projectId) from YAML config
+ * @param vertexOptions - Vertex AI specific options (region, projectId, skipAuth, baseURL)
  */
 export function createAnthropicVertexClient(
   credentials: AnthropicCredentials,
@@ -195,14 +253,10 @@ export function createAnthropicVertexClient(
   const region = vertexOptions?.region || process.env.ANTHROPIC_VERTEX_REGION || 'us-east5';
   const projectId =
     vertexOptions?.projectId || process.env.VERTEX_PROJECT_ID || serviceKey.project_id;
+  const skipAuth = vertexOptions?.skipAuth === true;
+  const baseURL = vertexOptions?.baseURL || process.env.ANTHROPIC_VERTEX_BASE_URL || undefined;
 
   try {
-    const googleAuth = new GoogleAuth({
-      credentials: serviceKey,
-      scopes: 'https://www.googleapis.com/auth/cloud-platform',
-      ...(projectId && { projectId }),
-    });
-
     // Filter out unsupported anthropic-beta header values for Vertex AI
     const filteredOptions = options
       ? {
@@ -213,10 +267,28 @@ export function createAnthropicVertexClient(
         }
       : undefined;
 
-    return new AnthropicVertex({
-      region: region,
-      googleAuth: googleAuth,
+    if (skipAuth) {
+      const gatewayProjectId = projectId || VERTEX_GATEWAY_PLACEHOLDER_PROJECT;
+      return new AnthropicVertex({
+        region,
+        projectId: gatewayProjectId,
+        authClient: createGatewayAuthClient(gatewayProjectId),
+        ...(baseURL && { baseURL }),
+        ...filteredOptions,
+      });
+    }
+
+    const googleAuth = new GoogleAuth({
+      credentials: serviceKey,
+      scopes: 'https://www.googleapis.com/auth/cloud-platform',
       ...(projectId && { projectId }),
+    });
+
+    return new AnthropicVertex({
+      region,
+      googleAuth,
+      ...(projectId && { projectId }),
+      ...(baseURL && { baseURL }),
       ...filteredOptions,
     });
   } catch (error) {

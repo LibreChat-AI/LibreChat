@@ -22,6 +22,17 @@ export interface VertexAIClientOptions {
   region?: string;
   /** Google Cloud Project ID */
   projectId?: string;
+  /**
+   * Skip local Google service-account auth when an AI gateway upstream owns
+   * Vertex authentication. No `Authorization` header is attached client-side.
+   */
+  skipAuth?: boolean;
+  /**
+   * Override the Vertex API base URL. Typically the gateway URL, e.g.
+   * `https://gateway.example.com/google-vertex-ai/v1`. The SDK still constructs
+   * the `/projects/<id>/locations/<region>/.../rawPredict` path on top of this.
+   */
+  baseURL?: string;
 }
 
 export interface ThinkingConfigDisabled {
