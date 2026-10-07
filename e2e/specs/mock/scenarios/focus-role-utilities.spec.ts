@@ -7,8 +7,8 @@ import { NEW_CHAT_PATH } from '../helpers';
  * The focus outline utilities the primitives compose (`outline-theme-focus`,
  * `outline-offset-theme-focus`, `outline-focus-outline`) paint what the global `:focus-visible`
  * rule paints, in every palette and at the theme's width and offset, so a primitive that names the
- * outline itself reads as it did when it inherited it. The probe carries the same class string the
- * `focusOutlineRole` constant exports.
+ * outline itself reads as it did when it inherited it. A probe carries the class string
+ * `focusOutlineRole` exports, and the settings theme selector is the real Dropdown trigger.
  */
 
 type Mode = 'light' | 'dark';
@@ -143,6 +143,22 @@ test.describe('focus outline utilities', () => {
 
       expect(global[0]).toBe('solid');
       expect(role).toEqual(global);
+
+      /** The real non-field Dropdown trigger, with the classes the primitive ships. */
+      await page.getByTestId('nav-user').click();
+      await page.getByRole('menuitem', { name: 'Settings' }).click();
+      const trigger = page.getByTestId('theme-selector');
+      await expect(trigger).toBeVisible({ timeout: 10000 });
+      await page.keyboard.press('Shift');
+      await trigger.focus();
+      await expect(trigger).toBeFocused();
+      expect(await trigger.evaluate((node) => node.matches(':focus-visible'))).toBe(true);
+      expect(
+        await trigger.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return [style.outlineStyle, style.outlineWidth, style.outlineColor, style.outlineOffset];
+        }),
+      ).toEqual(global);
       if (width) {
         expect(role[1]).toBe(width);
       }
