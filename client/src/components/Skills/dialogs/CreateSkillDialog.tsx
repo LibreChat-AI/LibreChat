@@ -205,6 +205,7 @@ export default function CreateSkillDialog({
               {localize('com_ui_description')}
             </label>
             <TextareaAutosize
+              variant="framed"
               focusOutline="hidden"
               id="create-skill-description"
               minRows={2}
@@ -213,7 +214,7 @@ export default function CreateSkillDialog({
               aria-label={localize('com_ui_description')}
               aria-invalid={errors.description ? 'true' : 'false'}
               aria-describedby={errors.description ? 'create-skill-description-error' : undefined}
-              className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none rounded-xl border bg-transparent px-3 py-2 text-sm focus-visible:ring-2"
+              className="w-full resize-none px-3 py-2 text-sm"
               {...register('description', {
                 required: localize('com_ui_skill_description_required'),
                 maxLength: {
@@ -241,13 +242,14 @@ export default function CreateSkillDialog({
               {localize('com_ui_skill_instructions')}
             </label>
             <TextareaAutosize
+              variant="framed"
               focusOutline="hidden"
               id="create-skill-body"
               minRows={6}
               maxRows={12}
               placeholder={localize('com_ui_skill_instructions_placeholder')}
               aria-label={localize('com_ui_skill_instructions')}
-              className="border-border-medium text-text-primary placeholder:text-text-secondary focus-visible:ring-ring-primary w-full resize-none rounded-xl border bg-transparent px-3 py-2 text-sm focus-visible:ring-2"
+              className="w-full resize-none px-3 py-2 text-sm"
               {...register('body')}
             />
           </div>

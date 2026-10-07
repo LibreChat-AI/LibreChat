@@ -1222,7 +1222,7 @@
   },
   "client/src/components/Skills/dialogs/CreateSkillDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 26
+      "count": 10
     }
   },
   "client/src/components/Skills/display/SkillDetail.tsx": {
@@ -1237,7 +1237,7 @@
   },
   "client/src/components/Skills/forms/CreateSkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 6
     }
   },
   "client/src/components/Skills/forms/SkillContentEditor.tsx": {
@@ -1247,7 +1247,7 @@
   },
   "client/src/components/Skills/forms/SkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 6
     }
   },
   "client/src/components/Skills/lists/SkillListItem.tsx": {
