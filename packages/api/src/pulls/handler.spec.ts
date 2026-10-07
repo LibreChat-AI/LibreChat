@@ -4,8 +4,8 @@ import type { ServerRequest } from '~/types';
 import {
   createConversationPullRequestHandler,
   createConversationPullRequestsHandler,
-  resolveTokenReference,
 } from './handler';
+import { resolveTokenReference } from './settings';
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -138,6 +138,79 @@ describe('createConversationPullRequestHandler', () => {
     const { run, lookup } = setup({ laneGit: { branch: 'feat/x', head, repo: 'o/r' } });
     await run();
     expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ head }));
+  });
+
+  describe('without an enabled switch or a token reference', () => {
+    const scoped = { allowedRepositories: ['o/r'] };
+
+    it('looks the pull request up, using the deployment GitHub token', async () => {
+      const { run, res, lookup } = setup({ settings: scoped, env: { GITHUB_TOKEN: 'ghp_deploy' } });
+      await run();
+      expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ token: 'ghp_deploy' }));
+      expect(res.json).toHaveBeenCalledWith({ pullRequest: pr });
+    });
+
+    it('answers no pull request, and reads nothing, with no token anywhere', async () => {
+      const { run, res, lookup } = setup({ settings: scoped, env: {} });
+      await run();
+      expect(lookup).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ pullRequest: null });
+    });
+
+    it('still reports a configured reference that does not resolve', async () => {
+      const { run, res } = setup({
+        settings: { ...scoped, token: '${MISSING}' },
+        env: { GITHUB_TOKEN: 'ghp_deploy' },
+      });
+      await run();
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'NOT_CONFIGURED' }));
+    });
+
+    it('is off when switched off, even with a token and a scope', async () => {
+      const { run, res, lookup } = setup({
+        settings: { ...scoped, enabled: false },
+        env: { GITHUB_TOKEN: 'ghp_deploy' },
+      });
+      await run();
+      expect(lookup).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ pullRequest: null });
+    });
+  });
+
+  describe('allowAllRepositories', () => {
+    const lane = { branch: 'feat/x', head: null, repo: 'someone/else' };
+    const open = { allowAllRepositories: true };
+
+    it('looks up a repository nobody listed, when the administrator opted in', async () => {
+      const { run, lookup } = setup({
+        settings: open,
+        laneGit: lane,
+        env: { GITHUB_TOKEN: 'ghp_deploy' },
+      });
+      await run();
+      expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ repo: 'someone/else' }));
+    });
+
+    it('passes the open scope on, so a fork named by the worker is authorized the same way', async () => {
+      const { run, lookup } = setup({
+        settings: open,
+        laneGit: lane,
+        env: { GITHUB_TOKEN: 'ghp_deploy' },
+      });
+      await run();
+      expect(lookup.mock.calls[0][0].allowedRepositories).toEqual(['*/*']);
+    });
+
+    it('does not look it up without the opt-in, even with a token', async () => {
+      const { run, lookup } = setup({
+        settings: { allowedRepositories: ['o/r'] },
+        laneGit: lane,
+        env: { GITHUB_TOKEN: 'ghp_deploy' },
+      });
+      await run();
+      expect(lookup).not.toHaveBeenCalled();
+    });
   });
 
   describe('repository allowlist', () => {
@@ -330,6 +403,18 @@ describe('createConversationPullRequestsHandler', () => {
     };
     return { run, res, lookup, getConvosLaneGit };
   }
+
+  it('looks up any repository on the batch route too, when the administrator opted in', async () => {
+    const { run, lookup } = batch({
+      settings: { allowAllRepositories: true },
+      lanes: [
+        { conversationId: 'a', laneGit: { branch: 'feat/x', head: null, repo: 'someone/else' } },
+      ],
+      env: { GITHUB_TOKEN: 'ghp_deploy' },
+    });
+    await run({ conversationIds: ['a'] });
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ repo: 'someone/else' }));
+  });
 
   it('answers each conversation in the order asked, from one owner-scoped read', async () => {
     const { run, res, getConvosLaneGit, lookup } = batch();

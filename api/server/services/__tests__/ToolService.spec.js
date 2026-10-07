@@ -227,6 +227,10 @@ function createEndpointsConfig(capabilities) {
   };
 }
 
+beforeAll(() => {
+  process.env.GITHUB_TOKEN = process.env.GITHUB_TOKEN || 'ghp_test';
+});
+
 describe('ToolService - Action Capability Gating', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -3230,7 +3234,7 @@ describe('ToolService - Action Capability Gating', () => {
         AgentCapabilities.stateful_code_sessions,
       ];
       const req = createMockReq(capabilities);
-      req.config.endpoints[EModelEndpoint.agents].pullRequests = { enabled: true };
+      req.config.endpoints[EModelEndpoint.agents].pullRequests = { allowAllRepositories: true };
       req.body = {
         conversationId: 'body-convo',
         codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],
@@ -3287,7 +3291,7 @@ describe('ToolService - Action Capability Gating', () => {
           AgentCapabilities.stateful_code_sessions,
         ];
         const req = createMockReq(capabilities);
-        req.config.endpoints[EModelEndpoint.agents].pullRequests = { enabled: true };
+        req.config.endpoints[EModelEndpoint.agents].pullRequests = { allowAllRepositories: true };
         req.resolvedConversation = {
           conversationId: 'resolved-convo',
           codeWorkspaces: [{ environmentId: 'personal-machine', workspaceId: 'project-a' }],

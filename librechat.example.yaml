@@ -924,20 +924,27 @@ endpoints:
   #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
-  #   # (optional) Show a conversation's pull request in the chat header. Off by default. It needs
-  #   # a code worker built from LibreChat-AI/code-interpreter#311 or later that reports its
-  #   # branch, with CODEAPI_BRIDGE_LANE_GIT=true set on the Code API; without both, every chat
-  #   # simply shows no pull request. It also needs a GitHub token held on the server. Use a
-  #   # fine-grained token limited to the repositories involved, with read-only "Pull requests",
-  #   # "Checks" and "Contents" permissions. Without "Checks" every matched pull request fails to
-  #   # load, and without "Contents" a chat whose branch has moved on since its last command does.
+  #   # (optional) Show a conversation's pull request in the chat header and the sidebar. It is on
+  #   # as soon as the server has a GitHub token and a repository scope, with no switch needed:
+  #   # the token is `token` below, else the first of GITHUB_PULL_REQUEST_TOKEN, GITHUB_TOKEN and
+  #   # GH_TOKEN that is set, and the scope is `allowedRepositories` or `allowAllRepositories`.
+  #   # Without either, every chat simply shows no pull request. It also needs a code worker built
+  #   # from LibreChat-AI/code-interpreter#311 or later that reports its branch, with
+  #   # CODEAPI_BRIDGE_LANE_GIT=true set on the Code API. Use a fine-grained token limited to the
+  #   # repositories involved, with read-only "Pull requests", "Checks" and "Contents" permissions.
+  #   # Without "Checks" every matched pull request fails to load, and without "Contents" a chat
+  #   # whose branch has moved on since its last command does.
   #   pullRequests:
-  #     enabled: false
-  #     # Environment variable reference only, never the token itself.
+  #     enabled: true # set false to turn the feature off
+  #     # Environment variable reference only, never the token itself. Optional, see above.
   #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
-  #     # Repositories the token may be used for, as owner/name or owner/*. Required: a worker
-  #     # reports its own repository, and only these are ever looked up with the server's token.
+  #     # Repositories the token may be used for, as owner/name or owner/*. A worker reports its
+  #     # own repository, and only these are ever looked up with the server's token.
   #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Or look up every repository a worker reports, limited only by what the token can read.
+  #     # Off by default: any user could then point the server's token at any repository it can
+  #     # see, so use a read-only token scoped to the repositories you are willing to show.
+  #     allowAllRepositories: false
   #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
   #     cacheTtlSeconds: 30
   #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many

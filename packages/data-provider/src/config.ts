@@ -1859,17 +1859,25 @@ export const agentsEndpointSchema = baseEndpointSchema
         })
         .optional(),
       /** Header pull request chip: finds the pull request for the branch a conversation's code
-       *  workspace reports, using a server-held GitHub token. Off unless an administrator opts in. */
+       *  workspace reports, using a server-held GitHub token. On by default once a token is found
+       *  (`token`, else `GITHUB_PULL_REQUEST_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`) and a repository
+       *  scope is set; `enabled: false` turns it off. */
       pullRequests: z
         .object({
-          enabled: z.boolean().optional().default(false),
+          enabled: z.boolean().optional(),
           /** Environment variable reference holding a read-only GitHub token, e.g.
-           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. */
+           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. Optional: without it the first
+           *  of `GITHUB_PULL_REQUEST_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` that is set is used. */
           token: pullRequestTokenReferenceSchema.optional(),
           /** Repositories the token may be used for, as `owner/name` or `owner/*`. A worker reports
            *  its own repository, so without this list a user could point the server's token at any
            *  repository it can read. */
           allowedRepositories: z.array(pullRequestRepositorySchema).max(256).optional(),
+          /** Look up every repository a worker reports, limited only by what the token can read.
+           *  Off by default: a worker names its own repository, so with this on any user can point
+           *  the server's token at any repository it can see. Use a read-only token scoped to the
+           *  repositories you are willing to show. */
+          allowAllRepositories: z.boolean().optional(),
           /** Seconds a looked-up pull request is reused before GitHub is asked again. */
           cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
           /** Pull requests cached per credential before the oldest is evicted. Size it to the
@@ -1905,22 +1913,6 @@ export const agentsEndpointSchema = baseEndpointSchema
           maxCandidatePages: z.number().int().min(1).max(10).optional().default(1),
           /** Candidates compared with that commit before the search gives up. Each is one request. */
           maxHeadComparisons: z.number().int().min(0).max(20).optional().default(3),
-        })
-        .superRefine((value, ctx) => {
-          if (value.enabled && !value.token) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['token'],
-              message: 'A token reference is required when pull requests are enabled',
-            });
-          }
-          if (value.enabled && (value.allowedRepositories?.length ?? 0) === 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['allowedRepositories'],
-              message: 'At least one allowed repository is required when pull requests are enabled',
-            });
-          }
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are
@@ -3156,7 +3148,8 @@ export type TStartupConfig = {
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
   insightsEnabled?: boolean;
-  /** `endpoints.agents.pullRequests.enabled`; the header does not ask for a pull request without it. */
+  /** Whether pull requests are active (on unless turned off, with a token and a repository scope);
+   *  the header does not ask for a pull request without it. */
   pullRequestsEnabled?: boolean;
   /** Present with `pullRequestsEnabled` once this server has the batch route the sidebar uses. */
   pullRequestsBatchVersion?: typeof PULL_REQUEST_BATCH_VERSION;

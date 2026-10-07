@@ -332,7 +332,7 @@ router.get('/', async function (req, res) {
       langfuseConnectionAccess,
       insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
       /** Lets the client skip the pull request lookup entirely when the feature is off. */
-      ...resolvePullRequestCapabilities(appConfig),
+      ...resolvePullRequestCapabilities(appConfig, process.env),
       compactionEnabled: appConfig?.summarization?.enabled !== false,
       ...(codeEnvironmentDecisionVersion != null ? { codeEnvironmentDecisionVersion } : {}),
       mcpApps: resolveMCPAppsPolicy(
