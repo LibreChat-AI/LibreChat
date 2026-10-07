@@ -103,7 +103,7 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
       aria-labelledby="pending-tool-approval-title"
       aria-live="polite"
     >
-      <div className="popover border-border-light bg-surface-primary-alt pointer-events-auto flex max-h-[70vh] flex-col rounded-2xl border shadow-lg">
+      <div className="popover border-border-light bg-surface-primary-alt rounded-theme-popover pointer-events-auto flex max-h-[70vh] flex-col border shadow-lg">
         <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
           <p id="pending-tool-approval-title" className="text-text-primary text-sm font-medium">
             {localize(reviews.length === 1 ? 'com_ui_review_action' : 'com_ui_review_actions', {
@@ -116,10 +116,10 @@ export const PendingToolApprovalPanel = memo(function PendingToolApprovalPanel({
             render={
               <Button
                 type="button"
-                variant="ghost"
+                variant="quiet"
                 size="icon"
                 aria-label={localize('com_ui_collapse')}
-                className="text-text-secondary size-auto rounded-md p-1"
+                className="size-auto rounded-md p-1"
                 onClick={() => setOpen(false)}
               >
                 <ChevronDown className="size-4" aria-hidden="true" />
@@ -226,12 +226,12 @@ export const PendingToolApprovalButton = memo(function PendingToolApprovalButton
   return (
     <Button
       type="button"
-      variant="ghost"
+      variant="quiet"
       size="sm"
       aria-expanded={open}
       aria-controls="pending-tool-approval-panel"
       onClick={() => setOpen((current) => !current)}
-      className="text-text-secondary h-8 gap-1.5 rounded-full px-2"
+      className="h-8 gap-1.5 rounded-full px-2"
       data-testid="pending-tool-approval-button"
     >
       <ShieldQuestion className="size-4" aria-hidden="true" />

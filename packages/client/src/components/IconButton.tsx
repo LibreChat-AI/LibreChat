@@ -16,7 +16,7 @@ type IconButtonVariantProps = {
     | 'submit'
     | null;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'theme' | null;
-  shape?: 'round' | 'square' | 'control' | 'theme' | null;
+  shape?: 'round' | 'square' | 'control' | 'theme' | 'composer' | null;
 };
 
 const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string = cva(
@@ -57,6 +57,8 @@ const iconButtonVariants: (props?: IconButtonVariantProps & ClassProp) => string
         /** The theme's control corner: softer than `square`, short of the full circle of `round`. */
         control: 'rounded-theme-control',
         theme: 'rounded-theme-control-round',
+        /** The composer's send and stop slot, whose corner a theme sets apart from the other round controls. */
+        composer: 'rounded-theme-composer-action',
       },
     },
     defaultVariants: {

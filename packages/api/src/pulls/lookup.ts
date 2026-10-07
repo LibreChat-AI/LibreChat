@@ -41,6 +41,9 @@ export function createPullRequestLookup({
   /** One bounded partition per credential, so a capacity setting only ever evicts entries
    *  fetched with its own credential. */
   const partitions = new Map<string, Map<string, Entry>>();
+  /** The largest capacity any caller asked for per credential. Principals can share a token yet
+   *  carry different configured sizes, and the smaller must not trim what the larger keeps. */
+  const capacities = new Map<string, number>();
   const inflight = new Map<string, Promise<PullRequestLookupResult>>();
   const cooldowns = new Map<string, number>();
   const rateLimited: PullRequestLookupResult = { ok: false, error: { code: 'RATE_LIMITED' } };
@@ -69,6 +72,7 @@ export function createPullRequestLookup({
       const idle = partitions.keys().next();
       if (idle.done) break;
       partitions.delete(idle.value);
+      capacities.delete(idle.value);
     }
     return partition;
   }
@@ -83,9 +87,11 @@ export function createPullRequestLookup({
   ): void {
     const lifetime = result.ok ? ttlMs : Math.min(ttlMs, FAILURE_TTL_MS);
     const entries = partitionOf(scope, credentials);
+    const bound = Math.max(capacities.get(scope) ?? 0, capacity);
+    capacities.set(scope, bound);
     entries.delete(key);
     entries.set(key, { result, expiresAt: now() + lifetime });
-    while (entries.size > capacity) {
+    while (entries.size > bound) {
       const oldest = entries.keys().next();
       if (oldest.done) break;
       entries.delete(oldest.value);
@@ -107,6 +113,7 @@ export function createPullRequestLookup({
     token,
     ttlMs,
     limits,
+    allowedRepositories,
     cacheMaxEntries,
     cacheMaxCredentials,
   }) => {
@@ -119,6 +126,12 @@ export function createPullRequestLookup({
       limits?.maxCheckRunPages,
       limits?.maxCandidatePullRequests,
       limits?.maxHeadComparisons,
+      limits?.maxCandidatePages,
+      /** Which fork a pull request's checks may be read from depends on this list. */
+      [...(allowedRepositories ?? [])]
+        .map((entry) => entry.toLowerCase())
+        .sort()
+        .join('|'),
     ].join(',');
     const key = `${scope}\0${repo}#${branch}\0${head ?? ''}\0${policy}`;
     const cached = touch(scope)?.get(key);
@@ -134,7 +147,10 @@ export function createPullRequestLookup({
     const run = (async (): Promise<PullRequestLookupResult> => {
       let result: PullRequestLookupResult;
       try {
-        result = { ok: true, value: await source.find({ repo, branch, head, token, limits }) };
+        result = {
+          ok: true,
+          value: await source.find({ repo, branch, head, token, limits, allowedRepositories }),
+        };
       } catch (error) {
         if (!(error instanceof PullRequestSourceError)) {
           logger.warn('[PullRequests] Lookup failed', getSafeErrorMetadata(error));

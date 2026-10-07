@@ -35,7 +35,7 @@
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
  * --list. Check ids: eslint, prettier, imports, eslint-config, json,
- * suppressions, circular-deps, typecheck, config-tests, i18n, depcheck.
+ * suppressions, css-colors, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -107,6 +107,18 @@ const FILTERS = {
     'scripts/static-checks.mts',
     '.github/workflows/static-checks.yml',
     '!**.md',
+  ],
+  // Stylesheets are outside the design lint, which reads JSX.
+  css_colors: [
+    'client/src/*.css',
+    'packages/client/src/*.css',
+    'client/src/**/*.css',
+    'packages/client/src/**/*.css',
+    'packages/client/src/theme/allowlist.md',
+    'scripts/css-colors.test.mts',
+    'scripts/css-colors.mts',
+    'scripts/static-checks.mts',
+    '.github/workflows/static-checks.yml',
   ],
   config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
   i18n: [
@@ -1813,6 +1825,26 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
   };
 }
 
+// --------------------------------------------------------------- CSS colours
+
+function checkCssColors(): CheckOutcome {
+  const script = resolve(ROOT, 'scripts/css-colors.mts');
+  if (!existsSync(script)) {
+    return { ok: false, output: 'scripts/css-colors.mts is missing' };
+  }
+  const scan = runCommand({ command: process.execPath, args: [script] }, []);
+  const scannerTests = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/css-colors.test.mts')] },
+    [],
+  );
+  return {
+    ok: scan.status === 0 && scannerTests.status === 0,
+    output: [scan.output, scannerTests.status === 0 ? '' : scannerTests.output]
+      .filter(Boolean)
+      .join('\n'),
+  };
+}
+
 // --------------------------------------------------------------- circular dependencies
 
 function findCircularDependencies(): CheckOutcome {
@@ -2131,6 +2163,13 @@ const CHECKS: Check[] = [
     tier: 'fast',
     group: 'suppressions',
     run: validateSuppressions,
+  },
+  {
+    id: 'css-colors',
+    title: 'CSS colour literals',
+    tier: 'fast',
+    group: 'css_colors',
+    run: checkCssColors,
   },
   {
     id: 'circular-deps',

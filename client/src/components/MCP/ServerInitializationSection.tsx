@@ -132,7 +132,7 @@ export default function ServerInitializationSection({
       {shouldShowRevoke && (
         <Button
           size="sm"
-          variant="destructive"
+          variant="destructive-soft"
           onClick={() => revokeOAuthForServer?.(serverName)}
           aria-label={localize('com_ui_revoke')}
         >

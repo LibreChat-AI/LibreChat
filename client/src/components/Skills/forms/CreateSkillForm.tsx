@@ -169,7 +169,7 @@ export default function CreateSkillForm({
                     {...field}
                     id="skill-name"
                     type="text"
-                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
+                    className="peer border-border-medium text-text-primary mr-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -219,7 +219,8 @@ export default function CreateSkillForm({
               <div className="flex flex-col">
                 <Label
                   htmlFor="skill-description"
-                  className="text-text-secondary mb-1 text-sm font-medium"
+                  variant="secondary"
+                  className="mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
                   <span className="text-text-destructive ml-0.5">*</span>
@@ -277,7 +278,7 @@ export default function CreateSkillForm({
               type="submit"
               disabled={createDisabled}
               aria-disabled={createDisabled || undefined}
-              className={cn('w-full sm:w-auto', createDisabled && 'opacity-50')}
+              className="w-full sm:w-auto"
             >
               {localize('com_ui_skill_create_title')}
             </Button>

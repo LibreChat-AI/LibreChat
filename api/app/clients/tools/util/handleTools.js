@@ -29,8 +29,8 @@ const {
   buildWebSearchDynamicContext,
   codeExecutionAuthHeaders,
   getCodeFileLocation,
-  resolveCodeExecutionContext,
-  resolveCodeExecutionWorkspaceSelections,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
@@ -386,30 +386,20 @@ const loadTools = async ({
 
     if (tool === Tools.execute_code) {
       requestedTools[tool] = async () => {
-        const statefulSessions =
-          agent?.stateful_code_sessions === true &&
-          (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions));
         const codeExecutionContext =
           options.codeExecutionContext ??
-          resolveCodeExecutionContext({
-            statefulSessions,
-            environment: agent?.stateful_code_environment,
-            environmentId: agent?.code_environment_id,
-            environmentIds: agent?.code_environment_ids,
-            allowEnvironmentSelection:
-              options.req?.config?.endpoints?.agents?.statefulCodeSessions
-                ?.allowEnvironmentSelection,
-            workspaceSelections: resolveCodeExecutionWorkspaceSelections({
-              conversation: options.req?.resolvedConversation,
-              request: options.req?.body,
+          resolveAgentCodeExecution(
+            withRequestCodeInputs({
+              req: options.req ?? {},
+              agent,
+              codeExecutionAvailable: true,
+              statefulSessionsAvailable:
+                agent?.stateful_code_sessions === true &&
+                (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions)),
+              userId: user,
+              conversationId: options.req?.body?.conversationId,
             }),
-            inheritedEnvironments: options.req?.codeWorkspaceInheritance,
-            environments:
-              options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-            userId: user,
-            agentId: agent?.id,
-            conversationId: options.req?.body?.conversationId,
-          });
+          ).context;
         const { files, toolContext } = await primeCodeFiles({
           ...options,
           signal,

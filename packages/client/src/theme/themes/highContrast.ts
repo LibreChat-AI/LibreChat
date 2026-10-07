@@ -99,6 +99,9 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #ffffff
   'rgb-surface-code': '255 255 255', // #ffffff, matching surface-primary-alt
   'rgb-surface-code-body': '255 255 255', // #ffffff, matching surface-chat
+  'rgb-surface-code-inline': '212 212 212', // #d4d4d4, matching surface-active-alt
+  'rgb-prose-bullet': '0 0 0', // #000000
+  'rgb-prose-quote-bar': '0 0 0', // #000000
   'rgb-surface-qr': '255 255 255', // #ffffff
   'rgb-surface-inverted': '0 0 0', // #000000
   'rgb-surface-inverted-hover': '51 51 51', // #333333
@@ -296,6 +299,9 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-surface-chat': '0 0 0', // #000000
   'rgb-surface-code': '0 0 0', // #000000, matching presentation
   'rgb-surface-code-body': '0 0 0', // #000000, matching surface-primary-alt
+  'rgb-surface-code-inline': '87 87 87', // #575757, matching surface-hover-alt
+  'rgb-prose-bullet': '255 255 255', // #ffffff
+  'rgb-prose-quote-bar': '255 255 255', // #ffffff
   'rgb-surface-qr': '255 255 255', // #ffffff, so the code stays scannable
   'rgb-surface-inverted': '255 255 255', // #ffffff
   'rgb-surface-inverted-hover': '212 212 212', // #d4d4d4

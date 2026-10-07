@@ -24,6 +24,7 @@ const {
   resolveCodeEnvironmentTransitionVersion,
   getPromptCategoriesStartupConfig,
   loadConversationListLimits,
+  resolvePullRequestCapabilities,
 } = require('@librechat/api');
 const {
   DEFAULT_MCP_APP_CSP_LIMITS,
@@ -332,6 +333,8 @@ router.get('/', async function (req, res) {
       langfuseFanoutEnabled,
       langfuseConnectionAccess,
       insightsEnabled: isEnabled(process.env.ENABLE_INSIGHTS),
+      /** Lets the client skip the pull request lookup entirely when the feature is off. */
+      ...resolvePullRequestCapabilities(appConfig),
       compactionEnabled: appConfig?.summarization?.enabled !== false,
       ...(codeEnvironmentDecisionVersion != null ? { codeEnvironmentDecisionVersion } : {}),
       mcpApps: resolveMCPAppsPolicy(

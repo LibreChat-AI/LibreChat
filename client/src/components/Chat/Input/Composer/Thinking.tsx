@@ -232,7 +232,7 @@ function ThinkingControl({
         aria-label={localize('com_ui_composer_thinking_value', { 0: display })}
         /* `border-light` resolves to the same value as `surface-tertiary`, so
            the edge was invisible against the popup's own background. */
-        className="animate-composer-popover border-border-medium bg-surface-tertiary z-50 rounded-2xl border shadow-lg outline-hidden"
+        className="animate-composer-popover border-border-medium bg-surface-tertiary rounded-theme-popover z-50 border shadow-lg outline-hidden"
       >
         <Effort setting={setting} conversation={conversation} value={value} onChange={onChange} />
       </Ariakit.Popover>

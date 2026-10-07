@@ -117,7 +117,7 @@ test.describe('mid-run steering and queuing', () => {
    * SURVIVES inside the response after run end, with no degradation to a
    * queued follow-up turn.
    */
-  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary', async ({
+  test('steers mid-run: anchored bubble appears immediately and applies at the next tool boundary @scenario:steer-renders-in-thread', async ({
     page,
   }) => {
     test.setTimeout(150000);
@@ -793,42 +793,24 @@ test.describe('mid-run steering and queuing', () => {
     await expect(queuedRows(page)).toHaveCount(0);
   });
 
-  test('Stop preserves an empty response parent for the next turn', async ({ page }) => {
-    test.setTimeout(120000);
-    const label = uniqueLabel('stop-empty');
-    const emptyRunPrompt = `E2E_EMPTY_SLOW_REPLY:${label}`;
-    const interruptText = `Interrupt empty follow-up ${label}`;
-
+  test('Stop before the first token saves the follow-up from the new composer', async ({
+    page,
+  }) => {
+    const label = uniqueLabel('stop-before-token');
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
-    await establishConversation(page, `interrupt-empty-setup-${label}`);
 
-    const conversationId = new URL(page.url()).pathname.split('/').pop();
-    expect(conversationId).toBeTruthy();
-    const accessToken = await getAccessToken(page);
-    const messagesPath = `/api/messages/${encodeURIComponent(conversationId as string)}`;
+    let releaseStatus = () => {};
+    const statusGate = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    await page.route('**/api/agents/chat/status/**', async (route) => {
+      const response = await route.fetch();
+      await statusGate;
+      await route.fulfill({ response });
+    });
 
-    const run = await sendMessage(page, emptyRunPrompt);
-    expect(run.ok()).toBeTruthy();
-
-    /** BaseClient starts its user-row write only after `onStart` emitted
-     * `created`. Waiting for that row proves the server is in the exact
-     * created-but-still-whitespace state, without relying on a sleep. */
-    await expect
-      .poll(
-        async () => {
-          const persisted = await requestJson<PersistedMessage[]>(page, {
-            path: messagesPath,
-            token: accessToken,
-          });
-          return persisted.some(
-            (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
-          );
-        },
-        { timeout: 30000 },
-      )
-      .toBe(true);
-
+    await sendMessage(page, `E2E_PRE_TOKEN_REPLY:${label}`);
     const [abortResponse] = await Promise.all([
       page.waitForResponse(
         (response) =>
@@ -837,29 +819,125 @@ test.describe('mid-run steering and queuing', () => {
       ),
       page.getByTestId('stop-generation-button').click(),
     ]);
-    expect(abortResponse.ok()).toBeTruthy();
-    await expect(page.getByTestId('stop-generation-button')).toHaveCount(0);
-    await sendMessage(page, interruptText);
-    await expect(messageTurns(page)).toHaveCount(6);
-    await expect(messageTurns(page).nth(5)).toContainText(MOCK_REPLY_TEXT);
+    try {
+      expect(abortResponse.ok()).toBeTruthy();
+      await expect(page.getByText('Generating a reply…', { exact: true })).toBeVisible();
+    } finally {
+      releaseStatus();
+    }
+    await expect(page.getByText('Generating a reply…', { exact: true })).toHaveCount(0);
+    const stoppedTurns = await messageTurns(page).count();
+    expect([0, 2]).toContain(stoppedTurns);
+    await expect(page).toHaveURL(stoppedTurns === 0 ? /\/c\/new$/ : /\/c\/[0-9a-fA-F-]{36}$/);
 
+    const followUp = replyPrompt(`after-${label}`);
+    const followUpStart = await sendMessage(page, followUp);
+    const { streamId: conversationId } = (await followUpStart.json()) as { streamId: string };
+    await expect(messagesView(page).getByText(replyText(`after-${label}`))).toBeVisible();
     const persisted = await requestJson<PersistedMessage[]>(page, {
-      path: messagesPath,
-      token: accessToken,
+      path: `/api/messages/${encodeURIComponent(conversationId)}`,
+      token: await getAccessToken(page),
     });
-    const interruptedUser = persisted.find(
-      (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
+    expect(persisted.some((message) => message.isCreatedByUser && message.text === followUp)).toBe(
+      true,
     );
-    expect(interruptedUser).toBeTruthy();
-    expect(
-      persisted.find(
-        (message) =>
-          message.isCreatedByUser === false &&
-          message.parentMessageId === interruptedUser?.messageId,
-      ),
-    ).toMatchObject({ content: [], unfinished: true });
-    await expect(queuedRows(page)).toHaveCount(0);
+    await page.reload();
+    await expect(messageTurns(page)).toHaveCount(stoppedTurns + 2);
+    await expect(messagesView(page).getByText(replyText(`after-${label}`))).toBeVisible();
   });
+
+  for (const startingPoint of ['new', 'existing'] as const) {
+    test(`Stop preserves an empty response parent in a ${startingPoint} chat`, async ({ page }) => {
+      test.setTimeout(120000);
+      const label = uniqueLabel('stop-empty');
+      const emptyRunPrompt = `E2E_EMPTY_SLOW_REPLY:${label}`;
+      const interruptText = `Interrupt empty follow-up ${label}`;
+
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      if (startingPoint === 'existing') {
+        await establishConversation(page, `interrupt-empty-setup-${label}`);
+      }
+
+      const run = await sendMessage(page, emptyRunPrompt);
+      expect(run.ok()).toBeTruthy();
+      const { streamId: conversationId } = (await run.json()) as { streamId: string };
+      const accessToken = await getAccessToken(page);
+      const messagesPath = `/api/messages/${encodeURIComponent(conversationId)}`;
+
+      /** BaseClient starts its user-row write only after `onStart` emitted
+       * `created`. Waiting for that row proves the server is in the exact
+       * created-but-still-whitespace state, without relying on a sleep. */
+      await expect
+        .poll(
+          async () => {
+            const persisted = await requestJson<PersistedMessage[]>(page, {
+              path: messagesPath,
+              token: accessToken,
+            });
+            return persisted.some(
+              (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
+            );
+          },
+          { timeout: 30000 },
+        )
+        .toBe(true);
+
+      let releaseStatus = () => {};
+      const statusGate = new Promise<void>((resolve) => {
+        releaseStatus = resolve;
+      });
+      await page.route('**/api/agents/chat/status/**', async (route) => {
+        const response = await route.fetch();
+        await statusGate;
+        await route.fulfill({ response });
+      });
+
+      const [abortResponse] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.request().method() === 'POST' &&
+            new URL(response.url()).pathname === '/api/agents/chat/abort',
+        ),
+        page.getByTestId('stop-generation-button').click(),
+      ]);
+      try {
+        expect(abortResponse.ok()).toBeTruthy();
+        await expect(page.getByText('Generating a reply…', { exact: true })).toBeVisible();
+      } finally {
+        releaseStatus();
+      }
+      await expect(page.getByText('Generating a reply…', { exact: true })).toHaveCount(0);
+      await sendMessage(page, interruptText);
+      const expectedTurns = startingPoint === 'existing' ? 6 : 4;
+      await expect(messageTurns(page)).toHaveCount(expectedTurns);
+      await expect(messageTurns(page).last()).toContainText(MOCK_REPLY_TEXT);
+
+      const persisted = await requestJson<PersistedMessage[]>(page, {
+        path: messagesPath,
+        token: accessToken,
+      });
+      const interruptedUser = persisted.find(
+        (message) => message.isCreatedByUser === true && message.text === emptyRunPrompt,
+      );
+      expect(interruptedUser).toBeTruthy();
+      expect(
+        persisted.find(
+          (message) =>
+            message.isCreatedByUser === false &&
+            message.parentMessageId === interruptedUser?.messageId,
+        ),
+      ).toMatchObject({ content: [], unfinished: true });
+      const followUp = persisted.find(
+        (message) => message.isCreatedByUser === true && message.text === interruptText,
+      );
+      expect(followUp).toBeTruthy();
+      await page.reload();
+      await expect(messageTurns(page)).toHaveCount(expectedTurns);
+      await expect(messageTurns(page).last()).toContainText(MOCK_REPLY_TEXT);
+      await expect(queuedRows(page)).toHaveCount(0);
+    });
+  }
 
   /** The other interrupt chord uses the same no-tool-boundary continuation. */
   test('interrupt & steer (Cmd/Ctrl+Shift+Enter) seals mid-stream and injects with no tool boundary', async ({

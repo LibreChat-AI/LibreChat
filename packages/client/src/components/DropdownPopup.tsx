@@ -36,7 +36,10 @@ type MenuProps = Omit<
   DropdownProps,
   'trigger' | 'isOpen' | 'setIsOpen' | 'focusLoop' | 'mountByState'
 > &
-  Ariakit.MenuProps;
+  Ariakit.MenuProps & {
+    /** Closes the outermost menu, so a pick made inside a submenu does not leave its parent open. */
+    hideAll?: () => void;
+  };
 
 const DropdownPopup: React.FC<DropdownProps> = ({
   trigger,
@@ -53,18 +56,19 @@ const DropdownPopup: React.FC<DropdownProps> = ({
       menu.setAutoFocusOnShow(true);
     }
   }, [isOpen, autoFocusOnShow, menu]);
+  const hideAll = () => menu.hide();
   if (mountByState) {
     return (
       <Ariakit.MenuProvider store={menu}>
         {trigger}
-        {isOpen && <Menu {...props} autoFocusOnShow={autoFocusOnShow} />}
+        {isOpen && <Menu {...props} hideAll={hideAll} autoFocusOnShow={autoFocusOnShow} />}
       </Ariakit.MenuProvider>
     );
   }
   return (
     <Ariakit.MenuProvider store={menu}>
       {trigger}
-      <Menu {...props} autoFocusOnShow={autoFocusOnShow} />
+      <Menu {...props} hideAll={hideAll} autoFocusOnShow={autoFocusOnShow} />
     </Ariakit.MenuProvider>
   );
 };
@@ -84,12 +88,22 @@ const Menu: React.FC<MenuProps> = ({
   finalFocus,
   unmountOnHide,
   preserveTabOrder,
+  hideAll,
   style,
   ...props
 }) => {
-  const menuStore = Ariakit.useMenuStore();
   const menu = Ariakit.useMenuContext();
   const zIndex = usePopoverZIndex();
+  /** An item with an id is keyed by it, so a focused row stays the same element when items are added
+   *  before it. A missing or repeated id falls back to the position, which cannot collide. */
+  const seenIds = new Set<string>();
+  const itemKey = (item: t.MenuItemProps, index: number) => {
+    if (item.id != null && !seenIds.has(item.id)) {
+      seenIds.add(item.id);
+      return `${keyPrefix ?? ''}${item.id}`;
+    }
+    return `${keyPrefix ?? ''}${index}-${item.id ?? ''}`;
+  };
   return (
     <Ariakit.Menu
       id={menuId}
@@ -124,49 +138,21 @@ const Menu: React.FC<MenuProps> = ({
           }
           if (subItems && subItems.length > 0) {
             return (
-              <Ariakit.MenuProvider
-                store={menuStore}
-                key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}-provider`}
-              >
-                <Ariakit.MenuButton
-                  className={cn(
-                    'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
-                    disabledInkClasses,
-                    itemClassName,
-                  )}
-                  disabled={item.disabled}
-                  id={item.id}
-                  render={item.render}
-                  ref={item.ref}
-                  // hideOnClick={item.hideOnClick}
-                >
-                  <span className="flex items-center gap-2">
-                    {item.icon != null && (
-                      <span
-                        className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
-                        aria-hidden="true"
-                      >
-                        {item.icon}
-                      </span>
-                    )}
-                    {item.label}
-                  </span>
-                  <Ariakit.MenuButtonArrow className="stroke-1 text-base opacity-75" />
-                </Ariakit.MenuButton>
-                <Menu
-                  items={subItems}
-                  menuId={`${menuId}-${index}`}
-                  key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
-                  gutter={12}
-                  portal={true}
-                />
-              </Ariakit.MenuProvider>
+              <SubMenuItem
+                key={itemKey(item, index)}
+                item={item}
+                subItems={subItems}
+                menuId={`${menuId}-${index}`}
+                hideAll={hideAll ?? (() => menu?.hide())}
+                iconClassName={iconClassName}
+                itemClassName={itemClassName}
+              />
             );
           }
 
           return (
             <Ariakit.MenuItem
-              key={`${keyPrefix ?? ''}${index}-${item.id ?? ''}`}
+              key={itemKey(item, index)}
               id={item.id}
               className={cn(
                 'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
@@ -182,13 +168,19 @@ const Menu: React.FC<MenuProps> = ({
               aria-controls={item.ariaControls}
               aria-label={item.ariaLabel}
               aria-checked={item.ariaChecked}
-              {...(item.ariaChecked !== undefined ? { role: 'menuitemcheckbox' } : {})}
+              {...(item.ariaChecked !== undefined
+                ? { role: item.ariaRole ?? 'menuitemcheckbox' }
+                : {})}
               onClick={(event) => {
                 event.preventDefault();
                 if (item.onClick) {
                   item.onClick(event);
                 }
                 if (item.hideOnClick === false) {
+                  return;
+                }
+                if (hideAll) {
+                  hideAll();
                   return;
                 }
                 menu?.hide();
@@ -212,6 +204,62 @@ const Menu: React.FC<MenuProps> = ({
           );
         })}
     </Ariakit.Menu>
+  );
+};
+
+/** Owns its store: sharing one across siblings would open every submenu of a menu together. */
+const SubMenuItem: React.FC<{
+  item: t.MenuItemProps;
+  subItems: t.MenuItemProps[];
+  menuId: string;
+  hideAll: () => void;
+  iconClassName?: string;
+  itemClassName?: string;
+}> = ({ item, subItems, menuId, hideAll, iconClassName, itemClassName }) => {
+  const store = Ariakit.useMenuStore();
+  /** The parent's `hideAll` closes only its own store: a submenu that stays mounted would be left
+   *  open in its portal, so this store is closed with it. */
+  const hideSubmenuAndParents = () => {
+    store.hide();
+    hideAll();
+  };
+  return (
+    <Ariakit.MenuProvider store={store}>
+      {/* A submenu trigger is a MenuItem and a MenuButton in one element: as a bare
+          MenuButton it is not part of the parent menu's arrow-key order. */}
+      <Ariakit.MenuItem
+        className={cn(
+          'group text-text-primary hover:bg-surface-hover focus:bg-surface-hover flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-3.5 text-sm outline-hidden md:px-2.5 md:py-2',
+          disabledInkClasses,
+          itemClassName,
+        )}
+        disabled={item.disabled}
+        id={item.id}
+        ref={item.ref}
+        render={<Ariakit.MenuButton render={item.render} />}
+      >
+        <span className="flex items-center gap-2">
+          {item.icon != null && (
+            <span
+              className={cn('size-theme-icon mr-2 [&>svg]:size-full', iconClassName)}
+              aria-hidden="true"
+            >
+              {item.icon}
+            </span>
+          )}
+          {item.label}
+        </span>
+        <Ariakit.MenuButtonArrow className="stroke-1 text-base opacity-75" />
+      </Ariakit.MenuItem>
+      <Menu
+        items={subItems}
+        menuId={menuId}
+        gutter={20}
+        portal={true}
+        hideAll={hideSubmenuAndParents}
+        style={{ maxHeight: 'min(24rem, var(--popover-available-height, 24rem))' }}
+      />
+    </Ariakit.MenuProvider>
   );
 };
 

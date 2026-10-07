@@ -370,7 +370,7 @@ export default function Viewer({
     if (recordsQuery.isLoading) {
       return (
         <div role="status" className="flex flex-1 items-center justify-center gap-2">
-          <Spinner className="text-text-secondary size-5" />
+          <Spinner tone="secondary" className="size-5" />
           <span className="sr-only">{localize('com_ui_trace_loading')}</span>
         </div>
       );

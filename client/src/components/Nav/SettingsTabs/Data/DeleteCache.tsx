@@ -47,7 +47,7 @@ export const DeleteCache = ({ disabled = false }: { disabled?: boolean }) => {
       <OGDialog open={open} onOpenChange={setOpen}>
         <OGDialogTrigger asChild>
           <Button
-            variant="destructive"
+            variant="destructive-soft"
             onClick={() => setOpen(true)}
             disabled={disabled || isCacheEmpty}
             aria-labelledby="delete-cache-label"

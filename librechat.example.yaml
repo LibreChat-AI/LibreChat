@@ -267,6 +267,8 @@ interface:
     create: true
     share: false
     public: false
+  # Allow Lia, the welcome screen mascot. Users still opt in from Settings (default: true).
+  mascot: true
   # Scheduled chats are experimental and disabled unless explicitly enabled.
   # A deployment with Redis-backed resumable streams can run this on every replica.
   # A single-process deployment without Redis must also set
@@ -959,11 +961,17 @@ endpoints:
   #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
   #     # past it. When principals configure different values, the largest applies.
   #     cacheMaxCredentials: 256
+  #     # Lookups one sidebar request runs at once (1 to 16); each is a few GitHub requests.
+  #     maxConcurrentLookups: 4
+  #     # Seconds one sidebar request may stay open in total (1 to 120); entries still waiting then
+  #     # answer with an upstream error and the row shows nothing until the next refresh.
+  #     batchTimeoutSeconds: 20
   #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
   #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
   #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
   #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
   #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxCandidatePages: 1 # pages of those read per state, for branch names reused more often (1 to 10)
   #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.

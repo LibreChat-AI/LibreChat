@@ -9,8 +9,8 @@ jest.mock('@librechat/client', () => ({
   useMediaQuery: () => false,
   useRemScale: () => 1,
   useToastContext: () => ({ showToast: jest.fn() }),
-  Spinner: ({ className }: { className?: string }) => (
-    <svg data-testid="status-ring" className={className} />
+  Spinner: ({ className, size }: { className?: string; size?: string | number }) => (
+    <svg data-testid="status-ring" className={className} data-size={size} />
   ),
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
@@ -109,6 +109,21 @@ describe('Conversation row status', () => {
     expect(screen.getByTestId('convo-options')).toBeInTheDocument();
     expect(screen.getAllByTestId('status-ring')).toHaveLength(1);
     expect(rowButton()).toContainElement(ring);
+  });
+
+  it('sizes the ring in rem so it follows the avatar box at any UI scale', () => {
+    renderRow({ isGenerating: true });
+
+    expect(screen.getByTestId('status-ring').getAttribute('class')).toContain('size-[2.125rem]');
+  });
+
+  it('offsets the ring in rem so it stays centered on the avatar at any UI scale', () => {
+    renderRow({ isGenerating: true });
+
+    const className = screen.getByTestId('status-ring').getAttribute('class') ?? '';
+    expect(className).toContain('-top-[0.4375rem]');
+    expect(className).toContain('-left-[0.4375rem]');
+    expect(className).not.toMatch(/\[\d+px\]/);
   });
 
   it('marks an unseen reply on the avatar and in the title weight', () => {

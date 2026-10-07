@@ -164,7 +164,7 @@ function ExpandedPanel({
             aria-label={localize(toggleLabel)}
             aria-expanded={expanded}
             aria-keyshortcuts={toggleSidebarAriaKey}
-            className="h-9 w-9 rounded-lg"
+            className="h-9 w-9"
             onClick={toggleClick}
           >
             <Sidebar aria-hidden="true" className="text-text-primary h-5 w-5" />
