@@ -67,7 +67,9 @@ const PromptTextCard = ({ mainText }: PromptTextCardProps) => {
               }
               aria-live="polite"
             >
-              <MorphIcon icon={isCopied ? Check : Copy} className="text-text-secondary size-4" />
+              <span className="text-text-secondary flex">
+                <MorphIcon icon={isCopied ? Check : Copy} className="size-4" />
+              </span>
             </Button>
           }
         />

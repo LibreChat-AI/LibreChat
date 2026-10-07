@@ -113,7 +113,6 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
                       onChange={setOtpToken}
                       maxLength={6}
                       pattern={REGEXP_ONLY_DIGITS}
-                      className="gap-2"
                     >
                       <>
                         <InputOTPGroup>
