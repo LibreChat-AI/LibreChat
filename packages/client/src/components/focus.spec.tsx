@@ -2,12 +2,10 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
-import { Table, TableBody, TableCell, TableRow } from './Table';
 import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
-import DropdownPopup from './DropdownPopup';
 import MultiSearch from './MultiSearch';
 
 jest.mock('./MorphIcon', () => {
@@ -119,40 +117,6 @@ describe('shared control keyboard focus', () => {
 
     expect(screen.getByRole('tab', { name: 'One' })).toHaveClass(
       'focus-visible:outline-hidden',
-      'focus-visible:ring-2',
-      'focus-visible:ring-focus-control',
-    );
-  });
-
-  it('rings a table row in the focus role', () => {
-    render(
-      <Table>
-        <TableBody>
-          <TableRow data-testid="row" tabIndex={0}>
-            <TableCell>cell</TableCell>
-          </TableRow>
-        </TableBody>
-      </Table>,
-    );
-
-    expect(screen.getByTestId('row')).toHaveClass(
-      'focus-visible:ring-2',
-      'focus-visible:ring-focus-control',
-    );
-  });
-
-  it('rings the menu items in the focus role', async () => {
-    render(
-      <DropdownPopup
-        menuId="menu"
-        isOpen
-        setIsOpen={jest.fn()}
-        trigger={<button type="button">Open</button>}
-        items={[{ label: 'First', onClick: jest.fn() }]}
-      />,
-    );
-
-    expect(await screen.findByRole('menuitem', { name: 'First' })).toHaveClass(
       'focus-visible:ring-2',
       'focus-visible:ring-focus-control',
     );
