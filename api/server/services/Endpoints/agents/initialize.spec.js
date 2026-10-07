@@ -2400,6 +2400,119 @@ describe('initializeClient — subagent loading', () => {
     }
   });
 
+  it('forwards the initializer code opt-out through the tool loader', async () => {
+    const codeExecutionContext = {
+      baseUrl: 'https://api.librechat.ai/v1',
+      codeSessionKey: 'execute_code',
+      executionProfile: 'default',
+      statefulSessions: false,
+    };
+    mockInitializeAgent.mockImplementationOnce(async (params) => {
+      await params.loadTools({
+        agentId: PRIMARY_ID,
+        tools: ['execute_code'],
+        codeExecutionContext,
+        attachedEnvironmentOptOut: true,
+      });
+      return makePrimaryConfig({});
+    });
+
+    await initializeClient({
+      req: makeSubagentReq(),
+      res: {},
+      signal: new AbortController().signal,
+      endpointOption: makeEndpointOption(),
+    });
+
+    expect(loadAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({ codeExecutionContext, attachedEnvironmentOptOut: true }),
+    );
+  });
+
+  it('keeps a lazy subagent off its attached machine in a conversation that chose no workspace', async () => {
+    const subAgent = await createAgent({
+      id: SUBAGENT_ID,
+      name: 'Attached Default Subagent',
+      provider: 'openai',
+      model: 'gpt-4',
+      author: new mongoose.Types.ObjectId(),
+      tools: ['execute_code'],
+      stateful_code_sessions: true,
+      stateful_code_environment: 'agent-user',
+      code_environment_id: 'attached-vm',
+      code_environment_ids: ['other-vm'],
+    });
+    await grantView(subAgent);
+    mockInitializeAgent.mockResolvedValue(
+      makePrimaryConfig({
+        subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+      }),
+    );
+    const attachedVm = (id) => ({
+      id,
+      name: id,
+      type: 'attached',
+      owner: 'deployment',
+      workerId: `${id}-worker`,
+      baseURL: 'https://bridge.example.com/v1/',
+    });
+    const req = makeSubagentReq();
+    req.body.codeEnvironmentMode = 'without_attached';
+    req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
+    req.config.endpoints.agents.statefulCodeSessions = {
+      allowedEnvironments: ['agent-user'],
+      allowEnvironmentSelection: true,
+      environments: [attachedVm('attached-vm'), attachedVm('other-vm')],
+    };
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+    try {
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+
+      const descriptor = agentClientArgs.agent.lazySubagentConfigs[0];
+      expect(descriptor).toEqual(
+        expect.objectContaining({
+          codeEnvAvailable: false,
+          statefulCodeSessions: false,
+          codeExecutionContext: undefined,
+          subagentHostArgs: undefined,
+          codeExecutionChoices: undefined,
+        }),
+      );
+      expect(descriptor.description ?? '').not.toContain('Unavailable in this conversation');
+
+      const initCalls = mockInitializeAgent.mock.calls.length;
+      await expect(
+        descriptor.resolve({
+          signal: new AbortController().signal,
+          hostArgs: { machine: 'other-vm' },
+        }),
+      ).rejects.toThrow(/rejected/);
+      expect(mockInitializeAgent).toHaveBeenCalledTimes(initCalls);
+      mockInitializeAgent.mockResolvedValueOnce(makeSubagentConfig(SUBAGENT_ID));
+      await descriptor.resolve({ signal: new AbortController().signal });
+
+      const childInit = mockInitializeAgent.mock.calls.at(-1)[0];
+      expect(childInit.agent.code_environment_id).toBe('attached-vm');
+      expect(childInit.requestBody).toEqual(
+        expect.objectContaining({ codeEnvironmentMode: 'without_attached' }),
+      );
+      expect(
+        mockInitializeAgent.mock.calls.some(
+          ([params]) => params.agent?.code_environment_id === 'other-vm',
+        ),
+      ).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it.each([
     [true, 'request', false],
     [false, 'request', false],

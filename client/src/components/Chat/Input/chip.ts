@@ -17,7 +17,7 @@ export const infoChipClasses = cn(
 /** The popover the rail's chips open. Menus open above their chip, so they rise a few pixels
  *  from its edge while fading and scaling in, and leave on the faster theme step. */
 export const chipMenuClasses = cn(
-  'z-50 flex max-w-[min(340px,calc(100vw-2rem))] min-w-[240px] flex-col rounded-2xl',
+  'z-50 flex max-w-[min(340px,calc(100vw-2rem))] min-w-[240px] flex-col rounded-theme-popover',
   'border-border-menu bg-surface-menu max-h-[var(--popover-available-height)] overflow-y-auto border p-1 shadow-lg',
   'origin-bottom-left translate-y-1 scale-95 opacity-0',
   'transition duration-theme-normal ease-out motion-reduce:transition-none',

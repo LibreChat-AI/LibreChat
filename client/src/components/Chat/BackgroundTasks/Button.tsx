@@ -129,7 +129,7 @@ function BackgroundTasksButton({
         finalFocus={disclosureRef}
         aria-label={title}
         className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col rounded-xl border shadow-lg focus:outline-none',
+          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none',
           wide ? 'w-[36rem]' : 'w-80',
         )}
       >

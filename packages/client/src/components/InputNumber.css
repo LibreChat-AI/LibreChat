@@ -1,0 +1,11 @@
+/* The rc-input-number field renders its input inside a wrapper the `option` variant classes, so
+   the nested input is reset here, where the component ships, rather than in the app stylesheet. */
+.reset-rc-number-input input {
+  width: 100%;
+  border: none !important;
+  background: transparent;
+}
+
+.reset-rc-number-input-text-right input {
+  text-align: right;
+}

@@ -137,13 +137,8 @@ export default function Settings({
                 min={0}
                 step={0.01}
                 controls={false}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
-                  ),
-                )}
+                variant="option"
+                className="w-12"
               />
             </div>
             <Slider
@@ -178,13 +173,8 @@ export default function Settings({
                 min={0}
                 step={0.01}
                 controls={false}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
-                  ),
-                )}
+                variant="option"
+                className="w-12"
               />
             </div>
             <Slider
@@ -220,13 +210,8 @@ export default function Settings({
                 min={-2}
                 step={0.01}
                 controls={false}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
-                  ),
-                )}
+                variant="option"
+                className="w-12"
               />
             </div>
             <Slider
@@ -262,13 +247,8 @@ export default function Settings({
                 min={-2}
                 step={0.01}
                 controls={false}
-                className={cn(
-                  defaultTextProps,
-                  cn(
-                    optionText,
-                    'reset-rc-number-input reset-rc-number-input-text-right group-hover/temp:border-border-light h-auto w-12 border-0',
-                  ),
-                )}
+                variant="option"
+                className="w-12"
               />
             </div>
             <Slider

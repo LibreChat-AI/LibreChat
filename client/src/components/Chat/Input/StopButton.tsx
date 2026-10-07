@@ -32,7 +32,7 @@ export default memo(function StopButton({
           label={localize('com_nav_stop_generating')}
           variant="submit"
           size="theme"
-          shape="theme"
+          shape="composer"
           data-testid="stop-generation-button"
           hidden={hidden}
           disabled={!canStop}

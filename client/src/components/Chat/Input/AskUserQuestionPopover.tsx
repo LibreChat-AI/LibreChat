@@ -56,7 +56,7 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
     <div className="absolute bottom-full z-10 mb-2 w-full">
       {/* The prompt and answers each scroll within their own caps; this outer cap keeps
           the whole card on screen when both are at their limit on a short viewport. */}
-      <div className="popover border-border-light bg-surface-secondary flex max-h-[70vh] flex-col overflow-y-auto rounded-2xl border shadow-lg [view-transition-name:ask-question]">
+      <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-lg [view-transition-name:ask-question]">
         {/* Kept at full height so the cap above scrolls it rather than clipping its end. */}
         <AskUserQuestions
           actionId={liveAsk.actionId}
@@ -164,7 +164,7 @@ function AskUserQuestionPopoverPanel({
           scroll region: the panel is absolutely positioned, so anything that
           overflows it is unreachable by page scroll. */}
       <div
-        className="popover border-border-light bg-surface-secondary flex max-h-[60vh] flex-col rounded-2xl border p-2 shadow-lg [view-transition-name:ask-question]"
+        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-lg [view-transition-name:ask-question]"
         onKeyDown={handlePopoverKeyDown}
       >
         <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 p-1 pl-2">
@@ -207,7 +207,7 @@ function AskUserQuestionPopoverPanel({
               should still come from the recipe. */}
           <Button
             variant="ghost"
-            className="text-text-secondary hover:text-text-primary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
+            className="text-text-secondary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
             onClick={() => textAreaRef?.current?.focus()}
           >
             {options.length === 0

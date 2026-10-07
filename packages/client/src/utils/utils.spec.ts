@@ -15,4 +15,20 @@ describe('cn', () => {
   ])('lets a caller size replace %s', (role, caller) => {
     expect(cn(role, caller)).toBe(caller);
   });
+
+  it.each(['3xs', '2xs', '1xs', '1sm'])('keeps a color beside text-%s', (step) => {
+    expect(cn('text-text-primary', `text-${step}`)).toBe(`text-text-primary text-${step}`);
+  });
+
+  it('lets a caller size replace an off-scale step', () => {
+    expect(cn('text-2xs', 'text-sm')).toBe('text-sm');
+    expect(cn('text-sm', 'text-1xs')).toBe('text-1xs');
+  });
+
+  it.each(['px-0', 'px-3', 'px-theme-control-x'])(
+    'lets %s replace the Button padding role',
+    (caller) => {
+      expect(cn('px-theme-button-x', caller)).toBe(caller);
+    },
+  );
 });

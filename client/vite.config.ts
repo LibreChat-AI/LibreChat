@@ -8,6 +8,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
+import { injectThemeCacheVersion } from './src/Providers/bootVersion.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -89,6 +90,7 @@ export default defineConfig(({ command }) => ({
         });
       },
     },
+    themeCacheVersion(),
     copyPublicAssets(),
     VitePWA({
       injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
@@ -454,6 +456,18 @@ export default defineConfig(({ command }) => ({
     },
   },
 }));
+
+/**
+ * Writes the deployment-theme cache version into the boot script's check, the same value
+ * `themeCache.ts` stamps on the entries it stores, so a role added to the registry retires
+ * every entry stored before it without anyone remembering to bump a number.
+ */
+export function themeCacheVersion(): Plugin {
+  return {
+    name: 'theme-cache-version',
+    transformIndexHtml: injectThemeCacheVersion,
+  };
+}
 
 interface SourcemapExclude {
   excludeNodeModules?: boolean;

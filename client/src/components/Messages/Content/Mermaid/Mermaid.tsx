@@ -460,7 +460,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
                 variant="ghost"
                 size="sm"
                 onClick={handleRetry}
-                className="text-text-secondary hover:bg-surface-hover h-auto gap-1 rounded px-2 py-1 text-xs"
+                className="text-text-secondary h-auto gap-1 rounded px-2 py-1 text-xs"
               >
                 <RefreshCw className="h-3 w-3" aria-hidden="true" />
                 {localize('com_ui_retry')}

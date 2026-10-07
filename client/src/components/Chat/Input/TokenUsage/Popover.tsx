@@ -181,7 +181,7 @@ export default function UsagePopover({
           }
         }}
         className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-xl border p-3 shadow-lg focus:outline-hidden',
+          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain border p-3 shadow-lg focus:outline-hidden',
           'origin-bottom translate-y-1 scale-95 opacity-0 transition duration-150 ease-out motion-reduce:transition-none',
           'data-[enter]:translate-y-0 data-[enter]:scale-100 data-[enter]:opacity-100',
           'data-[leave]:translate-y-1 data-[leave]:scale-95 data-[leave]:opacity-0',
