@@ -67,6 +67,13 @@ class FakeXHR {
 const message = (data: object | string) =>
   `event: message\ndata: ${typeof data === 'string' ? data : JSON.stringify(data)}\n\n`;
 
+const enrollmentPayload = {
+  code: 'two_factor_enrollment_required',
+  twoFASetupRequired: true,
+  tempToken: 'setup-token',
+};
+const enrollmentBody = JSON.stringify(enrollmentPayload);
+
 const turn = {
   server: '/api/assistants/v2/chat',
   payload: { text: 'Hello', conversationId: null, isContinued: false } as TPayload,
@@ -210,6 +217,41 @@ describe('createSSETransport', () => {
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(xhrs).toHaveLength(2);
     expect(events).toEqual([{ type: 'error', data: undefined }]);
+  });
+
+  it('leaves for setup on an enrollment 403 instead of reporting a stream error', () => {
+    const redirect = jest.spyOn(request, 'redirectIfTwoFactorSetupPayload').mockReturnValue(true);
+    send();
+    current().status = 403;
+    current().write(enrollmentBody);
+
+    expect(redirect).toHaveBeenCalledWith(enrollmentBody);
+    expect(events).toEqual([]);
+  });
+
+  it('reports a 403 that is not an enrollment response', () => {
+    send();
+    current().status = 403;
+    current().write(JSON.stringify({ message: 'Forbidden' }));
+
+    expect(events).toEqual([{ type: 'error', data: { message: 'Forbidden' } }]);
+  });
+
+  it('leaves for setup when the 401 refresh answers with enrollment', async () => {
+    jest.spyOn(request, 'refreshToken').mockResolvedValue(enrollmentPayload as never);
+    const redirect = jest.spyOn(request, 'redirectIfTwoFactorSetupPayload').mockReturnValue(true);
+    const dispatchTokenUpdated = jest
+      .spyOn(request, 'dispatchTokenUpdatedEvent')
+      .mockImplementation(() => undefined);
+    send();
+    current().status = 401;
+    current().write('Unauthorized');
+    await new Promise(process.nextTick);
+
+    expect(redirect).toHaveBeenCalledWith(enrollmentPayload);
+    expect(xhrs).toHaveLength(1);
+    expect(dispatchTokenUpdated).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
   });
 
   it.each([
@@ -493,6 +535,36 @@ describe('createSSETransport().reconnectToStream', () => {
 
     expect(xhrs).toHaveLength(1);
     expect(events).toEqual([{ type: 'error', status: 401, data: undefined }]);
+  });
+
+  it('leaves for setup on an enrollment 403 instead of reporting a failure', () => {
+    const redirect = jest.spyOn(request, 'redirectIfTwoFactorSetupPayload').mockReturnValue(true);
+    attach();
+    current().status = 403;
+    current().write(enrollmentBody);
+
+    expect(redirect).toHaveBeenCalledWith(enrollmentBody);
+    expect(events).toEqual([]);
+  });
+
+  it('reports a 403 that is not an enrollment response with its status', () => {
+    attach();
+    current().status = 403;
+    current().write(JSON.stringify({ message: 'Forbidden' }));
+
+    expect(events).toEqual([{ type: 'error', status: 403, data: { message: 'Forbidden' } }]);
+  });
+
+  it('leaves for setup when the 401 refresh answers with enrollment', async () => {
+    jest.spyOn(request, 'refreshToken').mockResolvedValue(enrollmentPayload as never);
+    jest.spyOn(request, 'redirectIfTwoFactorSetupPayload').mockReturnValue(true);
+    attach();
+    current().status = 401;
+    current().write('Unauthorized');
+    await new Promise(process.nextTick);
+
+    expect(xhrs).toHaveLength(1);
+    expect(events).toEqual([]);
   });
 
   it('stays closed when the caller aborts while a 401 refresh is in flight', async () => {

@@ -40,7 +40,7 @@ test.describe('composer redesign contracts', () => {
     await openComposer(page);
     await startRun(page, `interrupt-hint-${Date.now()}`);
     await messageInput(page).fill('interrupt hint');
-    await expect(page.getByTestId('composer-hints')).toContainText(/interrupt/i);
+    await expect(page.locator('#composer-hint-0')).toContainText(/interrupt/i);
   });
 
   test('Staged reasoning relabels steer as a new turn @scenario:staged-reasoning-relabels-steer-as-a-new-turn', async ({
@@ -65,6 +65,7 @@ test.describe('composer redesign contracts', () => {
     /* The send-now chord would queue as well, so the hint names only the queue. */
     await expect(messageInput(page)).toHaveAccessibleDescription(/Enter queues/);
     await expect(messageInput(page)).not.toHaveAccessibleDescription(/send now/i);
+    await expect(messageInput(page)).not.toHaveAccessibleDescription(/interrupt/i);
     await page.getByTestId('during-run-send-button').click();
     await expect(
       page.getByTestId('queued-message-row').filter({ hasText: 'new turn after reasoning' }),
@@ -190,7 +191,10 @@ test.describe('composer redesign contracts', () => {
       .getByTestId('pending-steers')
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
-    await expect(bubble).toContainText('Sending');
+    await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+      'data-receipt-state',
+      'delivered',
+    );
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
     await expect(messagesView(page).getByText('pending steer', { exact: true })).toHaveCount(0);
@@ -207,7 +211,10 @@ test.describe('composer redesign contracts', () => {
       .getByTestId('pending-steers')
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
-    await expect(bubble).toContainText('Sending');
+    await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+      'data-receipt-state',
+      'delivered',
+    );
     await bubble.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(bubble).toHaveCount(0);
     await expect(messageInput(page)).toHaveValue('pending steer');
@@ -224,7 +231,10 @@ test.describe('composer redesign contracts', () => {
       .getByTestId('pending-steers')
       .getByRole('listitem')
       .filter({ hasText: 'pending steer' });
-    await expect(bubble).toContainText('Sending');
+    await expect(bubble.getByTestId('steer-receipt')).toHaveAttribute(
+      'data-receipt-state',
+      'delivered',
+    );
     /** A draft staged while the cancel is in flight owns the composer. The
      *  reclaimed steer is a different message: gluing the two together would
      *  send one submission the user never wrote, so it becomes a queued
@@ -237,7 +247,8 @@ test.describe('composer redesign contracts', () => {
     await expect(queuedRow).toBeVisible();
     /** Editing the queued row while that draft is still typed would merge the
      *  two the same way, so Edit refuses and says what to do instead. */
-    await queuedRow.getByRole('button', { name: 'Edit message' }).click();
+    await queuedRow.getByRole('button', { name: 'More options' }).click();
+    await page.getByRole('menuitem', { name: 'Edit message' }).click();
     await expect(
       page.getByLabel('Notifications (F8)').getByText(/Clear the message box in this chat/),
     ).toBeVisible();
@@ -250,13 +261,35 @@ test.describe('composer redesign contracts', () => {
   }) => {
     await openComposer(page);
     await startRun(page, `pending-status-${Date.now()}`);
-    await messageInput(page).fill('pending status');
-    await page.getByTestId('during-run-send-button').click();
+    let releaseRequest: () => void = () => {};
+    const requestGate = new Promise<void>((resolve) => {
+      releaseRequest = resolve;
+    });
+    await page.route('**/api/agents/chat/steer', async (route) => {
+      await requestGate;
+      await route.fallback();
+    });
     const bubble = page
       .getByTestId('pending-steers')
       .getByRole('listitem')
       .filter({ hasText: 'pending status' });
-    await expect(bubble).toBeVisible();
-    await expect(bubble).toContainText('Sending');
+    const receipt = bubble.getByTestId('steer-receipt');
+    try {
+      await messageInput(page).fill('pending status');
+      await page.getByTestId('during-run-send-button').click();
+      await expect(bubble).toBeVisible();
+      await expect(receipt).toHaveAttribute('data-receipt-state', 'sending');
+      await expect(bubble.getByText(/^Sending/)).toHaveCount(1);
+    } finally {
+      releaseRequest();
+    }
+    await expect(receipt).toHaveAttribute('data-receipt-state', 'delivered');
+    await expect(bubble.getByText(/^Sending/)).toHaveCount(0);
+    await expect(bubble.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled();
+    await expect(
+      messagesView(page).locator(
+        '[data-testid="steer-part"]:not([data-testid="pending-steers"] *)',
+      ),
+    ).toHaveCount(0);
   });
 });

@@ -59,16 +59,16 @@ function FeedbackOptionButton({
 
   return (
     <Button
-      variant="ghost"
+      variant="quiet"
       className={cn(
-        'text-text-secondary hover:bg-surface-hover hover:text-text-primary h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
+        'h-auto w-full justify-start gap-3 rounded-xl p-2 transition-colors duration-200',
         active && 'bg-surface-hover text-text-primary font-semibold',
       )}
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
     >
-      <Icon size="19" bold={active} aria-hidden="true" />
+      <Icon size="1.1875rem" bold={active} aria-hidden="true" />
       <span>{label}</span>
     </Button>
   );
@@ -158,7 +158,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsUp'}
             aria-haspopup="menu"
           >
-            <ThumbUpIcon size="19" bold={feedback?.rating === 'thumbsUp'} />
+            <ThumbUpIcon size="1.1875rem" bold={feedback?.rating === 'thumbsUp'} />
           </Button>
         }
       />
@@ -167,7 +167,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate border-border-medium bg-surface-secondary flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {positiveTags.map((tag) => (
@@ -193,7 +193,7 @@ function FeedbackButtons({
             aria-pressed={feedback?.rating === 'thumbsDown'}
             aria-haspopup="menu"
           >
-            <ThumbDownIcon size="19" bold={feedback?.rating === 'thumbsDown'} />
+            <ThumbDownIcon size="1.1875rem" bold={feedback?.rating === 'thumbsDown'} />
           </Button>
         }
       />
@@ -202,7 +202,7 @@ function FeedbackButtons({
         gutter={8}
         portal
         unmountOnHide
-        className="popover-animate border-border-medium bg-surface-secondary flex w-auto flex-col gap-1.5 overflow-hidden rounded-2xl border p-1.5 shadow-lg"
+        className="popover-animate border-border-medium bg-surface-secondary rounded-theme-popover flex w-auto flex-col gap-1.5 overflow-hidden border p-1.5 shadow-lg"
       >
         <div className="flex flex-col items-stretch justify-center">
           {negativeTags.map((tag) => (
@@ -293,7 +293,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             aria-label={label}
             aria-pressed="true"
           >
-            <Icon size="19" bold />
+            <Icon size="1.1875rem" bold />
           </Button>
         }
       />

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import type { IThemeAppearance, IThemeRGB } from './types';
 import { clickHouseDarkTheme, clickHouseLightTheme, clickHouseTheme } from './themes/clickhouse';
 import { highContrastDarkTheme, highContrastLightTheme } from './themes/highContrast';
+import { fieldControl } from '../components/Field';
 import { defaultTheme } from './themes/default';
 import { defaultAppearance } from './registry';
 import { darkTheme } from './themes/dark';
@@ -126,6 +127,16 @@ describe('shared field and dropdown interaction styles', () => {
     expect(field).not.toMatch(/\bborder-border-(?:light|medium)\b/);
     expect(field).toMatch(/focus-visible:ring-2/);
     expect(field).toMatch(/focus-visible:ring-focus-control/);
+    /** The fill and ink classes the field-fill e2e scenarios probe in the browser. */
+    expect(fieldControl.split(' ')).toEqual(
+      expect.arrayContaining([
+        'lc-field',
+        'bg-transparent',
+        'text-field-text',
+        'theme-field-fill:bg-field-fill',
+        'theme-field-fill:disabled:hover:bg-field-fill',
+      ]),
+    );
 
     const composers: Array<[string, RegExp]> = [
       ['Input.tsx', /\bfieldControl\b/],
@@ -157,7 +168,11 @@ describe('shared field and dropdown interaction styles', () => {
     const roleOutline =
       ':focus-visible \\{\\s*outline: var\\(--theme-focus-ring-width, 2px\\) solid rgb\\(var\\(--focus-outline\\)\\);\\s*outline-offset: var\\(--theme-focus-ring-offset, 2px\\);';
     expect(appStyles).toMatch(new RegExp(`@layer base \\{\\s*${roleOutline}`));
-    expect(appStyles).toMatch(new RegExp(`\\.dark ${roleOutline}`));
+    expect(appStyles).toMatch(
+      new RegExp(
+        `\\.dark ${roleOutline.replace(':focus-visible ', ":focus-visible:not\\(\\[class\\*='focus-visible:outline-'\\], \\[class\\*='focus:outline-'\\]\\) ")}`,
+      ),
+    );
     expect(appStyles).not.toMatch(/textarea\s*\n\):hover,/);
   });
 
@@ -245,6 +260,13 @@ describe.each([
     expect(belowAA(theme, neutralTextTokens, [...canvasSurfaces, 'rgb-surface-tertiary'])).toEqual(
       [],
     );
+  });
+
+  it('keeps the tooltip label and the error alert text at WCAG AA', () => {
+    const tooltip = belowAA(theme, ['rgb-text-tooltip'], ['rgb-surface-tooltip']);
+    const alert = belowAA(theme, ['rgb-status-error'], ['rgb-alert-error-fill']);
+
+    expect({ tooltip, alert }).toEqual({ tooltip: [], alert: [] });
   });
 
   it('keeps warning and destructive text at WCAG AA on canvas surfaces', () => {

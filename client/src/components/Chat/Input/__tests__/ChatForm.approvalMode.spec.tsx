@@ -75,13 +75,7 @@ function Harness() {
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <ChatForm
-          index={0}
-          isLandingPage={false}
-          showComposerTips={false}
-          footerBelow={false}
-          centerFormOnLanding={false}
-        />
+        <ChatForm index={0} isLandingPage={false} footerBelow={false} centerFormOnLanding={false} />
       </ChatContext.Provider>
     </ChatFormProvider>
   );

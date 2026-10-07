@@ -35,7 +35,7 @@
  *
  * Flags: --staged, --full, --fast, --only <ids>, --skip <ids>, --verbose,
  * --list. Check ids: eslint, prettier, imports, eslint-config, json,
- * suppressions, circular-deps, typecheck, config-tests, i18n, depcheck.
+ * suppressions, css-colors, circular-deps, typecheck, config-tests, i18n, depcheck.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -57,6 +57,7 @@ import {
 } from 'node:fs';
 
 import type { Dirent } from 'node:fs';
+import { isTranslationReferenced } from './i18n.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -107,8 +108,22 @@ const FILTERS = {
     '.github/workflows/static-checks.yml',
     '!**.md',
   ],
+  // Stylesheets are outside the design lint, which reads JSX.
+  css_colors: [
+    'client/src/*.css',
+    'packages/client/src/*.css',
+    'client/src/**/*.css',
+    'packages/client/src/**/*.css',
+    'packages/client/src/theme/allowlist.md',
+    'scripts/css-colors.test.mts',
+    'scripts/css-colors.mts',
+    'scripts/static-checks.mts',
+    '.github/workflows/static-checks.yml',
+  ],
   config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
   i18n: [
+    'scripts/i18n*.mts',
+    'scripts/static-checks.mts',
     'api/**',
     'client/src/**',
     'packages/client/**',
@@ -877,20 +892,16 @@ function workflowSelectsWhatItFilters(): string[] {
   } catch {
     return [`${path} could not be read; the lane it defines is what this check runs in`];
   }
-  /** A block ends at its first sibling, which sits at the same indent: a
-   *  terminator that only fires on shallower lines runs on through the next
-   *  filter and reads its patterns as this one's. */
-  const list = (section: RegExp, indent: number): string[] =>
-    (workflow.split(section)[1] ?? '')
-      .split(new RegExp(`^ {0,${indent}}\\S`, 'm'))[0]
-      .split('\n')
-      .map((line) => new RegExp(`^ {${indent + 2}}- '([^']+)'$`).exec(line)?.[1])
-      .filter((pattern): pattern is string => Boolean(pattern) && !pattern.startsWith('!'));
-
-  const trigger = list(/^ {4}paths:$/m, 4);
-  const lane = list(/^ {12}suppressions:$/m, 12);
+  const { trigger, lane } = workflowFilters(workflow);
   if (trigger.length === 0 || lane.length === 0) {
     return [`${path}: the trigger or the suppressions filter could not be read`];
+  }
+  /** CI checks out LF, so a parser that only reads LF passes there and fails
+   *  every commit on a Windows checkout with `core.autocrlf`, where the file
+   *  arrives as CRLF. Reading the CRLF rendering here lets CI see that too. */
+  const crlf = workflowFilters(workflow.replace(/\r?\n/g, '\r\n'));
+  if (crlf.trigger.join('\n') !== trigger.join('\n') || crlf.lane.join('\n') !== lane.join('\n')) {
+    return [`${path}: its filters read differently with CRLF line endings`];
   }
   /** GitHub's filter syntax, in the shapes both lists use: an exact path, a
    *  subtree, and a basename at any depth. */
@@ -909,6 +920,24 @@ function workflowSelectsWhatItFilters(): string[] {
       (file) =>
         `${path}: the suppressions filter selects ${file}, which no \`on.pull_request.paths\` pattern starts the workflow for`,
     );
+}
+
+/** The `on.pull_request.paths` and `suppressions` pattern lists, exclusions
+ *  dropped. Line endings are normalized first: every pattern below is anchored
+ *  per line, and a `\r` left before the end of a line matches none of them. */
+function workflowFilters(text: string): { trigger: string[]; lane: string[] } {
+  const workflow = text.replace(/\r\n?/g, '\n');
+  /** A block ends at its first sibling, which sits at the same indent: a
+   *  terminator that only fires on shallower lines runs on through the next
+   *  filter and reads its patterns as this one's. */
+  const list = (section: RegExp, indent: number): string[] =>
+    (workflow.split(section)[1] ?? '')
+      .split(new RegExp(`^ {0,${indent}}\\S`, 'm'))[0]
+      .split('\n')
+      .map((line) => new RegExp(`^ {${indent + 2}}- '([^']+)'$`).exec(line)?.[1])
+      .filter((pattern): pattern is string => Boolean(pattern) && !pattern.startsWith('!'));
+
+  return { trigger: list(/^ {4}paths:$/m, 4), lane: list(/^ {12}suppressions:$/m, 12) };
 }
 
 /**
@@ -1785,7 +1814,7 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
     ) {
       return false;
     }
-    return !isReferenced(key);
+    return !isTranslationReferenced(key, isReferenced);
   });
 
   if (unused.length === 0) return { ok: true };
@@ -1793,6 +1822,26 @@ async function findUnusedI18nKeys(): Promise<CheckOutcome> {
     ok: false,
     output: `Found ${unused.length} unused i18n key(s):\n${unused.map((key) => `  ${key}`).join('\n')}`,
     hints: [`Remove them from ${I18N_FILE} or reference them in the source.`],
+  };
+}
+
+// --------------------------------------------------------------- CSS colours
+
+function checkCssColors(): CheckOutcome {
+  const script = resolve(ROOT, 'scripts/css-colors.mts');
+  if (!existsSync(script)) {
+    return { ok: false, output: 'scripts/css-colors.mts is missing' };
+  }
+  const scan = runCommand({ command: process.execPath, args: [script] }, []);
+  const scannerTests = runCommand(
+    { command: process.execPath, args: ['--test', resolve(ROOT, 'scripts/css-colors.test.mts')] },
+    [],
+  );
+  return {
+    ok: scan.status === 0 && scannerTests.status === 0,
+    output: [scan.output, scannerTests.status === 0 ? '' : scannerTests.output]
+      .filter(Boolean)
+      .join('\n'),
   };
 }
 
@@ -2114,6 +2163,13 @@ const CHECKS: Check[] = [
     tier: 'fast',
     group: 'suppressions',
     run: validateSuppressions,
+  },
+  {
+    id: 'css-colors',
+    title: 'CSS colour literals',
+    tier: 'fast',
+    group: 'css_colors',
+    run: checkCssColors,
   },
   {
     id: 'circular-deps',

@@ -3,7 +3,7 @@ import type { IThemeAppearance, ThemeDefinition, IThemeRGB } from '../types';
 /**
  * ClickHouse reference theme, built from Click UI's design tokens
  * (github.com/ClickHouse/click-ui, `src/theme/tokens/variables.light.ts` and
- * `variables.dark.ts` at tag v0.12.0, e2b3d213798f4223122581a75ebc8dd91e47fd9f). The tokens it
+ * `variables.dark.ts` at tag v0.13.0, bb744e8255a3c97635d2fdc9a546c266b5b8a3e0). The tokens it
  * cites are pinned in `clickui.json`, and `clickui.spec.ts` fails on drift in either one.
  *
  * This is the deliberately different theme that proves the engine repaints the
@@ -88,6 +88,9 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #ffffff (background.default)
   'rgb-surface-code': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
   'rgb-surface-code-body': '246 247 250', // #f6f7fa (codeblock.lightMode.color.background.default)
+  'rgb-surface-code-inline': '204 207 211', // #cccfd3 (palette.slate.200, distinct from the page and from the user message bubble, slate.100)
+  'rgb-prose-bullet': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble; stroke.default is 1.24:1)
+  'rgb-prose-quote-bar': '83 87 95', // #53575f (palette.slate.700, 3:1 or better on the page and the user message bubble)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '21 21 21', // #151515 (palette.neutral.900)
   'rgb-surface-inverted-hover': '50 50 50', // #323232 (palette.neutral.712)
@@ -105,10 +108,31 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-border-medium': '230 231 233', // #e6e7e9 (stroke.default)
   'rgb-border-medium-alt': '230 231 233', // #e6e7e9 (stroke.default)
   'rgb-border-heavy': '179 182 189', // #b3b6bd (stroke.intense)
+  'rgb-drawer-edge': '246 247 250', // #f6f7fa (background.split, the drawer's own fill)
   'rgb-border-xheavy': '128 134 145', // #808691 (palette.slate.500, two steps past stroke.intense #b3b6bd (2.03:1 on white))
   'rgb-border-destructive': '193 0 0', // #c10000 (palette.danger.600)
   'rgb-border-control': '128 134 145', // #808691 (palette.slate.500, 3.42:1 on background.muted)
   'rgb-border-field-focus': '22 21 23', // #161517 (field.color.stroke.active)
+  'rgb-focus-subtle': '67 126 239', // #437eef (outline.default, 3.84:1 on white)
+  'rgb-field-fill': '251 252 255', // #fbfcff (field.color.background.default)
+  'rgb-field-text': '48 46 50', // #302e32 (field.color.text.default)
+  'rgb-surface-tooltip': '29 29 29', // #1d1d1d (tooltip.color.background.default, lch(10.767 0 0 / 0.85) taken opaque)
+  'rgb-text-tooltip': '255 255 255', // #ffffff (tooltip.color.label.default)
+  'rgb-alert-error-fill': '255 233 233', // #ffe9e9 (alert.color.background.danger, danger at 10% over background.default)
+  'rgb-alert-error-border': '255 233 233', // #ffe9e9 (Click UI alerts draw no edge, so it matches the fill)
+  // Layering roles
+  'rgb-surface-canvas': '255 255 255', // #ffffff (background.default)
+  'rgb-surface-user-message': '230 231 233', // #e6e7e9 (palette.slate.100, the sidebar.main.navigation.item active step; Click UI has no chat bubble)
+  'rgb-surface-card': '255 255 255', // #ffffff (card.secondary.color.background.default)
+  'rgb-surface-card-hover': '246 247 250', // #f6f7fa (card.secondary.color.background.hover)
+  'rgb-surface-nav-hover': '236 237 240', // #ecedf0 (sidebar.main.navigation.item.color.background.hover, lch(91.609 1.1023 265.86 / 0.6) composited on background.split)
+  'rgb-surface-nav-selected': '230 231 233', // #e6e7e9 (sidebar.main.navigation.item.color.background.active)
+  'rgb-surface-tab-selected': '230 231 233', // #e6e7e9 (sidebar.main.navigation.item.color.background.active)
+  'rgb-surface-menu': '255 255 255', // #ffffff (genericMenu.panel.color.background.default)
+  'rgb-surface-popover': '255 255 255', // #ffffff (genericMenu.panel.color.background.default)
+  'rgb-border-menu': '230 231 233', // #e6e7e9 (genericMenu.panel.color.stroke.default)
+  'rgb-surface-composer': '255 255 255', // #ffffff (background.default)
+  'rgb-surface-search': '255 255 255', // #ffffff (background.default)
   'rgb-surface-disabled': '223 223 223', // #dfdfdf (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '160 160 160', // #a0a0a0 (text.disabled)
   'rgb-border-disabled': '223 223 223', // #dfdfdf (field.color.stroke.disabled)
@@ -145,7 +169,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
-  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-document': '13 62 155', // #0d3e9b (palette.info.700)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
   'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
@@ -248,6 +272,9 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-surface-chat': '31 31 28', // #1f1f1c (background.default)
   'rgb-surface-code': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
   'rgb-surface-code-body': '40 40 40', // #282828 (codeblock.darkMode.color.background.default)
+  'rgb-surface-code-inline': '65 65 65', // #414141 (palette.neutral.700, distinct from the user message bubble, neutral.712)
+  'rgb-prose-bullet': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas; stroke.default is 1.29:1)
+  'rgb-prose-quote-bar': '128 128 128', // #808080 (palette.neutral.500, 3.7:1 on the canvas)
   'rgb-surface-qr': '255 255 255', // #ffffff (palette.neutral.0)
   'rgb-surface-inverted': '250 255 105', // #faff69 (button.basic.color.primary.background.default)
   'rgb-surface-inverted-hover': '252 255 150', // #fcff96 (button.basic.color.primary.background.hover)
@@ -264,10 +291,31 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-border-medium': '50 50 50', // #323232 (stroke.default)
   'rgb-border-medium-alt': '50 50 50', // #323232 (stroke.default)
   'rgb-border-heavy': '65 65 65', // #414141 (stroke.intense)
+  'rgb-drawer-edge': '128 128 128', // #808080 (palette.neutral.500, matching border-xheavy)
   'rgb-border-xheavy': '128 128 128', // #808080 (palette.neutral.500, three steps past stroke.intense #414141 (1.62:1 on the canvas))
   'rgb-border-destructive': '255 117 117', // #ff7575 (palette.danger.300)
   'rgb-border-control': '128 128 128', // #808080 (palette.neutral.500, 3.73:1 on background.muted)
   'rgb-border-field-focus': '250 255 105', // #faff69 (field.color.stroke.active)
+  'rgb-focus-subtle': '250 255 105', // #faff69 (outline.default)
+  'rgb-field-fill': '45 45 45', // rgb(17.794% 17.794% 17.794%) (field.color.background.default)
+  'rgb-field-text': '230 231 233', // #e6e7e9 (field.color.text.default)
+  'rgb-surface-tooltip': '50 50 50', // #323232 (palette.neutral.712; tooltip.color.background.default #282828 would vanish on the #282828 canvas)
+  'rgb-text-tooltip': '255 255 255', // #ffffff (tooltip.color.label.default)
+  'rgb-alert-error-fill': '76 32 29', // #4c201d (alert.color.background.danger, danger at 20% over background.default)
+  'rgb-alert-error-border': '76 32 29', // #4c201d (Click UI alerts draw no edge, so it matches the fill)
+  // Layering roles
+  'rgb-surface-canvas': '31 31 28', // #1f1f1c (background.default)
+  'rgb-surface-user-message': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-surface-card': '31 31 28', // #1f1f1c (card.secondary.color.background.default)
+  'rgb-surface-card-hover': '40 40 40', // #282828 (card.secondary.color.background.hover)
+  'rgb-surface-nav-hover': '46 46 46', // #2e2e2e (sidebar.main.navigation.item.color.background.hover, lch(19.05 0 none))
+  'rgb-surface-nav-selected': '55 55 55', // #373737 (sidebar.main.navigation.item.color.background.active, lch(27.535 0 none / 0.6) composited on background.split)
+  'rgb-surface-tab-selected': '50 50 50', // #323232 (palette.neutral.712)
+  'rgb-surface-menu': '40 40 40', // #282828 (genericMenu.panel.color.background.default)
+  'rgb-surface-popover': '40 40 40', // #282828 (genericMenu.panel.color.background.default)
+  'rgb-border-menu': '65 65 65', // #414141 (genericMenu.panel.color.stroke.default)
+  'rgb-surface-composer': '45 45 45', // #2d2d2d (field.color.background.default)
+  'rgb-surface-search': '45 45 45', // #2d2d2d (field.color.background.default)
   'rgb-surface-disabled': '65 65 65', // #414141 (button.basic.color.primary.background.disabled)
   'rgb-text-disabled': '128 128 128', // #808080 (text.disabled)
   'rgb-border-disabled': '65 65 65', // #414141 (field.color.stroke.disabled)
@@ -304,7 +352,7 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '161 190 247', // #a1bef7 (palette.info.200)
   'rgb-illustration': '67 126 239', // #437eef (palette.info.400)
   'rgb-illustration-strong': '16 78 198', // #104ec6 (palette.info.600)
-  'rgb-file-document': '204 0 153', // #cc0099 (palette.fuchsia.600)
+  'rgb-file-document': '67 126 239', // #437eef (palette.info.400)
   'rgb-file-sheet': '0 138 11', // #008a0b (palette.success.700)
   'rgb-file-code': '214 79 0', // #d64f00 (palette.warning.600)
   'rgb-file-artifact': '48 46 50', // #302e32 (palette.slate.800)
@@ -354,8 +402,8 @@ export const clickHouseDarkTheme: IThemeRGB = {
  * `radii.1`, which LibreChat's `sm` also renders at on a 16px root; every larger step tightens.
  *
  * Click UI's mono family is Inconsolata, which the component library ships in `theme/fonts.css`
- * (latin 400 and 700). The tail is the same metric-matched stack the default theme uses (Click
- * UI's own tail names `"SFMono Regular"`, which no platform installs).
+ * (latin 400 and 700), and the stack is Click UI's verbatim. Its `"SFMono Regular"` matches no
+ * installed face, so where Inconsolata has no glyph a browser falls to Consolas or `monospace`.
  *
  * Click UI's display family leads with Basier Square, a commercial face ClickHouse licenses for
  * its own sites. It is named here but not self-hosted: a browser that has it installed renders
@@ -376,8 +424,23 @@ const clickHouseShape = {
   largeSurfaceRadius: '0.75rem',
   roundControlRadius: '9999px',
   menuRadius: '0.25rem', // genericMenu.panel.radii.all
+  popoverRadius: '0.25rem', // genericMenu.panel.radii.all, the panel the composer popovers are
+  menuPanelRadius: '0.25rem', // genericMenu.panel.radii.all
+  composerActionRadius: '0.25rem', // button.radii.all, Click UI draws its icon buttons square
+  inlineCodeWeight: '500', // typography.font.weights.2
   tooltipRadius: '0.25rem', // tooltip.radii.all
+  tooltipPaddingX: '0.75rem', // tooltip.space.x
+  tooltipPaddingY: '0.5rem', // tooltip.space.y
+  tooltipTextSize: '0.75rem', // tooltip.typography.label.default
   tabRadius: '0.25rem', // tabs.radii.all
+  /** Click UI sizes a tab trigger by its label, in `tabs.space.x` on each side. */
+  tabMinWidth: '0',
+  /** Click UI's select list is as wide as its trigger (`select-popover-content` in
+   *  SelectComponents.module.css), which the list's viewport already enforces, so it takes no
+   *  floor of its own. Its height is capped only by the viewport's available height, which a
+   *  length role cannot express, so the cap keeps LibreChat's. */
+  listMinWidth: '0',
+  listMaxHeight: '24rem',
   radiusSm: '0.25rem', // border.radii.1
   radiusMd: '0.25rem', // border.radii.1
   radiusLg: '0.25rem', // border.radii.1
@@ -386,8 +449,7 @@ const clickHouseShape = {
   radius3xl: '0.75rem', // border.radii.3
   fontFamily:
     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif',
-  monoFontFamily:
-    '"Inconsolata", ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", "Liberation Mono", Consolas, monospace',
+  monoFontFamily: '"Inconsolata", Consolas, "SFMono Regular", monospace', // typography.font.families.mono
   displayFontFamily:
     '\'Basier Square\', "Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif', // typography.font.families.display
   textXs: '0.75rem', // typography.font.sizes.1
@@ -407,12 +469,22 @@ const clickHouseShape = {
   shadowSm: '0 2px 2px 0 rgb(0 0 0 / 0.03)', // shadow.5
   controlHeight: '2rem', // genericMenu.panel.size.height
   controlPaddingX: '1rem', // button.basic.space.x
+  buttonPaddingX: '1rem', // button.basic.space.x
   controlGap: '0.5rem', // button.basic.space.gap
   controlFontWeight: '400', // button.basic.typography.label.default
   /** Click UI's button is sized by its content: 0.2813rem of space.y on both sides of a
    *  0.875rem/1.5 label and a 1px stroke, 32px in all. */
   buttonHeight: '2rem',
   buttonHeightSm: '2rem',
+  /** Click UI draws one button size, so the `lg` step matches the default too. Its icon button is
+   *  a 1rem icon in 0.25rem of `iconButton.sm` space on each side, 1.5rem in all, which still meets
+   *  the 24px target minimum; its `xs` (no space) would not, so `icon-xs` keeps LibreChat's. */
+  buttonHeightLg: '2rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '1.5rem',
+  iconSize: '1rem', // image.sm.size.width
+  iconSizeMd: '1.25rem', // image.md.size.width
+  iconSizeLg: '1.5rem', // image.lg.size.width, the dialog close icon
   /** Click UI's field is sized by its content, like its button: 0.2813rem of space.y on both
    *  sides of a 0.875rem/1.5 value and a 1px stroke, 32px in all. On focus it swaps its stroke to
    *  `field.color.stroke.active` and draws no ring (InputWrapper); LibreChat adds a 1px ring in
@@ -420,6 +492,8 @@ const clickHouseShape = {
   fieldHeight: '2rem',
   fieldPaddingY: '0.2813rem', // field.space.y
   fieldFocusStyle: 'border' as const,
+  /** Click UI fills its fields in `field.color.background.default`. */
+  fieldFillStyle: 'fill' as const,
   /** Click UI's keyboard focus outline: 2px in `outline.default`, 2px off the edge
    *  (BaseButton.module.css, IconButton, Dropdown and ContextMenu triggers). */
   focusRingWidth: '2px',
@@ -445,12 +519,24 @@ const clickHouseShape = {
   disabledStyle: 'fill' as const,
   switchWidth: '2rem', // switch.size.width
   switchHeight: '1rem', // switch.size.height
+  checkboxSize: '1rem', // checkbox.size.all
   /** Click UI's own sizes halve like LibreChat's: `md` is this full space, and the compact tables
    *  every in-repo consumer draws land on `sm` (0.5rem), the size Click UI tables default to. */
+  /** The shared spacing takes two steps of Click UI's `spaces` scale: its 0.5rem gap step, the
+   *  one its buttons and fields space icon and label by, and 0.75rem, which already matched. */
+  spaceCompact: '0.5rem', // spaces.2
+  spaceNormal: '0.75rem', // spaces.3
   tableCellSpaceY: '1rem', // table.body.cell.space.md.y
   tableRowStroke: '1px', // table.cell.stroke
   motionFast: '100ms', // transition.duration.medium, the step transition.default runs at
   motionNormal: '150ms', // transition.duration.smooth
+  /** Click UI strokes cards, panels, dialogs, fields and tables in stroke.default, but not the
+   *  controls and chat chrome LibreChat outlines (iconButton.*.stroke.default and tabs.basic are
+   *  transparent), and it separates a card's inner regions by fill. */
+  chromeBorderAlpha: '0', // iconButton.primary.stroke.default
+  insetBorderAlpha: '0', // separation by fill, not a nested stroke
+  /** Click UI's danger button: a 10% tint of danger under the danger text (button.*.danger). */
+  destructiveStyle: 'soft' as const,
 };
 
 const elevation = (alpha: number): string =>

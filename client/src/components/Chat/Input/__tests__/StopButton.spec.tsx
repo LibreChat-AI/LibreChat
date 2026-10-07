@@ -6,6 +6,14 @@ jest.mock('~/hooks', () => ({
 }));
 
 describe('StopButton', () => {
+  it('uses contrasted theme roles for its fill and inherited glyph ink', () => {
+    render(<StopButton stop={jest.fn()} setShowStopButton={jest.fn()} />);
+
+    const button = screen.getByTestId('stop-generation-button');
+    expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
+    expect(button.querySelector('rect')).toHaveAttribute('fill', 'currentColor');
+  });
+
   it('hides itself and aborts the run on click', () => {
     const stop = jest.fn();
     const setShowStopButton = jest.fn();

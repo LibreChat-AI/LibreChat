@@ -63,6 +63,9 @@ export const themeColorTokens = Object.freeze([
   'rgb-surface-chat',
   'rgb-surface-code',
   'rgb-surface-code-body',
+  'rgb-surface-code-inline',
+  'rgb-prose-bullet',
+  'rgb-prose-quote-bar',
   'rgb-surface-qr',
   'rgb-surface-inverted',
   'rgb-surface-inverted-hover',
@@ -78,9 +81,29 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-medium-alt',
   'rgb-border-heavy',
   'rgb-border-xheavy',
+  'rgb-drawer-edge',
   'rgb-border-destructive',
   'rgb-border-control',
   'rgb-border-field-focus',
+  'rgb-focus-subtle',
+  'rgb-field-fill',
+  'rgb-field-text',
+  'rgb-surface-tooltip',
+  'rgb-text-tooltip',
+  'rgb-alert-error-fill',
+  'rgb-alert-error-border',
+  'rgb-surface-canvas',
+  'rgb-surface-user-message',
+  'rgb-surface-card',
+  'rgb-surface-card-hover',
+  'rgb-surface-nav-hover',
+  'rgb-surface-nav-selected',
+  'rgb-surface-tab-selected',
+  'rgb-surface-menu',
+  'rgb-surface-popover',
+  'rgb-border-menu',
+  'rgb-surface-composer',
+  'rgb-surface-search',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -158,6 +181,23 @@ export const themeBrandTokens = Object.freeze([
 
 export type ThemeBrandToken = (typeof themeBrandTokens)[number];
 
+/**
+ * Color utilities the stylesheet computes from other roles, so a theme sets the roles they read
+ * (an overlay, a border, an appearance share) and never the name itself.
+ */
+export const themeDerivedColorTokens = Object.freeze([
+  'scrim',
+  'scrim-alert',
+  'scrim-modal',
+  'border-chrome',
+  'border-chrome-heavy',
+  'border-chrome-medium',
+  'border-inset',
+  'border-inset-medium',
+] as const);
+
+export type ThemeDerivedColorToken = (typeof themeDerivedColorTokens)[number];
+
 /** One problem in a theme definition: where it is, relative to the definition, and what it is. */
 export interface ThemeIssue {
   path: string[];
@@ -227,6 +267,23 @@ const isSwitchLength = (value: unknown): value is string =>
  * never vanishes; its offset may also be zero or negative, drawing the outline on or inside the
  * element's edge.
  */
+/**
+ * A positive px or rem length inside the range its layouts were built for, in px on a 16px root:
+ * the icon and checkbox roles size glyphs that sit in fixed insets and rows, so a theme can retune
+ * them, but not past the room those layouts leave.
+ */
+const lengthWithin =
+  (minPx: number, maxPx: number) =>
+  (value: unknown): value is string => {
+    if (!isSwitchLength(value)) {
+      return false;
+    }
+    const px = parseFloat(value) * (value.endsWith('rem') ? 16 : 1);
+    return px >= minPx && px <= maxPx;
+  };
+/** A pointer target never drops under WCAG 2.5.8's 24px minimum, written in px or rem. */
+const isTargetSize = (value: unknown): value is string =>
+  isSwitchLength(value) && parseFloat(value) >= (value.endsWith('rem') ? 1.5 : 24);
 const isFocusRingOffset = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|-?\d*\.?\d+(px|rem))$/.test(value);
 /** A numeric CSS font weight, 1 to 1000, which is all a label weight needs. */
@@ -338,8 +395,21 @@ const appearanceValidators = {
   largeSurfaceRadius: isLength,
   /** A menu panel's, a tooltip's and a tab trigger's corner. */
   menuRadius: isLength,
+  popoverRadius: isLength,
+  menuPanelRadius: isLength,
+  composerActionRadius: isLength,
+  inlineCodeWeight: isFontWeight,
   tooltipRadius: isLength,
+  /** A tooltip's padding and text size. */
+  tooltipPaddingX: isLength,
+  tooltipPaddingY: isLength,
+  tooltipTextSize: isLength,
   tabRadius: isLength,
+  tabMinWidth: isTableLength,
+  /** A Select list's narrowest width (`0` to size it by its trigger), and the height it scrolls
+   *  past: never under 8rem, so a few options always show, nor over 40rem. */
+  listMinWidth: isTableLength,
+  listMaxHeight: lengthWithin(128, 640),
   radiusSm: isLength,
   radiusMd: isLength,
   radiusLg: isLength,
@@ -350,16 +420,31 @@ const appearanceValidators = {
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
+  /** The Button's default size inline padding. */
+  buttonPaddingX: isLength,
   controlGap: isLength,
+  /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
+   *  2rem). */
+  iconSize: lengthWithin(12, 20),
+  iconSizeMd: lengthWithin(20, 24),
+  iconSizeLg: lengthWithin(16, 32),
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: isFontWeight,
   buttonHeight: isLength,
   buttonHeightSm: isLength,
+  /** The Button's `xs` and `lg` heights and the `icon-sm` square, each a pointer target. */
+  buttonHeightXs: isTargetSize,
+  buttonHeightLg: isTargetSize,
+  buttonHeightCompact: isTargetSize,
+  iconButtonSizeSm: isTargetSize,
   /** A form field's height and vertical padding, and whether focus draws a ring or swaps the
    *  field's edge color. */
   fieldHeight: isLength,
+  fieldHeightLg: isTargetSize,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
+  /** Whether a field stays transparent or paints `field-fill`. */
+  fieldFillStyle: (value: unknown) => value === 'transparent' || value === 'fill',
   /** The keyboard focus outline's width and offset. */
   focusRingWidth: isSwitchLength,
   focusRingOffset: isFocusRingOffset,
@@ -369,6 +454,8 @@ const appearanceValidators = {
   labelFontWeight: (value: unknown) => value === 'inherit' || isFontWeight(value),
   switchWidth: isSwitchLength,
   switchHeight: isSwitchLength,
+  /** A checkbox's box and the check inside it, 1 to 1.5rem: never smaller than the box it was. */
+  checkboxSize: lengthWithin(16, 24),
   tableCellSpaceY: isTableLength,
   tableRowStroke: isTableLength,
   spaceCompact: isLength,
@@ -384,6 +471,10 @@ const appearanceValidators = {
   textLg: isLength,
   textXl: isLength,
   text2xl: isLength,
+  text3xs: isLength,
+  text2xs: isLength,
+  text1xs: isLength,
+  text1sm: isLength,
   leadingXs: isLineHeight,
   leadingSm: isLineHeight,
   leadingBase: isLineHeight,
@@ -420,6 +511,12 @@ const appearanceValidators = {
   tooltipShadow: isShadow,
   motionFast: isDuration,
   motionNormal: isDuration,
+  /** How much of `border-light` the outlines of controls and chips, and the hairlines inside a
+   *  stroked surface, keep: 0 draws none and leaves the box where it was. */
+  chromeBorderAlpha: isOpacity,
+  insetBorderAlpha: isOpacity,
+  /** `fill` paints a destructive action in the solid destructive surface; `soft` in a tint of it. */
+  destructiveStyle: (value: unknown) => value === 'fill' || value === 'soft',
 } satisfies Record<string, (value: unknown) => boolean>;
 
 export type ThemeAppearanceToken = keyof typeof appearanceValidators;
@@ -427,6 +524,28 @@ export type ThemeAppearanceToken = keyof typeof appearanceValidators;
 export const themeAppearanceTokens = Object.freeze(
   Object.keys(appearanceValidators) as ThemeAppearanceToken[],
 );
+
+/**
+ * Bumped by hand when a release changes what resolving a theme emits without changing its roles
+ * (a palette value, a fallback derivation, an emitted attribute), so cached entries are rebuilt.
+ */
+export const THEME_CACHE_EPOCH = 1 as const;
+
+/**
+ * Names the role set a stored resolved theme was built against: any color, brand or appearance
+ * role added or removed changes it. A cache that replays resolved variables keys itself on this,
+ * so an entry that predates a role is dropped instead of painting that role's stylesheet default.
+ */
+export function themeRoleFingerprint(): string {
+  const roles = [...themeColorTokens, ...themeBrandTokens, ...themeAppearanceTokens]
+    .sort()
+    .join(',');
+  let hash = 5381;
+  for (let i = 0; i < roles.length; i++) {
+    hash = ((hash * 33) ^ roles.charCodeAt(i)) >>> 0;
+  }
+  return `${THEME_VERSION}.${THEME_CACHE_EPOCH}.${hash.toString(36)}`;
+}
 
 export const isThemeAppearanceToken = (key: string): key is ThemeAppearanceToken =>
   Object.prototype.hasOwnProperty.call(appearanceValidators, key);

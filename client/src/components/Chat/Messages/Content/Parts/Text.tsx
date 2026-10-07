@@ -1,8 +1,8 @@
 import { memo, useMemo, ReactElement } from 'react';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import CollapsibleText from './CollapsibleText';
 import { cn } from '~/utils';
 
@@ -45,7 +45,7 @@ const TextPart = memo(function TextPart({ text, isCreatedByUser, showCursor }: T
         className={cn(
           isSubmitting ? 'submitting' : '',
           showCursorState && !!text.length ? 'result-streaming' : '',
-          'markdown prose message-content dark:prose-invert light w-full break-words',
+          'markdown prose message-content light w-full break-words',
           isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',
           'text-text-primary',
         )}

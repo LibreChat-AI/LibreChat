@@ -299,7 +299,7 @@ function FileHeader({
         <button
           type="button"
           onClick={onOpenPreview}
-          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-border-heavy min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
+          className="text-text-primary decoration-border-medium hover:text-text-secondary focus-visible:ring-focus-subtle min-w-0 truncate text-left text-xs font-medium underline underline-offset-2 transition-colors focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:outline-hidden"
           aria-label={`${localize('com_ui_preview')}: ${fileName}`}
         >
           {fileName}
@@ -314,7 +314,7 @@ function FileHeader({
           className="flex cursor-help items-center"
         >
           <span
-            className="bg-surface-tertiary text-text-secondary shrink-0 cursor-help rounded px-1.5 py-0.5 text-[11px] leading-none tabular-nums"
+            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded px-1.5 py-0.5 leading-none tabular-nums"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
@@ -323,7 +323,7 @@ function FileHeader({
       )}
       <span className="flex-1" />
       {sortedPages && sortedPages.length > 0 && (
-        <span className="text-text-secondary shrink-0 text-[11px]">
+        <span className="text-text-secondary text-2xs shrink-0">
           {localize('com_file_pages', { pages: sortedPages.join(', ') })}
         </span>
       )}
@@ -503,7 +503,7 @@ export default function RetrievalCall({
                       onOpenPreview={item.fileId ? () => openPreview(i) : undefined}
                     />
                     {item.content && (
-                      <div className="border-border-light border-t px-3 py-3">
+                      <div className="border-border-inset border-t px-3 py-3">
                         <OutputRenderer text={item.content} />
                       </div>
                     )}

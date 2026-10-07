@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
+import { createServer, get } from 'node:http';
 import type { IConversation, IMessage } from '@librechat/data-schemas';
 import type { SubagentUpdateEvent } from '@librechat/agents';
+import type { AddressInfo } from 'node:net';
 import type { Response } from 'express';
 import type { SubagentActivityEnvelope, SubagentActivityUpdateEvent } from './subagentActivity';
 import type { IEventTransport } from '~/stream/interfaces/IJobStore';
@@ -666,7 +668,7 @@ describe('subagent activity stream authorization', () => {
     expect(transport.handlers.size).toBe(0);
   });
 
-  it('closes a slow SSE consumer instead of buffering later activity', async () => {
+  it('waits for drain before sending buffered activity and the terminal event', async () => {
     const transport = new TestTransport();
     const stream = new SubagentActivityStream(transport);
     const handler = createSubagentActivityStreamHandler(
@@ -688,7 +690,225 @@ describe('subagent activity stream authorization', () => {
     await handler(request(), res);
     await stream.publish(threadId, taskId, update());
 
+    await stream.publish(threadId, taskId, update({ label: 'buffered' }));
+    await stream.complete(threadId, taskId, 'completed');
+    expect(res.end).not.toHaveBeenCalled();
+    expect(res.chunks.join('')).not.toContain('buffered');
+    (res.write as jest.Mock).mockImplementation((chunk: string) => {
+      res.chunks.push(chunk);
+      return true;
+    });
+    res.emit('drain');
+    expect(res.chunks.join('')).toContain('buffered');
+    expect(res.chunks.join('')).toContain('"status":"completed"');
     expect(res.end).toHaveBeenCalledTimes(1);
+    expect(res.listenerCount('drain')).toBe(0);
     expect(transport.handlers.size).toBe(0);
+  });
+
+  it('closes an over-budget blocked reader so it can recover through replay', async () => {
+    const transport = new TestTransport();
+    const stream = new SubagentActivityStream(transport);
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      stream,
+    );
+    const res = response();
+    (res.write as jest.Mock).mockImplementation((chunk: string) => {
+      res.chunks.push(chunk);
+      return false;
+    });
+    await handler(request(), res);
+    for (let index = 0; index < 110; index++) await stream.publish(threadId, taskId, update());
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(res.listenerCount('drain')).toBe(0);
+    expect(transport.handlers.size).toBe(0);
+  });
+
+  it('writes a bounded live event whose public identity exceeds the waiting-queue budget', async () => {
+    const eventThreadId = `${'\u0001'.repeat(498)}x`;
+    const req = request();
+    req.params = { parentConversationId, threadId: eventThreadId, taskId };
+    const transport = new TestTransport();
+    const stream = new SubagentActivityStream(transport);
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue({
+          ...child,
+          subagentThread: { ...child.subagentThread, parentToolCallId: 'event-binding:private' },
+        }),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      stream,
+    );
+    const res = response();
+    await handler(req, res);
+    await stream.publish(
+      eventThreadId,
+      taskId,
+      update({ parentToolCallId: undefined, ancestry: [], data: { text: 'x'.repeat(64_000) } }),
+    );
+    const publicFrame = res.chunks.find((chunk) => chunk.includes('on_subagent_update'))!;
+    expect(Buffer.byteLength(publicFrame)).toBeGreaterThan(65_536);
+    expect(res.end).not.toHaveBeenCalled();
+    expect(transport.getSubscriberCount(subagentActivityStreamId(eventThreadId, taskId))).toBe(1);
+    res.emit('close');
+    stream.destroy();
+  });
+
+  it.each([false, true])(
+    'delivers an expanded event-thread snapshot without closing (blocked: %s)',
+    async (blocked) => {
+      const transport = new TestTransport();
+      const stream = new SubagentActivityStream(transport);
+      const eventThreadId = 'x'.repeat(499);
+      const req = request();
+      req.params = { parentConversationId, threadId: eventThreadId, taskId };
+      const entries: SubagentActivityEnvelope[] = Array.from({ length: 100 }, (_, sequence) => ({
+        event: 'on_subagent_update',
+        data: update({
+          parentToolCallId: undefined,
+          ancestry: [],
+          activitySequence: sequence,
+          data: { text: 'a'.repeat(250) },
+        }),
+      }));
+      const retainedBytes = entries.reduce(
+        (total, data, seq) =>
+          total + Buffer.byteLength(JSON.stringify({ type: 'chunk', seq, data })),
+        0,
+      );
+      expect(retainedBytes).toBeLessThanOrEqual(65_536);
+      const unsubscribe = jest.fn();
+      const handler = createSubagentActivityStreamHandler(
+        {
+          getConvoOwnership: jest.fn().mockResolvedValue(parent),
+          getSubagentThreadForParent: jest.fn().mockResolvedValue({
+            ...child,
+            subagentThread: {
+              ...child.subagentThread,
+              parentToolCallId: 'event-binding:private',
+            },
+          }),
+          getMessages: jest.fn().mockResolvedValue([]),
+        },
+        {
+          subscribe: (_thread, _task, subscriber) => ({
+            unsubscribe,
+            ready: Promise.resolve().then(() => {
+              if (blocked)
+                subscriber.onEvent({
+                  event: 'on_subagent_update',
+                  data: update({ label: 'before-snapshot' }),
+                });
+              subscriber.onEvent({ event: 'subagent_activity_replay', data: entries });
+              subscriber.onEvent({
+                event: 'on_subagent_update',
+                data: update({ activitySequence: 100, label: 'live-tail' }),
+              });
+            }),
+          }),
+        },
+      );
+      const res = response();
+      if (blocked)
+        (res.write as jest.Mock).mockImplementationOnce((frame: string) => {
+          res.chunks.push(frame);
+          return false;
+        });
+      await handler(req, res);
+      expect(res.end).not.toHaveBeenCalled();
+      if (blocked) {
+        expect(res.chunks.join('')).not.toContain('subagent_activity_replay');
+        res.emit('drain');
+      }
+      const frames = res.chunks
+        .filter((chunk) => chunk.startsWith('data: '))
+        .map((chunk) => JSON.parse(chunk.slice(6)));
+      const replay = frames.find((frame) => frame.event === 'subagent_activity_replay');
+      expect(Buffer.byteLength(JSON.stringify(replay))).toBeGreaterThan(65_536);
+      expect(replay.data).toHaveLength(100);
+      expect(
+        replay.data.map((entry: SubagentActivityEnvelope) => entry.data.activitySequence),
+      ).toEqual(Array.from({ length: 100 }, (_, index) => index));
+      expect(replay.data[0].data.parentToolCallId).toBe(`event-thread:${eventThreadId}`);
+      expect(res.chunks.join('')).not.toContain('event-binding:');
+      expect(res.chunks.join('')).toContain('live-tail');
+      res.emit('close');
+      expect(unsubscribe).toHaveBeenCalled();
+      expect(res.listenerCount('drain')).toBe(0);
+      stream.destroy();
+    },
+  );
+
+  it('streams a full snapshot and concurrent buffered frames through actual HTTP backpressure', async () => {
+    const unsubscribe = jest.fn();
+    const activity = (sequence: number, text: string): SubagentActivityEnvelope => ({
+      event: 'on_subagent_update',
+      data: update({ activitySequence: sequence, data: { text } }),
+    });
+    const handler = createSubagentActivityStreamHandler(
+      {
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessages: jest.fn().mockResolvedValue([]),
+      },
+      {
+        subscribe: (_thread, _task, subscriber) => ({
+          unsubscribe,
+          ready: Promise.resolve().then(() => {
+            subscriber.onEvent({
+              event: 'subagent_activity_replay',
+              data: [activity(0, 'x'.repeat(52_000))],
+            });
+            for (let sequence = 1; sequence <= 4; sequence++)
+              subscriber.onEvent(activity(sequence, 'y'.repeat(10_000)));
+            subscriber.onDone?.({ final: true, subagentActivity: true, status: 'completed' });
+          }),
+        }),
+      },
+    );
+    let backpressure = 0;
+    const server = createServer((req, res) => {
+      const write = res.write.bind(res);
+      jest.spyOn(res, 'write').mockImplementation((...args: Parameters<typeof res.write>) => {
+        const accepted = write(...args);
+        if (!accepted) backpressure++;
+        return accepted;
+      });
+      Object.assign(req, { params: request().params, user: request().user });
+      void handler(req as ServerRequest, res as Response).catch(() => res.destroy());
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const chunks: string[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const client = get(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, (res) => {
+          res.setEncoding('utf8');
+          res.on('data', (chunk: string) => chunks.push(chunk));
+          res.on('end', resolve);
+          res.on('error', reject);
+        });
+        client.on('error', reject);
+      });
+      expect(backpressure).toBeGreaterThan(0);
+      const frames = chunks
+        .join('')
+        .split('\n\n')
+        .filter((frame) => frame.startsWith('data: '))
+        .map((frame) => JSON.parse(frame.slice(6)));
+      expect(frames[0].data[0].data.activitySequence).toBe(0);
+      expect(frames.slice(1, 5).map((frame) => frame.data.activitySequence)).toEqual([1, 2, 3, 4]);
+      expect(frames[5]).toMatchObject({ final: true, status: 'completed' });
+      expect(unsubscribe).toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

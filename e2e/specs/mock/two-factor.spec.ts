@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { TStartupConfig } from 'librechat-data-provider';
 import { NEW_CHAT_PATH } from './helpers';
 
 /**
@@ -85,5 +86,48 @@ test.describe('account settings · two-factor dialog', () => {
       framerErrors,
       `framer-motion threw while rendering the 2FA dialog: ${framerErrors.join(' | ')}`,
     ).toEqual([]);
+  });
+
+  test('explains why an administrator-required 2FA control cannot be disabled', async ({
+    page,
+  }) => {
+    await page.route('**/api/config', async (route) => {
+      const response = await route.fetch();
+      const config = (await response.json()) as TStartupConfig;
+      config.twoFactorAuthenticationRequired = true;
+      await route.fulfill({ response, json: config });
+    });
+    await page.route('**/api/user', async (route) => {
+      const response = await route.fetch();
+      const user = (await response.json()) as { twoFactorEnabled?: boolean };
+      user.twoFactorEnabled = true;
+      await route.fulfill({ response, json: user });
+    });
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await page.getByTestId('nav-user').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Account' }).click();
+
+    const disableButton = page.getByRole('button', { name: 'Disable 2FA' });
+    const tooltipTrigger = page.getByTestId('required-2fa-disable-control');
+
+    await expect(disableButton).toBeDisabled();
+    await expect(tooltipTrigger).toHaveCSS('cursor', 'not-allowed');
+
+    for (let tabCount = 0; tabCount < 20; tabCount++) {
+      await page.keyboard.press('Tab');
+      if (await tooltipTrigger.evaluate((element) => document.activeElement === element)) {
+        break;
+      }
+    }
+    await expect(tooltipTrigger).toBeFocused();
+    await expect(page.getByRole('tooltip')).toHaveText('Required by administrator');
+
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('tooltip')).toBeHidden();
+    await page.mouse.move(0, 0);
+    await tooltipTrigger.hover();
+    await expect(page.getByRole('tooltip')).toHaveText('Required by administrator');
   });
 });

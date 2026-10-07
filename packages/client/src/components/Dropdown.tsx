@@ -161,19 +161,25 @@ const Dropdown: React.FC<DropdownProps> = ({
   );
 
   return (
-    <div className={cn('relative', variant === 'field' && 'w-full', className)}>
+    <div className={cn('relative max-w-full min-w-0', variant === 'field' && 'w-full', className)}>
       <Select.Select
         store={selectProps}
         disabled={disabled}
         className={cn(
-          'border-border-control text-text-primary hover:bg-surface-hover hover:text-text-primary relative inline-flex items-center justify-between border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
-          variant !== 'field' && shapeClasses[shape],
-          'disabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
+          'border-border-control text-text-primary hover:bg-surface-hover relative inline-flex items-center justify-between border bg-transparent py-2 text-sm transition-all duration-200 ease-in-out',
+          /** A field-variant trigger keeps the field ink from `fieldControl` in every state. */
+          variant !== 'field' && [
+            shapeClasses[shape],
+            'hover:text-text-primary disabled:hover:text-text-primary',
+          ],
+          'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,
           /** Horizontal padding would squeeze the icon, which flex-shrinks to fit */
-          iconOnly ? 'size-10 justify-center px-0' : 'w-fit gap-2 px-3',
+          iconOnly
+            ? 'size-theme-button min-h-theme-target min-w-theme-target justify-center px-0'
+            : 'w-fit max-w-full gap-2 px-3',
           variant === 'field' && fieldControl,
-          variant === 'compact' && 'h-8 px-2.5 py-0 text-xs transition-none',
+          variant === 'compact' && 'h-theme-button-compact px-2.5 py-0 text-xs transition-none',
           triggerClassName,
         )}
         data-testid={testId}
@@ -187,7 +193,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           ariaLabelledBy == null || iconOnly ? ariaLabelledBy : `${ariaLabelledBy} ${valueId}`
         }
       >
-        <div className={cn('flex items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
+        <div className={cn('flex min-w-0 items-center gap-2', iconOnly ? 'shrink-0' : 'w-full')}>
           {icon}
           {!iconOnly && (
             <span id={valueId} className="block truncate">
@@ -202,7 +208,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             </span>
           )}
         </div>
-        {!iconOnly && <Select.SelectArrow />}
+        {!iconOnly && <Select.SelectArrow className="shrink-0" />}
       </Select.Select>
       <Select.SelectPopover
         portal={portal}
@@ -210,7 +216,7 @@ const Dropdown: React.FC<DropdownProps> = ({
         store={selectProps}
         className={cn(
           // `className` sizes the TRIGGER only (applied above on Select.Select).
-          // Forwarding it here too meant a caller's trigger height (e.g. `h-10`)
+          // Forwarding it here too meant a caller's trigger height (a fixed height utility)
           // became the popover's height as well, clipping every option below the
           // first out of view. `sizeClasses` is the popover's own sizing prop; the
           // shared `.popover-ui` class already caps height to the viewport via
@@ -225,7 +231,7 @@ const Dropdown: React.FC<DropdownProps> = ({
             <div className="sticky -top-2 z-10 -mx-2 -mt-2 mb-1 bg-inherit px-2 pt-2 pb-1.5">
               <div className="relative">
                 <Search
-                  className="text-text-tertiary pointer-events-none absolute top-1/2 left-2 h-4 w-4 -translate-y-1/2"
+                  className="text-text-tertiary size-theme-icon pointer-events-none absolute top-1/2 left-2 -translate-y-1/2"
                   aria-hidden="true"
                 />
                 <Combobox.Combobox

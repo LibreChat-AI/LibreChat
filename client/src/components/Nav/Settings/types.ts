@@ -51,9 +51,11 @@ export interface SettingsContextValue {
   emailEnabled: boolean;
   allowEmailChange: boolean;
   passkeyLoginEnabled: boolean;
+  isTwoFactorPolicyProvider: boolean;
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
+  mascotAllowed: boolean;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   adminPanelURL: string;

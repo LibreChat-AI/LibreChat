@@ -52,7 +52,18 @@ function setup(conversation: TConversation = saved) {
   });
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client }, children);
-  return { client, ...renderHook(() => useCodeWorkspace(conversation), { wrapper }) };
+  const render = jest.fn();
+  return {
+    client,
+    render,
+    ...renderHook(
+      () => {
+        render();
+        return useCodeWorkspace(conversation);
+      },
+      { wrapper },
+    ),
+  };
 }
 
 describe('workspace status recovery', () => {
@@ -74,6 +85,37 @@ describe('workspace status recovery', () => {
       codeEnvironmentMode: 'attached',
       codeWorkspaces: [selected],
     });
+    unmount();
+    client.clear();
+  });
+
+  it('keeps unchanged status refreshes out of the composer render path', async () => {
+    const request = jest.spyOn(dataService, 'getCodeEnvironmentStatus').mockResolvedValue(ready);
+    const { result, client, render, unmount } = setup();
+    await waitFor(() => expect(result.current.state).toBe('ready'));
+    const renders = render.mock.calls.length;
+    let resolve = (_status: TCodeEnvironmentStatusResponse) => {};
+    request.mockReturnValueOnce(new Promise((done) => (resolve = done)));
+
+    let refresh: Promise<void>;
+    await act(async () => {
+      refresh = client.invalidateQueries(DynamicQueryKeys.codeEnvironmentStatus('vm'));
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(render).toHaveBeenCalledTimes(renders);
+    await act(async () => {
+      resolve({ ...ready, workspaces: [{ id: 'project' }] });
+      await refresh;
+    });
+    expect(render).toHaveBeenCalledTimes(renders);
+    expect(result.current.canSubmit).toBe(true);
+
+    request.mockResolvedValue({ ...ready, workspaces: [] });
+    await act(async () => {
+      await client.invalidateQueries(DynamicQueryKeys.codeEnvironmentStatus('vm'));
+    });
+    await waitFor(() => expect(result.current.state).toBe('missing'));
+    expect(result.current.canSubmit).toBe(false);
     unmount();
     client.clear();
   });

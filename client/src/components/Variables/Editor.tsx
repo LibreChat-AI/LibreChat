@@ -104,7 +104,8 @@ export default function VariableEditor({
         <Label className={labelClassName} htmlFor={id}>
           {label}
         </Label>
-        <div className="flex items-center gap-0.5">
+        {/* `ml-auto` keeps the actions right-aligned when the label is visually hidden. */}
+        <div className="ml-auto flex items-center gap-0.5">
           {showVariables && (
             <DropdownPopup
               portal={portal}
@@ -136,7 +137,7 @@ export default function VariableEditor({
                 variant="ghost"
                 onClick={() => setIsDialogOpen(true)}
                 aria-label={localize('com_ui_expand_editor')}
-                className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary h-7 w-7 p-0"
+                className="text-text-secondary hover:bg-surface-secondary h-7 w-7 p-0"
               >
                 <Maximize2 className="h-4 w-4" strokeWidth={1.75} aria-hidden={true} />
               </Button>

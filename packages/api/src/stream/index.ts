@@ -24,6 +24,7 @@ export type {
   IJobStore,
   IJobStoreV2,
   DetachedAgentEventActionStoreMode,
+  ScheduleProviderOwner,
 } from './interfaces/IJobStore';
 // Canonical "is this approval live?" predicate — one definition shared by the
 // stores, the approval lifecycle, and the status route / message middleware.
@@ -62,6 +63,9 @@ export {
   RecoveredSteerPayloadMismatchError,
 } from './SteerRecovery';
 export type { RecoveredSteerPayload } from './SteerRecovery';
+
+export { logGenerationStartFailure } from './admission';
+export type { GenerationStartFailureContext } from './admission';
 
 export { createStreamServices } from './createStreamServices';
 export type { StreamServicesConfig, StreamServices } from './createStreamServices';

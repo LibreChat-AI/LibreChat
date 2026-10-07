@@ -118,12 +118,44 @@ export function primaryButtonFallbacks(colors: IThemeRGB): IThemeRGB {
   };
 }
 
-/** Inks split out of the primary one: dialog titles, badge labels and the default avatar's glyph
- *  were all set in it. */
+/**
+ * Layering roles split out of the surface a component painted before each had a name: the role,
+ * and the surface it followed in light and in dark. A theme that repaints the surface keeps the
+ * layer on it, unless it names the role.
+ */
+export const layerRoleSources: ReadonlyArray<
+  readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
+> = [
+  ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-nav-hover', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-nav-selected', 'rgb-surface-active-alt', 'rgb-surface-active-alt'],
+  ['rgb-surface-tab-selected', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
+  ['rgb-surface-menu', 'rgb-presentation', 'rgb-presentation'],
+  ['rgb-surface-popover', 'rgb-surface-primary', 'rgb-surface-secondary'],
+  ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
+  ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
+  ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+];
+
+export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {
+  return Object.fromEntries(
+    layerRoleSources.flatMap(([role, light, dark]) => {
+      const source = colors[mode === 'dark' ? dark : light];
+      return colors[role] === undefined && source !== undefined ? [[role, source]] : [];
+    }),
+  );
+}
+
+/** Inks split out of the primary one: dialog titles, badge labels, the default avatar's glyph and
+ *  a field's typed value were all set in it. */
 export const primaryInkRoles: ReadonlyArray<keyof IThemeRGB> = [
   'rgb-dialog-title',
   'rgb-badge-label',
   'rgb-avatar-text',
+  'rgb-field-text',
 ];
 
 /** A theme that repaints the primary ink keeps the inks split out of it on it, unless it names them. */
@@ -133,6 +165,25 @@ export function primaryInkFallbacks(colors: IThemeRGB): IThemeRGB {
     primaryInkRoles.flatMap((role) => {
       const ink = colors[role] ?? primary;
       return ink === undefined ? [] : [[role, ink]];
+    }),
+  );
+}
+
+/** Roles that were painted in another role before they had their own. */
+export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, keyof IThemeRGB]> = [
+  ['rgb-surface-tooltip', 'rgb-surface-primary'],
+  ['rgb-text-tooltip', 'rgb-text-primary'],
+  ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
+  ['rgb-alert-error-border', 'rgb-status-error-border'],
+];
+
+/** A theme that repaints a source role keeps the tooltip and the error alert on it, unless it
+ *  names them. */
+export function overlayFallbacks(colors: IThemeRGB): IThemeRGB {
+  return Object.fromEntries(
+    overlayFallbackSources.flatMap(([role, source]) => {
+      const value = colors[source];
+      return colors[role] === undefined && value !== undefined ? [[role, value]] : [];
     }),
   );
 }
@@ -163,8 +214,18 @@ export const themeAppearanceProperties: Readonly<
   surfaceRadius: '--theme-surface-radius',
   largeSurfaceRadius: '--theme-large-surface-radius',
   menuRadius: '--theme-menu-radius',
+  popoverRadius: '--theme-popover-radius',
+  menuPanelRadius: '--theme-menu-panel-radius',
+  composerActionRadius: '--theme-composer-action-radius',
+  inlineCodeWeight: '--theme-inline-code-weight',
   tooltipRadius: '--theme-tooltip-radius',
+  tooltipPaddingX: '--theme-tooltip-padding-x',
+  tooltipPaddingY: '--theme-tooltip-padding-y',
+  tooltipTextSize: '--theme-tooltip-text-size',
   tabRadius: '--theme-tab-radius',
+  tabMinWidth: '--theme-tab-min-width',
+  listMinWidth: '--theme-list-min-width',
+  listMaxHeight: '--theme-list-max-height',
   radiusSm: '--theme-radius-sm',
   radiusMd: '--theme-radius-md',
   radiusLg: '--theme-radius-lg',
@@ -173,13 +234,23 @@ export const themeAppearanceProperties: Readonly<
   radius3xl: '--theme-radius-3xl',
   controlHeight: '--theme-control-height',
   controlPaddingX: '--theme-control-padding-x',
+  buttonPaddingX: '--theme-button-padding-x',
   controlGap: '--theme-control-gap',
+  iconSize: '--theme-icon-size',
+  iconSizeMd: '--theme-icon-size-md',
+  iconSizeLg: '--theme-icon-size-lg',
   controlFontWeight: '--theme-control-font-weight',
   buttonHeight: '--theme-button-height',
   buttonHeightSm: '--theme-button-height-sm',
+  buttonHeightXs: '--theme-button-height-xs',
+  buttonHeightLg: '--theme-button-height-lg',
+  buttonHeightCompact: '--theme-button-height-compact',
+  iconButtonSizeSm: '--theme-icon-button-size-sm',
   fieldHeight: '--theme-field-height',
+  fieldHeightLg: '--theme-field-height-lg',
   fieldPaddingY: '--theme-field-padding-y',
   fieldFocusStyle: '--theme-field-focus-style',
+  fieldFillStyle: '--theme-field-fill-style',
   focusRingWidth: '--theme-focus-ring-width',
   focusRingOffset: '--theme-focus-ring-offset',
   labelSize: '--theme-label-size',
@@ -187,6 +258,7 @@ export const themeAppearanceProperties: Readonly<
   labelFontWeight: '--theme-label-font-weight',
   switchWidth: '--theme-switch-width',
   switchHeight: '--theme-switch-height',
+  checkboxSize: '--theme-checkbox-size',
   tableCellSpaceY: '--theme-table-cell-space-y',
   tableRowStroke: '--theme-table-row-stroke',
   spaceCompact: '--theme-space-compact',
@@ -201,6 +273,10 @@ export const themeAppearanceProperties: Readonly<
   textLg: '--theme-text-lg',
   textXl: '--theme-text-xl',
   text2xl: '--theme-text-2xl',
+  text3xs: '--theme-text-3xs',
+  text2xs: '--theme-text-2xs',
+  text1xs: '--theme-text-1xs',
+  text1sm: '--theme-text-1sm',
   leadingXs: '--theme-text-xs-leading',
   leadingSm: '--theme-text-sm-leading',
   leadingBase: '--theme-text-base-leading',
@@ -230,6 +306,9 @@ export const themeAppearanceProperties: Readonly<
   tooltipShadow: '--theme-tooltip-shadow',
   motionFast: '--theme-motion-fast',
   motionNormal: '--theme-motion-normal',
+  chromeBorderAlpha: '--theme-border-chrome-alpha',
+  insetBorderAlpha: '--theme-border-inset-alpha',
+  destructiveStyle: '--theme-destructive-style',
 });
 
 export const defaultAppearance: IThemeAppearance = Object.freeze({
@@ -238,8 +317,18 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   surfaceRadius: '1rem',
   largeSurfaceRadius: '1.5rem',
   menuRadius: '0.7rem',
+  popoverRadius: '1rem',
+  menuPanelRadius: '0.75rem',
+  composerActionRadius: '9999px',
+  inlineCodeWeight: '600',
   tooltipRadius: '0.275rem',
+  tooltipPaddingX: '0.5rem',
+  tooltipPaddingY: '0.25rem',
+  tooltipTextSize: '1rem',
   tabRadius: '0.185rem',
+  tabMinWidth: '100px',
+  listMinWidth: '8rem',
+  listMaxHeight: '24rem',
   radiusSm: 'calc(0.5rem - 4px)',
   radiusMd: 'calc(0.5rem - 2px)',
   radiusLg: '0.5rem',
@@ -248,19 +337,30 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   radius3xl: '1.5rem',
   controlHeight: '2.25rem',
   controlPaddingX: '0.75rem',
+  buttonPaddingX: '1rem',
   controlGap: '0.375rem',
+  iconSize: '1rem',
+  iconSizeMd: '1.25rem',
+  iconSizeLg: '1.5rem',
   controlFontWeight: '500',
   buttonHeight: '2.5rem',
   buttonHeightSm: '2.25rem',
+  buttonHeightXs: '1.75rem',
+  buttonHeightLg: '2.75rem',
+  buttonHeightCompact: '2rem',
+  iconButtonSizeSm: '2rem',
   fieldHeight: '2.5rem',
+  fieldHeightLg: '3rem',
   fieldPaddingY: '0.5rem',
   fieldFocusStyle: 'ring',
+  fieldFillStyle: 'transparent',
   focusRingWidth: '2px',
   focusRingOffset: '2px',
   labelSize: '0.875rem',
   labelLeading: '1',
   labelFontWeight: 'inherit',
   ...defaultSwitchSize,
+  checkboxSize: '1rem',
   tableCellSpaceY: '1rem',
   tableRowStroke: '0px',
   spaceCompact: '0.375rem',
@@ -276,6 +376,10 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   textLg: '1.125rem',
   textXl: '1.25rem',
   text2xl: '1.5rem',
+  text3xs: '0.625rem',
+  text2xs: '0.6875rem',
+  text1xs: '0.8125rem',
+  text1sm: '0.9375rem',
   leadingXs: 'calc(1 / 0.75)',
   leadingSm: 'calc(1.25 / 0.875)',
   leadingBase: 'calc(1.5 / 1)',
@@ -305,6 +409,9 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   tooltipShadow: '0 2px 4px 0 rgb(0 0 0 / 0.25)',
   motionFast: '150ms',
   motionNormal: '200ms',
+  chromeBorderAlpha: '1',
+  insetBorderAlpha: '1',
+  destructiveStyle: 'fill',
 });
 
 /**
@@ -455,7 +562,7 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
- * and dialog titles were set in the `text-lg` step and the display family, so a theme that names
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
  * follow one that is itself inherited.
  */
@@ -466,6 +573,9 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['labelSize', 'textSm'],
   ['dialogTitleSize', 'textLg'],
   ['dialogTitleFontFamily', 'displayFontFamily'],
+  ['popoverRadius', 'radius2xl'],
+  ['menuPanelRadius', 'radiusXl'],
+  ['composerActionRadius', 'roundControlRadius'],
 ];
 
 /**
@@ -507,7 +617,9 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const baseColors = mode === 'dark' ? darkTheme : defaultTheme;
   const definition = theme.modes[mode];
   const customColors = knownColors(definition?.colors);
-  const composerHoverFallback =
+  /** Each fallback is typed as one `IThemeRGB`, not a `{ role } | {}` union: the colors below
+   *  spread them all, and every union spread would double the type checker's work. */
+  const composerHoverFallback: IThemeRGB =
     customColors?.['rgb-surface-composer-hover'] === undefined &&
     customColors?.['rgb-surface-hover'] !== undefined
       ? { 'rgb-surface-composer-hover': customColors['rgb-surface-hover'] }
@@ -522,7 +634,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-presentation']
       : customColors?.['rgb-surface-primary-alt'];
-  const codeSurfaceFallback =
+  const codeSurfaceFallback: IThemeRGB =
     customColors?.['rgb-surface-code'] === undefined && codeSurfaceSource !== undefined
       ? { 'rgb-surface-code': codeSurfaceSource }
       : {};
@@ -535,7 +647,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-surface-primary-alt']
       : customColors?.['rgb-surface-chat'];
-  const codeBodyFallback =
+  const codeBodyFallback: IThemeRGB =
     customColors?.['rgb-surface-code-body'] === undefined && codeBodySource !== undefined
       ? { 'rgb-surface-code-body': codeBodySource }
       : {};
@@ -547,12 +659,12 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * sweep alongside custom text still gets it by naming the stop, the way
    * `rgb-surface-composer-hover` opts out of its own fallback above.
    */
-  const shimmerBaseFallback =
+  const shimmerBaseFallback: IThemeRGB =
     customColors?.['rgb-shimmer-base'] === undefined &&
     customColors?.['rgb-text-primary'] !== undefined
       ? { 'rgb-shimmer-base': customColors['rgb-text-primary'] }
       : {};
-  const textMutedFallback =
+  const textMutedFallback: IThemeRGB =
     customColors?.['rgb-text-muted'] === undefined &&
     customColors?.['rgb-text-tertiary'] !== undefined
       ? { 'rgb-text-muted': customColors['rgb-text-tertiary'] }
@@ -565,10 +677,33 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const proseLinkSource =
     customColors?.['rgb-link'] ??
     (mode === 'dark' ? customColors?.['rgb-text-primary'] : undefined);
-  const proseLinkFallback =
+  const proseLinkFallback: IThemeRGB =
     customColors?.['rgb-link-prose'] === undefined && proseLinkSource !== undefined
       ? { 'rgb-link-prose': proseLinkSource }
       : {};
+  /**
+   * The list marker, the blockquote bar and the inline code chip read border and surface roles
+   * before they had their own, so a theme that names none of the three keeps what it painted:
+   * `border-medium` for the marker, `border-light` in light and `border-medium` in dark for the
+   * bar, and `surface-active-alt` in light and `surface-hover-alt` in dark for the chip.
+   */
+  const proseBulletSource = customColors?.['rgb-border-medium'];
+  const proseQuoteBarSource = customColors?.['rgb-border-medium'];
+  const codeInlineSource =
+    mode === 'dark'
+      ? customColors?.['rgb-surface-hover-alt']
+      : customColors?.['rgb-surface-active-alt'];
+  const proseFallback: IThemeRGB = {
+    ...(customColors?.['rgb-prose-bullet'] === undefined && proseBulletSource !== undefined
+      ? { 'rgb-prose-bullet': proseBulletSource }
+      : {}),
+    ...(customColors?.['rgb-prose-quote-bar'] === undefined && proseQuoteBarSource !== undefined
+      ? { 'rgb-prose-quote-bar': proseQuoteBarSource }
+      : {}),
+    ...(customColors?.['rgb-surface-code-inline'] === undefined && codeInlineSource !== undefined
+      ? { 'rgb-surface-code-inline': codeInlineSource }
+      : {}),
+  };
   /**
    * Agent and assistant avatars sat on `surface-secondary` in light and `surface-tertiary` in dark
    * before they had a role, so a theme that repaints the one its mode used keeps that backdrop.
@@ -577,11 +712,23 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     mode === 'dark'
       ? customColors?.['rgb-surface-tertiary']
       : customColors?.['rgb-surface-secondary'];
-  const avatarPlaceholderFallback =
+  const avatarPlaceholderFallback: IThemeRGB =
     customColors?.['rgb-avatar-placeholder'] === undefined && avatarPlaceholderSource !== undefined
       ? { 'rgb-avatar-placeholder': avatarPlaceholderSource }
       : {};
-  const chartWidgetSurfaceFallback =
+  /**
+   * The mobile drawer drew its edge only in dark, in `border-xheavy`; in light the drawer's own
+   * fill. A theme that repaints the role its mode used keeps that edge.
+   */
+  const drawerEdgeSource =
+    mode === 'dark'
+      ? customColors?.['rgb-border-xheavy']
+      : customColors?.['rgb-surface-primary-alt'];
+  const drawerEdgeFallback: Partial<IThemeRGB> =
+    customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
+      ? { 'rgb-drawer-edge': drawerEdgeSource }
+      : {};
+  const chartWidgetSurfaceFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-surface'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-chart-widget-surface': customColors['rgb-surface-primary'] }
@@ -590,36 +737,51 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    * The thumb was painted `surface-primary` before it had a role, so a theme that repaints that
    * surface keeps the knob it drew against its tracks.
    */
-  const switchThumbFallback =
+  const switchThumbFallback: IThemeRGB =
     customColors?.['rgb-switch-thumb'] === undefined &&
     customColors?.['rgb-surface-primary'] !== undefined
       ? { 'rgb-switch-thumb': customColors['rgb-surface-primary'] }
       : {};
+  /** A field fill only shows under `fieldFillStyle: 'fill'`, on the theme's own canvas by default. */
+  const fieldFillFallback: IThemeRGB =
+    customColors?.['rgb-field-fill'] === undefined &&
+    customColors?.['rgb-surface-primary'] !== undefined
+      ? { 'rgb-field-fill': customColors['rgb-surface-primary'] }
+      : {};
   /** Table column names were `text-secondary` before they had a role. */
-  const tableHeaderTextFallback =
+  const tableHeaderTextFallback: IThemeRGB =
     customColors?.['rgb-table-header-text'] === undefined &&
     customColors?.['rgb-text-secondary'] !== undefined
       ? { 'rgb-table-header-text': customColors['rgb-text-secondary'] }
       : {};
   /** Self-sticking table headers were the dialog surface before they had a role. */
-  const tableHeaderFillFallback =
+  const tableHeaderFillFallback: IThemeRGB =
     customColors?.['rgb-table-header-fill'] === undefined &&
     customColors?.['rgb-surface-dialog'] !== undefined
       ? { 'rgb-table-header-fill': customColors['rgb-surface-dialog'] }
       : {};
-  const chartWidgetStrokeFallback =
+  const chartWidgetStrokeFallback: IThemeRGB =
     customColors?.['rgb-chart-widget-stroke'] === undefined &&
     customColors?.['rgb-border-light'] !== undefined
       ? { 'rgb-chart-widget-stroke': customColors['rgb-border-light'] }
       : {};
+  const focusSubtleFallback: IThemeRGB =
+    customColors?.['rgb-focus-subtle'] === undefined &&
+    customColors?.['rgb-border-heavy'] !== undefined
+      ? { 'rgb-focus-subtle': customColors['rgb-border-heavy'] }
+      : {};
   const borderControlSource =
     customColors != null ? controlBorderFallback(customColors) : undefined;
-  const borderControlFallback =
+  const borderControlFallback: IThemeRGB =
     borderControlSource !== undefined ? { 'rgb-border-control': borderControlSource } : {};
-  const focusFallback = customColors != null ? focusFallbacks(customColors) : {};
-  const pressedFallback = customColors != null ? pressedFallbacks(customColors) : {};
-  const primaryButtonFallback = customColors != null ? primaryButtonFallbacks(customColors) : {};
-  const primaryInks = customColors != null ? primaryInkFallbacks(customColors) : {};
+  const layerFallback: IThemeRGB =
+    customColors != null ? layerRoleFallbacks(customColors, mode) : {};
+  const focusFallback: IThemeRGB = customColors != null ? focusFallbacks(customColors) : {};
+  const pressedFallback: IThemeRGB = customColors != null ? pressedFallbacks(customColors) : {};
+  const primaryButtonFallback: IThemeRGB =
+    customColors != null ? primaryButtonFallbacks(customColors) : {};
+  const primaryInks: IThemeRGB = customColors != null ? primaryInkFallbacks(customColors) : {};
+  const overlayFallback: IThemeRGB = customColors != null ? overlayFallbacks(customColors) : {};
   /**
    * Slot 8 arrived after the seven-slot scale shipped, so a stored or
    * environment theme that paints its own scale cannot name it. Filling the
@@ -638,7 +800,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
     ([1, 2, 3, 4, 5, 6, 7] as const).some(
       (slot) => customColors[`rgb-series-${slot}`] !== undefined,
     );
-  const seriesEightFallback =
+  const seriesEightFallback: IThemeRGB =
     customColors?.['rgb-series-8'] === undefined && ownsSeriesScale
       ? {
           'rgb-series-8': customColors?.['rgb-text-secondary'] ?? baseColors['rgb-text-secondary'],
@@ -657,7 +819,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
    */
   const ownsMarkSurroundings =
     customColors != null && MARK_NEIGHBOURHOOD.some((token) => customColors[token] !== undefined);
-  const verifiedFallback =
+  const verifiedFallback: IThemeRGB =
     ownsMarkSurroundings && customColors?.['rgb-status-verified'] === undefined
       ? {
           'rgb-status-verified':
@@ -678,10 +840,16 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...shimmerBaseFallback,
       ...textMutedFallback,
       ...proseLinkFallback,
+      ...proseFallback,
       ...avatarPlaceholderFallback,
+      ...drawerEdgeFallback,
       ...chartWidgetSurfaceFallback,
       ...chartWidgetStrokeFallback,
+      ...focusSubtleFallback,
       ...switchThumbFallback,
+      ...fieldFillFallback,
+      ...overlayFallback,
+      ...layerFallback,
       ...tableHeaderTextFallback,
       ...tableHeaderFillFallback,
       ...borderControlFallback,

@@ -1,5 +1,6 @@
 import { Input, Label } from '@librechat/client';
 import { Controller, useWatch, useFormContext } from 'react-hook-form';
+import type { InstructionsPromptStatus } from './Instructions';
 import type { AgentForm } from '~/common';
 import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
 import AgentCategorySelector from './AgentCategorySelector';
@@ -12,11 +13,18 @@ import { validateEmail, cn } from '~/utils';
 import Instructions from './Instructions';
 import FileContext from './FileContext';
 import AgentAvatar from './AgentAvatar';
+import Starters from './Starters';
 import { Panel } from '~/common';
 
 const fieldClass = 'h-9';
 
-export default function AgentConfig() {
+export default function AgentConfig({
+  instructionsPromptStatus,
+  onRetryInstructionsPrompt,
+}: {
+  instructionsPromptStatus?: InstructionsPromptStatus;
+  onRetryInstructionsPrompt?: () => void;
+}) {
   const localize = useLocalize();
   const methods = useFormContext<AgentForm>();
   const { setActivePanel, endpointsConfig, agentsConfig } = useAgentPanelContext();
@@ -110,13 +118,13 @@ export default function AgentConfig() {
             onClick={() => setActivePanel(Panel.model)}
             title={model || undefined}
             className={cn(
-              'border-border-light bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
+              'border-border-control bg-surface-secondary text-text-primary hover:bg-surface-tertiary focus-visible:ring-ring-primary relative flex h-9 w-full min-w-0 items-center overflow-hidden rounded-lg border text-sm font-medium transition-colors focus:outline-hidden focus-visible:ring-2',
               model != null && model ? 'px-1' : 'px-3',
             )}
           >
             <div className="flex w-full min-w-0 items-center gap-2">
               {providerValue !== undefined && (
-                <div className="shadow-stroke relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-black dark:bg-white">
+                <div className="avatar-stroke bg-surface-primary text-text-primary relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full">
                   <ResolvedProviderIcon
                     provider={providerId}
                     imageURL={imageURL}
@@ -143,7 +151,10 @@ export default function AgentConfig() {
       </div>
 
       {/* INSTRUCTIONS */}
-      <Instructions />
+      <Instructions
+        promptStatus={instructionsPromptStatus}
+        onRetryLoad={onRetryInstructionsPrompt}
+      />
 
       {/* TOOLS — unified built-ins / tools / actions / mcp / skills */}
       <ToolsSection agentId={agent_id} />
@@ -154,6 +165,9 @@ export default function AgentConfig() {
           <FileContext agent_id={agent_id} files={contextFiles} />
         </div>
       )}
+
+      {/* CONVERSATION STARTERS */}
+      <Starters />
 
       {/* SUPPORT CONTACT */}
       <div className="mb-3 flex flex-col">

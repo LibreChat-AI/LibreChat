@@ -79,6 +79,56 @@ function createPendingAction(streamId: string) {
   );
 }
 
+it('keeps a fresh terminal writer and its DONE subscription when cleanup reaps an unrelated job', async () => {
+  const store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+  const transport = new InMemoryEventTransport();
+  const manager = new GenerationJobManagerClass();
+  manager.configure({
+    jobStore: store,
+    eventTransport: transport,
+    isRedis: false,
+    cleanupOnComplete: false,
+  });
+  manager.initialize();
+  const onDone = jest.fn();
+  const onError = jest.fn();
+  try {
+    const job = await manager.createJob('fresh-final-writer', 'owner');
+    const subscription = await manager.subscribe(job.streamId, () => undefined, onDone, onError);
+    const claim = await manager.claimTerminalJob(
+      job.streamId,
+      'complete',
+      undefined,
+      job.createdAt,
+      { persistencePending: true },
+    );
+    expect(claim).not.toBeNull();
+    const victim = await store.createJob('unrelated-expired', 'owner');
+    await store.updateJob(
+      victim.streamId,
+      { status: 'complete', completedAt: Date.now() - 120_000 },
+      victim.createdAt,
+    );
+    await manager['cleanup']();
+    expect(await store.getJob(victim.streamId)).toBeNull();
+    expect((await store.getJob(job.streamId))?.terminalPersistencePending).toBe(true);
+    expect(job.abortController.signal.aborted).toBe(false);
+    expect(transport.getSubscriberCount(job.streamId)).toBe(1);
+    await store.finalizeTerminalPersistence(
+      job.streamId,
+      job.createdAt,
+      JSON.stringify({ final: true, terminalStatus: 'complete' }),
+    );
+    await manager.emitDone(job.streamId, { final: true }, job.createdAt);
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    await manager.finishTerminalJob(claim!);
+    subscription?.unsubscribe();
+  } finally {
+    await manager.destroy();
+  }
+});
+
 describe('GenerationJobManager startup telemetry', () => {
   it('returns sanitized initial metadata from the atomic job creation', async () => {
     const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
@@ -635,6 +685,59 @@ describe('GenerationJobManager startup telemetry', () => {
 
     subscription?.unsubscribe();
     await manager.destroy();
+  });
+
+  it('carries only canonical protected text and revision from created through abort', async () => {
+    const manager = createManager();
+    const streamId = 'stream-protected-stop';
+    const text = 'Email [EMAIL_1_0123456789abcdef0123456789abcdef]';
+    const revision = '0123456789abcdef0123456789abcdef';
+    const job = await manager.createJob(streamId, 'owner', streamId, {
+      initialMetadata: {
+        responseMessageId: 'response-1',
+        userMessage: {
+          messageId: 'user-1',
+          conversationId: streamId,
+          text,
+          privacyRevision: revision,
+        },
+      },
+    });
+    const created: ServerSentEvent = {
+      created: true,
+      streamId,
+      message: {
+        messageId: 'user-1',
+        conversationId: streamId,
+        sender: 'User',
+        isCreatedByUser: true,
+        text,
+        privacyRevision: revision,
+      },
+    };
+    try {
+      await manager.emitChunk(streamId, created, { expectedCreatedAt: job.createdAt });
+      expect((await manager.getJob(streamId))?.metadata.userMessage).toMatchObject({
+        messageId: 'user-1',
+        text,
+        privacyRevision: revision,
+      });
+      const result = await manager.abortJob(streamId, {
+        expectedCreatedAt: job.createdAt,
+        beforePublish: async (pending) => {
+          expect(pending.jobData?.userMessage).toMatchObject({ text, privacyRevision: revision });
+          expect(pending.finalEvent).toMatchObject({
+            requestMessage: { text, privacyRevision: revision },
+          });
+        },
+      });
+      expect(result.finalEvent).toMatchObject({
+        requestMessage: { messageId: 'user-1', text, privacyRevision: revision },
+      });
+      expect(JSON.stringify(result)).not.toContain('alice@example.com');
+    } finally {
+      await manager.destroy();
+    }
   });
 
   it('ends an active startup when the manager shuts down', async () => {

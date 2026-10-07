@@ -1,3 +1,4 @@
+import { RUM_COLLECTOR_ACK_HEADER } from 'librechat-data-provider';
 jest.mock('~/app/metrics', () => ({
   recordRumProxyRequest: jest.fn(),
 }));
@@ -16,7 +17,14 @@ import {
   isRumProxyEnabled,
   proxyRumRequest,
   resolveRumProxyTarget,
+  isRumClientLogsEnabled,
+  isRumLogsEndpointEnabled,
+  requireRumLogsEnabled,
+  requireRumProxyEnabled,
+  excludeRumBodyParser,
 } from './proxy';
+
+const PROTOBUF_HEADERS = { 'content-type': 'application/x-protobuf' };
 
 const makeResponse = () => {
   const res = {
@@ -80,6 +88,73 @@ describe('RUM proxy configuration', () => {
     expect(isRumProxyEnabled()).toBe(false);
   });
 
+  it('keeps client logs opt-in and limited to proxy mode', () => {
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_AUTH_MODE = 'proxy';
+    process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+    delete process.env.RUM_CLIENT_LOGS;
+    expect(isRumClientLogsEnabled()).toBe(false);
+
+    process.env.RUM_CLIENT_LOGS = '';
+    expect(isRumClientLogsEnabled()).toBe(false);
+
+    process.env.RUM_CLIENT_LOGS = 'false';
+    expect(isRumClientLogsEnabled()).toBe(false);
+
+    process.env.RUM_CLIENT_LOGS = 'true';
+    expect(isRumClientLogsEnabled()).toBe(true);
+
+    process.env.RUM_CLIENT_LOGS = 'true';
+    process.env.RUM_AUTH_MODE = 'publicToken';
+    expect(isRumClientLogsEnabled()).toBe(false);
+  });
+
+  it.each([
+    [{}, false],
+    [{ RUM_CLIENT_LOGS: 'true' }, true],
+    [{ RUM_CONSOLE_CAPTURE: 'true' }, true],
+    [{ RUM_DISABLE_REPLAY: 'false' }, true],
+    [{ RUM_DISABLE_REPLAY: 'true', RUM_CLIENT_LOGS: 'false' }, false],
+  ])('accepts OTLP logs only when a browser log source is enabled (%p)', (env, expected) => {
+    process.env.RUM_ENABLED = 'true';
+    process.env.RUM_AUTH_MODE = 'proxy';
+    process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+    delete process.env.RUM_CLIENT_LOGS;
+    delete process.env.RUM_CONSOLE_CAPTURE;
+    delete process.env.RUM_DISABLE_REPLAY;
+    Object.assign(process.env, env);
+
+    expect(isRumLogsEndpointEnabled()).toBe(expected);
+
+    process.env.RUM_AUTH_MODE = 'publicToken';
+    expect(isRumLogsEndpointEnabled()).toBe(false);
+  });
+
+  it.each([undefined, 'text/plain', 'multipart/form-data; boundary=x', 'application/xml'])(
+    'refuses %p payloads with 415 before contacting the collector',
+    async (contentType) => {
+      process.env.RUM_ENABLED = 'true';
+      process.env.RUM_AUTH_MODE = 'proxy';
+      process.env.RUM_PROXY_TARGET_URL = 'http://otel-collector:4318';
+      const fetchMock = jest.spyOn(global, 'fetch');
+      const res = makeResponse();
+
+      await proxyRumRequest(
+        {
+          path: '/v1/logs',
+          body: Buffer.from('payload'),
+          headers: contentType ? { 'content-type': contentType } : {},
+        } as never,
+        res as never,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(415);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'unsupported_media_type');
+      fetchMock.mockRestore();
+    },
+  );
+
   it('rejects unsafe collector target URLs', () => {
     process.env.RUM_PROXY_TARGET_URL = 'https://user:pass@collector.example.com';
     expect(getRumProxyTargetBaseUrl()).toBeUndefined();
@@ -138,7 +213,10 @@ describe('RUM proxy configuration', () => {
     const missingBodyRes = makeResponse();
     const unsupportedPathRes = makeResponse();
 
-    await proxyRumRequest({ path: '/v1/traces', headers: {} } as never, missingBodyRes as never);
+    await proxyRumRequest(
+      { path: '/v1/traces', headers: { 'content-type': 'application/x-protobuf' } } as never,
+      missingBodyRes as never,
+    );
     await proxyRumRequest(
       { path: '/v1/metrics', body: Buffer.from('payload'), headers: {} } as never,
       unsupportedPathRes as never,
@@ -158,7 +236,7 @@ describe('RUM proxy configuration', () => {
     const res = makeResponse();
 
     await proxyRumRequest(
-      { path: '/v1/traces', body: Buffer.from('payload'), headers: {} } as never,
+      { path: '/v1/traces', body: Buffer.from('payload'), headers: PROTOBUF_HEADERS } as never,
       res as never,
     );
 
@@ -177,13 +255,132 @@ describe('RUM proxy configuration', () => {
     const res = makeResponse();
 
     await proxyRumRequest(
-      { path: '/v1/logs', body: Buffer.from('payload'), headers: {} } as never,
+      { path: '/v1/logs', body: Buffer.from('payload'), headers: PROTOBUF_HEADERS } as never,
       res as never,
     );
 
     expect(res.status).toHaveBeenCalledWith(503);
     expect(recordRumProxyRequest).toHaveBeenCalledWith('logs', 'collector_5xx');
     fetchMock.mockRestore();
+  });
+});
+
+describe('RUM HTTP boundary', () => {
+  const originalEnv = process.env;
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      RUM_ENABLED: 'true',
+      RUM_AUTH_MODE: 'proxy',
+      RUM_PROXY_TARGET_URL: 'http://otel-collector:4318',
+    };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('maps disabled proxy and log-source policy to 404 in typed middleware', async () => {
+    delete process.env.RUM_CLIENT_LOGS;
+    delete process.env.RUM_CONSOLE_CAPTURE;
+    delete process.env.RUM_DISABLE_REPLAY;
+    const app = express();
+    app.post('/traces', requireRumProxyEnabled, (_req, res) => {
+      res.status(202).end();
+    });
+    app.post('/logs', requireRumLogsEnabled, requireRumProxyEnabled, (_req, res) => {
+      res.status(202).end();
+    });
+    expect((await request(app).post('/traces')).status).toBe(202);
+    expect((await request(app).post('/logs')).status).toBe(404);
+    process.env.RUM_CLIENT_LOGS = 'true';
+    expect((await request(app).post('/logs')).status).toBe(202);
+    process.env.RUM_ENABLED = 'false';
+    expect((await request(app).post('/traces')).status).toBe(404);
+  });
+
+  it('defers JSON parsing to the authenticated, rate-limited RUM route without changing other routes', async () => {
+    const parser = jest.fn(express.json({ limit: '3mb' }));
+    const app = express();
+    app.use(excludeRumBodyParser(parser));
+    app.post(
+      '/api/rum/v1/logs',
+      (req, res, next) => {
+        expect(req.body).toBeUndefined();
+        if (!req.headers.authorization) {
+          res.status(204).end();
+          return;
+        }
+        if (req.headers['x-budget'] === 'exhausted') {
+          res.status(429).end();
+          return;
+        }
+        next();
+      },
+      express.json({ limit: '1kb' }),
+      (req, res) => {
+        res.json(req.body);
+      },
+    );
+    app.post('/api/rumor', (req, res) => {
+      res.json(req.body);
+    });
+    const body = 'not valid JSON';
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .set('x-budget', 'exhausted')
+          .set('Content-Type', 'application/json')
+          .send(body.repeat(1000))
+      ).status,
+    ).toBe(429);
+    expect(
+      (
+        await request(app)
+          .post('/API/RUM/v1/logs')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(204);
+    expect(parser).not.toHaveBeenCalled();
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .set('Content-Type', 'application/json')
+          .send(body)
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .send({ records: [] })
+      ).body,
+    ).toEqual({ records: [] });
+    expect(
+      (
+        await request(app)
+          .post('/api/rum/v1/logs')
+          .set('authorization', 'Bearer test')
+          .send({ text: 'x'.repeat(2000) })
+      ).status,
+    ).toBe(413);
+    expect((await request(app).post('/api/rumor').send({ parsed: true })).body).toEqual({
+      parsed: true,
+    });
+    expect(parser).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -266,6 +463,74 @@ describe('RUM proxy upstream HTTP contract', () => {
       expect(recordRumProxyRequest).toHaveBeenCalledWith(signal, 'success');
     },
   );
+
+  it('marks a successful collector 204 so clients can distinguish it from an auth drop', async () => {
+    collector.on('request', (_req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+    const app = express();
+    app.use(express.json());
+    app.post('/v1/logs', (req, res) => proxyRumRequest(req, res));
+    const response = await request(app).post('/v1/logs').send({ resourceLogs: [] });
+    expect(response.status).toBe(204);
+    expect(response.headers[RUM_COLLECTOR_ACK_HEADER]).toBe('true');
+  });
+
+  it('forwards OTLP/JSON log records unchanged after the app JSON parser and never logs them', async () => {
+    const records = {
+      resourceLogs: [
+        {
+          resource: {
+            attributes: [{ key: 'service.name', value: { stringValue: 'librechat-web' } }],
+          },
+          scopeLogs: [
+            {
+              scope: { name: 'librechat.client', version: '1' },
+              logRecords: [
+                {
+                  timeUnixNano: '1790000000000000000',
+                  severityNumber: 17,
+                  severityText: 'ERROR',
+                  body: { stringValue: 'payload-marker' },
+                  attributes: [{ key: 'log.repeat_count', value: { intValue: '3' } }],
+                  traceId: 'a'.repeat(32),
+                  spanId: 'b'.repeat(16),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    let receivedBody = '';
+    let receivedType: string | undefined;
+    collector.on('request', (req, res) => {
+      receivedType = req.headers['content-type'];
+      req.on('data', (chunk: Buffer) => {
+        receivedBody += chunk.toString();
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    const logSpy = jest.spyOn(logger, 'warn');
+    const app = express();
+    app.use(express.json({ limit: '3mb' }));
+    app.post('/v1/:signal', (req, res) => proxyRumRequest(req, res));
+
+    const response = await request(app)
+      .post('/v1/logs')
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify(records));
+
+    expect(response.status).toBe(200);
+    expect(receivedType).toBe('application/json');
+    expect(JSON.parse(receivedBody)).toEqual(records);
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain('payload-marker');
+    logSpy.mockRestore();
+  });
 
   it.each([undefined, '', '   '])(
     'preserves unauthenticated collectors with authorization %p',

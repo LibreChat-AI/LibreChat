@@ -6,9 +6,9 @@ import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
 import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import Image from '~/components/Chat/Messages/Content/Image';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import CollapsibleText from './CollapsibleText';
 import { useShareContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -116,12 +116,13 @@ const SteerPart = memo(function SteerPart({
   return (
     <div
       id={steerId ? `steer-${steerId}` : undefined}
-      className="steer-render group relative my-5 flex w-full justify-end"
+      data-steer-render
+      className="group relative my-5 flex w-full justify-end"
       data-testid="steer-part"
     >
       <div className="user-turn relative flex w-fit max-w-[90%] flex-col items-end sm:max-w-[85%]">
         <h2 className="sr-only">{label}</h2>
-        <div className="rounded-theme-surface rounded-br-theme-control bg-surface-tertiary px-theme-normal flex max-w-full flex-col items-start gap-2 py-2.5">
+        <div className="rounded-theme-surface rounded-br-theme-control bg-surface-user-message px-theme-normal flex max-w-full flex-col items-start gap-2 py-2.5">
           <MessageQuotes quotes={quotes} />
           {(imageFiles.length > 0 || otherFiles.length > 0) && (
             <div className="flex w-full flex-wrap gap-2">
@@ -150,7 +151,7 @@ const SteerPart = memo(function SteerPart({
           <CollapsibleText enabled={collapseLongUserMessages}>
             <div
               className={cn(
-                'markdown prose message-content dark:prose-invert light w-full break-words',
+                'markdown prose message-content light w-full break-words',
                 !enableUserMsgMarkdown && 'whitespace-pre-wrap',
                 'text-text-primary',
               )}

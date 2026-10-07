@@ -46,9 +46,12 @@ import {
   getReasoningStateKey,
   pendingReasoningOverrideFamily,
 } from '~/components/Chat/Input/Composer/state';
+import {
+  withSubmittedCodeDecision,
+  resolveSubmittedCodeApprovalMode,
+} from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
-import { withSubmittedCodeDecision } from '~/hooks/Agents/codeDecision';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
@@ -69,7 +72,14 @@ const STALE_SEND_REVALIDATION_MS = 5_000;
 
 const logChatRequest = (request: Record<string, unknown>) => {
   logger.log('=====================================\nAsk function called with:');
-  logger.dir(request);
+  logger.dir({
+    conversationId: request.conversationId,
+    messageId: request.messageId,
+    parentMessageId: request.parentMessageId,
+    isEdited: request.isEdited,
+    isContinued: request.isContinued,
+    isRegenerate: request.isRegenerate,
+  });
   logger.log('=====================================');
 };
 
@@ -251,11 +261,12 @@ export default function useChatFunctions({
   const jotaiStore = useStore();
   const getConversation = useGetConversation(index);
   const addedConversation = useRecoilValue(store.conversationByKeySelector(1));
+  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
   const { modes: codeApprovalModes, selected: fallbackCodeApprovalMode } = useCodeApprovalMode(
     immutableConversation,
     addedConversation,
+    codeWorkspaceState.mode,
   );
-  const codeWorkspaceState = useCodeWorkspace(immutableConversation, addedConversation);
 
   /**
    * `ask` refuses while `isSubmitting`, but that Recoil value only reads true
@@ -384,10 +395,6 @@ export default function useChatFunctions({
 
     const conversation = cloneDeep(immutableConversation);
     const latestCodeApprovalMode = getConversation()?.codeApprovalMode;
-    const codeApprovalMode =
-      latestCodeApprovalMode != null && codeApprovalModes.includes(latestCodeApprovalMode)
-        ? latestCodeApprovalMode
-        : fallbackCodeApprovalMode;
     const latestCodeWorkspaces = getConversation()?.codeWorkspaces ?? conversation?.codeWorkspaces;
     const latestCodeEnvironmentMode =
       getConversation()?.codeEnvironmentMode ?? conversation?.codeEnvironmentMode;
@@ -400,6 +407,12 @@ export default function useChatFunctions({
       return false;
     }
     const { codeEnvironmentMode, codeWorkspaces } = workspaceSubmission;
+    const codeApprovalMode = resolveSubmittedCodeApprovalMode({
+      requested: latestCodeApprovalMode,
+      modes: codeApprovalModes,
+      fallback: fallbackCodeApprovalMode,
+      codeEnvironmentMode,
+    });
 
     const endpoint = conversation?.endpoint;
     if (endpoint === null) {
@@ -679,10 +692,11 @@ export default function useChatFunctions({
       currentMsg.files = [...submissionFiles];
       /** Queued override files were consumed just like composer files, so mark their identities
        * as submitted before later draft cleanup can classify the restored paste as unsent. */
-      submissionFiles.forEach((file) => {
-        markPasteSubmitted(file.file_id);
-        markPasteSubmitted(file.temp_file_id);
-      });
+      const submittedFileIds: (string | undefined)[] = [];
+      for (const file of submissionFiles) {
+        submittedFileIds.push(file.file_id, file.temp_file_id);
+      }
+      markPasteSubmitted(...submittedFileIds);
       // Caller-supplied overrideFiles were consumed elsewhere (queued
       // during-run messages take theirs out of the composer at queue time);
       // clearing here would eat attachments staged for the user's NEXT send.
@@ -696,22 +710,22 @@ export default function useChatFunctions({
       // `overrideFiles` (even empty) is authoritative for the submission:
       // auto-drained queued messages must never vacuum up attachments the
       // user has staged in the composer for their NEXT message.
-      currentMsg.files = Array.from(files.values()).map((file) => ({
-        file_id: file.file_id,
-        filepath: file.filepath,
-        filename: file.filename,
-        type: file.type ?? '', // Ensure type is not undefined
-        llmDeliveryPath: file.llmDeliveryPath,
-        height: file.height,
-        width: file.width,
-      }));
-      /** The draft keeps a paste's provenance after the map is emptied, so discarding later has
-       * to be able to tell what this message already took with it. */
-      files.forEach((file, key) => {
-        markPasteSubmitted(key);
-        markPasteSubmitted(file.file_id);
-        markPasteSubmitted(file.temp_file_id);
-      });
+      const submittedFileIds: (string | undefined)[] = [];
+      currentMsg.files = [];
+      for (const [key, file] of files) {
+        currentMsg.files.push({
+          file_id: file.file_id,
+          filepath: file.filepath,
+          filename: file.filename,
+          type: file.type ?? '',
+          llmDeliveryPath: file.llmDeliveryPath,
+          height: file.height,
+          width: file.width,
+        });
+        submittedFileIds.push(key, file.file_id, file.temp_file_id);
+      }
+      // Publish every alias before clearing the composer or its draft.
+      markPasteSubmitted(...submittedFileIds);
       setFiles(new Map());
       setFilesToDelete({});
     }
@@ -890,7 +904,14 @@ export default function useChatFunctions({
     askInFlightRef.current = true;
     setSubmissionStart(Date.now());
     setSubmission(submission);
-    logger.dir('message_stream', submission, { depth: null });
+    logger.dir('message_stream', {
+      conversationId,
+      messageId: currentMsg.messageId,
+      parentMessageId: currentMsg.parentMessageId,
+      isEdited: isEditOrContinue,
+      isRegenerate: regenerateShaped,
+      isContinued,
+    });
   };
 
   const regenerate = (

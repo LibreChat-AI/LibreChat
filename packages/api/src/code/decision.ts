@@ -1,4 +1,8 @@
-import { isCodeEnvironmentMode, isCodeWorkspaceSelections } from 'librechat-data-provider';
+import {
+  isCodeEnvironmentMode,
+  isCodeWorkspaceSelections,
+  canonicalizeCodeWorkspaceSelections,
+} from 'librechat-data-provider';
 import type {
   CodeEnvironmentMode,
   CodeWorkspaceSelection,
@@ -16,16 +20,15 @@ export interface ConversationCodeEnvironmentDecision {
 export type StoredConversationDecision = Pick<
   TConversation,
   'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
-> & { codeEnvironmentRevision?: number };
+> & {
+  codeEnvironmentRevision?: number;
+  /** Read in the same snapshot as the workspaces, so a lane report can be fenced by exactly the
+   *  attachment the run was admitted on. Absent when the read did not carry it. */
+  codeAttachmentEpoch?: number;
+};
 
 function canonicalSelections(selections: CodeWorkspaceSelection[]): CodeWorkspaceSelection[] {
-  return [...selections].sort((left, right) => {
-    if (left.environmentId < right.environmentId) return -1;
-    if (left.environmentId > right.environmentId) return 1;
-    if (left.workspaceId < right.workspaceId) return -1;
-    if (left.workspaceId > right.workspaceId) return 1;
-    return 0;
-  });
+  return canonicalizeCodeWorkspaceSelections(selections);
 }
 
 function sameSelections(left: CodeWorkspaceSelection[], right: CodeWorkspaceSelection[]): boolean {

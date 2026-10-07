@@ -33,6 +33,7 @@ import { ArchiveAllChats } from '../SettingsTabs/Data/ArchiveAllChats';
 import { toggleControl, ThemeSetting, LangSetting } from './controls';
 import BackupCodesItem from '../SettingsTabs/Account/BackupCodesItem';
 import { EngineSTTSetting, EngineTTSSetting } from './SpeechControls';
+import UiScaleSelector from '../SettingsTabs/General/UiScaleSelector';
 import FontSizeSelector from '../SettingsTabs/Chat/FontSizeSelector';
 import ChatTitleInTab from '../SettingsTabs/General/ChatTitleInTab';
 import AdvancedPrompts from '../SettingsTabs/Chat/AdvancedPrompts';
@@ -49,12 +50,12 @@ import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
 import { ClearChats } from '../SettingsTabs/Data/ClearChats';
 import { TokenCredits, AutoRefill } from './BillingControls';
 import AdminPanel from '../SettingsTabs/General/AdminPanel';
-import { showComposerTipsAtom } from '~/store/composerTips';
 import SharedLinks from '../SettingsTabs/Data/SharedLinks';
 import ImageResize from '../SettingsTabs/Chat/ImageResize';
 import Passkeys from '../SettingsTabs/Account/Passkeys';
 import { showThinkingAtom } from '~/store/showThinking';
 import ProviderKeys from '../SettingsTabs/ProviderKeys';
+import { showLiaAtom } from '~/components/Lia/store';
 import { autoScrollAtom } from '~/store/autoScroll';
 import Avatar from '../SettingsTabs/Account/Avatar';
 import CodeEnvironments from './CodeEnvironments';
@@ -99,6 +100,14 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_font_size',
     keywords: ['text', 'zoom'],
     Component: FontSizeSelector,
+  },
+  {
+    id: 'uiScale',
+    tab: GENERAL,
+    section: 'appearance',
+    labelKey: 'com_nav_ui_scale',
+    keywords: ['zoom', 'scale', 'size', 'interface', 'display'],
+    Component: UiScaleSelector,
   },
   {
     id: 'chatDirection',
@@ -148,14 +157,18 @@ export const registry: SettingEntry[] = [
     }),
   },
   {
-    id: 'showComposerTips',
+    id: 'showLia',
     tab: GENERAL,
     section: 'layout',
-    labelKey: 'com_nav_composer_tips',
+    labelKey: 'com_nav_show_lia',
+    keywords: ['mascot', 'lia', 'fun', 'animation', 'welcome'],
+    show: (ctx) => ctx.mascotAllowed,
     Component: toggleControl({
-      stateAtom: showComposerTipsAtom,
-      localizationKey: 'com_nav_composer_tips',
-      switchId: 'showComposerTips',
+      stateAtom: showLiaAtom,
+      localizationKey: 'com_nav_show_lia',
+      switchId: 'showLia',
+      hoverCardText: 'com_nav_info_show_lia',
+      beta: true,
     }),
   },
   {
@@ -288,19 +301,6 @@ export const registry: SettingEntry[] = [
     labelKey: 'com_nav_during_run_action',
     keywords: ['steer', 'queue', 'interrupt', 'generating'],
     Component: DuringRunAction,
-  },
-  {
-    id: 'steerInterruptsByDefault',
-    tab: CHAT,
-    section: 'sending',
-    labelKey: 'com_ui_steer_interrupts_default',
-    keywords: ['steer', 'interrupt', 'preempt', 'generating', 'stop'],
-    Component: toggleControl({
-      stateAtom: store.steerInterruptsByDefault,
-      localizationKey: 'com_ui_steer_interrupts_default',
-      switchId: 'steerInterruptsByDefault',
-      hoverCardText: 'com_ui_steer_interrupts_default_info',
-    }),
   },
   {
     id: 'saveDrafts',
@@ -799,7 +799,7 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_2fa',
-    show: (ctx) => ctx.isLocalProvider,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider,
     Component: EnableTwoFactorItem,
   },
   {
@@ -807,7 +807,7 @@ export const registry: SettingEntry[] = [
     tab: ACCOUNT,
     section: 'security',
     labelKey: 'com_ui_settings_label_backup_codes',
-    show: (ctx) => ctx.isLocalProvider && ctx.twoFactorEnabled,
+    show: (ctx) => ctx.isTwoFactorPolicyProvider && ctx.twoFactorEnabled,
     Component: BackupCodesItem,
   },
   {

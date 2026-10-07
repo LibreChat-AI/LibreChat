@@ -41,6 +41,7 @@ import {
 } from '~/data-provider';
 import ProjectCreateDialog from '~/components/Projects/ProjectCreateDialog';
 import ProjectDeleteDialog from '~/components/Projects/ProjectDeleteDialog';
+import ProjectEditDialog from '~/components/Projects/ProjectEditDialog';
 import { useLocalize, useLocalStorage, useNewConvo } from '~/hooks';
 import { clearMessagesCache, cn, rowActionClasses } from '~/utils';
 import { Collapse } from '~/components/ui';
@@ -157,7 +158,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
           variant="ghost"
           size="sm"
           onClick={onShowAll}
-          className="text-text-secondary hover:text-text-primary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium transition-colors"
+          className="text-text-secondary mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium"
         >
           {localize('com_ui_show_all')}
         </Button>
@@ -187,7 +188,17 @@ const ProjectItem = memo(
     const menuId = useId();
     const [expanded, setExpanded] = useState(defaultExpanded);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
+    /** The dialog items keep the menu open so it does not steal focus from the
+     *  dialog mounting beside it; closing the dialog closes the menu too. */
+    const closeMenuWith = (setOpen: (open: boolean) => void, open: boolean) => {
+      setOpen(open);
+      if (!open) {
+        setIsMenuOpen(false);
+      }
+    };
     const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+    const [isEditOpen, setIsEditOpen] = useState(false);
+    const editMenuRef = useRef<HTMLButtonElement>(null);
     const deleteMenuRef = useRef<HTMLButtonElement>(null);
     const projectChatPath = `/c/${Constants.NEW_CONVO}?projectId=${encodeURIComponent(project._id)}`;
 
@@ -271,10 +282,10 @@ const ProjectItem = memo(
           id: `${menuId}-rename`,
           label: localize('com_ui_edit_project'),
           icon: <Pencil className="text-text-secondary size-4" aria-hidden="true" />,
-          onClick: () => {
-            navigate(`/projects/${encodeURIComponent(project._id)}?edit=1`);
-            toggleNav();
-          },
+          onClick: () => setIsEditOpen(true),
+          hideOnClick: false,
+          ref: editMenuRef,
+          render: (props) => <button {...props} />,
         },
         {
           id: `${menuId}-delete`,
@@ -286,17 +297,18 @@ const ProjectItem = memo(
           render: (props) => <button {...props} />,
         },
       ],
-      [localize, menuId, navigate, openProject, project._id, toggleNav],
+      [localize, menuId, openProject],
     );
 
     return (
       <li className="max-w-full min-w-0 list-none" ref={projectRowRef}>
         <div
           className={cn(
-            'group/project-row text-text-primary hover:bg-surface-active-alt relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
-            isActive && 'bg-surface-active-alt hover:bg-surface-active-alt',
-            !isActive && isMenuOpen && 'bg-surface-active-alt',
-            isDropOver && canDrop && 'bg-surface-active-alt ring-border-medium ring-1 ring-inset',
+            'group text-text-primary relative flex h-9 max-w-full min-w-0 items-center rounded-lg text-sm',
+            isActive || isMenuOpen || (isDropOver && canDrop)
+              ? 'bg-surface-nav-selected'
+              : 'hover:bg-surface-nav-hover',
+            isDropOver && canDrop && 'ring-border-medium ring-1 ring-inset',
           )}
         >
           <button
@@ -343,7 +355,8 @@ const ProjectItem = memo(
               menuId={menuId}
               isOpen={isMenuOpen}
               setIsOpen={setIsMenuOpen}
-              className="z-[125] min-w-44"
+              className="z-[125]"
+              minWidth="11rem"
               iconClassName="mr-2 text-text-secondary"
               trigger={
                 <Ariakit.MenuButton
@@ -358,16 +371,24 @@ const ProjectItem = memo(
           </div>
         </div>
         <Collapse open={expanded} className="pl-2">
-          <ProjectChatsInline
-            projectId={project._id}
-            expanded={expanded}
-            toggleNav={toggleNav}
-            onShowAll={openProject}
-          />
+          <div className="pt-1">
+            <ProjectChatsInline
+              projectId={project._id}
+              expanded={expanded}
+              toggleNav={toggleNav}
+              onShowAll={openProject}
+            />
+          </div>
         </Collapse>
+        <ProjectEditDialog
+          open={isEditOpen}
+          onOpenChange={(open) => closeMenuWith(setIsEditOpen, open)}
+          project={project}
+          triggerRef={editMenuRef}
+        />
         <ProjectDeleteDialog
           open={isDeleteOpen}
-          onOpenChange={setIsDeleteOpen}
+          onOpenChange={(open) => closeMenuWith(setIsDeleteOpen, open)}
           project={project}
           triggerRef={deleteMenuRef}
         />
@@ -458,7 +479,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
     }
 
     return (
-      <ul className="m-0 list-none p-0">
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
         {projects.map((project) => (
           <ProjectItem
             key={project._id}

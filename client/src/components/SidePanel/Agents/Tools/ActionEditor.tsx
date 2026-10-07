@@ -100,7 +100,7 @@ export default function ActionEditor({
       <OGDialogTrigger asChild>
         <Button
           type="button"
-          variant="destructive"
+          variant="destructive-soft"
           size="icon"
           disabled={isEphemeralAgent(agentId) || !action.action_id}
           aria-label={localize('com_ui_delete_action')}
@@ -112,7 +112,7 @@ export default function ActionEditor({
       <OGDialogTemplate
         showCloseButton={false}
         title={localize('com_ui_delete_action')}
-        className="max-w-[450px]"
+        className="max-w-[28.125rem]"
         main={
           <Label className="text-left text-sm font-medium">
             {localize('com_ui_delete_action_confirm')}

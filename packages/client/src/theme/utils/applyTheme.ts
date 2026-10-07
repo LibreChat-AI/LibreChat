@@ -2,6 +2,7 @@ import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition
 import {
   controlBorderFallback,
   focusFallbacks,
+  overlayFallbacks,
   pressedFallbacks,
   primaryButtonFallbacks,
   primaryInkFallbacks,
@@ -77,6 +78,15 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
   }
 
+  /** The field fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
+  Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
+    variables.push([colorProperty(role as keyof IThemeRGB), value]);
+  });
+
   if (colors['rgb-table-header-text'] === undefined && colors['rgb-text-secondary'] !== undefined) {
     variables.push(['--table-header-text', colors['rgb-text-secondary']]);
   }
@@ -87,6 +97,10 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
 
   if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
     variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
+  }
+
+  if (colors['rgb-focus-subtle'] === undefined && colors['rgb-border-heavy'] !== undefined) {
+    variables.push(['--focus-subtle', colors['rgb-border-heavy']]);
   }
 
   const legacyControlBorder = controlBorderFallback(colors);
@@ -159,10 +173,15 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
   return variables;
 }
 
+/** The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as it. */
+function canonicalAppearance(key: keyof IThemeAppearance, value: string): string {
+  return key === 'chromeBorderAlpha' && Number(value) === 0 ? '0' : value;
+}
+
 function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   return Object.entries(themeAppearanceProperties).map(([key, property]) => [
     property,
-    appearance[key as keyof IThemeAppearance],
+    canonicalAppearance(key as keyof IThemeAppearance, appearance[key as keyof IThemeAppearance]),
   ]);
 }
 

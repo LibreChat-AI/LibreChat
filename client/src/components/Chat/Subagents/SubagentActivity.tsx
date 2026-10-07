@@ -179,7 +179,7 @@ export function SubagentActivityScrollSurface({
         className={cn('min-h-0 flex-1 overflow-y-auto', padded && 'px-4 py-4')}
         data-subagent-activity-scroll-surface
       >
-        <div ref={contentRef} className={cn(headerInset && 'pt-[52px]')}>
+        <div ref={contentRef} className={cn(headerInset && 'pt-13')}>
           {children}
         </div>
       </div>
@@ -277,7 +277,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
       aria-labelledby={headingId}
       className="border-border-light bg-surface-secondary text-text-primary mb-3 shrink-0 overflow-hidden rounded-lg border"
     >
-      <div className="border-border-light flex min-h-[2.75rem] items-center justify-between gap-3 border-b px-3 py-2">
+      <div className="border-border-inset flex min-h-[2.75rem] items-center justify-between gap-3 border-b px-3 py-2">
         <h3 id={headingId} className="text-text-primary text-sm font-medium">
           {localize('com_ui_prompt')}
         </h3>
@@ -289,7 +289,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           aria-expanded={expanded}
           aria-label={toggleLabel}
           title={toggleLabel}
-          className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
+          className="text-text-secondary hover:bg-surface-tertiary focus:ring-text-primary h-8 gap-1.5 rounded-md px-2 text-xs font-medium transition focus:ring-2"
         >
           {expanded ? <Minimize2 size={14} aria-hidden /> : <Maximize2 size={14} aria-hidden />}
           <span className="hidden sm:inline">{toggleLabel}</span>
@@ -302,7 +302,7 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
           expanded ? 'overflow-visible' : 'max-h-32 overflow-hidden',
         )}
       >
-        <div className="markdown prose prose-sm message-content light dark:prose-invert text-text-primary w-full max-w-none break-words">
+        <div className="markdown prose prose-sm message-content light text-text-primary w-full max-w-none break-words">
           <MarkdownLite content={prompt} codeExecution={false} />
         </div>
         {!expanded && (
@@ -420,6 +420,7 @@ export default function SubagentActivity({
   showPrompt = true,
   headerInset = false,
   onCancelControl,
+  notice,
 }: {
   activity: ChildActivity;
   activityId?: string;
@@ -427,6 +428,7 @@ export default function SubagentActivity({
   embedded?: boolean;
   showPrompt?: boolean;
   headerInset?: boolean;
+  notice?: React.ReactNode;
   onCancelControl?: (controlId: string) => void;
 }) {
   const statusHeader = isAbnormalTerminalStatus(activity.status) ? (
@@ -435,13 +437,16 @@ export default function SubagentActivity({
     </div>
   ) : null;
   const content = (
-    <SubagentActivityContent
-      activity={activity}
-      activityId={activityId}
-      state={state}
-      showPrompt={showPrompt}
-      onCancelControl={onCancelControl}
-    />
+    <>
+      {notice}
+      <SubagentActivityContent
+        activity={activity}
+        activityId={activityId}
+        state={state}
+        showPrompt={showPrompt}
+        onCancelControl={onCancelControl}
+      />
+    </>
   );
 
   if (embedded) {

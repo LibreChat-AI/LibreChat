@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Button } from '@librechat/client';
 import { Tools } from 'librechat-data-provider';
+import { Button, useRemScale } from '@librechat/client';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ToolArtifactType } from '~/utils/artifacts';
@@ -25,6 +25,7 @@ import { useAttachmentLink } from './LogLink';
 import { cn } from '~/utils';
 
 const COLLAPSED_MAX_HEIGHT = 320;
+const OVERFLOW_TOLERANCE = 1;
 
 /**
  * Row placeholder for a code-execution office file whose inline preview
@@ -81,11 +82,11 @@ const PreviewPlaceholderRow = memo(
         <span className="min-w-0 shrink-[100] truncate text-xs font-normal">{subtitleText}</span>
         <Button
           type="button"
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary size-5 shrink-0 rounded focus-visible:ring-offset-0"
+          className="size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
         </Button>
@@ -131,14 +132,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return (
       <div
         className={cn(
-          'file-attachment-container',
-          'transition-all duration-300 ease-out',
+          'subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         <PreviewPlaceholderRow
@@ -152,14 +151,12 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   return (
     <div
       className={cn(
-        'file-attachment-container',
-        'transition-all duration-300 ease-out',
+        'subpixel-antialiased transition-all duration-300 ease-out',
         isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <FileContainer
@@ -238,7 +235,7 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         className={cn(
           'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
           'text-text-secondary hover:text-text-primary transition-colors',
-          'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+          'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
         )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -294,13 +291,13 @@ const TextAttachment = memo(
     showFileChip?: boolean;
   }) => {
     const localize = useLocalize();
+    const remScale = useRemScale();
+    const collapsedMaxHeight = COLLAPSED_MAX_HEIGHT * remScale;
+    const overflowTolerance = OVERFLOW_TOLERANCE * remScale;
     const preId = useId();
     const preRef = useRef<HTMLPreElement>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [expanded, setExpanded] = useState(false);
-    // Decided once after layout: does the text actually overflow the collapsed
-    // height? Char count is a poor proxy (a 100-char file with many newlines can
-    // overflow; 800 chars of dense single-line text may not), so we measure.
     const [overflowed, setOverflowed] = useState(false);
     const file = attachment as TFile & TAttachmentMetadata;
     const { handleDownload } = useAttachmentLink({
@@ -324,22 +321,21 @@ const TextAttachment = memo(
       if (!el) {
         return;
       }
-      setOverflowed(el.scrollHeight > COLLAPSED_MAX_HEIGHT + 1);
-    }, [text]);
+      setOverflowed(el.scrollHeight > collapsedMaxHeight + overflowTolerance);
+    }, [text, collapsedMaxHeight, overflowTolerance]);
 
     const isClamped = overflowed && !expanded;
 
     return (
       <div
         className={cn(
-          'text-attachment-container flex w-full flex-col gap-1.5',
-          'transition-all duration-300 ease-out',
+          'flex w-full flex-col gap-1.5',
+          'subpixel-antialiased transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
         style={{
           transformOrigin: 'center top',
           willChange: 'opacity, transform',
-          WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
         {attachment.filepath && showFileChip && (
@@ -354,7 +350,7 @@ const TextAttachment = memo(
         )}
         <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="border-border-light flex items-center justify-between gap-2 border-b px-3 py-2">
+            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -364,7 +360,7 @@ const TextAttachment = memo(
                   onClick={handleDownload}
                   aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
                   title={localize('com_ui_download')}
-                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-focus-subtle flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <Download className="size-4" aria-hidden="true" />
                 </button>
@@ -379,7 +375,7 @@ const TextAttachment = memo(
                 'text-text-primary font-mono text-sm leading-6 break-words whitespace-pre-wrap',
                 isClamped ? 'overflow-hidden' : 'overflow-auto',
               )}
-              style={isClamped ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
+              style={isClamped ? { maxHeight: collapsedMaxHeight } : undefined}
             >
               {text}
             </pre>
@@ -389,7 +385,7 @@ const TextAttachment = memo(
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-expanded={expanded}
                 aria-controls={preId}
-                className="text-text-secondary hover:text-text-primary focus-visible:ring-border-heavy mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
               >
                 {expanded ? localize('com_ui_collapse') : localize('com_ui_show_all')}
               </button>
@@ -414,14 +410,12 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   return (
     <div
       className={cn(
-        'image-attachment-container',
-        'transition-all duration-500 ease-out',
+        'subpixel-antialiased transition-all duration-500 ease-out',
         isLoaded ? 'scale-100 opacity-100' : 'scale-[0.98] opacity-0',
       )}
       style={{
         transformOrigin: 'center top',
         willChange: 'opacity, transform',
-        WebkitFontSmoothing: 'subpixel-antialiased',
       }}
     >
       <Image

@@ -1,5 +1,10 @@
 const { logger } = require('@librechat/data-schemas');
-const { getToolkitKey, checkPluginAuth, filterUniquePlugins } = require('@librechat/api');
+const {
+  getToolkitKey,
+  checkPluginAuth,
+  filterUniquePlugins,
+  filterGitHubComparePlugins,
+} = require('@librechat/api');
 const { getCachedTools, setCachedTools } = require('~/server/services/Config');
 const { availableTools, toolkits } = require('~/app/clients/tools');
 const { getAppConfig } = require('~/server/services/Config');
@@ -15,7 +20,9 @@ const getAvailablePluginsController = async (req, res) => {
       }));
     const { filteredTools = [], includedTools = [] } = appConfig;
 
-    const uniquePlugins = filterUniquePlugins(availableTools);
+    const uniquePlugins = filterUniquePlugins(
+      filterGitHubComparePlugins(availableTools, appConfig?.githubCompare),
+    );
     const includeSet = new Set(includedTools);
     const filterSet = new Set(filteredTools);
 
@@ -67,7 +74,9 @@ const getAvailableTools = async (req, res) => {
       toolDefinitions = appConfig.availableTools;
     }
 
-    const uniquePlugins = filterUniquePlugins(availableTools);
+    const uniquePlugins = filterUniquePlugins(
+      filterGitHubComparePlugins(availableTools, appConfig?.githubCompare),
+    );
     const toolDefKeysList = toolDefinitions ? Object.keys(toolDefinitions) : null;
     const toolDefKeys = toolDefKeysList ? new Set(toolDefKeysList) : null;
 

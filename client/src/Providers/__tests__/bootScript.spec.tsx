@@ -3,7 +3,14 @@ import { readFileSync } from 'fs';
 import { render } from '@testing-library/react';
 import { ThemeProvider, applyResolvedTheme, resolveTheme } from '@librechat/client';
 import type { ThemeDefinition } from '@librechat/client';
-import { isPublicRoute, buildThemeCache, writeThemeCache } from '../themeCache';
+import {
+  isPublicRoute,
+  buildThemeCache,
+  writeThemeCache,
+  THEME_CACHE_KEY,
+  THEME_CACHE_VERSION,
+} from '../themeCache';
+import { THEME_CACHE_VERSION_PLACEHOLDER, injectThemeCacheVersion } from '../bootVersion';
 
 /** The inline shell script in `client/index.html`, run as the browser runs it. */
 const bootScript = (() => {
@@ -13,7 +20,7 @@ const bootScript = (() => {
   if (!script) {
     throw new Error('client/index.html has no deployment theme boot script');
   }
-  return script;
+  return injectThemeCacheVersion(script);
 })();
 
 const acme: ThemeDefinition = {
@@ -96,6 +103,28 @@ describe('index.html deployment theme boot script', () => {
     },
   );
 
+  it('leaves the placeholder out of the script the build serves', () => {
+    expect(bootScript).not.toContain(THEME_CACHE_VERSION_PLACEHOLDER);
+    expect(bootScript).toContain(`'${THEME_CACHE_VERSION}'`);
+  });
+
+  it('does not replay an entry stored against another role set', () => {
+    const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+    localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, v: 'before-a-new-role' }));
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+  });
+
+  it('paints nothing on a first-ever visit, leaving the operator theme to the config answer', () => {
+    localStorage.clear();
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(root().classList.contains('light')).toBe(true);
+  });
+
   it('follows the OS scheme under `system`', () => {
     mockMedia(true);
     boot();
@@ -137,7 +166,9 @@ describe('index.html deployment theme boot script', () => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
     entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
-      name === '--surface-primary-alt' ? [name, '0 0 0;}</style><b>x'] : [name, value],
+      name === '--surface-primary-alt' || name === '--surface-canvas'
+        ? [name, '0 0 0;}</style><b>x']
+        : [name, value],
     );
     writeThemeCache(entry);
     boot();
@@ -145,11 +176,71 @@ describe('index.html deployment theme boot script', () => {
     expect(document.head.textContent).not.toContain('</style>');
   });
 
+  it('paints the cached canvas over the split surface it follows by default', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(1, 2, 3)');
+  });
+
+  it('keeps the split surface on routes that do not paint the canvas', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', '/agents');
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(8, 10, 24)');
+  });
+
+  it('paints the canvas for the prompt redirect that lands on a new chat', () => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', '/prompts/new');
+    boot();
+    expect(document.head.textContent).toContain('background-color: rgb(1, 2, 3)');
+  });
+
+  it.each([
+    ['/d', 'rgb(1, 2, 3)'],
+    ['/d/', 'rgb(1, 2, 3)'],
+    ['/d/prompts', 'rgb(1, 2, 3)'],
+    ['/d/prompts/', 'rgb(1, 2, 3)'],
+    ['/d/prompts/new', 'rgb(1, 2, 3)'],
+    ['/d/anything', 'rgb(1, 2, 3)'],
+    ['/d/prompts/abc123', 'rgb(8, 10, 24)'],
+    ['/D/Prompts/abc123', 'rgb(8, 10, 24)'],
+    ['/D/Prompts/New', 'rgb(1, 2, 3)'],
+    ['/C/new', 'rgb(1, 2, 3)'],
+  ])('classifies the legacy dashboard path %s by where it lands', (path, expected) => {
+    localStorage.setItem('color-theme', 'dark');
+    const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
+    entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
+      name === '--surface-canvas' ? [name, '1 2 3'] : [name, value],
+    );
+    writeThemeCache(entry);
+    window.history.pushState({}, '', path);
+    boot();
+    expect(document.head.textContent).toContain(`background-color: ${expected}`);
+  });
+
   it('accepts any whitespace between the cached surface channels', () => {
     localStorage.setItem('color-theme', 'dark');
     const entry = buildThemeCache('tenant-a:user-1', 'acme', acme);
     entry.modes.dark.properties = entry.modes.dark.properties.map(([name, value]) =>
-      name === '--surface-primary-alt' ? [name, ' 8  10\t24 '] : [name, value],
+      name === '--surface-primary-alt' || name === '--surface-canvas'
+        ? [name, ' 8  10\t24 ']
+        : [name, value],
     );
     writeThemeCache(entry);
     boot();

@@ -12,17 +12,21 @@ const themedControls = [
   /** The submit slot's faces share one recipe, which owns the coarse-pointer
    *  tap-target floor as well as the geometry. */
   ['DuringRunSendButton.tsx', ['composerSubmitClasses()']],
-  ['InterruptSteerButton.tsx', ['size-theme-control', 'rounded-theme-control-round']],
-  ['TokenUsage/index.tsx', ['size-theme-control', 'rounded-theme-control-round']],
+  ['TokenUsage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   ['Files/AttachFile.tsx', ['size-theme-control', 'rounded-theme-control-round']],
-  ['CodeApprovalMenu.tsx', ['composerControlClasses()', 'md:px-theme-control-x']],
+  /** The context rail's pills share one recipe built on the composer control classes. */
+  ['chip.ts', ['composerControlClasses()']],
+  ['CodeApprovalMenu.tsx', ['chipClasses']],
+  ['CodeWorkspaceMenu.tsx', ['chipClasses', 'infoChipClasses']],
+  /** The dictation mic and its send share the submit slot's corner. */
+  ['Composer/Bar.tsx', ['shape="composer"']],
 ] as const;
 
 describe('Composer appearance tokens', () => {
   it.each(submitControls)('%s composes the shared submit-slot control', (file) => {
     const contents = source(file);
 
-    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="theme"'].forEach((token) =>
+    ['IconButton', 'variant="submit"', 'size="theme"', 'shape="composer"'].forEach((token) =>
       expect(contents).toContain(token),
     );
   });

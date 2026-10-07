@@ -1,6 +1,8 @@
 import { useState, memo } from 'react';
 import { useDefaultLayout } from 'react-resizable-panels';
-import { ResizablePanel, ResizablePanelGroup, useMediaQuery } from '@librechat/client';
+import { ResizablePanel, ResizablePanelGroup } from '@librechat/client';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import ArtifactsPanel from './ArtifactsPanel';
 
 const PANEL_IDS_SINGLE = ['messages-view'];
@@ -14,7 +16,7 @@ interface SidePanelProps {
 
 const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
   const [shouldRenderPanel, setShouldRenderPanel] = useState(panel != null);
-  const isSmallScreen = useMediaQuery('(max-width: 767px)');
+  const isSmallScreen = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
 
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: 'side-panel-layout',
@@ -29,7 +31,7 @@ const SidePanelGroup = memo(({ panel, children }: SidePanelProps) => {
       {/* The surface behind the panels is this group's host, not the group
           primitive: the resizer owns its own chrome, and the caller owns the
           backdrop the panels sit on. */}
-      <div className="bg-surface-primary-alt relative min-w-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         <ResizablePanelGroup
           orientation="horizontal"
           defaultLayout={defaultLayout}

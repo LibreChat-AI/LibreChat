@@ -7,6 +7,9 @@
  */
 export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center gap-2.5';
 
+/** Behavior hook for header glyphs, independent of their layout. */
+export const FOLD_GLYPH_CLASS = 'fold-glyph';
+
 /**
  * The leading glyph slot of a row: 24px wide, the width of the message
  * header's avatar, and the row's own 20px tall. A 16px tool icon, the 14px
@@ -15,19 +18,29 @@ export const TOOL_ROW_CLASSES = 'relative my-1.5 flex h-5 shrink-0 items-center 
  * starts where the header's name does. `min-w` rather than `w`, so a stacked
  * icon strip can run wider without overlapping its label; never taller than
  * `TOOL_ROW_CLASSES`, whose `ProgressText` content is absolutely positioned
- * and would carry a taller slot 2px below the row's center.
+ * and would carry a taller slot 2px below the row's center. `fold-glyph` is a
+ * hook, not a style: see `FOLD_GLYPH_SELECTOR`.
  */
-export const ROW_GLYPH_SLOT = 'flex h-5 min-w-6 shrink-0 items-center justify-center';
+export const ROW_GLYPH_SLOT = `${FOLD_GLYPH_CLASS} flex h-5 min-w-6 shrink-0 items-center justify-center`;
+
+/** Shared by normal row slots and custom header glyphs. */
+export const FOLD_GLYPH_SELECTOR = `.${FOLD_GLYPH_CLASS}`;
 
 /**
  * The panel under an open header: its rows step in by one glyph slot and a
- * hairline hangs from the header's glyph down their left, so what is under the
- * header reads as under it. Carried by the panel's clipping wrapper, the one
- * `overflow-hidden` element the fold animation needs: the inset then lies
- * INSIDE the clip, which is what lets a failed row's stripe, drawn 12px left
- * of the row, show at all. The line is a pseudo-element, out of flow, so the
- * height animation is untouched; it starts at the wrapper's top and stops
- * short of the last row's bottom margin.
+ * hairline (`FoldRail`) hangs from the header's glyph down their left, so what
+ * is under the header reads as under it. Carried by the panel's clipping
+ * wrapper, the one `overflow-hidden` element the fold animation needs: the
+ * inset then lies INSIDE the clip, which is what lets a failed row's stripe,
+ * drawn 12px left of the row, show at all. The rail is absolutely positioned
+ * in that inset, out of flow, so the height animation is untouched.
  */
-export const FOLD_RAIL_CLASSES =
-  "relative pl-6 before:absolute before:bottom-1.5 before:left-[11px] before:top-0.5 before:w-px before:bg-border-medium before:content-['']";
+export const FOLD_RAIL_CLASSES = 'relative pl-6';
+
+/**
+ * A copy action laid over its pane (`group/copy`) instead of beside it, so it
+ * takes no width from the content. Hidden until the pane is hovered or the
+ * action holds keyboard focus; touch input, which cannot hover, always sees it.
+ */
+export const PANE_COPY_REVEAL =
+  '[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-visible:opacity-100 [@media(hover:hover)]:group-hover/copy:opacity-100';

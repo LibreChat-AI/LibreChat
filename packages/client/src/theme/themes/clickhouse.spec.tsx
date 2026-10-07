@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import '@testing-library/jest-dom';
 import { render, waitFor } from '@testing-library/react';
 import type { ThemeMode, IThemeRGB } from '../types';
@@ -30,6 +32,13 @@ const canvasSurfaces: Array<keyof IThemeRGB> = [
   'rgb-surface-code',
   'rgb-surface-code-body',
   'rgb-presentation',
+  'rgb-surface-canvas',
+  'rgb-surface-card',
+  'rgb-surface-card-hover',
+  'rgb-surface-menu',
+  'rgb-surface-popover',
+  'rgb-surface-composer',
+  'rgb-surface-search',
 ];
 
 /** Fills a row or menu item takes on hover or selection, which carry the
@@ -45,6 +54,10 @@ const interactiveFills: Array<keyof IThemeRGB> = [
   'rgb-header-primary',
   'rgb-header-hover',
   'rgb-header-button-hover',
+  'rgb-surface-user-message',
+  'rgb-surface-nav-hover',
+  'rgb-surface-nav-selected',
+  'rgb-surface-tab-selected',
 ];
 
 const neutralTextTokens: Array<keyof IThemeRGB> = [
@@ -174,6 +187,19 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     expect(below(theme, WCAG_AA_NORMAL, neutralTextTokens, canvasSurfaces)).toEqual([]);
   });
 
+  it('steps each layer off the one it sits on, so hover and selection stay apart', () => {
+    const layers: Array<[keyof IThemeRGB, keyof IThemeRGB]> = [
+      ['rgb-surface-user-message', 'rgb-surface-canvas'],
+      ['rgb-surface-card-hover', 'rgb-surface-card'],
+      ['rgb-surface-nav-selected', 'rgb-surface-nav-hover'],
+      ['rgb-surface-nav-hover', 'rgb-surface-primary-alt'],
+      ['rgb-surface-tab-selected', 'rgb-surface-dialog'],
+      ['rgb-surface-search', 'rgb-surface-primary-alt'],
+      ['rgb-border-menu', 'rgb-surface-menu'],
+    ];
+    expect(layers.filter(([layer, ground]) => theme[layer] === theme[ground])).toEqual([]);
+  });
+
   it('keeps primary text at WCAG AA on hover, selected and header fills', () => {
     expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-primary'], interactiveFills)).toEqual([]);
   });
@@ -282,6 +308,27 @@ describe.each(modes)('clickhouse %s palette', (_mode, theme) => {
     ).toEqual([]);
   });
 
+  it('keeps the list marker and the quote bar at the 3:1 floor on the page and the user bubble', () => {
+    expect(
+      below(
+        theme,
+        WCAG_NON_TEXT,
+        ['rgb-prose-bullet', 'rgb-prose-quote-bar'],
+        ['rgb-surface-chat', 'rgb-surface-primary', 'rgb-presentation', 'rgb-surface-user-message'],
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps the inline code chip off the user message bubble it can sit on', () => {
+    expect(theme['rgb-surface-code-inline']).not.toEqual(theme['rgb-surface-user-message']);
+  });
+
+  it('keeps primary text at WCAG AA on the inline code chip', () => {
+    expect(below(theme, WCAG_AA_NORMAL, ['rgb-text-primary'], ['rgb-surface-code-inline'])).toEqual(
+      [],
+    );
+  });
+
   it('keeps every series mark at the 3:1 floor on the page and under the status label', () => {
     expect(
       below(theme, WCAG_NON_TEXT, seriesTokens, [
@@ -320,8 +367,8 @@ describe('clickhouse theme definition', () => {
       roundControlRadius: '9999px',
     });
     expect(resolved.appearance.fontFamily).toMatch(/^"Inter", "SF Pro Display"/);
-    expect(resolved.appearance.monoFontFamily).toMatch(
-      /^"Inconsolata", ui-monospace, .*monospace$/,
+    expect(resolved.appearance.monoFontFamily).toBe(
+      '"Inconsolata", Consolas, "SFMono Regular", monospace',
     );
     /** Click UI's `border.radii` 1, 2 and 3. */
     expect(resolved.appearance).toMatchObject({
@@ -379,21 +426,51 @@ describe('clickhouse theme definition', () => {
     ).toEqual([]);
   });
 
-  /** Click UI's control height, button padding and gap, and `transition.default`. The shared
-   *  spacing roles keep LibreChat's values: they also pad message bubbles and the composer's send
-   *  button, and 0.75rem is already Click UI's field padding. */
-  it('sizes theme controls from Click UI and leaves the shared spacing alone', () => {
+  /** Click UI draws no stroke on icon buttons or chat chrome and separates a card's regions by
+   *  fill; its keyboard outline is the focus ring. */
+  it.each<ThemeMode>(['light', 'dark'])(
+    'draws no chrome or inset border and rings subtle focus in the outline in %s',
+    (mode) => {
+      const { appearance, colors } = resolveTheme(clickHouseTheme, mode);
+      expect([appearance.chromeBorderAlpha, appearance.insetBorderAlpha]).toEqual(['0', '0']);
+      expect(colors['rgb-focus-subtle']).toBe(colors['rgb-focus-outline']);
+    },
+  );
+
+  /** Click UI's control height, button padding and gap, `transition.default`, and the two steps of
+   *  its `spaces` scale the shared spacing takes. */
+  it('squares the composer actions and brings its popovers onto the menu corner', () => {
+    const { appearance } = resolveTheme(clickHouseTheme, 'light');
+    expect(appearance).toMatchObject({
+      composerActionRadius: '0.25rem',
+      popoverRadius: appearance.menuRadius,
+      menuPanelRadius: appearance.menuRadius,
+      inlineCodeWeight: '500',
+    });
+  });
+
+  it('bundles the Inconsolata face the inline code weight selects', () => {
+    const { appearance } = resolveTheme(clickHouseTheme, 'light');
+    const fonts = fs.readFileSync(path.resolve(__dirname, '../fonts.css'), 'utf8');
+    const faces = fonts.match(/font-family: Inconsolata;[^}]*font-weight: (\d+);/g) ?? [];
+    expect(faces.map((face) => face.match(/font-weight: (\d+)/)?.[1])).toContain(
+      appearance.inlineCodeWeight,
+    );
+  });
+
+  it('sizes theme controls and the shared spacing from Click UI', () => {
     const { appearance } = resolveTheme(clickHouseTheme, 'light');
     expect(appearance).toMatchObject({
       controlHeight: '2rem',
       controlPaddingX: '1rem',
+      buttonPaddingX: '1rem',
       controlGap: '0.5rem',
       controlFontWeight: '400',
       buttonHeight: '2rem',
       buttonHeightSm: '2rem',
       motionFast: '100ms',
     });
-    expect(appearance.spaceCompact).toBe(defaultAppearance.spaceCompact);
+    expect(appearance.spaceCompact).toBe('0.5rem');
     expect(appearance.spaceNormal).toBe(defaultAppearance.spaceNormal);
   });
 

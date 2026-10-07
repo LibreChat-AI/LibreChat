@@ -20,12 +20,6 @@ function ResetPassword() {
   const password = watch('password');
   const resetPassword = useResetPasswordMutation();
   const { setError, setHeaderText, startupConfig } = useOutletContext<TLoginLayoutContext>();
-  const authInputClassName =
-    'webkit-dark-styles peer h-auto w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pr-12 pt-3 text-text-primary duration-200 hover:border-border-light focus:border-accent-primary focus-visible:border-accent-primary';
-  const authLabelClassName =
-    'absolute start-3 top-1.5 z-10 origin-[0] -translate-y-4 scale-75 transform bg-surface-primary px-2 text-sm text-text-secondary-alt duration-200 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:scale-100 peer-focus:top-1.5 peer-focus:-translate-y-4 peer-focus:scale-75 peer-focus:px-2 peer-focus:text-accent-primary rtl:peer-focus:left-auto rtl:peer-focus:translate-x-1/4';
-  const authSecretButtonClassName =
-    'size-9 rounded-xl text-text-secondary-alt hover:bg-transparent hover:text-text-primary';
 
   const onSubmit = (data: TResetPassword) => {
     resetPassword.mutate(data, {
@@ -41,12 +35,7 @@ function ResetPassword() {
   if (resetPassword.isSuccess) {
     return (
       <>
-        <Alert
-          variant="success"
-          icon={false}
-          elevation="raised"
-          className="mt-6 px-6 py-4 transition-all"
-        >
+        <Alert variant="success" icon={false} elevation="raised" size="roomy" className="mt-6">
           <div className="flex flex-col space-y-4">
             <p>{localize('com_auth_login_with_new_password')}</p>
             <Button
@@ -100,12 +89,9 @@ function ResetPassword() {
               },
             })}
             aria-invalid={!!errors.password}
-            className={authInputClassName}
+            variant="floating"
             placeholder=" "
             label={localize('com_auth_password')}
-            labelClassName={authLabelClassName}
-            controlsClassName="right-2"
-            buttonClassName={authSecretButtonClassName}
           />
         </div>
 
@@ -125,12 +111,9 @@ function ResetPassword() {
               validate: (value) => value === password || localize('com_auth_password_not_match'),
             })}
             aria-invalid={!!errors.confirm_password}
-            className={authInputClassName}
+            variant="floating"
             placeholder=" "
             label={localize('com_auth_password_confirm')}
-            labelClassName={authLabelClassName}
-            controlsClassName="right-2"
-            buttonClassName={authSecretButtonClassName}
           />
         </div>
         {errors.confirm_password && (
@@ -155,7 +138,8 @@ function ResetPassword() {
           aria-label={localize('com_auth_submit_registration')}
           disabled={!!errors.password || !!errors.confirm_password || isSubmitting}
           variant="submit"
-          className="h-12 w-full rounded-2xl"
+          shape="soft"
+          className="h-12 w-full"
         >
           {isSubmitting ? <Spinner /> : localize('com_auth_continue')}
         </Button>

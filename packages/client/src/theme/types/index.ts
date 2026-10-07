@@ -33,6 +33,9 @@ export interface IThemeRGB {
   'rgb-ring-primary'?: string;
   'rgb-focus-outline'?: string;
   'rgb-focus-control'?: string;
+  /** The keyboard ring of a row or control inside content (tool rows, attachments, summaries,
+   *  message navigation); `rgb-border-heavy` when a theme omits it. */
+  'rgb-focus-subtle'?: string;
 
   // Header colors
   'rgb-header-primary'?: string;
@@ -72,6 +75,11 @@ export interface IThemeRGB {
   'rgb-surface-chat'?: string;
   'rgb-surface-code'?: string;
   'rgb-surface-code-body'?: string;
+  /** An inline code chip in rendered Markdown. */
+  'rgb-surface-code-inline'?: string;
+  /** The list marker and the blockquote bar in rendered Markdown. */
+  'rgb-prose-bullet'?: string;
+  'rgb-prose-quote-bar'?: string;
   /** The backdrop a QR code is scanned against; keep it light in every mode. */
   'rgb-surface-qr'?: string;
   'rgb-surface-inverted'?: string;
@@ -93,6 +101,11 @@ export interface IThemeRGB {
   'rgb-border-medium-alt'?: string;
   'rgb-border-heavy'?: string;
   'rgb-border-xheavy'?: string;
+  /** The mobile drawer's trailing edge. Its light default is the drawer's own fill, since the
+   *  scrim already separates it there; dark mode draws a visible edge because the scrim and the
+   *  drawer are both near-black. Follows `rgb-surface-primary-alt` (light) and
+   *  `rgb-border-xheavy` (dark) in a theme that does not set it. */
+  'rgb-drawer-edge'?: string;
   'rgb-border-destructive'?: string;
   /** The boundary of a form control (field, select trigger, OTP slot). Owes the
    *  3:1 non-text floor on every canvas, so it is kept apart from the separator
@@ -101,6 +114,31 @@ export interface IThemeRGB {
   /** A field's edge while it holds focus, under `fieldFocusStyle: 'border'`; follows
    *  `rgb-focus-control` when a theme omits it. */
   'rgb-border-field-focus'?: string;
+  /** A field's fill, painted only under `fieldFillStyle: 'fill'`; follows `rgb-surface-primary`
+   *  when a theme omits it. */
+  'rgb-field-fill'?: string;
+  /** A field's typed value; follows `rgb-text-primary` when a theme omits it. */
+  'rgb-field-text'?: string;
+  /** A tooltip's chip and its label; they follow `rgb-surface-primary` and `rgb-text-primary` when a
+   *  theme omits them. */
+  'rgb-surface-tooltip'?: string;
+  'rgb-text-tooltip'?: string;
+  /** The error alert's fill and edge; they follow `rgb-status-error-subtle` and
+   *  `rgb-status-error-border` when a theme omits them. */
+  'rgb-alert-error-fill'?: string;
+  'rgb-alert-error-border'?: string;
+  'rgb-surface-canvas'?: string;
+  'rgb-surface-user-message'?: string;
+  'rgb-surface-card'?: string;
+  'rgb-surface-card-hover'?: string;
+  'rgb-surface-nav-hover'?: string;
+  'rgb-surface-nav-selected'?: string;
+  'rgb-surface-tab-selected'?: string;
+  'rgb-surface-menu'?: string;
+  'rgb-surface-popover'?: string;
+  'rgb-border-menu'?: string;
+  'rgb-surface-composer'?: string;
+  'rgb-surface-search'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -235,6 +273,7 @@ export interface IThemeVariables {
   '--ring-primary': string;
   '--focus-outline': string;
   '--focus-control': string;
+  '--focus-subtle': string;
   '--header-primary': string;
   '--header-hover': string;
   '--header-button-hover': string;
@@ -265,6 +304,9 @@ export interface IThemeVariables {
   '--surface-chat': string;
   '--surface-code': string;
   '--surface-code-body': string;
+  '--surface-code-inline': string;
+  '--prose-bullet': string;
+  '--prose-quote-bar': string;
   '--surface-qr': string;
   '--surface-inverted': string;
   '--surface-inverted-hover': string;
@@ -283,10 +325,29 @@ export interface IThemeVariables {
   '--border-heavy': string;
   '--border-heavy-alpha': string;
   '--border-xheavy': string;
+  '--drawer-edge': string;
   '--border-xheavy-alpha': string;
   '--border-destructive': string;
   '--border-control': string;
   '--border-field-focus': string;
+  '--field-fill': string;
+  '--field-text': string;
+  '--surface-tooltip': string;
+  '--text-tooltip': string;
+  '--alert-error-fill': string;
+  '--alert-error-border': string;
+  '--surface-canvas': string;
+  '--surface-user-message': string;
+  '--surface-card': string;
+  '--surface-card-hover': string;
+  '--surface-nav-hover': string;
+  '--surface-nav-selected': string;
+  '--surface-tab-selected': string;
+  '--surface-menu': string;
+  '--surface-popover': string;
+  '--border-menu': string;
+  '--surface-composer': string;
+  '--surface-search': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -375,6 +436,7 @@ export interface IThemeColors {
   'ring-primary'?: string;
   'focus-outline'?: string;
   'focus-control'?: string;
+  'focus-subtle'?: string;
   'header-primary'?: string;
   'header-hover'?: string;
   'header-button-hover'?: string;
@@ -405,6 +467,9 @@ export interface IThemeColors {
   'surface-chat'?: string;
   'surface-code'?: string;
   'surface-code-body'?: string;
+  'surface-code-inline'?: string;
+  'prose-bullet'?: string;
+  'prose-quote-bar'?: string;
   'surface-qr'?: string;
   'surface-inverted'?: string;
   'surface-inverted-hover'?: string;
@@ -420,9 +485,28 @@ export interface IThemeColors {
   'border-medium-alt'?: string;
   'border-heavy'?: string;
   'border-xheavy'?: string;
+  'drawer-edge'?: string;
   'border-destructive'?: string;
   'border-control'?: string;
   'border-field-focus'?: string;
+  'field-fill'?: string;
+  'field-text'?: string;
+  'surface-tooltip'?: string;
+  'text-tooltip'?: string;
+  'alert-error-fill'?: string;
+  'alert-error-border'?: string;
+  'surface-canvas'?: string;
+  'surface-user-message'?: string;
+  'surface-card'?: string;
+  'surface-card-hover'?: string;
+  'surface-nav-hover'?: string;
+  'surface-nav-selected'?: string;
+  'surface-tab-selected'?: string;
+  'surface-menu'?: string;
+  'surface-popover'?: string;
+  'border-menu'?: string;
+  'surface-composer'?: string;
+  'surface-search'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -500,8 +584,28 @@ export interface IThemeAppearance {
   /** The corners of a menu panel (`.popover-ui`), a tooltip and a tab trigger, apart from the
    *  control and surface radii; their defaults are the literals those primitives drew. */
   menuRadius: string;
+  /** The corners of the composer's popovers (attach, palette, reasoning), the model selector's
+   *  panel, and the composer's send and mic buttons; their defaults are the literals those
+   *  surfaces drew, so a theme can bring them in line with `menuRadius` without touching the
+   *  control or surface radii. */
+  popoverRadius: string;
+  menuPanelRadius: string;
+  composerActionRadius: string;
+  /** The weight of an inline code chip in rendered Markdown. */
+  inlineCodeWeight: string;
   tooltipRadius: string;
+  /** A tooltip's padding and the size of its text, apart from the control spacing and the type
+   *  scale; their defaults are the literals the tooltip drew. */
+  tooltipPaddingX: string;
+  tooltipPaddingY: string;
+  tooltipTextSize: string;
   tabRadius: string;
+  /** The narrowest a tab trigger draws; `0` sizes it by its label. */
+  tabMinWidth: string;
+  /** The narrowest a Select's list draws; `0` sizes it by its trigger and options. */
+  listMinWidth: string;
+  /** The tallest a Select's list draws before it scrolls, 8 to 40rem. */
+  listMaxHeight: string;
   radiusSm: string;
   radiusMd: string;
   radiusLg: string;
@@ -512,20 +616,39 @@ export interface IThemeAppearance {
   /** A theme-sized control's inline padding and icon-to-label gap; they follow `spaceNormal` and
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
+  /** The Button's default size inline padding. */
+  buttonPaddingX: string;
   controlGap: string;
+  /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
+   *  close button draws (1 to 2rem). */
+  iconSize: string;
+  /** The medium icon (1.25 to 1.5rem), such as the exported Dialog's close glyph. */
+  iconSizeMd: string;
+  iconSizeLg: string;
   /** A theme-sized control's label weight, and the Button's default and `sm` heights. */
   controlFontWeight: string;
   buttonHeight: string;
   buttonHeightSm: string;
+  /** The Button's `xs` and `lg` heights; `icon-xs` is as wide as `xs` is tall, `icon` as the
+   *  default, and `icon-sm` takes its own size. */
+  buttonHeightXs: string;
+  buttonHeightLg: string;
+  /** The compact toolbar step the Button and Dropdown `compact` recipes share. */
+  buttonHeightCompact: string;
+  iconButtonSizeSm: string;
   /**
    * A form field's height, and its focus treatment: `ring` draws the keyboard-only focus ring,
    * `border` swaps the field's edge to `border-field-focus` on any focus, and keyboard focus adds
    * a 1px ring in that color so the indicator keeps a 2px perimeter.
    */
   fieldHeight: string;
+  /** The height of the large `title` field. */
+  fieldHeightLg: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';
+  /** `transparent` leaves a field on the surface it sits on; `fill` paints it `field-fill`. */
+  fieldFillStyle: 'transparent' | 'fill';
   /** The keyboard focus outline's width and its offset from the element's edge, apart from the
    *  heavier outline the contrast modes keep. */
   focusRingWidth: string;
@@ -537,6 +660,8 @@ export interface IThemeAppearance {
   labelFontWeight: string;
   switchWidth: string;
   switchHeight: string;
+  /** A checkbox's box and the check inside it, 1 to 1.5rem. */
+  checkboxSize: string;
   tableCellSpaceY: string;
   tableRowStroke: string;
   spaceCompact: string;
@@ -554,6 +679,11 @@ export interface IThemeAppearance {
   textLg: string;
   textXl: string;
   text2xl: string;
+  /** Sizes between and below the scale (10, 11, 13 and 15px) that carry no line height of their own. */
+  text3xs: string;
+  text2xs: string;
+  text1xs: string;
+  text1sm: string;
   leadingXs: string;
   leadingSm: string;
   leadingBase: string;
@@ -592,6 +722,20 @@ export interface IThemeAppearance {
   tooltipShadow: string;
   motionFast: string;
   motionNormal: string;
+  /**
+   * The share of `border-light` that `border-chrome` (the outline of an icon button, pill, chip
+   * or avatar ring that sits on the shell) and `border-inset` (a hairline inside a surface that
+   * is already stroked) paint. 1 keeps them as `border-light`; 0 draws none, with the 1px box
+   * unchanged so layout and focus geometry stay put.
+   */
+  chromeBorderAlpha: string;
+  insetBorderAlpha: string;
+  /**
+   * How a `destructive` Button is painted. `fill` is the solid destructive surface with its
+   * on-status ink; `soft` is a tint of that surface under the destructive ink, with the hover
+   * and pressed tints a step stronger.
+   */
+  destructiveStyle: 'fill' | 'soft';
 }
 
 export interface ThemeModeDefinition {

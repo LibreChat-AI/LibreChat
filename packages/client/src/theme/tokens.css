@@ -43,6 +43,8 @@
   --color-ring-primary: rgb(var(--ring-primary));
   --color-focus-outline: rgb(var(--focus-outline));
   --color-focus-control: rgb(var(--focus-control));
+  /* Follows the heavy border it replaced, for a stylesheet that predates it. */
+  --color-focus-subtle: rgb(var(--focus-subtle, var(--border-heavy)));
   --color-header-primary: rgb(var(--header-primary));
   --color-header-hover: rgb(var(--header-hover));
   --color-header-button-hover: rgb(var(--header-button-hover));
@@ -78,6 +80,9 @@
   --color-surface-chat: rgb(var(--surface-chat));
   --color-surface-code: rgb(var(--surface-code));
   --color-surface-code-body: rgb(var(--surface-code-body));
+  --color-surface-code-inline: rgb(var(--surface-code-inline));
+  --color-prose-bullet: rgb(var(--prose-bullet));
+  --color-prose-quote-bar: rgb(var(--prose-quote-bar));
   --color-surface-qr: rgb(var(--surface-qr));
   --color-surface-inverted: rgb(var(--surface-inverted));
   --color-surface-inverted-hover: rgb(var(--surface-inverted-hover));
@@ -113,13 +118,46 @@
   /* borders */
   --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));
   --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
+  /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
+  --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-heavy, at the chrome share: the pressed or selected outline of a control that is chrome. */
+  --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the chrome share: the hover outline of a chrome control. */
+  --color-border-chrome-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  /* border-medium, at the inset share: the box edges of a form that sits on a stroked page. */
+  --color-border-inset-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)));
+  --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
+  --color-drawer-edge: rgb(var(--drawer-edge));
   --color-border-destructive: rgb(var(--border-destructive));
   --color-border-control: rgb(var(--border-control));
   /* Falls back to the focus ring color, for a stylesheet that predates it. */
   --color-border-field-focus: rgb(var(--border-field-focus, var(--focus-control)));
+  /* Follow the canvas and the primary ink, for a stylesheet that predates them. */
+  --color-field-fill: rgb(var(--field-fill, var(--surface-primary)));
+  --color-field-text: rgb(var(--field-text, var(--text-primary)));
+  /* Follow the roles they were painted in before they had their own, for a stylesheet that
+     predates them. */
+  --color-surface-tooltip: rgb(var(--surface-tooltip, var(--surface-primary)));
+  --color-text-tooltip: rgb(var(--text-tooltip, var(--text-primary)));
+  --color-alert-error-fill: rgb(var(--alert-error-fill, var(--status-error-subtle)));
+  --color-alert-error-border: rgb(var(--alert-error-border, var(--status-error-border)));
+  --color-surface-canvas: rgb(var(--surface-canvas));
+  --color-surface-user-message: rgb(var(--surface-user-message));
+  --color-surface-card: rgb(var(--surface-card));
+  --color-surface-card-hover: rgb(var(--surface-card-hover));
+  --color-surface-nav-hover: rgb(var(--surface-nav-hover));
+  --color-surface-nav-selected: rgb(var(--surface-nav-selected));
+  --color-surface-tab-selected: rgb(var(--surface-tab-selected));
+  --color-surface-menu: rgb(var(--surface-menu));
+  --color-surface-popover: rgb(var(--surface-popover));
+  --color-border-menu: rgb(
+    var(--border-menu) / var(--border-menu-alpha, var(--border-light-alpha, 1))
+  );
+  --color-surface-composer: rgb(var(--surface-composer));
+  --color-surface-search: rgb(var(--surface-search));
   --color-border-disabled: rgb(var(--border-disabled));
 
   /* status */
@@ -162,6 +200,18 @@
   --color-switch-thumb: rgb(var(--switch-thumb, var(--surface-primary)));
   --color-table-header-text: rgb(var(--table-header-text, var(--text-secondary)));
   --color-table-header-fill: rgb(var(--table-header-fill, var(--surface-dialog)));
+  /* The code-syntax palette and the shimmer animation are painted from stylesheets, so these carry no
+   * utility today; each is declared so the registry and this file name the same colors. */
+  --color-syntax-text: rgb(var(--syntax-text));
+  --color-syntax-comment: rgb(var(--syntax-comment));
+  --color-syntax-meta: rgb(var(--syntax-meta));
+  --color-syntax-builtin: rgb(var(--syntax-builtin));
+  --color-syntax-keyword: rgb(var(--syntax-keyword));
+  --color-syntax-string: rgb(var(--syntax-string));
+  --color-syntax-attr: rgb(var(--syntax-attr));
+  --color-syntax-title: rgb(var(--syntax-title));
+  --color-shimmer-base: rgb(var(--shimmer-base) / var(--shimmer-base-alpha, 1));
+  --color-shimmer-dip: rgb(var(--shimmer-dip) / var(--shimmer-dip-alpha, 1));
 }
 
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
@@ -192,6 +242,10 @@
   --text-xl--line-height: var(--theme-text-xl-leading);
   --text-2xl: var(--theme-text-2xl);
   --text-2xl--line-height: var(--theme-text-2xl-leading);
+  --text-3xs: var(--theme-text-3xs);
+  --text-2xs: var(--theme-text-2xs);
+  --text-1xs: var(--theme-text-1xs);
+  --text-1sm: var(--theme-text-1sm);
   --shadow: var(--theme-shadow-sm);
   --shadow-2xs: var(--theme-shadow-2xs);
   --shadow-xs: var(--theme-shadow-xs);
@@ -238,6 +292,29 @@
   }
 }
 
+/* A theme whose `destructiveStyle` is `soft` paints the `destructive` Button as a tint of the
+ * destructive surface under the destructive ink, as Click UI's danger button does. Read, like the
+ * disabled style, from the `--theme-destructive-style` property the nearest themed root carries. */
+@custom-variant theme-destructive-soft {
+  @container style(--theme-destructive-style: soft) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
+/* A theme whose `chromeBorderAlpha` is `0` draws no outline on chrome controls, so a control that
+ * floats over content or a bar that sits over a scrolling thread needs a surface in place of the
+ * edge. Read, like the disabled style, from the `--theme-border-chrome-alpha` property the nearest
+ * themed root carries. */
+@custom-variant theme-chrome-quiet {
+  @container style(--theme-border-chrome-alpha: 0) {
+    &:is(:root *) {
+      @slot;
+    }
+  }
+}
+
 /* A theme whose `fieldFocusStyle` is `border` swaps a focused field's edge color instead of
  * drawing a ring. Read, like the disabled style, from the `--theme-field-focus-style` property
  * the nearest themed root carries. */
@@ -246,5 +323,15 @@
     &:is(:root *) {
       @slot;
     }
+  }
+}
+
+/* A theme whose `fieldFillStyle` is `fill` paints its fields in `field-fill` instead of leaving
+ * them on the surface they sit on, read like the focus style from the nearest themed root. The
+ * default `transparent` style, and a browser without style queries, keep the fields clear. The
+ * fill carries a single class's weight, so a hover, open or disabled fill still paints over it. */
+@custom-variant theme-field-fill {
+  @container style(--theme-field-fill-style: fill) {
+    @slot;
   }
 }

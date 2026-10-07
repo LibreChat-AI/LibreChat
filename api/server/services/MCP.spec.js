@@ -2,6 +2,7 @@
 const mockGetTenantId = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
     error: jest.fn(),
@@ -863,6 +864,48 @@ describe('tests for the new helper functions used by the MCP connection status e
       });
     });
 
+    it('does not report rejected stored credentials as connected after the OAuth flow is gone', async () => {
+      const { findToken } = require('~/models');
+      const credentialSetId = 'rejected-generation';
+      mockGetOAuthReconnectionManager.mockReturnValue({ isReconnecting: jest.fn(() => false) });
+      mockGetFlowStateManager.mockReturnValue({ getFlowState: jest.fn(() => null) });
+      mockGetLogStores.mockReturnValue({});
+      findToken.mockImplementation(async ({ type }) => {
+        if (type === 'mcp_oauth_client') {
+          return {
+            token: 'enc:{"client_id":"dynamic-client"}',
+            metadata: {
+              credential_set_id: credentialSetId,
+              rejected_credential_set_id: credentialSetId,
+              authorization_endpoint: 'https://auth.example.com/authorize',
+              token_endpoint: 'https://auth.example.com/token',
+              server_url: 'https://mcp.example.com/',
+              client_source: 'dynamic',
+            },
+          };
+        }
+        return {
+          expiresAt: new Date(Date.now() + 60000),
+          metadata: { credential_set_id: credentialSetId },
+        };
+      });
+
+      const result = await getServerConnectionStatus(
+        mockUserId,
+        mockServerName,
+        { ...mockConfig, url: 'https://mcp.example.com/' },
+        new Map(),
+        new Map(),
+        new Set([mockServerName]),
+      );
+
+      expect(result).toEqual({
+        requiresOAuth: true,
+        connectionState: 'disconnected',
+        authorizationState: 'needs_authorization',
+      });
+    });
+
     it('should derive runtime-detected OAuth readiness from bound token storage', async () => {
       const appConnections = new Map();
       const userConnections = new Map();
@@ -1695,11 +1738,111 @@ describe('User parameter passing tests', () => {
       ).rejects.toThrow();
       expect(receipt).toHaveBeenCalledWith({
         error,
+        identity: undefined,
         streamId: 'scheduled-conversation',
         jobCreatedAt: 42,
         userId: 'scheduled-owner',
         serverName: 'test-server',
       });
+    });
+
+    it('carries captured schedule identity into the transport failure receipt', async () => {
+      const {
+        createScheduleMCPExecution,
+        createMCPRequestContext,
+        ScheduledMCPPolicyError,
+      } = require('@librechat/api');
+      const user = { id: 'scheduled-owner', tenantId: 'tenant', role: 'USER' };
+      const identity = {
+        scheduleId: 'schedule',
+        ownerId: user.id,
+        tenantId: 'tenant',
+        agentId: 'root',
+        invocationMode: 'delegated',
+      };
+      const context = createMCPRequestContext();
+      const execution = createScheduleMCPExecution({
+        storage: {
+          readScheduleMCPConsent: async () => ({
+            agentId: 'root',
+            enabled: true,
+            configRevision: 0,
+            enrollment: null,
+            compatible: true,
+          }),
+        },
+        loadAuthorization: async () => {
+          throw new Error('Unused legacy policy loader');
+        },
+      });
+      await execution.attach(context, identity, 'invoke');
+      const error = new ScheduledMCPPolicyError('consent_revoked', 'test-server', 'child');
+      const receipt = require('~/server/services/Schedules').recordMCPToolAuthFailure;
+      let durable = false;
+      let completed = false;
+      const persist = jest.fn(async () => durable);
+      receipt.mockImplementationOnce((input) =>
+        require('@librechat/api').recordScheduledMCPToolAuthFailure(input, () => persist),
+      );
+
+      require('~/models').getRoleByName.mockResolvedValue({
+        permissions: { [PermissionTypes.MCP_SERVERS]: { [Permissions.USE]: true } },
+      });
+      mockGetMCPManager.mockReturnValue({ callTool: jest.fn().mockRejectedValue(error) });
+      const tool = await createMCPTool({
+        agentId: 'child',
+        user,
+        toolKey: `test-tool${D}test-server`,
+        provider: 'openai',
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        requestScopedConnections: context,
+        config: { type: 'streamable-http', url: 'https://mcp.example.com' },
+        availableTools: {
+          [`test-tool${D}test-server`]: {
+            function: { description: 'Test MCP', parameters: { type: 'object', properties: {} } },
+          },
+        },
+      });
+      // Model/run metadata cannot replace the tool-construction identity.
+      const expectedIdentity = { ...identity };
+      identity.scheduleId = 'mutated';
+      const result = tool
+        .func({}, undefined, {
+          configurable: {
+            user,
+            requestScopedConnections: createMCPRequestContext(),
+            scheduleId: 'forged',
+          },
+          metadata: { provider: 'openai', thread_id: 'scheduled-conversation', run_id: 'run' },
+          toolCall: {},
+        })
+        .catch((failure) => {
+          completed = true;
+          return failure;
+        });
+      try {
+        const deadline = Date.now() + 2000;
+        while (persist.mock.calls.length === 0 && Date.now() < deadline)
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(persist).toHaveBeenCalled();
+        expect(completed).toBe(false);
+        durable = true;
+        await expect(result).resolves.toBe(error);
+      } finally {
+        durable = true;
+        await result;
+      }
+
+      expect(receipt).toHaveBeenCalledWith({
+        error,
+        identity: expectedIdentity,
+        streamId: 'scheduled-conversation',
+        jobCreatedAt: 42,
+        userId: 'scheduled-owner',
+        serverName: 'test-server',
+      });
+      expect(Object.isFrozen(receipt.mock.calls.at(-1)[0].identity)).toBe(true);
     });
 
     it('keeps shared OAuth recovery alive when one tool caller aborts', async () => {

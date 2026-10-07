@@ -97,6 +97,7 @@ const mockCheckPermission = jest.fn();
 const mockDecryptMetadata = jest.fn();
 const mockStampConvoLastResponse = jest.fn().mockResolvedValue(undefined);
 const mockStampForcedRetention = jest.fn().mockResolvedValue(undefined);
+const mockAddConvoToolApprovalAllows = jest.fn();
 const mockDisposeClient = jest.fn();
 const mockGetMCPRequestContext = jest.fn();
 const mockCleanupMCPRequestContextForReq = jest.fn();
@@ -180,6 +181,7 @@ jest.mock('~/models', () => ({
   settleAgentEventActorDetachedAction: (...args) =>
     mockSettleAgentEventActorDetachedAction(...args),
   stampConvoLastResponse: (...args) => mockStampConvoLastResponse(...args),
+  addConvoToolApprovalAllows: (...args) => mockAddConvoToolApprovalAllows(...args),
 }));
 
 jest.mock('~/server/services/Endpoints/agents/eventChildLease', () => ({
@@ -218,6 +220,26 @@ const { captureCodeExecutionApprovalBinding } = require('@librechat/api');
 
 /** Drain the microtask + immediate queues so the post-ACK continuation settles. */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+/** Provenance commits in the approval claim's CAS, never in a post-ACK job-store write. */
+const expectProvenanceClaimed = (provenance) => {
+  expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.anything(),
+    expect.objectContaining(provenance),
+    1000,
+  );
+  expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.objectContaining({ userSubmittedPaths: expect.anything() }),
+    expect.anything(),
+  );
+  expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
+    CONVO_ID,
+    expect.objectContaining({ userSubmittedMessageFieldPaths: expect.anything() }),
+    expect.anything(),
+  );
+};
 
 /** A live, resolvable paused tool-approval job (single tool call `tc1`). */
 function makeToolApprovalJob(overrides = {}) {
@@ -489,6 +511,29 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     decisions: [{ tool_call_id: 'tc1', decision: 'approve' }],
     ...extra,
   });
+
+  /** Enable "Always allow" and offer it on the paused `tc1` call. */
+  const withAllowAlways = (job) => {
+    requestConfigOverrides = {
+      endpoints: {
+        agents: {
+          checkpointer: { type: 'mongo' },
+          toolApproval: { enabled: true, allowAlways: true },
+        },
+      },
+    };
+    job.metadata.pendingAction.payload = {
+      type: 'tool_approval',
+      action_requests: [{ tool_call_id: 'tc1', name: 'search_mcp_github', arguments: {} }],
+      review_configs: [
+        { tool_call_id: 'tc1', allowed_decisions: ['approve', 'reject'], allow_always: true },
+      ],
+    };
+    mockAddConvoToolApprovalAllows.mockResolvedValue(true);
+    return job;
+  };
+  const allowAlwaysBody = () =>
+    approveBody({ decisions: [{ tool_call_id: 'tc1', decision: 'approve', scope: 'session' }] });
 
   const configureEventActorResume = (expiredAt = new Date(Date.now() + 60_000)) => {
     requestStateOverrides = {
@@ -1084,6 +1129,33 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     });
   });
 
+  it('passes retained completion lineage to authenticated approval initialization without claiming an occurrence', async () => {
+    const lineage = {
+      scheduleId: 'original-schedule',
+      ownerId: USER_ID,
+      tenantId: TENANT_ID,
+      agentId: 'original-root',
+      invocationMode: 'delegated',
+    };
+    mockGenerationJobManager.getJob.mockResolvedValue(
+      makeToolApprovalJob({ metadata: { scheduleMCPCompletion: lineage } }),
+    );
+    const res = await post(
+      approveBody({
+        agentCompletion: { scheduleMCPIdentity: { ...lineage, agentId: 'forged-root' } },
+      }),
+    );
+    expect(res.status).toBe(200);
+    await settled;
+    expect(mockInitializeClient.mock.calls[0][0].scheduleJobIdentity.scheduleMCPCompletion).toEqual(
+      lineage,
+    );
+    expect(mockInitializeClient.mock.calls[0][0].scheduledTokenContext).toBeUndefined();
+    expect(capturedInit.isScheduledFire).not.toBe(true);
+    expect(mockClaimScheduleResume).not.toHaveBeenCalled();
+    expect(mockRecordScheduleOutcome).not.toHaveBeenCalled();
+  });
+
   describe('scheduled occurrence lifecycle', () => {
     const scheduledFor = '2026-08-17T12:00:00.000Z';
     const makeScheduledJob = () =>
@@ -1259,6 +1331,42 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockDeleteAgentCheckpoint).toHaveBeenCalled();
     });
 
+    it('aborts a resume the schedule fence rejected after claiming its provenance', async () => {
+      const job = makeScheduledJob();
+      job.metadata.userSubmittedPaths = ['/content/0/steer'];
+      job.metadata.pendingAction.payload.review_configs = [
+        { tool_call_id: 'tc1', allowed_decisions: ['approve', 'edit'] },
+      ];
+      mockGenerationJobManager.getJob.mockResolvedValue(job);
+      mockGenerationJobManager.getResumeState.mockResolvedValue({
+        aggregatedContent: [makeToolCallContent()],
+      });
+      mockFinalizeScheduleResumeClaim.mockResolvedValue(false);
+
+      const res = await post(
+        approveBody({
+          decisions: [{ tool_call_id: 'tc1', decision: 'edit', editedArguments: { q: 'edit' } }],
+        }),
+      );
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SCHEDULE_NO_LONGER_ACTIVE' });
+      expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledWith(
+        CONVO_ID,
+        ACTION_ID,
+        expect.objectContaining({
+          userSubmittedPaths: expect.arrayContaining(['/content/0/tool_call/args']),
+        }),
+        1000,
+      );
+      expect(mockGenerationJobManager.abortJob).toHaveBeenCalledWith(CONVO_ID, {
+        expectedCreatedAt: 1000,
+        awaitProviderDrain: true,
+      });
+      expect(mockJobStore.updateJob).not.toHaveBeenCalled();
+      expect(mockInitializeClient).not.toHaveBeenCalled();
+    });
+
     it('refuses to settle the stale resume handoff on an unconfirmed stop', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(makeScheduledJob());
       mockFinalizeScheduleResumeClaim.mockResolvedValue(false);
@@ -1368,6 +1476,17 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         error: 'Schedule was disabled, changed, or deleted before approval',
       });
       expect(mockInitializeClient).not.toHaveBeenCalled();
+    });
+
+    it('does not remember an approval when the schedule fence rejects the resume', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeScheduledJob()));
+      mockFinalizeScheduleResumeClaim.mockResolvedValue(false);
+
+      const res = await post(allowAlwaysBody());
+
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'SCHEDULE_NO_LONGER_ACTIVE' });
+      expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
     });
 
     it('settles a scheduled continuation stopped during its resumed segment', async () => {
@@ -1487,6 +1606,18 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
 
       expect(mockGetAgentCheckpointer).not.toHaveBeenCalled();
       expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes isResume: true into initializeClient so recorded prompt-link usage is not doubled', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+
+      const res = await post(approveBody());
+      expect(res.status).toBe(200);
+      await settled;
+      await flush();
+
+      expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+      expect(mockInitializeClient.mock.calls[0][0]).toMatchObject({ isResume: true });
     });
 
     it('does not read the checkpoint for a source unrelated to resume content', async () => {
@@ -2337,6 +2468,16 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient).toHaveBeenCalled();
     });
 
+    it('does not remember an approval when the project context fence rejects the resume', async () => {
+      withProject(4, 3);
+      const job = await mockGenerationJobManager.getJob();
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(job));
+      const res = await post(allowAlwaysBody());
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: 'PROJECT_CONTEXT_CHANGED' });
+      expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
+    });
+
     it('rejects a resume whose Project no longer exists', async () => {
       withProject(3, 3);
       mockGetChatProject.mockResolvedValue(null);
@@ -2913,6 +3054,56 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
     });
   });
 
+  describe('remembered tool approvals', () => {
+    it('stores the approved tool only after the resume fences pass', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+      const res = await post(allowAlwaysBody());
+      await settled;
+      expect(res.status).toBe(200);
+      expect(mockAddConvoToolApprovalAllows).toHaveBeenCalledWith({
+        user: USER_ID,
+        conversationId: CONVO_ID,
+        toolNames: ['search_mcp_github'],
+        max: 64,
+      });
+      expect(mockInitializeClient.mock.invocationCallOrder[0]).toBeLessThan(
+        mockAddConvoToolApprovalAllows.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('approves once without storing when a hook registered after the pause applies', async () => {
+      const { setPluginHookSource } = jest.requireActual('@librechat/api');
+      const hasToolApprovalHooks = jest.fn(() => true);
+      setPluginHookSource({ hasHooks: () => true, hasToolApprovalHooks, register: () => 0 });
+      try {
+        mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+        const client = makeClient();
+        mockInitializeClient.mockResolvedValue({ client, userMCPAuthMap: {} });
+        const res = await post(allowAlwaysBody());
+        await settled;
+        await flush();
+        expect(res.status).toBe(200);
+        expect(hasToolApprovalHooks).toHaveBeenCalledWith(['search_mcp_github']);
+        expect(mockAddConvoToolApprovalAllows).not.toHaveBeenCalled();
+        expect(client.resumeCompletion).toHaveBeenCalledTimes(1);
+      } finally {
+        setPluginHookSource(undefined);
+      }
+    });
+
+    it('still resumes once when storing the remembered tool fails', async () => {
+      mockGenerationJobManager.getJob.mockResolvedValue(withAllowAlways(makeToolApprovalJob()));
+      mockAddConvoToolApprovalAllows.mockRejectedValue(new Error('db down'));
+      const client = makeClient();
+      mockInitializeClient.mockResolvedValue({ client, userMCPAuthMap: {} });
+      const res = await post(allowAlwaysBody());
+      await settled;
+      await flush();
+      expect(res.status).toBe(200);
+      expect(client.resumeCompletion).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('happy path: approve -> reconstruct -> resume -> finalize', () => {
     const statefulCodeAgent = (bridgeWorkerId) => ({
       id: AGENT_ID,
@@ -3085,6 +3276,33 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
           resumeValue: { tc1: { type: 'approve' } },
           userMCPAuthMap: { server1: { token: 't' } },
           compactionSemanticIndex,
+        }),
+      );
+    });
+
+    it('carries only server-owned approval bindings through the claimed resume', async () => {
+      const bindings = {
+        tc1: {
+          agentId: AGENT_ID,
+          instanceName: 'query_mcp_db',
+          toolName: 'query_mcp_db',
+          binding: 'server-digest',
+          scope: 'chat',
+        },
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { pendingAction: { toolApprovalBindings: bindings } } }),
+      );
+      await post(approveBody({ toolApprovalBindings: { tc1: { binding: 'forged' } } }));
+      await settled;
+      await flush();
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewedToolApprovals: {
+            bindings,
+            decisions: [{ tool_call_id: 'tc1', decision: 'approve' }],
+          },
         }),
       );
     });
@@ -3874,15 +4092,9 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         }),
         1000,
       );
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        {
-          userSubmittedMessageFieldPaths: [
-            { path: '/content/1/tool_call/output', field: 'answer' },
-          ],
-        },
-        1000,
-      );
+      expectProvenanceClaimed({
+        userSubmittedMessageFieldPaths: [{ path: '/content/1/tool_call/output', field: 'answer' }],
+      });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -3989,11 +4201,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
         1000,
       );
       const exactProvenance = [{ path: '/content/0/tool_call/output', field: 'answer' }];
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        { userSubmittedMessageFieldPaths: exactProvenance },
-        1000,
-      );
+      expectProvenanceClaimed({ userSubmittedMessageFieldPaths: exactProvenance });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ userSubmittedMessageFieldPaths: exactProvenance }),
@@ -4046,11 +4254,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await flush();
 
       const exactProvenance = [{ path: '/content/0/tool_call/output', field: 'answer' }];
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        { userSubmittedMessageFieldPaths: exactProvenance },
-        1000,
-      );
+      expectProvenanceClaimed({ userSubmittedMessageFieldPaths: exactProvenance });
       expect(mockSaveMessage).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ userSubmittedMessageFieldPaths: exactProvenance }),
@@ -4110,7 +4314,7 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
               userSubmittedMessageFieldPaths: [{ path: expectedPath, field: expectedField }],
             }
           : { userSubmittedPaths: [expectedPath] };
-        expect(mockJobStore.updateJob).toHaveBeenCalledWith(CONVO_ID, expectedProvenance, 1000);
+        expectProvenanceClaimed(expectedProvenance);
         expect(mockSaveMessage).toHaveBeenCalledWith(
           expect.anything(),
           expect.objectContaining(expectedProvenance),
@@ -4140,6 +4344,9 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       await settled;
       await flush();
 
+      expect(mockGenerationJobManager.approvals.resolve.mock.calls[0][2]).not.toHaveProperty(
+        'userSubmittedPaths',
+      );
       expect(mockJobStore.updateJob).not.toHaveBeenCalledWith(
         CONVO_ID,
         expect.objectContaining({ userSubmittedPaths: expect.anything() }),
@@ -4498,15 +4705,11 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockSaveMessage).not.toHaveBeenCalled();
       expect(mockGenerationJobManager.publishTerminalClaim).not.toHaveBeenCalled();
       expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
-      expect(mockJobStore.updateJob).toHaveBeenCalledWith(
-        CONVO_ID,
-        {
-          userSubmittedMessageFieldPaths: [
-            { path: '/content/0/tool_call/output', field: 'decision_response' },
-          ],
-        },
-        1000,
-      );
+      expectProvenanceClaimed({
+        userSubmittedMessageFieldPaths: [
+          { path: '/content/0/tool_call/output', field: 'decision_response' },
+        ],
+      });
       expect(mockDecrementPendingRequest).toHaveBeenCalledWith(USER_ID);
     });
 

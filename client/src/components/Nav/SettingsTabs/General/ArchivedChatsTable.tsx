@@ -184,7 +184,7 @@ export default function ArchivedChatsTable() {
             </Link>
           );
           return (
-            <div className="flex items-center gap-2.5">
+            <div className="flex w-0 min-w-full items-center gap-2.5">
               <MinimalIcon
                 endpoint={row.original.endpoint}
                 size={28}

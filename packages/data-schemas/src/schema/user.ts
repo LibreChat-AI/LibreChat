@@ -104,6 +104,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    twoFactorEnrolledAt: {
+      type: Date,
+      default: null,
+    },
     totpSecret: {
       type: String,
       select: false,
@@ -128,6 +132,16 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
      */
     credentialsChangedAt: {
       type: Date,
+    },
+    twoFactorAcknowledgementNonceHash: {
+      type: String,
+      select: false,
+      default: null,
+    },
+    twoFactorFinalizationNonceHash: {
+      type: String,
+      select: false,
+      default: null,
     },
     refreshToken: {
       type: [SessionSchema],

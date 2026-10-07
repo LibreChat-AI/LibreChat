@@ -1,7 +1,7 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Constants,
@@ -42,6 +42,7 @@ function renderHoverButtons({
   getCanCopy = () => hasCopyableText({ text: message.text, content: message.content }),
   handleFeedback,
   thread,
+  voice,
 }: {
   isSubmitting: boolean;
   message?: TMessage;
@@ -53,12 +54,20 @@ function renderHoverButtons({
   /** The rows the hover controls resolve the message's parent from. Omitted, the
    *  thread is unavailable, as on a search row. */
   thread?: TMessage[];
+  /** Enables Read Aloud on the browser engine with this voice selected. */
+  voice?: string;
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
-  const initializeState = ({ set }: MutableSnapshot) => set(store.textToSpeech, false);
+  const initializeState = ({ set }: MutableSnapshot) => {
+    set(store.textToSpeech, voice != null);
+    if (voice != null) {
+      set(store.voice, voice);
+      set(store.speechSettingsInitialized, true);
+    }
+  };
 
   const { container } = render(
     <QueryClientProvider client={queryClient}>
@@ -637,5 +646,89 @@ describe('HoverButtons feedback affordance', () => {
     expect(screen.queryByTitle('Love this')).toBeNull();
     expect(screen.queryByTitle('Needs improvement')).toBeNull();
     expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+});
+
+describe('HoverButtons read aloud', () => {
+  const voiceName = 'Test Voice';
+  const spoken: string[] = [];
+
+  class FakeSpeechSynthesisUtterance {
+    public voice: SpeechSynthesisVoice | null = null;
+    public onend: (() => void) | null = null;
+    public onerror: (() => void) | null = null;
+    constructor(public text: string) {}
+  }
+
+  beforeAll(() => {
+    /** jsdom lacks it; the message's audio element revokes its source on unmount. */
+    URL.revokeObjectURL = jest.fn();
+    Object.defineProperty(window, 'speechSynthesis', {
+      writable: true,
+      configurable: true,
+      value: {
+        getVoices: () => [{ name: voiceName, localService: true }],
+        addEventListener: () => undefined,
+        speak: (utterance: FakeSpeechSynthesisUtterance) => spoken.push(utterance.text),
+        cancel: () => undefined,
+      },
+    });
+    Object.defineProperty(global, 'SpeechSynthesisUtterance', {
+      writable: true,
+      configurable: true,
+      value: FakeSpeechSynthesisUtterance,
+    });
+  });
+
+  beforeEach(() => {
+    spoken.length = 0;
+  });
+
+  const readAloud = (message: Partial<TMessage>) => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: { ...userMessage, messageId: 'assistant-1', isCreatedByUser: false, ...message },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+    });
+    fireEvent.click(screen.getByTestId('read-aloud-button'));
+  };
+
+  it('speaks the answer without the reasoning parts before it', () => {
+    readAloud({
+      text: '',
+      content: [
+        { type: ContentTypes.THINK, think: 'Let me work out 2 + 2 first.' },
+        { type: ContentTypes.TEXT, text: 'The answer is 4.' },
+      ],
+    });
+
+    expect(spoken).toEqual(['The answer is 4.']);
+  });
+
+  it('offers no read aloud for a response that only reasoned', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: {
+        ...userMessage,
+        messageId: 'assistant-1',
+        isCreatedByUser: false,
+        text: 'Let me work out 2 + 2 first.',
+        content: [{ type: ContentTypes.THINK, think: 'Let me work out 2 + 2 first.' }],
+      },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
+  it('speaks the answer without a legacy thinking block in plain text', () => {
+    readAloud({ text: ':::thinking\nLet me work out 2 + 2 first.\n:::\nThe answer is 4.' });
+
+    expect(spoken).toEqual(['The answer is 4.']);
   });
 });

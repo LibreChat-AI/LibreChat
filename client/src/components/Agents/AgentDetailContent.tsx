@@ -29,6 +29,7 @@ import { useMarketplaceHost } from './MarketplaceContext';
 import { useFavorites, useLocalize } from '~/hooks';
 import DescriptionWords from './DescriptionWords';
 import { cn, renderAgentAvatar } from '~/utils';
+import ResetApprovals from './ResetApprovals';
 import AgentCategoryBadge from './Category';
 import CopyLink from './CopyLink';
 
@@ -228,7 +229,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
           initial={morphing ? { opacity: 1 } : false}
           animate={{ opacity: morphing && morph === 'closing' ? 1 : 0 }}
           transition={MORPH_OPEN_TRANSITION}
-          className="border-border-light bg-surface-secondary pointer-events-none absolute inset-0 border"
+          className="border-border-light bg-surface-card pointer-events-none absolute inset-0 border"
         />
 
         {/* Only the category and the close control are pinned above the scroll:
@@ -285,7 +286,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                 {renderAgentAvatar(agent, {
                   size: 'md',
                   showBorder: false,
-                  className: 'rounded-full bg-surface-tertiary ring-1 ring-border-light',
+                  className: 'rounded-full bg-surface-tertiary ring-1 ring-border-chrome',
                 })}
               </motion.div>
               <div className="min-w-0 flex-1 sm:self-center">
@@ -361,7 +362,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                   <Button
                     key={`${starter}-${index}`}
                     variant="outline"
-                    className="h-auto min-h-14 items-start justify-between gap-3 px-4 py-3 text-left whitespace-normal rtl:text-right"
+                    className="h-auto min-h-14 items-start justify-between gap-3 py-3 text-left whitespace-normal rtl:text-right"
                     aria-disabled={actionsDisabled || undefined}
                     onClick={() => {
                       if (!actionsDisabled) {
@@ -399,7 +400,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                 onFocusCapture={handleActionFocusCapture}
                 onBlurCapture={handleActionBlurCapture}
               >
-                <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-2">
+                <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
                     aria-label={favoriteLabel}
@@ -421,6 +422,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                     <span className="truncate">{favoriteLabel}</span>
                   </Button>
                   <CopyLink url={shareUrl} disabled={actionsDisabled} />
+                  <ResetApprovals agentId={agent.id} disabled={actionsDisabled} />
                 </div>
                 <Button
                   className="w-full sm:w-auto"

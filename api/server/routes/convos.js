@@ -1,6 +1,5 @@
 const multer = require('multer');
 const express = require('express');
-const { sleep } = require('@librechat/agents');
 const {
   reportLocatorTraversalFailure,
   isEnabled,
@@ -20,23 +19,29 @@ const {
   createBackgroundTaskIndexHandler,
   createBackgroundTaskCancelHandler,
   createBackgroundTaskPolicyMiddleware,
+  createConversationPullRequestHandler,
+  createGitHubPullRequestSource,
+  createProxyAwareFetch,
+  createPullRequestLookup,
+  createConversationPullRequestsHandler,
   backgroundTaskRegistry,
   createSubagentThreadViewHandler,
+  createGeneratedTitleHandler,
+  createRenameConversationHandler,
   createMarkConvoSeenHandler,
   createMarkConvoUnreadHandler,
   resolveImportMaxFileSize,
   restoreTenantContextFromReq,
   deleteAllSharedLinksWithCleanup,
   deleteConvoSharedLinksWithCleanup,
-  inspectContent,
   createContentFilter,
   isContentFilterError,
   isConversationImportError,
-  contentFilterBlockResponse,
   extractConversationTitleContent,
   extractStoredMessageContent,
   GenerationJobManager,
   isStopConfirmed,
+  withToolCallPreviews,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys, EModelEndpoint } = require('librechat-data-provider');
@@ -167,6 +172,22 @@ const backgroundTaskIndexHandler = createBackgroundTaskIndexHandler({
 const backgroundTaskCancelHandler = createBackgroundTaskCancelHandler({
   registry: backgroundTaskRegistry,
 });
+/** One lookup, so the header's single route and the sidebar's batch route share its cache. */
+const pullRequestLookup = createPullRequestLookup({
+  source: createGitHubPullRequestSource({ fetchFn: createProxyAwareFetch() }),
+});
+const conversationPullRequestHandler = createConversationPullRequestHandler({
+  getConvoLaneGit: db.getConvoLaneGit,
+  getAppConfig,
+  lookup: pullRequestLookup,
+  env: process.env,
+});
+const conversationPullRequestsHandler = createConversationPullRequestsHandler({
+  getConvosLaneGit: db.getConvosLaneGit,
+  getAppConfig,
+  lookup: pullRequestLookup,
+  env: process.env,
+});
 router.use(requireJwtAuth);
 
 const isValidProjectFilter = (projectId) =>
@@ -239,6 +260,8 @@ router.post(
   subagentControlHandler,
 );
 router.get('/:parentConversationId/subagents', parentSubagentIndexHandler);
+router.post('/pull-requests', conversationPullRequestsHandler);
+router.get('/:conversationId/pull-request', conversationPullRequestHandler);
 router.get('/:conversationId/background-tasks', backgroundTaskPolicy, backgroundTaskIndexHandler);
 router.post(
   '/:conversationId/background-tasks/cancel',
@@ -258,33 +281,14 @@ router.get('/:conversationId', async (req, res) => {
   }
 });
 
-router.get('/gen_title/:conversationId', async (req, res) => {
-  const { conversationId } = req.params;
-  const titleCache = getLogStores(CacheKeys.GEN_TITLE);
-  const key = `${req.user.id}-${conversationId}`;
-  let title = await titleCache.get(key);
-
-  if (!title) {
-    // Exponential backoff: 500ms, 1s, 2s, 4s, 8s (total ~15.5s max wait)
-    const delays = [500, 1000, 2000, 4000, 8000];
-    for (const delay of delays) {
-      await sleep(delay);
-      title = await titleCache.get(key);
-      if (title) {
-        break;
-      }
-    }
-  }
-
-  if (title) {
-    await titleCache.delete(key);
-    res.status(200).json({ title });
-  } else {
-    res.status(404).json({
-      message: "Title not found or method not implemented for the conversation's endpoint",
-    });
-  }
-});
+router.get(
+  '/gen_title/:conversationId',
+  createGeneratedTitleHandler({
+    getConvoTitleState: db.getConvoTitleState,
+    getCache: () => getLogStores(CacheKeys.GEN_TITLE),
+    logger,
+  }),
+);
 
 const POST_DELETE_CANCEL_ATTEMPTS = 3;
 const POST_DELETE_CANCEL_BACKOFF_MS = 250;
@@ -661,6 +665,8 @@ router.post('/archive', validateConvoAccess, async (req, res) => {
         preserveUpdatedAt: true,
         /** Without timestamps, an upsert would insert a conversation that has none. */
         noUpsert: true,
+        /** Metadata-only: skip rebuilding `messages` so a concurrent append is not erased. */
+        appendMessageIds: [],
       },
     );
 
@@ -715,58 +721,18 @@ router.post('/seen', validateConvoAccess, markConvoSeenHandler);
 
 router.post('/unread', validateConvoAccess, markConvoUnreadHandler);
 
-/** Maximum allowed length for conversation titles */
-const MAX_CONVO_TITLE_LENGTH = 1024;
-
-/**
- * Updates a conversation's title.
- * @route POST /update
- * @param {string} req.body.arg.conversationId - The conversation ID to update.
- * @param {string} req.body.arg.title - The new title for the conversation.
- * @returns {object} 201 - The updated conversation object.
- */
-router.post('/update', validateConvoAccess, configMiddleware, async (req, res) => {
-  const { conversationId, title } = req.body?.arg ?? {};
-
-  if (!conversationId) {
-    return res.status(400).json({ error: 'conversationId is required' });
-  }
-
-  if (title === undefined) {
-    return res.status(400).json({ error: 'title is required' });
-  }
-
-  if (typeof title !== 'string') {
-    return res.status(400).json({ error: 'title must be a string' });
-  }
-
-  const sanitizedTitle = title.trim().slice(0, MAX_CONVO_TITLE_LENGTH);
-  if (req.config?.filters != null) {
-    const finding = inspectContent(extractConversationTitleContent({ title: sanitizedTitle }), {
-      filters: req.config.filters,
-    });
-    if (finding != null) {
-      return res.status(400).json(contentFilterBlockResponse(finding));
-    }
-  }
-
-  try {
-    const dbResponse = await db.saveConvo(
-      {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      { conversationId, title: sanitizedTitle },
-      { context: `POST /api/convos/update ${conversationId}` },
-    );
-    res.status(201).json(dbResponse);
-  } catch (error) {
-    logger.error('Error updating conversation', error);
-    res.status(500).send('Error updating conversation');
-  }
-});
+router.post(
+  '/update',
+  validateConvoAccess,
+  configMiddleware,
+  createRenameConversationHandler({
+    saveConvo: db.saveConvo,
+    getConvo: db.getConvo,
+    getActiveRunIds:
+      GenerationJobManager.getCleanupBlockingJobIdsForConversations.bind(GenerationJobManager),
+    logger,
+  }),
+);
 
 const { importIpLimiter, importUserLimiter } = createImportLimiters();
 /** Fork and duplicate share one rate-limit budget (same "clone" operation class) */
@@ -858,7 +824,7 @@ router.post('/fork', forkIpLimiter, forkUserLimiter, configMiddleware, async (re
         : { legacyPii: req.config.messageFilter.pii }),
     });
 
-    res.json(result);
+    res.json(withToolCallPreviews(req, result));
   } catch (error) {
     if (isContentFilterError(error)) {
       return res.status(error.statusCode).json(error.body);
@@ -891,7 +857,7 @@ router.post(
           ? {}
           : { legacyPii: req.config.messageFilter.pii }),
       });
-      res.status(201).json(result);
+      res.status(201).json(withToolCallPreviews(req, result));
     } catch (error) {
       if (isContentFilterError(error)) {
         return res.status(error.statusCode).json(error.body);

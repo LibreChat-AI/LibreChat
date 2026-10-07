@@ -54,6 +54,7 @@ import type {
   EndpointTokenConfig,
   InitializeResultBase,
 } from '~/types';
+import type { ResolveLinkedInstructions, LinkedInstructionsFacts } from './instructions/linked';
 import type { LCAvailableTools, RequestScopedMCPConnectionStore } from '../mcp/types';
 import type { ContentTraversalLimitError } from '../protection/adapters/nested';
 import type { SkillContentInput } from '../protection/adapters/submissions';
@@ -63,6 +64,7 @@ import type { TextContentFragment } from '../protection/types';
 import type { CheckAccessParams } from '../middleware/access';
 import type { GetProjectFiles } from '../projects/resources';
 import type { MCPToolAlias } from '~/tools/classification';
+import type { CodeExecutionContext } from './execution';
 import type { AgentExecutionContext } from './runtime';
 import {
   injectSkillCatalog,
@@ -73,12 +75,6 @@ import {
   unionPrimeAllowedTools,
   MAX_PRIMED_SKILLS_PER_TURN,
 } from './skills';
-import {
-  normalizeStatefulCodeEnvironment,
-  resolveCodeExecutionContext,
-  type CodeEnvironmentConfig,
-  type CodeExecutionContext,
-} from './execution';
 import {
   resolveChatProjectFiles,
   resolveChatProjectPolicyFiles,
@@ -110,29 +106,33 @@ import {
   normalizeAgentToolKeys,
 } from '~/mcp/utils';
 import {
+  resolveAttachedWorkspaceCommandTimeoutMax,
+  resolveAttachedWorkspaceCommandTimeoutDefault,
+} from '~/code/command';
+import {
   formatChatProjectInstructions,
   hydrateChatProjectContextResources,
 } from '../projects/context';
-import {
-  createStatefulCodeEnvironmentPolicyError,
-  isFatalAgentInitializationError,
-} from './errors';
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
-import { resolveAttachedWorkspaceCommandTimeoutMax } from '~/code/command';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
-import { isImplicitStatefulCodeRouteAvailable } from '../code/config';
+import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
+import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
+import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
+import { prepareQueuedCodeFileContext } from '~/files/code/queued';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
 import { resolveTurnDeliveryRouting } from './files/delivery';
 import { filterFilesByEndpointRuntimeConfig } from '~/files';
+import { isFatalAgentInitializationError } from './errors';
 import { hasActiveFilePolicy } from '../protection/files';
+import { resolveAgentCodeExecution } from '~/code/agent';
 import { hasActiveFileFieldPolicy } from '~/protection';
 import { applyBackgroundToolCalls } from './background';
 import { applyTurnDelivery } from './files/delivery';
@@ -880,28 +880,15 @@ export type InitializedAgent = Agent & {
   provisionWarnings?: string[];
   /** State for deferred file provisioning — actual uploads happen at tool invocation time */
   provisionState?: ProvisionState;
+  /**
+   * Facts about a resolved `instructionsPrompt` link (source, groupId,
+   * resolved promptId), surfaced for AI-2158. Never persisted — omitted for
+   * an agent with no link, an unresolved link, or a missing resolver.
+   */
+  instructionsPromptFacts?: LinkedInstructionsFacts;
 };
 
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
-/** Returns true when a conversation-level choice disables an attached environment. */
-export function optsOutOfAttachedCodeEnvironment(
-  agent: Agent,
-  requestBody: RequestBody | undefined,
-  environments: readonly CodeEnvironmentConfig[] | undefined,
-  implicitStatefulRouteAvailable = false,
-): boolean {
-  if (requestBody?.codeEnvironmentMode !== 'without_attached') return false;
-  const configured = agent.code_environment_id
-    ? environments?.find(({ id }) => id === agent.code_environment_id)
-    : environments?.find(({ default: isDefault }) => isDefault === true);
-  return (
-    agent.stateful_code_sessions === true &&
-    (configured?.type === 'attached' ||
-      (configured == null &&
-        (Boolean(agent.code_environment_id) || !implicitStatefulRouteAvailable)))
-  );
-}
-
 /**
  * Parameters for initializing an agent
  * Matches the CJS signature from api/server/services/Endpoints/agents/agent.js
@@ -938,6 +925,8 @@ export interface InitializeAgentParams {
     requestBody?: RequestBody;
     /** Trusted endpoint/profile resolved for this agent before any code-file priming. */
     codeExecutionContext: CodeExecutionContext;
+    /** The conversation's "No workspace" decision removed this agent's code tools. */
+    attachedEnvironmentOptOut?: boolean;
     /** Full accessible MCP server names (operator + user DB) when the heal
      *  already fetched them — lets execution-side collision guards see
      *  cross-tier shadowing without another registry round-trip. */
@@ -1002,6 +991,22 @@ export interface InitializeAgentParams {
    * from `db.getRoleByName`.
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
+  /**
+   * Resolves an agent's `instructionsPrompt` link (a linked native prompt
+   * group) into instruction text. Called only when `agent.instructionsPrompt`
+   * carries a resolvable `native` link. Absent, a linked agent falls back to
+   * empty instructions with a warning — there is no default DB-backed
+   * resolution path, unlike `resolveWebSearchGrant`, so every caller that
+   * wants linked instructions honored must supply one.
+   */
+  resolveLinkedInstructions?: ResolveLinkedInstructions;
+  /**
+   * Whether resolving `agent.instructionsPrompt` should record a usage
+   * generation on the linked prompt group. Defaults to `true`. Callers on the
+   * resume path set this to `false` because the turn that already counted the
+   * generation is being replayed, not repeated.
+   */
+  recordLinkedPromptUsage?: boolean;
   /**
    * Whether the `run_in_background` capability is enabled for this run. When
    * true, tools the agent opted in via `tool_options[name].run_in_background`
@@ -1202,6 +1207,17 @@ export async function initializeAgent(
   }
 
   /**
+   * Computed up front, before the definition-content check below, because
+   * that check needs it: a valid link means the stored inline `instructions`
+   * is dead text — it is overwritten below with the resolved prompt, or with
+   * `''` when the link can't resolve — so it is excluded from the scan
+   * rather than inspected and then discarded.
+   */
+  const instructionsPromptLink = isValidInstructionsPromptLink(agent.instructionsPrompt)
+    ? agent.instructionsPrompt
+    : undefined;
+
+  /**
    * Reject the stored agent definition before initialization performs usage
    * accounting, resource priming, tool/MCP loading, or provider setup. Inspect
    * definition fragments directly here: the raw agent may still contain
@@ -1209,10 +1225,11 @@ export async function initializeAgent(
    */
   let agentFragments: readonly TextContentFragment[] = [];
   let agentTraversalError: ContentTraversalLimitError | null = null;
+  const agentDefinitionInput = (instructionsPromptLink
+    ? { ...agent, instructions: undefined }
+    : agent) as unknown as Parameters<typeof extractAgentContent>[0];
   try {
-    agentFragments = extractAgentContent(
-      agent as unknown as Parameters<typeof extractAgentContent>[0],
-    );
+    agentFragments = extractAgentContent(agentDefinitionInput);
   } catch (error) {
     if (!isContentTraversalLimitError(error)) {
       throw error;
@@ -1235,6 +1252,33 @@ export async function initializeAgent(
   ) {
     throw agentTraversalError;
   }
+
+  /**
+   * Independent of every other step below (tool loading, resource priming,
+   * provider setup), so it starts as soon as the definition-content check
+   * above has passed — rather than waiting until the instructions block,
+   * well below, is reached — but never before that check: a rejected agent
+   * definition must never trigger an external prompt-service call. A valid
+   * link with no resolver never calls out, matching the "no resolver"
+   * fallback this same shape has always had.
+   */
+  const linkedInstructionsPromise =
+    instructionsPromptLink && params.resolveLinkedInstructions
+      ? params.resolveLinkedInstructions({
+          link: instructionsPromptLink,
+          signal: params.signal,
+          filters: appConfig?.filters,
+          config: appConfig?.endpoints?.agents?.linkedInstructions,
+        })
+      : undefined;
+  /**
+   * Started well before its result is needed at the instructions block below.
+   * An abort (or any other rejection) that lands before that await must not
+   * surface as an unhandled rejection; this no-op handler only silences that
+   * warning — the promise itself, awaited later, still carries the real
+   * outcome, rejection included.
+   */
+  linkedInstructionsPromise?.catch(() => {});
 
   /**
    * Heal legacy MCP tool keys ONCE, before anything reads them: model-facing
@@ -1500,9 +1544,10 @@ export async function initializeAgent(
       resolve: params.resolveWebSearchGrant,
       getRoleByName: db.getRoleByName,
     }));
-  if (webSearchDenied && stripWebSearchPlugin(llmConfig) > 0) {
-    logger.debug(
-      `[initializeAgent] Removed the OpenRouter web search plugin; role denies WEB_SEARCH.`,
+  if (webSearchDenied) {
+    stripWebSearchPlugin(llmConfig);
+    logger.warn(
+      '[initializeAgent] Provider-native web search was requested but blocked by WEB_SEARCH.USE. Restore the role grant explicitly; removing interface.webSearch does not reset stored permissions.',
     );
   }
   const tokensModel =
@@ -1551,38 +1596,31 @@ export async function initializeAgent(
   const agentRequestsCodeExec = (agent.tools ?? []).includes(Tools.execute_code);
   const configuredCodeEnvironments =
     appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.environments;
-  const attachedEnvironmentOptOut = optsOutOfAttachedCodeEnvironment(
+  const {
+    attachedEnvironmentOptOut,
+    codeEnvAvailable: effectiveCodeEnvAvailable,
+    statefulSessions: effectiveStatefulSessions,
+    statefulCodeEnvironment,
+    context: codeExecutionContext,
+  } = resolveAgentCodeExecution({
     agent,
     requestBody,
-    configuredCodeEnvironments,
-    isImplicitStatefulCodeRouteAvailable(
+    conversation: runtime.resolvedConversation,
+    codeExecutionAvailable: params.codeEnvAvailable === true,
+    statefulSessionsAvailable: params.statefulSessionsAvailable === true,
+    allowedStatefulCodeEnvironments: resolveAllowedStatefulCodeEnvironments(
+      params.allowedStatefulCodeEnvironments ??
+        appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowedEnvironments,
+    ),
+    allowEnvironmentSelection:
+      appConfig?.endpoints?.agents?.statefulCodeSessions?.allowEnvironmentSelection,
+    inheritedEnvironments: runtime.codeWorkspaceInheritance,
+    environments: configuredCodeEnvironments,
+    implicitStatefulRouteAvailable: isImplicitStatefulCodeRouteAvailable(
       process.env.CODE_ENVIRONMENT_DECISION_VERSION,
       process.env.LIBRECHAT_CODE_BASEURL_STATEFUL,
     ),
-  );
-  const effectiveCodeEnvAvailable =
-    params.codeEnvAvailable === true && agentRequestsCodeExec && !attachedEnvironmentOptOut;
-  const effectiveStatefulSessions =
-    effectiveCodeEnvAvailable &&
-    params.statefulSessionsAvailable === true &&
-    agent.stateful_code_sessions === true;
-  const statefulCodeEnvironment = normalizeStatefulCodeEnvironment(agent.stateful_code_environment);
-  if (effectiveStatefulSessions) {
-    const allowedStatefulCodeEnvironments = resolveAllowedStatefulCodeEnvironments(
-      params.allowedStatefulCodeEnvironments ??
-        appConfig?.endpoints?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowedEnvironments,
-    );
-    if (!allowedStatefulCodeEnvironments.includes(statefulCodeEnvironment)) {
-      throw createStatefulCodeEnvironmentPolicyError(statefulCodeEnvironment);
-    }
-  }
-  const codeExecutionContext = resolveCodeExecutionContext({
-    statefulSessions: effectiveStatefulSessions,
-    environment: statefulCodeEnvironment,
-    environmentId: agent.code_environment_id,
-    environments: configuredCodeEnvironments,
     userId: requestFileOwnerId,
-    agentId: agent.id,
     conversationId,
   });
   const attachedWorkspaceTools =
@@ -1988,6 +2026,7 @@ export async function initializeAgent(
     provisionState,
     warnings: provisionWarnings,
   } = await primeResources({
+    req: params.req,
     principal: user,
     getFiles: db.getFiles as never,
     filterFiles: db.filterFilesByAgentAccess,
@@ -2004,6 +2043,8 @@ export async function initializeAgent(
     provisionCandidates: deferredProvisionFiles as unknown as TFile[],
     codeRouteKey: codeExecutionContext.executionRouteKey ?? codeExecutionContext.executionProfile,
     codeBaseUrl: codeExecutionContext.baseUrl,
+    codeExecutionProfile: codeExecutionContext.executionProfile,
+    codeBridgeWorkerId: codeExecutionContext.bridgeWorkerId,
     screenPersistentFiles: (files) => {
       /* Persistent agent files are read inside primeResources, so they miss both checks
        * the caller already applied to this turn's other files. They face the same
@@ -2084,6 +2125,7 @@ export async function initializeAgent(
       tool_resources: runtimeToolResources,
       requestBody,
       codeExecutionContext,
+      attachedEnvironmentOptOut,
       accessibleMcpServerNames: resolvedAuditNames,
     });
 
@@ -2172,6 +2214,19 @@ export async function initializeAgent(
           trustedCodeExecutionContext.codeWorkspace?.maxCommandTimeoutMs,
         )
       : undefined;
+  const attachedWorkspaceCommandTimeoutDefaultMs =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceCommandTimeoutDefault(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema?.limits?.defaultCommandTimeoutMs,
+          attachedWorkspaceCommandTimeoutMaxMs,
+        )
+      : undefined;
+  const attachedWorkspaceReadFileDefaultLines =
+    trustedCodeExecutionContext.environmentType === 'attached'
+      ? resolveAttachedWorkspaceReadFileLines(
+          trustedCodeExecutionContext.codeEnvironmentConfigSchema,
+        )
+      : undefined;
   if (
     attachedWorkspaceOperations &&
     !attachedWorkspaceOperations.has('preview_edit') &&
@@ -2255,8 +2310,11 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
     });
     toolDefinitions = codeExecResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.execute_code, codeExecResult.toolNames);
@@ -2308,6 +2366,8 @@ export async function initializeAgent(
       workspaceTools: attachedWorkspaceTools,
       workspaceOperations: attachedWorkspaceOperations,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
     });
     toolDefinitions = skillReadResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.skills, skillReadResult.toolNames);
@@ -2428,6 +2488,36 @@ export async function initializeAgent(
     (agent.model_parameters as Record<string, unknown>).configuration = options.configOptions;
   }
 
+  /**
+   * Resolves an `instructionsPrompt` link before special-vars substitution, so
+   * a linked prompt's `{{current_date}}`-style placeholders are replaced the
+   * same way inline instructions are. A link without a resolver, or one that
+   * resolves to `unavailable`, continues the turn with empty instructions
+   * rather than failing initialization — the inline-text fallback is AI-2150.
+   * The resolution itself started well above, in parallel with everything
+   * between; this only awaits it.
+   */
+  let instructionsPromptFacts: LinkedInstructionsFacts | undefined;
+  if (instructionsPromptLink) {
+    if (linkedInstructionsPromise) {
+      const linkedResult = await linkedInstructionsPromise;
+      if (linkedResult.status === 'resolved') {
+        agent.instructions = linkedResult.prompt;
+        instructionsPromptFacts = linkedResult.facts;
+      } else {
+        agent.instructions = '';
+        logger.warn(
+          `[initializeAgent] Linked instructions unavailable for agent ${agent.id} (group ${instructionsPromptLink.groupId}): ${linkedResult.reason}`,
+        );
+      }
+    } else {
+      agent.instructions = '';
+      logger.warn(
+        `[initializeAgent] Agent ${agent.id} links instructions to group ${instructionsPromptLink.groupId} but no resolver was provided; continuing with empty instructions`,
+      );
+    }
+  }
+
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
@@ -2501,8 +2591,11 @@ export async function initializeAgent(
       workspaceOperations: attachedWorkspaceOperations,
       userId: user?.id,
       workspaceCommandTimeoutMaxMs: attachedWorkspaceCommandTimeoutMaxMs,
+      workspaceCommandTimeoutDefaultMs: attachedWorkspaceCommandTimeoutDefaultMs,
+      workspaceReadFileDefaultLines: attachedWorkspaceReadFileDefaultLines,
       workspaceEnvironment: trustedCodeExecutionContext.codeWorkspace?.environment,
       workspaceLinkedWorktrees: trustedCodeExecutionContext.codeWorkspace?.linkedWorktrees,
+      workspaceNativeSandbox: trustedCodeExecutionContext.codeWorkspace?.nativeSandbox,
       skillStates: params.skillStates,
       defaultActiveOnShare: params.defaultActiveOnShare,
       maxCatalogSkills: getMaxCatalogSkills(runtime),
@@ -2715,7 +2808,40 @@ export async function initializeAgent(
         : Math.max(1024, Math.round(baseContextTokens * (1 - DEFAULT_RESERVE_RATIO))),
     primedCodeFiles,
     endpointTokenConfig: options.endpointTokenConfig,
+    instructionsPromptFacts,
   };
+
+  prepareQueuedCodeFileContext(initializedAgent, [initializedAgent], user?.id);
+  const queuedFileContext = initializedAgent.dynamicToolContextMap?.queued_code_files;
+  if (typeof queuedFileContext === 'string') {
+    assertModelBoundContent({
+      filters: appConfig?.filters,
+      files: [{ content: queuedFileContext }],
+    });
+  }
+
+  /**
+   * Usage is recorded only once initialization has fully succeeded — every
+   * step above (tool loading, resource priming, provider setup, the queued
+   * code file content check just above) has already run without throwing. A
+   * resolved link with no `instructionsPromptFacts` never reaches here; an
+   * initialization that throws after resolution never reaches here either,
+   * so it records no use. Fire-and-forget: the turn does not wait on the
+   * increment, and `recordUse` itself catches and logs its own errors. The
+   * `typeof` guard is load-bearing, not defensive noise: `resolveLinkedInstructions`
+   * is typed as a plain callable in `InitializeAgentParams`, so a
+   * caller-supplied plain function (matching the type but not the resolver's
+   * `Object.assign(resolve, { recordUse })` shape) would otherwise throw here
+   * — after initialization has already fully succeeded — rather than
+   * silently recording no usage.
+   */
+  if (
+    instructionsPromptFacts &&
+    (params.recordLinkedPromptUsage ?? true) &&
+    typeof params.resolveLinkedInstructions?.recordUse === 'function'
+  ) {
+    params.resolveLinkedInstructions.recordUse(instructionsPromptFacts);
+  }
 
   return initializedAgent;
 }

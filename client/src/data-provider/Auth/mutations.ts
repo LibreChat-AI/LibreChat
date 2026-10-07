@@ -296,3 +296,35 @@ export const useDeletePasskeyMutation = (): UseMutationResult<
     },
   );
 };
+export const useEnableTwoFactorSetupMutation = (): UseMutationResult<
+  t.TEnable2FAResponse,
+  unknown,
+  t.TEnable2FASetupRequest,
+  unknown
+> => useMutation((payload: t.TEnable2FASetupRequest) => dataService.enableTwoFactorSetup(payload));
+
+export const useConfirmTwoFactorSetupMutation = (): UseMutationResult<
+  t.TConfirm2FASetupResponse,
+  unknown,
+  t.TConfirm2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TConfirm2FASetupRequest) => dataService.confirmTwoFactorSetup(payload));
+
+export const useAcknowledgeTwoFactorSetupMutation = (): UseMutationResult<
+  t.TAcknowledge2FASetupResponse,
+  unknown,
+  t.TAcknowledge2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TAcknowledge2FASetupRequest) =>
+    dataService.acknowledgeTwoFactorSetup(payload),
+  );
+
+export const useFinalizeTwoFactorSetupMutation = (): UseMutationResult<
+  t.TFinalize2FASetupResponse,
+  unknown,
+  t.TFinalize2FASetupRequest,
+  unknown
+> =>
+  useMutation((payload: t.TFinalize2FASetupRequest) => dataService.finalizeTwoFactorSetup(payload));

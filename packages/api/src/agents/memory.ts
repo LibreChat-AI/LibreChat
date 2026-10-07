@@ -761,6 +761,8 @@ export async function processMemory({
   deleteMemory,
   messages,
   inspectionMessages,
+  privateTextTokens,
+  signal,
   memory,
   memoryEntries,
   messageId,
@@ -788,6 +790,8 @@ export async function processMemory({
   conversationId: string;
   messages: BaseMessage[];
   inspectionMessages?: BaseMessage[];
+  privateTextTokens?: ReadonlySet<string>;
+  signal?: AbortSignal;
   validKeys?: string[];
   instructions: string;
   /** Canonical rows preserve key/value granularity for field-scoped policy. */
@@ -807,6 +811,7 @@ export async function processMemory({
   tenantId?: string;
 }): Promise<(TAttachment | null)[] | undefined> {
   try {
+    signal?.throwIfAborted();
     const submittedMessages = (inspectionMessages ?? messages).filter(
       (message) => message._getType() !== 'ai',
     );
@@ -821,6 +826,7 @@ export async function processMemory({
     }
     assertModelBoundContent({
       filters,
+      privateTextTokens,
       submittedMessages,
       agents: [{ instructions, model_parameters: llmConfig }],
       memories,
@@ -994,7 +1000,9 @@ ${memory ?? 'No existing memories'}`;
       returnContent: true,
     });
 
+    signal?.throwIfAborted();
     const config = {
+      ...(signal != null && { signal }),
       runName: 'MemoryRun',
       configurable: {
         user_id: userId,
@@ -1066,6 +1074,8 @@ export async function createMemoryProcessor({
       (
         messages: BaseMessage[],
         inspectionMessages?: BaseMessage[],
+        privateTextTokens?: ReadonlySet<string>,
+        signal?: AbortSignal,
       ) => Promise<(TAttachment | null)[] | undefined>,
     ]
 > {
@@ -1101,6 +1111,8 @@ export async function createMemoryProcessor({
     async function (
       messages: BaseMessage[],
       inspectionMessages?: BaseMessage[],
+      privateTextTokens?: ReadonlySet<string>,
+      signal?: AbortSignal,
     ): Promise<(TAttachment | null)[] | undefined> {
       try {
         return await processMemory({
@@ -1109,6 +1121,8 @@ export async function createMemoryProcessor({
           agentId,
           messages,
           inspectionMessages,
+          privateTextTokens,
+          signal,
           validKeys,
           llmConfig,
           messageId,

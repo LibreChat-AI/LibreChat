@@ -59,6 +59,7 @@ jest.mock('@librechat/client', () => ({
   buttonVariants: () => '',
   useToastContext: () => ({ showToast: jest.fn() }),
   useMediaQuery: () => false,
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/data-provider', () => ({
@@ -98,7 +99,6 @@ jest.mock('react-router-dom', () => {
   };
 });
 
-jest.mock('../ProjectButton', () => () => null);
 jest.mock('../DeleteButton', () => () => null);
 jest.mock('../ShareButton', () => () => null);
 

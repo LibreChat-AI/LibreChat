@@ -264,7 +264,7 @@ function SharedView() {
               {artifactsContainer}
             </main>
           </div>
-          <SharedSubagentActivityDialog shareId={shareId} />
+          <SharedSubagentActivityDialog shareId={shareId} messages={data?.messages} />
         </AppChatSurface>
       </ShareContext.Provider>
     </CodeHighlightThrottleContext.Provider>
@@ -376,11 +376,7 @@ export function ShareHeader({
 
           <div className="flex flex-wrap items-center justify-end gap-2 md:flex-nowrap md:self-start">
             {langfuseSessionUrl && (
-              <Button
-                asChild
-                variant="outline"
-                className="border-border-medium text-text-primary gap-2 rounded-full px-4 py-2 text-sm"
-              >
+              <Button asChild variant="outline" className="border-border-medium rounded-full">
                 <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                   <span>{langfuseSessionLabel}</span>
                   <ExternalLink className="size-4 shrink-0" aria-hidden="true" />
@@ -392,7 +388,7 @@ export function ShareHeader({
               variant="submit"
               onClick={onContinue}
               disabled={isContinuing}
-              className="gap-2 rounded-full px-4 py-2 text-sm"
+              className="rounded-full"
             >
               {isContinuing ? (
                 <Spinner className="size-4" />

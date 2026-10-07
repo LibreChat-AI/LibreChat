@@ -20,7 +20,7 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
-import type { PtcTrace, PtcTraceEntry } from '~/store/ptc';
+import type { PtcTrace, PtcTraceEntry } from '~/common';
 import {
   subagentProgressByToolCallId,
   subagentProgressKey,

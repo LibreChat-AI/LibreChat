@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
 import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
@@ -63,6 +63,7 @@ function PromptsCommand({
   submitPrompt: (textPrompt: string) => void;
 }) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const { mutate: recordUsage } = useRecordPromptUsage();
   const promptGroupsContext = usePromptGroupsContext();
   const { allPromptGroups, hasAccess, requestAllPromptGroups } = promptGroupsContext ?? {};
@@ -216,11 +217,11 @@ function PromptsCommand({
       textAreaRef={textAreaRef}
     >
       <div className="absolute bottom-28 z-10 w-full space-y-2">
-        <div className="popover border-border-light bg-surface-tertiary-alt rounded-2xl border p-2 shadow-lg">
+        <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
           <Input
             ref={initInputRef}
             placeholder={localize('com_ui_command_usage_placeholder')}
-            className="bg-surface-tertiary-alt text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
+            className="bg-surface-tertiary-alt mb-1 h-auto w-full rounded-none border-0 p-2"
             autoComplete="off"
             value={searchValue}
             onKeyDown={(e) => {
@@ -278,11 +279,11 @@ function PromptsCommand({
                   <List
                     width={width}
                     overscanRowCount={5}
-                    rowHeight={ROW_HEIGHT}
+                    rowHeight={ROW_HEIGHT * remScale}
                     rowCount={matches.length}
                     rowRenderer={rowRenderer}
                     scrollToIndex={activeIndex}
-                    height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                    height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                   />
                 )}
               </AutoSizer>

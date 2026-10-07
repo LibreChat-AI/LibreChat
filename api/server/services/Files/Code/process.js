@@ -17,6 +17,7 @@ const {
   isMissingSandboxPathError,
   parseSandboxImageChunk,
   readWindowedSandboxImage,
+  createSandboxTextReader,
   createCodeApiRateLimitBudget,
   codeServerHttpAgent,
   codeServerHttpsAgent,
@@ -1091,6 +1092,8 @@ async function readWorkspaceFile({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1099,6 +1102,8 @@ async function readWorkspaceFile({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1148,6 +1153,8 @@ async function searchWorkspace({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1156,6 +1163,8 @@ async function searchWorkspace({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1205,6 +1214,8 @@ async function listWorkspaceFiles({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1213,6 +1224,8 @@ async function listWorkspaceFiles({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1247,6 +1260,8 @@ async function writeWorkspaceFile({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1255,6 +1270,8 @@ async function writeWorkspaceFile({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1290,6 +1307,8 @@ async function editWorkspaceFile({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1298,6 +1317,8 @@ async function editWorkspaceFile({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1333,6 +1354,8 @@ async function previewWorkspaceEdit({
   signal,
   maxQueueWaitMs,
   maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
   deadlineAtMs,
 }) {
   return executeWorkspaceTool({
@@ -1341,6 +1364,8 @@ async function previewWorkspaceEdit({
     maxQueueWaitMs,
     codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
     maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
     deadlineAtMs,
     /** Minted per admission attempt: a queued call outlives one token TTL. */
     authHeaders: async () => ({
@@ -1641,7 +1666,10 @@ module.exports = {
   writeWorkspaceFile,
   previewWorkspaceEdit,
   editWorkspaceFile,
-  readSandboxFile,
+  readSandboxFile: createSandboxTextReader({
+    readFile: readSandboxFile,
+    readBytes: readSandboxImage,
+  }),
   readSandboxImage,
   writeSandboxFile,
   runPreviewFinalize,

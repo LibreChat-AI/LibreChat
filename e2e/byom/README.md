@@ -33,7 +33,7 @@ BYOM_WORKSPACE_TRANSITIONS=true BYOM_CODE_REPO=/absolute/path/to/code-interprete
 
 This enables the decision protocol and attach/detach policy only in the disposable test app.
 
-The `Native Workspace Acceptance` workflow runs this transition variant on a hosted macOS
+The `Native Workspace Acceptance` workflow runs both variants on a hosted macOS
 runner when the harness changes in a `dev` pull request. It pins the Code API/worker revision
 and uses the native Seatbelt policy unchanged. It does not upload identities, raw logs or
 browser state. This proves the macOS journey only; Linux and WSL2 require their own native run.
@@ -57,6 +57,31 @@ do not relax that policy to make the test pass.
 8. Stopping B produces a persisted tool failure, not success or fallback to A.
 9. Selecting **Full access** runs commands and physically creates a file without
    approval prompts, survives reload, and can switch back to **Ask before changes**.
+10. Giving one agent an explicit additional-machine list lets new chats select worker B,
+    persist that choice across reload, and still start on default worker A in a separate chat.
+    Both chats read different physical files. An offline B never falls back to A.
+
+The disposable fixture enables `endpoints.agents.statefulCodeSessions.allowEnvironmentSelection`
+and the environment-decision protocol. Machine selection is on by default, but an agent keeps
+fixed routing unless it has a nonempty `code_environment_ids` list, and a deployment can turn it
+off with `allowEnvironmentSelection: false`. The default
+`code_environment_id` is implicitly allowed; every additional machine still requires the user's
+own access and current worker capabilities. This does not move an existing chat between machines.
+
+Each coding agent in the graph contributes its machine requirement, including lazy subagents.
+The composer identifies an unselected agent and machine beneath the picker, and each machine
+section lists its agents. Agents may share one selection when they explicitly allow that machine.
+Explicit choices record the choosing agents in `codeWorkspaces[].agentIds`, so Lia can use B
+while a fixed reviewer stays on A. Ownership survives persistence, reload and decision sealing.
+Legacy selections without ownership prefer the selected default; without it, exactly one
+permitted target must match. Independent fixed-machine requirements survive alternative picks.
+Update every API replica and refresh clients before enabling the opt-in: old validators reject
+ownership-bearing choices rather than silently rerouting them. The builder also permits removing
+saved machines that are no longer accessible, without blocking unrelated edits to the agent.
+
+`maxEnvironmentChoices` limits additional machines per agent (default 32, ceiling 128). The
+builder uses the same limit; create, update, duplicate and restore authorize all listed machines
+against the loaded principal-scoped config before reserving database references.
 
 Assertions inspect **tool outputs**, not echoed arguments or the model's final prose.
 The default hosted Code API URL is deliberately pointed at an invalid local route,

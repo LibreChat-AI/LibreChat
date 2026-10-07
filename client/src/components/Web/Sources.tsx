@@ -92,7 +92,7 @@ function SourceItem({ source, expanded = false }: SourceItemProps) {
           <Ariakit.Hovercard
             gutter={16}
             className={cn(
-              'border-border-medium bg-surface-secondary text-text-primary z-[999] w-[320px] max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-lg',
+              'border-border-medium bg-surface-secondary text-text-primary z-[999] w-[20rem] max-w-[calc(100vw-2rem)] rounded-xl border p-3 shadow-lg',
               'origin-top-left scale-95 opacity-0 transition-[opacity,transform] duration-150 ease-out',
               'data-[enter]:scale-100 data-[enter]:opacity-100',
               'data-[leave]:scale-95 data-[leave]:opacity-0',
@@ -156,7 +156,7 @@ function ImageItem({ image }: { image: ImageResult }) {
             className="size-full object-cover"
           />
           {image.title && (
-            <div className="absolute right-0 bottom-0 left-0 w-full border-none bg-gray-900/80 p-1 text-xs font-medium text-white backdrop-blur-xs">
+            <div className="bg-surface-media-overlay/80 text-text-on-media absolute right-0 bottom-0 left-0 w-full border-none p-1 text-xs font-medium backdrop-blur-xs">
               <span className="truncate">{image.title}</span>
             </div>
           )}
@@ -380,7 +380,7 @@ export function StackedFavicons({
         <FaviconImage
           key={`icon-${i}`}
           domain={getCleanDomain(source.link)}
-          className={i > 0 ? 'ml-[-6px]' : ''}
+          className={i > 0 ? 'ml-[-0.375rem]' : ''}
         />
       ))}
     </div>
@@ -411,7 +411,7 @@ const SourcesGroup = React.memo(function SourcesGroup({
     <div className="grid w-full grid-cols-4 gap-2 overflow-x-auto">
       <OGDialog>
         {visibleSources.map((source, i) => (
-          <div key={`source-${i}`} className="w-full min-w-[120px]">
+          <div key={`source-${i}`} className="w-full min-w-[7.5rem]">
             <SourceItem source={source} />
           </div>
         ))}
@@ -425,7 +425,7 @@ const SourcesGroup = React.memo(function SourcesGroup({
             </div>
           </OGDialogTrigger>
         )}
-        <OGDialogContent className="bg-surface-dialog flex max-h-[80vh] max-w-full flex-col overflow-hidden rounded-lg p-0 md:max-w-[600px]">
+        <OGDialogContent className="flex max-h-[80vh] max-w-full flex-col overflow-hidden rounded-lg p-0 md:max-w-[37.5rem]">
           <div className="border-border-light bg-surface-dialog sticky top-0 z-10 flex items-center justify-between border-b px-3 py-2">
             <OGDialogTitle className="text-base font-medium">
               {localize('com_sources_title')}
@@ -500,7 +500,7 @@ function FilesGroup({ files, messageId, conversationId, limit = 3 }: FilesGroupP
     <div className="grid w-full grid-cols-4 gap-2 overflow-x-auto">
       <OGDialog>
         {visibleFiles.map((file, i) => (
-          <div key={`file-${i}`} className="w-full min-w-[120px]">
+          <div key={`file-${i}`} className="w-full min-w-[7.5rem]">
             <FileItem file={file} messageId={messageId} conversationId={conversationId} />
           </div>
         ))}
@@ -509,7 +509,10 @@ function FilesGroup({ files, messageId, conversationId, limit = 3 }: FilesGroupP
             <div className="flex items-center gap-2">
               <div className="relative flex">
                 {remainingFiles.slice(0, 3).map((_, i) => (
-                  <File key={`file-icon-${i}`} className={`size-4 ${i > 0 ? 'ml-[-6px]' : ''}`} />
+                  <File
+                    key={`file-icon-${i}`}
+                    className={`size-4 ${i > 0 ? 'ml-[-0.375rem]' : ''}`}
+                  />
                 ))}
               </div>
               <span className="text-text-secondary truncate text-xs font-medium">
@@ -518,7 +521,7 @@ function FilesGroup({ files, messageId, conversationId, limit = 3 }: FilesGroupP
             </div>
           </OGDialogTrigger>
         )}
-        <OGDialogContent className="bg-surface-dialog flex max-h-[80vh] max-w-full flex-col overflow-hidden rounded-lg p-0 md:max-w-[600px]">
+        <OGDialogContent className="flex max-h-[80vh] max-w-full flex-col overflow-hidden rounded-lg p-0 md:max-w-[37.5rem]">
           <div className="border-border-light bg-surface-dialog sticky top-0 z-10 flex items-center justify-between border-b px-3 py-2">
             <OGDialogTitle className="text-base font-medium">
               {localize('com_sources_agent_files')}
@@ -755,7 +758,7 @@ export default function Sources(props: SourcesProps) {
         variant="outline"
         size="sm"
         onClick={() => window.location.reload()}
-        className="bg-surface-primary text-text-primary hover:bg-surface-hover rounded-md px-3 py-1 text-sm"
+        className="bg-surface-primary rounded-md py-1"
         aria-label={localize('com_sources_reload_page')}
       >
         {localize('com_ui_refresh')}

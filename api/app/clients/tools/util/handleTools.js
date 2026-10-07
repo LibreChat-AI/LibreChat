@@ -2,6 +2,8 @@ const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Calculator, createSearchTool, createCodeExecutionTool } = require('@librechat/agents');
 const {
   checkAccess,
+  createGitHubCompareTool,
+  getProxyDispatcher,
   toolkitParent,
   toolRolePermissions,
   checkToolRolePermission,
@@ -27,7 +29,8 @@ const {
   buildWebSearchDynamicContext,
   codeExecutionAuthHeaders,
   getCodeFileLocation,
-  resolveCodeExecutionContext,
+  withRequestCodeInputs,
+  resolveAgentCodeExecution,
   resolveMCPClientCapabilityProfile,
 } = require('@librechat/api');
 const {
@@ -225,6 +228,13 @@ const loadTools = async ({
   };
 
   const customConstructors = {
+    github_compare: () =>
+      createGitHubCompareTool({
+        config: options.req?.config?.githubCompare,
+        toolRegistry: options.toolRegistry,
+        fetch,
+        getDispatcher: getProxyDispatcher,
+      }),
     image_gen_oai: async (_toolContextMap, dynamicToolContextMap) => {
       const authFields = getAuthFields('image_gen_oai');
       const authValues = await loadAuthValues({ userId: user, authFields });
@@ -376,21 +386,20 @@ const loadTools = async ({
 
     if (tool === Tools.execute_code) {
       requestedTools[tool] = async () => {
-        const statefulSessions =
-          agent?.stateful_code_sessions === true &&
-          (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions));
         const codeExecutionContext =
           options.codeExecutionContext ??
-          resolveCodeExecutionContext({
-            statefulSessions,
-            environment: agent?.stateful_code_environment,
-            environmentId: agent?.code_environment_id,
-            environments:
-              options.req?.config?.endpoints?.agents?.statefulCodeSessions?.environments,
-            userId: user,
-            agentId: agent?.id,
-            conversationId: options.req?.body?.conversationId,
-          });
+          resolveAgentCodeExecution(
+            withRequestCodeInputs({
+              req: options.req ?? {},
+              agent,
+              codeExecutionAvailable: true,
+              statefulSessionsAvailable:
+                agent?.stateful_code_sessions === true &&
+                (await checkCapability(options.req, AgentCapabilities.stateful_code_sessions)),
+              userId: user,
+              conversationId: options.req?.body?.conversationId,
+            }),
+          ).context;
         const { files, toolContext } = await primeCodeFiles({
           ...options,
           signal,
@@ -676,6 +685,7 @@ const loadTools = async ({
       getAvailableTools: (userId, serverName, config) =>
         getMCPServerTools(userId, serverName, config, capabilityProfile),
       context: {
+        agentId: agent?.id,
         mcpPermissionContext,
         signal,
         user: safeUser,

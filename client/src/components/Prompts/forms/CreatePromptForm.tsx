@@ -2,9 +2,10 @@ import { useEffect } from 'react';
 import { FileText } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useForm, Controller, FormProvider } from 'react-hook-form';
+import { Button, Spinner, TextareaAutosize, Input } from '@librechat/client';
 import { LocalStorageKeys, PermissionTypes, Permissions } from 'librechat-data-provider';
-import { Button, Spinner, TextareaAutosize, Input, useMediaQuery } from '@librechat/client';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import VariablesDropdown from '../editor/VariablesDropdown';
 import CategorySelector from '../fields/CategorySelector';
 import PromptVariables from '../display/PromptVariables';
@@ -45,7 +46,7 @@ const CreatePromptForm = ({
 }) => {
   const localize = useLocalize();
   const navigate = useNavigate();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const { hasAccess: hasUseAccess } = usePromptGroupsContext() ?? {};
   const hasCreateAccess = useHasAccess({
     permissionType: PermissionTypes.PROMPTS,
@@ -140,7 +141,7 @@ const CreatePromptForm = ({
                     {...field}
                     id="prompt-name"
                     type="text"
-                    className="peer border-border-medium text-text-primary mr-2 w-full border p-2 text-2xl"
+                    className="peer border-border-medium text-text-primary mr-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_prompt_name')}
@@ -217,7 +218,7 @@ const CreatePromptForm = ({
               />
             </div>
           </div>
-          <PromptVariables promptText={promptText} />
+          <PromptVariables promptText={promptText} inset />
           <Description
             onValueChange={(value) => methods.setValue('oneliner', value)}
             tabIndex={0}

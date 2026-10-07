@@ -1,6 +1,6 @@
 import { useContext, useMemo, useState } from 'react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
-import { ChevronUp, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
 import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
@@ -33,19 +33,78 @@ export default function AskUserQuestion({
   const answerMode = useAskAnswerMode(conversationId);
   const isLivePause = answerMode.liveAsk?.actionId === actionId;
   if (questions != null && questions.length > 0) {
-    if (answerMode.popoverVisible && isLivePause) {
-      return null;
-    }
-    return (
-      <AskUserQuestions
+    /** Same footprint reservation as a single question: while the popover owns
+     *  the batch, a hidden copy of the card holds its place in the thread, so
+     *  moving it between the composer and the chat reflows nothing. */
+    const reserved = answerMode.popoverVisible && isLivePause;
+    const card = (
+      <AskUserQuestionsCard
         actionId={actionId}
         questions={questions}
-        className="border-border-light bg-surface-secondary my-2 max-h-[70vh] w-full rounded-lg border"
+        live={isLivePause && !reserved}
+        reserved={reserved}
         onExpand={answerMode.collapsed && isLivePause ? answerMode.expand : undefined}
       />
     );
+    return reserved ? <AskingPlaceholder>{card}</AskingPlaceholder> : card;
   }
   return <AskUserQuestionSingle actionId={actionId} question={question} answerMode={answerMode} />;
+}
+
+/** The batch's chat card. Shares the popover's view-transition-name while it is
+ *  the live pause's surface, so moving the batch between the composer and the
+ *  chat morphs one surface into the other, like a single question does. */
+function AskUserQuestionsCard({
+  actionId,
+  questions,
+  live,
+  reserved,
+  onExpand,
+}: {
+  actionId: string;
+  questions: Agents.AskUserQuestionBatchItem[];
+  live: boolean;
+  reserved: boolean;
+  onExpand?: () => void;
+}) {
+  const localize = useLocalize();
+  return (
+    <div
+      className={cn(
+        'border-border-light bg-surface-secondary my-2 flex w-full flex-col rounded-2xl border',
+        live && '[view-transition-name:ask-question]',
+        reserved && 'invisible',
+      )}
+      aria-hidden={reserved || undefined}
+      inert={reserved ? '' : undefined}
+    >
+      <AskUserQuestions
+        actionId={actionId}
+        questions={questions}
+        headerAction={
+          onExpand != null && (
+            <TooltipAnchor
+              description={localize('com_ui_ask_move_to_composer')}
+              side="top"
+              render={
+                <Button
+                  variant="row-action"
+                  size="icon-xs"
+                  aria-label={localize('com_ui_ask_move_to_composer')}
+                  onClick={onExpand}
+                >
+                  <ChevronDown
+                    className="size-4 rotate-180 [view-transition-name:ask-question-chevron]"
+                    aria-hidden="true"
+                  />
+                </Button>
+              }
+            />
+          )
+        }
+      />
+    </div>
+  );
 }
 
 function AskUserQuestionSingle({
@@ -169,14 +228,14 @@ function AskUserQuestionSingle({
   const card = (
     <div
       className={cn(
-        'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-xl border p-3',
+        'border-border-light bg-surface-secondary my-2 flex w-full flex-col gap-2.5 rounded-2xl border p-3',
         showPlaceholder && 'invisible',
+        isLivePause && !showPlaceholder && '[view-transition-name:ask-question]',
       )}
       aria-hidden={showPlaceholder || undefined}
-      style={isLivePause && !showPlaceholder ? { viewTransitionName: 'ask-question' } : undefined}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+      <div className="text-text-secondary flex items-start justify-between gap-2">
+        <div className="min-w-0 pt-1">
           <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
             {question.question}
           </p>
@@ -192,13 +251,15 @@ function AskUserQuestionSingle({
             side="top"
             render={
               <Button
-                variant="ghost"
-                size="icon"
+                variant="row-action"
+                size="icon-xs"
                 aria-label={localize('com_ui_ask_move_to_composer')}
-                className="text-text-secondary size-auto rounded-md p-1"
                 onClick={expand}
               >
-                <ChevronUp className="size-4" aria-hidden="true" />
+                <ChevronDown
+                  className="size-4 rotate-180 [view-transition-name:ask-question-chevron]"
+                  aria-hidden="true"
+                />
               </Button>
             }
           />
@@ -257,12 +318,17 @@ function AskUserQuestionSingle({
     return card;
   }
 
-  /** Popover has the question: the reserved card sits hidden underneath the
-   *  same compact in-progress row the other tools use, so the turn still
-   *  shows the call is running. */
+  return <AskingPlaceholder>{card}</AskingPlaceholder>;
+}
+
+/** Popover has the question: the reserved card sits hidden underneath the
+ *  same compact in-progress row the other tools use, so the turn still
+ *  shows the call is running. */
+function AskingPlaceholder({ children }: { children: React.ReactNode }) {
+  const localize = useLocalize();
   return (
     <div className="relative">
-      {card}
+      {children}
       <div className="absolute inset-x-0 top-0 my-1 flex h-5 items-center gap-2.5">
         <MessageCircleQuestion className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <span className="tool-status-text shimmer text-text-secondary font-medium">

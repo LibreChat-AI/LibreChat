@@ -45,11 +45,13 @@ const COUNTED_REPLY_MARKER = 'E2E_COUNTED_REPLY:';
 const ORDERED_REPLY_MARKER = 'E2E_ORDERED_REPLY:';
 const SLOW_REPLY_MARKER = 'E2E_SLOW_REPLY:';
 const EMPTY_SLOW_REPLY_MARKER = 'E2E_EMPTY_SLOW_REPLY:';
+const PRE_TOKEN_REPLY_MARKER = 'E2E_PRE_TOKEN_REPLY:';
 /** A run that completes having produced no content at all: the shape a
  *  summarizer takes when it returns nothing for a manual compaction. */
 const EMPTY_REPLY_MARKER = 'E2E_EMPTY_REPLY:';
 const SLOW_COUNTED_REPLY_MARKER = 'E2E_SLOW_COUNTED_REPLY:';
 const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
+const INTERRUPT_TOOL_REPLY_MARKER = 'E2E_INTERRUPT_TOOL_REPLY:';
 const MCP_APP_MARKER = 'E2E_MCP_APP:';
 const MCP_APP_PHASE_MARKER = 'E2E_MCP_APP_PHASE:';
 const MCP_LINK_APP_MARKER = 'E2E_MCP_LINK_APP:';
@@ -60,9 +62,13 @@ const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
 const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const TOOL_THEN_THINK_REPLY_MARKER = 'E2E_TOOL_THEN_THINK_REPLY:';
 const ACTIVITY_FAILED_REPLY_MARKER = 'E2E_ACTIVITY_FAILED_REPLY:';
 const ACTIVITY_PROSE_REPLY_MARKER = 'E2E_ACTIVITY_PROSE_REPLY:';
 const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
+/** A three-question batch; the LONG variant gives the first question a maximum-size prompt. */
+const ASK_USER_QUESTIONS_MARKER = 'E2E_ASK_USER_QUESTIONS:';
+const ASK_USER_LONG_QUESTIONS_MARKER = 'E2E_ASK_USER_LONG_QUESTIONS:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
@@ -74,6 +80,7 @@ const PARAGRAPHS_REPLY_MARKER = 'E2E_PARAGRAPHS_REPLY';
 const MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_MERMAID_ARTIFACT_REPLY';
 const LARGE_MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_LARGE_MERMAID_ARTIFACT_REPLY';
 const HTML_ARTIFACT_REPLY_MARKER = 'E2E_HTML_ARTIFACT_REPLY';
+const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
@@ -577,6 +584,22 @@ function replyResponses(text) {
     };
   }
 
+  if (text.includes(TWO_ARTIFACT_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          ':::artifact{identifier="e2e-first" type="text/html" title="E2E First Artifact"}',
+          '<h1>First sandbox fixture</h1>',
+          ':::',
+          '',
+          ':::artifact{identifier="e2e-second" type="text/html" title="E2E Second Artifact"}',
+          '<h1>Second sandbox fixture</h1>',
+          ':::',
+        ].join('\n'),
+      ],
+    };
+  }
+
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [
@@ -732,14 +755,29 @@ function replyResponses(text) {
     return slowReplyResponses(slowName);
   }
 
+  const preTokenName = getMarkerValue(text, PRE_TOKEN_REPLY_MARKER);
+  if (preTokenName) {
+    return { responses: [`E2E pre-token reply ${preTokenName}`], sleep: 10_000 };
+  }
+
   /** Keep a generation live after `created` without producing any content
    * that the abort persistence filter accepts. The browser regression waits
    * for the user row, then interrupts this whitespace-only stream. */
   const emptySlowName = getMarkerValue(text, EMPTY_SLOW_REPLY_MARKER);
   if (emptySlowName) {
+    let invocation = 0;
     return {
-      responses: [' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)],
+      responses: [''],
       sleep: SLOW_CHUNK_DELAY_MS,
+      resolveInvocation: async (messages) => {
+        invocation += 1;
+        return {
+          response:
+            invocation === 1
+              ? ' '.repeat(EMPTY_SLOW_REPLY_CHUNKS)
+              : `E2E empty reply continued ${emptySlowName} ${steerEchoSuffix(messages)}`,
+        };
+      },
     };
   }
 
@@ -1706,6 +1744,49 @@ function activityPhaseReplyResponses(label, toolNames) {
   };
 }
 
+/**
+ * One tool call, then a slowly streamed `<think>` of several sentences and the
+ * final text. The thought streams after a tool batch, which is the state the
+ * live thought peek must stay hidden in.
+ */
+function toolThenThinkReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E tool then think reply unavailable: no ${STEER_TOOL_NAME_PREFIX} tool advertised.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    sleep: 200,
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_tool_then_think_${label}`,
+              name: toolName,
+              args: { fact: `tool then think ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return {
+        response:
+          '<think>First I read the tool result slowly. Then I weigh what it changes with care. ' +
+          'Next I compare it against the original request. Afterwards I check the edge cases once more. ' +
+          `Finally I decide how to answer it.</think>\n\nE2E tool then think reply done ${label}`,
+      };
+    },
+  };
+}
+
 /** Short prose remains visible while the real tool/label pipeline forms and
  * dissolves folds. The pause before calls lets the browser finish the initial
  * word fade and install its identity/animation observer before that transition. */
@@ -1739,6 +1820,39 @@ function activityProseReplyResponses(label, toolNames) {
         };
       }
       return { response: `E2E activity prose complete ${label}` };
+    },
+  };
+}
+
+function interruptToolReplyResponses(label, toolNames) {
+  const remember = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  const slow = Array.from(toolNames).find((name) => name.startsWith(SLOW_ECHO_TOOL_NAME_PREFIX));
+  if (!remember || !slow) return { responses: ['E2E interrupt tools unavailable'] };
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async (messages) => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: `E2E interrupt tools running ${label}`,
+          toolCalls: [
+            {
+              id: `call_interrupt_fast_${label}`,
+              name: remember,
+              args: { fact: `completed ${label}` },
+              type: 'tool_call',
+            },
+            {
+              id: `call_interrupt_slow_${label}`,
+              name: slow,
+              args: { text: `late ${label}`, delay_ms: 5000 },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `E2E interrupt tool reply done ${label} ${steerEchoSuffix(messages)}` };
     },
   };
 }
@@ -1849,6 +1963,68 @@ function askUserQuestionResponses(label, toolNames) {
               options: [
                 { label: 'Staging', value: 'staging' },
                 { label: 'Production', value: 'production' },
+              ],
+            },
+          ],
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
+function askUserQuestionBatchResponses(label, toolNames, { long }) {
+  if (!toolNames.has(ASK_USER_QUESTION_TOOL_NAME)) {
+    return askUserQuestionResponses(label, toolNames);
+  }
+  /** Near the tool's limits: a 2,000-character question and a 4,000-character description. */
+  const longQuestion =
+    `Which environment for ${label}? ${'Explain the deployment target. '.repeat(64)}`
+      .slice(0, 2000)
+      .trim();
+  const longDescription = Array.from(
+    { length: 60 },
+    (_, index) => `Line ${index + 1} of the long clarification for ${label}.`,
+  )
+    .join(' ')
+    .slice(0, 4000);
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `call_e2e_ask_user_questions_${label}`,
+        name: ASK_USER_QUESTION_TOOL_NAME,
+        args: {
+          questions: [
+            {
+              id: 'environment',
+              question: long ? longQuestion : `Which environment for ${label}?`,
+              ...(long ? { description: longDescription } : {}),
+              options: [
+                { label: 'Staging', value: 'staging' },
+                { label: 'Production', value: 'production' },
+                ...(long
+                  ? Array.from({ length: 6 }, (_, index) => ({
+                      label: `Region ${index + 1}: ${'a deliberately long option label '.repeat(4)}`,
+                      value: `region-${index + 1}`,
+                    }))
+                  : []),
+              ],
+            },
+            {
+              id: 'region',
+              question: `Which region for ${label}?`,
+              options: [
+                { label: 'Europe', value: 'europe' },
+                { label: 'Americas', value: 'americas' },
+              ],
+            },
+            {
+              id: 'notes',
+              question: `Anything else for ${label}?`,
+              options: [
+                { label: 'Nothing else', value: 'none' },
+                { label: 'Call me first', value: 'call' },
               ],
             },
           ],
@@ -3301,6 +3477,9 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return statefulCodeResponses(statefulCodeOperation, toolNames);
   }
 
+  const interruptToolLabel = getMarkerValue(text, INTERRUPT_TOOL_REPLY_MARKER);
+  if (interruptToolLabel) return interruptToolReplyResponses(interruptToolLabel, toolNames);
+
   const steerToolLabel = getMarkerValue(text, STEER_TOOL_REPLY_MARKER);
   if (steerToolLabel) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
@@ -3360,6 +3539,11 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
   }
 
+  const toolThenThinkLabel = getMarkerValue(text, TOOL_THEN_THINK_REPLY_MARKER);
+  if (toolThenThinkLabel) {
+    return toolThenThinkReplyResponses(toolThenThinkLabel, toolNames);
+  }
+
   const activityProseLabel = getMarkerValue(text, ACTIVITY_PROSE_REPLY_MARKER);
   if (activityProseLabel) {
     return activityProseReplyResponses(activityProseLabel, toolNames);
@@ -3370,9 +3554,33 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return activityFailedReplyResponses(activityFailedLabel, toolNames);
   }
 
+  const askBatchLabel = getMarkerValue(text, ASK_USER_QUESTIONS_MARKER);
+  const askLongBatchLabel = getMarkerValue(text, ASK_USER_LONG_QUESTIONS_MARKER);
+  if (askBatchLabel || askLongBatchLabel) {
+    return askUserQuestionBatchResponses(askBatchLabel || askLongBatchLabel, toolNames, {
+      long: Boolean(askLongBatchLabel),
+    });
+  }
+
   const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
   if (askUserQuestionLabel) {
     return askUserQuestionResponses(askUserQuestionLabel, toolNames);
+  }
+
+  if (text.includes('E2E_PRIVATE_TEXT:')) {
+    return {
+      responses: [MOCK_REPLY],
+      resolveOnStream: (streamMessages) => {
+        const prompt = JSON.stringify(streamMessages);
+        const protectedText =
+          !prompt.includes('alice@example.com') && /EMAIL_1_[a-f0-9]{32}/.test(prompt);
+        return {
+          responses: [
+            protectedText ? 'E2E private model input verified' : 'E2E private model input failed',
+          ],
+        };
+      },
+    };
   }
 
   if (text.includes(ASSERT_PROJECT_CONTEXT_MARKER)) {

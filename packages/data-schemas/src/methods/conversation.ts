@@ -1,5 +1,9 @@
 import { Buffer } from 'node:buffer';
-import { RetentionMode, isForcedTemporaryRetention } from 'librechat-data-provider';
+import {
+  RetentionMode,
+  isForcedTemporaryRetention,
+  UNSEEN_REPLY_WATERMARK,
+} from 'librechat-data-provider';
 import type {
   AnyBulkWriteOperation,
   DeleteResult,
@@ -59,13 +63,32 @@ const ACTOR_CHECKPOINT_FIELDS = [
   'agentEventActorSuspension',
 ] as const;
 
-function stripActorCheckpointFields(record: Record<string, unknown>): void {
+/** Removes each field and every dotted path beneath it, which Mongo reads as a write to the field. */
+function stripFields(record: Record<string, unknown>, fields: readonly string[]): void {
   for (const key of Object.keys(record)) {
-    if (ACTOR_CHECKPOINT_FIELDS.some((field) => key === field || key.startsWith(`${field}.`))) {
+    if (fields.some((field) => key === field || key.startsWith(`${field}.`))) {
       delete record[key];
     }
   }
 }
+
+function stripActorCheckpointFields(record: Record<string, unknown>): void {
+  stripFields(record, ACTOR_CHECKPOINT_FIELDS);
+}
+
+/** Written only by the lane methods, so no save, unset or import may reach them. */
+const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as const;
+
+/** The lane state a reader may see; the sequence number that fences writes stays private. */
+export type ConvoLaneGitView = Omit<NonNullable<IConversation['laneGit']>, 'seq'>;
+
+/** What a lane recorder needs to place and fence its writes, read once when its tool is created. */
+export type ConvoLaneContext = {
+  subagentThread?: IConversation['subagentThread'] | null;
+  /** Counts the owner's moves and detaches of the workspace the report is written to (the visible
+   *  root for a subagent thread); 0 until the first. */
+  codeAttachmentEpoch: number;
+};
 
 const AGENT_EVENT_ACTOR_RECEIPT_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MAX_AGENT_EVENT_ACTOR_SUSPENSION_BYTES = 64 * 1_024;
@@ -255,6 +278,11 @@ async function refreshChatProjectStatsInBatches(
   }
 }
 
+export type ConversationTitleState = Pick<
+  IConversation,
+  'title' | 'titleSetByUser' | 'titleRevision'
+>;
+
 export interface ConversationMethods {
   getConvoFiles(conversationId: string): Promise<string[]>;
   searchConversation(
@@ -279,6 +307,7 @@ export interface ConversationMethods {
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      titleSource?: 'manual' | 'generated';
       /** Same-tenant persisted agent already resolved by the request layer. */
       initialAgentId?: string | null;
       /** `_id`s of messages this save just wrote. When present, they are appended with
@@ -319,12 +348,44 @@ export interface ConversationMethods {
     IConversation,
     'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeEnvironmentRevision'
   > | null>;
+  reserveConvoLaneGitSeq(user: string, conversationId: string): Promise<number | null>;
+  getConvoLaneContext(user: string, conversationId: string): Promise<ConvoLaneContext | null>;
+  setConvoLaneGit(input: {
+    user: string;
+    conversationId: string;
+    laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
+    repo?: string;
+    /** Reserved with `reserveConvoLaneGitSeq` when the command settled. */
+    seq: number;
+    /** The workspace the command ran in; the write applies only while the chat is still on it. */
+    workspace?: {
+      environmentId: string;
+      workspaceId: string;
+      required?: boolean;
+      /** The attachment epoch read when the tool was created; see `getConvoLaneContext`. */
+      epoch?: number;
+    };
+  }): Promise<boolean>;
+  getConvoLaneGit(
+    user: string,
+    conversationId: string,
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null>;
+  getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>>;
+  addConvoToolApprovalAllows(input: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean>;
   readAdmittedConvoCodeEnvironmentDecision(
     user: string,
     conversationId: string,
   ): Promise<Pick<
     IConversation,
-    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeAttachmentEpoch'
   > | null>;
   replaceConvoCodeEnvironmentDecision(
     params: {
@@ -373,6 +434,7 @@ export interface ConversationMethods {
     convoMap: Record<string, unknown>;
   }>;
   getConvo(user: string, conversationId: string): Promise<IConversation | null>;
+  getConvoTitleState(user: string, conversationId: string): Promise<ConversationTitleState | null>;
   getSubagentThreadForParent(input: {
     user: string;
     parentConversationId: string;
@@ -567,6 +629,7 @@ export interface ConversationMethods {
     lastResponseAt?: Date;
     lastResponseMessageId?: string;
     lastResponseIsManual?: boolean;
+    isMarkedUnread?: boolean;
   }>;
   stampConvoLastResponse(
     user: string,
@@ -646,8 +709,13 @@ export function createConversationMethods(
       const stamped = await Conversation.findOneAndUpdate(
         casFilter,
         {
-          $set: { lastResponseAt: stamp, lastResponseMessageId: responseMessageId },
-          $unset: { lastSeenAt: '', lastResponseIsManual: '' },
+          $set: {
+            lastResponseAt: stamp,
+            lastResponseMessageId: responseMessageId,
+            isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
+          },
+          $unset: { lastResponseIsManual: '' },
           $max: { updatedAt: stamp },
         },
         { new: true, projection, timestamps: false },
@@ -701,6 +769,16 @@ export function createConversationMethods(
       logger.error('[getConvo] Error getting single conversation', error);
       throw new Error('Error getting single conversation');
     }
+  }
+
+  async function getConvoTitleState(
+    user: string,
+    conversationId: string,
+  ): Promise<ConversationTitleState | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    return Conversation.findOne({ user, conversationId })
+      .select('title titleSetByUser titleRevision -_id')
+      .lean<ConversationTitleState>();
   }
 
   /** Resolves a child only through its owning parent and includes its private live lease. */
@@ -2383,6 +2461,7 @@ export function createConversationMethods(
       noUpsert?: boolean;
       createdAtOnInsert?: Date;
       preserveUpdatedAt?: boolean;
+      titleSource?: 'manual' | 'generated';
       initialAgentId?: string | null;
       /** Casts plain string ids, so callers outside this package need not name the id type. */
       appendMessageIds?: Array<Types.ObjectId | string>;
@@ -2407,9 +2486,18 @@ export function createConversationMethods(
       /* Read-state fields are server-owned. A stale marker must never be reintroduced by a
        * metadata save after a real reply cleared it. */
       delete update.lastResponseIsManual;
+      delete update.isMarkedUnread;
       delete update.lastResponseAt;
       delete update.lastResponseMessageId;
       delete update.initial_agent_id;
+      delete update.titleSetByUser;
+      delete update.titleRevision;
+      if (metadata?.titleSource === 'manual') {
+        update.titleSetByUser = true;
+      }
+      /* Remembered tool approvals are granted only by a validated resume. */
+      delete update.toolApprovalAllows;
+      stripFields(update, LANE_PRIVATE_FIELDS);
       /** Ordinary saves may seed a decision, but only an explicit move may replace it. */
       const decisionOnInsert = {
         ...(convo.codeEnvironmentMode != null && {
@@ -2428,9 +2516,14 @@ export function createConversationMethods(
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
       delete unsetFields.lastResponseIsManual;
+      delete unsetFields.isMarkedUnread;
       delete unsetFields.lastResponseMessageId;
       delete unsetFields.lastResponseAt;
       delete unsetFields.initial_agent_id;
+      delete unsetFields.titleSetByUser;
+      delete unsetFields.titleRevision;
+      delete unsetFields.toolApprovalAllows;
+      stripFields(unsetFields, LANE_PRIVATE_FIELDS);
       delete unsetFields.codeEnvironmentRevision;
       delete unsetFields.codeEnvironmentMode;
       delete unsetFields.codeWorkspaces;
@@ -2539,7 +2632,7 @@ export function createConversationMethods(
         timestampOptions.timestamps = false;
       }
 
-      const canUpsert = metadata?.noUpsert !== true;
+      const canUpsert = metadata?.noUpsert !== true && metadata?.titleSource !== 'generated';
       const initialAgentId =
         canUpsert &&
         typeof metadata?.initialAgentId === 'string' &&
@@ -2549,6 +2642,9 @@ export function createConversationMethods(
 
       const buildOperation = (setFields: Record<string, unknown>) => {
         const operation: Record<string, unknown> = { $set: setFields };
+        if (metadata?.titleSource === 'manual') {
+          operation.$inc = { titleRevision: 1 };
+        }
         if (appendMessageIds != null && appendMessageIds.length > 0) {
           operation.$addToSet = { messages: { $each: appendMessageIds } };
         }
@@ -2557,7 +2653,11 @@ export function createConversationMethods(
          * DocumentDB targets rule out. */
         if (setFields.lastResponseAt instanceof Date) {
           const { lastResponseAt, ...withoutReplyStamp } = setFields;
-          operation.$set = withoutReplyStamp;
+          operation.$set = {
+            ...withoutReplyStamp,
+            isMarkedUnread: false,
+            lastSeenAt: new Date(UNSEEN_REPLY_WATERMARK),
+          };
           operation.$max = { lastResponseAt };
           operation.$unset = { lastResponseIsManual: '' };
         }
@@ -2581,7 +2681,14 @@ export function createConversationMethods(
         return operation;
       };
 
-      const baseFilter = { conversationId, user: userId };
+      const baseFilter = {
+        conversationId,
+        user: userId,
+        ...(metadata?.titleSource === 'generated' && {
+          titleSetByUser: { $ne: true },
+          title: { $in: [null, '', 'New Chat'] },
+        }),
+      };
       const runUpdate = (
         filter: Record<string, unknown>,
         operation: Record<string, unknown>,
@@ -2712,7 +2819,7 @@ export function createConversationMethods(
         }
       }
 
-      /* Advance the version and clear the previous catch-up atomically. The database CAS orders
+      /* Advance the version and reset catch-up atomically. The database CAS orders
        * concurrent replies even when their application hosts disagree about wall-clock time. */
       let replyStampApplied = false;
       if (metadata?.stampReply === true) {
@@ -2727,6 +2834,8 @@ export function createConversationMethods(
                 lastResponseAt: 1,
                 lastResponseMessageId: 1,
                 lastResponseIsManual: 1,
+                isMarkedUnread: 1,
+                lastSeenAt: 1,
                 updatedAt: 1,
               },
             );
@@ -2737,7 +2846,8 @@ export function createConversationMethods(
               conversation.lastResponseAt = stamped.stamp;
               conversation.lastResponseMessageId = stamped.conversation.lastResponseMessageId;
               conversation.lastResponseIsManual = stamped.conversation.lastResponseIsManual;
-              conversation.lastSeenAt = undefined;
+              conversation.isMarkedUnread = stamped.conversation.isMarkedUnread;
+              conversation.lastSeenAt = stamped.conversation.lastSeenAt;
               if (stamped.conversation.updatedAt) {
                 conversation.updatedAt = stamped.conversation.updatedAt;
               }
@@ -2899,17 +3009,300 @@ export function createConversationMethods(
    * return the post-update decision in one round trip. A run that wins invalidates an in-flight
    * transition's revision; a transition that wins is observed by this read.
    */
+  /**
+   * Remember tools the owner approved for the rest of one conversation. Owner-scoped,
+   * idempotent (`$addToSet`), and bounded: the write matches only while the stored list
+   * plus the names it does not hold yet fits `max`, so concurrent resumes cannot grow it
+   * past the cap and a name already stored costs no room. Returns whether it applied.
+   */
+  async function addConvoToolApprovalAllows({
+    user,
+    conversationId,
+    toolNames,
+    max,
+  }: {
+    user: string;
+    conversationId: string;
+    toolNames: string[];
+    max: number;
+  }): Promise<boolean> {
+    const names = [...new Set(toolNames.filter((name) => typeof name === 'string' && name))];
+    if (names.length === 0 || names.length > max) {
+      return false;
+    }
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        {
+          user,
+          conversationId,
+          $expr: {
+            $lte: [
+              { $size: { $setUnion: [{ $ifNull: ['$toolApprovalAllows', []] }, names] } },
+              max,
+            ],
+          },
+        },
+        { $addToSet: { toolApprovalAllows: { $each: names } } },
+        { timestamps: false },
+      ),
+    );
+    return result.matchedCount === 1;
+  }
+
+  /**
+   * Reserve the next lane report sequence number for an owner's conversation. The counter lives in
+   * the database, so every replica draws from one order that no process clock can skew, and the
+   * number is taken when a command settles, before its write is attempted. Resolves to null when
+   * the conversation does not exist yet for this owner.
+   */
+  async function reserveConvoLaneGitSeq(
+    user: string,
+    conversationId: string,
+  ): Promise<number | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const reserved = await withoutMeiliIndexing(
+      Conversation.findOneAndUpdate(
+        { user, conversationId, ...activeExpirationFilter<IConversation>() },
+        { $inc: { laneGitSeq: 1 } },
+        { new: true, timestamps: false },
+      ),
+    )
+      .select('laneGitSeq')
+      .lean<Pick<IConversation, 'laneGitSeq'> | null>();
+    return reserved?.laneGitSeq ?? null;
+  }
+
+  /**
+   * The route and attachment epoch a lane recorder needs, in one owner-scoped read. A subagent
+   * thread's route names the visible conversation its lane belongs to. The epoch advances only
+   * when the owner moves or detaches the workspace (never when a generation is admitted), so a
+   * report captured before a move away and back to the same workspace still reads as stale.
+   * Resolves to null for a conversation that does not exist yet, or is not this owner's.
+   */
+  async function getConvoLaneContext(
+    user: string,
+    conversationId: string,
+  ): Promise<ConvoLaneContext | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const now = new Date();
+    /**
+     * The thread and its visible root in one operation, so the epoch cannot move between two
+     * reads. The tenant plugin scopes only the base collection of an aggregate, never the joined
+     * one, so the join is narrowed here to the same owner, tenant and visibility as the base row:
+     * a root outside them reads as absent, exactly as it did when it was read on its own.
+     */
+    const [row] = await Conversation.aggregate<{
+      subagentThread?: IConversation['subagentThread'] | null;
+      codeAttachmentEpoch?: number;
+      _root?: Array<{ codeAttachmentEpoch?: number }>;
+    }>([
+      { $match: { user, conversationId, ...activeExpirationFilter<IConversation>() } },
+      {
+        $lookup: {
+          from: 'conversations',
+          localField: 'subagentThread.rootConversationId',
+          foreignField: 'conversationId',
+          as: '_root',
+        },
+      },
+      {
+        $project: {
+          subagentThread: 1,
+          codeAttachmentEpoch: 1,
+          _root: {
+            $filter: {
+              input: '$_root',
+              as: 'r',
+              cond: {
+                $and: [
+                  { $eq: ['$$r.user', user] },
+                  { $eq: [{ $ifNull: ['$$r.tenantId', null] }, { $ifNull: ['$tenantId', null] }] },
+                  {
+                    $or: [
+                      { $eq: [{ $ifNull: ['$$r.expiredAt', null] }, null] },
+                      { $gt: ['$$r.expiredAt', now] },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      { $limit: 1 },
+    ]);
+    if (row == null) return null;
+    const rootId = row.subagentThread?.rootConversationId;
+    /** A thread's report is written to its visible root, so it is fenced by the root's epoch. */
+    const fenced = rootId && rootId !== conversationId ? row._root?.[0] : row;
+    return {
+      subagentThread: row.subagentThread ?? null,
+      codeAttachmentEpoch: fenced?.codeAttachmentEpoch ?? 0,
+    };
+  }
+
+  /**
+   * Record the branch and head a conversation's code lane last reported. Owner-scoped and fenced
+   * by the sequence number reserved when the command settled: the write matches only while the
+   * stored report carries a lower one, so a delayed older report, from this process or another
+   * replica, can never replace a newer state. When the caller names the workspace the command ran
+   * in, the write also matches only while the conversation is still attached to it, so a report
+   * queued before a move or detach cannot bring the old workspace's lane back. A conversation
+   * with no stored workspace (an agent default) accepts the report unless the caller requires a
+   * recorded one. Server-written only: generic saves and imports cannot set it. An expired
+   * temporary chat is treated as gone, here and in the reservation and the read, the way every
+   * other owner-scoped conversation access treats it. Resolves to whether the write applied; false
+   * means a newer report is already stored, the workspace no longer matches, or there is no such
+   * conversation for this owner.
+   */
+  async function setConvoLaneGit({
+    user,
+    conversationId,
+    laneGit,
+    repo,
+    seq,
+    workspace,
+  }: {
+    user: string;
+    conversationId: string;
+    laneGit: Pick<NonNullable<IConversation['laneGit']>, 'branch' | 'head'>;
+    repo?: string;
+    seq: number;
+    workspace?: { environmentId: string; workspaceId: string; required?: boolean; epoch?: number };
+  }): Promise<boolean> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const next = {
+      branch: laneGit.branch,
+      head: laneGit.head,
+      ...(repo ? { repo } : {}),
+      seq,
+    };
+    const epochFence =
+      workspace?.epoch == null
+        ? []
+        : [
+            {
+              codeAttachmentEpoch: workspace.epoch === 0 ? { $in: [null, 0] } : workspace.epoch,
+            },
+          ];
+    const workspaceFence =
+      workspace == null
+        ? []
+        : [
+            ...epochFence,
+            {
+              $or: [
+                {
+                  codeWorkspaces: {
+                    $elemMatch: {
+                      environmentId: workspace.environmentId,
+                      workspaceId: workspace.workspaceId,
+                    },
+                  },
+                },
+                ...(workspace.required === true
+                  ? []
+                  : [
+                      {
+                        codeEnvironmentMode: { $ne: 'without_attached' },
+                        $or: [
+                          { codeWorkspaces: { $exists: false } },
+                          { codeWorkspaces: null },
+                          { codeWorkspaces: { $size: 0 } },
+                        ],
+                      },
+                    ]),
+              ],
+            },
+          ];
+    const result = await withoutMeiliIndexing(
+      Conversation.updateOne(
+        {
+          user,
+          conversationId,
+          ...activeExpirationFilter<IConversation>(),
+          $and: [
+            {
+              $or: [
+                { 'laneGit.seq': { $exists: false } },
+                { 'laneGit.seq': null },
+                { 'laneGit.seq': { $lt: seq } },
+              ],
+            },
+            ...workspaceFence,
+          ],
+        },
+        { $set: { laneGit: next } },
+        { timestamps: false },
+      ),
+    );
+    return result.modifiedCount === 1;
+  }
+
+  /** The last reported lane state, or null when the conversation has none or is not the owner's. */
+  async function getConvoLaneGit(
+    user: string,
+    conversationId: string,
+  ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null> {
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.findOne({
+      user,
+      conversationId,
+      ...activeExpirationFilter<IConversation>(),
+    })
+      .select('laneGit')
+      .lean<Pick<IConversation, 'laneGit'> | null>();
+    if (stored?.laneGit == null) return null;
+    const { branch, head, repo } = stored.laneGit;
+    return { branch, head, ...(repo ? { repo } : {}) };
+  }
+
+  /**
+   * The last reported lane state of each of the owner's conversations that has one, in one query.
+   * A conversation that is missing, expired, another owner's or has no lane is simply absent, so a
+   * caller cannot tell them apart.
+   */
+  async function getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>> {
+    if (conversationIds.length === 0) return [];
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.find({
+      user,
+      conversationId: { $in: conversationIds },
+      laneGit: { $exists: true, $ne: null },
+      ...activeExpirationFilter<IConversation>(),
+    })
+      .select('conversationId laneGit')
+      .lean<Array<Pick<IConversation, 'conversationId' | 'laneGit'>>>();
+    return stored.flatMap(({ conversationId, laneGit }) => {
+      if (laneGit == null || conversationId == null) return [];
+      const { branch, head, repo } = laneGit;
+      return [{ conversationId, laneGit: { branch, head, ...(repo ? { repo } : {}) } }];
+    });
+  }
+
+  /**
+   * The decision a run is admitted on, with the attachment epoch of that same document. The epoch
+   * is `0` for a conversation never moved, so a lane report can be fenced by exactly the snapshot
+   * the workspace came from instead of a second read that a move could slip between.
+   */
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    return withoutMeiliIndexing(
+    const admitted = await withoutMeiliIndexing(
       Conversation.findOneAndUpdate(
         { user, conversationId },
         { $inc: { codeEnvironmentRevision: 1 } },
         { new: true, timestamps: false },
       ),
     )
-      .select('conversationId codeEnvironmentMode codeWorkspaces')
+      .select('conversationId codeEnvironmentMode codeWorkspaces +codeAttachmentEpoch')
       .lean<IConversation>();
+    return admitted == null
+      ? admitted
+      : { ...admitted, codeAttachmentEpoch: admitted.codeAttachmentEpoch ?? 0 };
   }
 
   /**
@@ -2950,12 +3343,17 @@ export function createConversationMethods(
           codeWorkspaces: expected.codeWorkspaces ?? { $in: [null] },
           codeEnvironmentRevision: expected.codeEnvironmentRevision ?? { $in: [null] },
         },
+        /** The reported lane belongs to the workspace being replaced, so it goes with it. */
         codeEnvironmentMode === 'attached'
-          ? { $set: { codeEnvironmentMode, codeWorkspaces }, $inc: { codeEnvironmentRevision: 1 } }
+          ? {
+              $set: { codeEnvironmentMode, codeWorkspaces },
+              $unset: { laneGit: 1 },
+              $inc: { codeEnvironmentRevision: 1, codeAttachmentEpoch: 1 },
+            }
           : {
               $set: { codeEnvironmentMode },
-              $unset: { codeWorkspaces: 1 },
-              $inc: { codeEnvironmentRevision: 1 },
+              $unset: { codeWorkspaces: 1, laneGit: 1 },
+              $inc: { codeEnvironmentRevision: 1, codeAttachmentEpoch: 1 },
             },
         { new: true, timestamps: false },
       ).lean<IConversation>();
@@ -3041,9 +3439,12 @@ export function createConversationMethods(
         delete sanitized.lastResponseAt;
         delete sanitized.lastResponseMessageId;
         delete sanitized.lastResponseIsManual;
+        delete sanitized.isMarkedUnread;
         delete sanitized.lastSeenAt;
         delete sanitized.codeApprovalMode;
         delete sanitized.initial_agent_id;
+        delete sanitized.toolApprovalAllows;
+        stripFields(sanitized, LANE_PRIVATE_FIELDS);
         delete sanitized.codeEnvironmentRevision;
         stripActorCheckpointFields(sanitized);
         if (typeof sanitized.user === 'string' && typeof sanitized.chatProjectId === 'string') {
@@ -3461,7 +3862,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -3787,6 +4188,15 @@ export function createConversationMethods(
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
       }
 
+      try {
+        await mongoose.models.ToolApprovalGrant?.deleteMany({
+          user,
+          conversationId: { $in: conversationIds },
+        });
+      } catch {
+        logger.warn('[deleteConvos] Remembered approval cleanup failed.');
+      }
+
       // conversationIds lets callers run sibling cleanup that lives in higher layers
       // (e.g. pruning the conversations' durable agent checkpoints) without re-querying
       // documents that no longer exist.
@@ -3952,7 +4362,7 @@ export function createConversationMethods(
       const lastSeenAt = observedResponseAt && observedResponseAt > now ? observedResponseAt : now;
       const result = await Conversation.updateOne(
         filter,
-        { $set: { lastSeenAt } },
+        { $set: { lastSeenAt }, $unset: { isMarkedUnread: '' } },
         { timestamps: false },
       );
       /* Matched, not modified: a retry of an acknowledgement that already landed writes the
@@ -3981,7 +4391,12 @@ export function createConversationMethods(
   async function markConvoUnread(user: string, conversationId: string) {
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      const projection = { lastResponseAt: 1, lastResponseMessageId: 1, lastResponseIsManual: 1 };
+      const projection = {
+        lastResponseAt: 1,
+        lastResponseMessageId: 1,
+        lastResponseIsManual: 1,
+        isMarkedUnread: 1,
+      };
       const stamped = await Conversation.findOneAndUpdate(
         {
           conversationId,
@@ -3989,12 +4404,15 @@ export function createConversationMethods(
           $or: [{ lastResponseAt: null }, { lastResponseAt: { $exists: false } }],
         },
         {
-          $set: { lastResponseAt: new Date(), lastResponseIsManual: true },
+          $set: { lastResponseAt: new Date(), lastResponseIsManual: true, isMarkedUnread: true },
           $unset: { lastSeenAt: '', lastResponseMessageId: '' },
         },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
       if (stamped) {
         return {
@@ -4002,15 +4420,19 @@ export function createConversationMethods(
           lastResponseAt: stamped.lastResponseAt,
           lastResponseMessageId: stamped.lastResponseMessageId,
           lastResponseIsManual: stamped.lastResponseIsManual === true,
+          isMarkedUnread: stamped.isMarkedUnread,
         };
       }
 
       const cleared = await Conversation.findOneAndUpdate(
         { conversationId, user },
-        { $unset: { lastSeenAt: '' } },
+        { $set: { isMarkedUnread: true }, $unset: { lastSeenAt: '' } },
         { timestamps: false, new: true, projection },
       ).lean<
-        Pick<IConversation, 'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual'>
+        Pick<
+          IConversation,
+          'lastResponseAt' | 'lastResponseMessageId' | 'lastResponseIsManual' | 'isMarkedUnread'
+        >
       >();
 
       return cleared
@@ -4019,6 +4441,7 @@ export function createConversationMethods(
             lastResponseAt: cleared.lastResponseAt,
             lastResponseMessageId: cleared.lastResponseMessageId,
             lastResponseIsManual: cleared.lastResponseIsManual === true,
+            isMarkedUnread: cleared.isMarkedUnread,
           }
         : { modified: false };
     } catch (error) {
@@ -4103,12 +4526,19 @@ export function createConversationMethods(
     setConvoPinned,
     appendConvoMessageReference,
     getConvoCodeEnvironmentDecision,
+    addConvoToolApprovalAllows,
+    reserveConvoLaneGitSeq,
+    setConvoLaneGit,
+    getConvoLaneGit,
+    getConvosLaneGit,
+    getConvoLaneContext,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,
     bulkSaveConvos,
     getConvosByCursor,
     getConvosQueried,
     getConvo,
+    getConvoTitleState,
     getSubagentThreadForParent,
     listSubagentThreadsForParent,
     getAgentEventBinding,

@@ -351,17 +351,17 @@ export default function Breakdown({
     hoveredSegment != null && hoverIsValid(hoveredSegment) ? hoveredSegment : null;
 
   return (
-    <div className="w-72" role="region" aria-label={localize('com_ui_context_usage')}>
+    <div className="w-full" role="region" aria-label={localize('com_ui_context_usage')}>
       <Collapsible open={expanded} onOpenChange={setExpanded}>
         <CollapsibleTrigger
           focusOutline="hidden"
-          className="group focus-visible:ring-text-primary flex w-full items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
+          className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
           data-testid="context-breakdown-toggle"
         >
-          <span className="text-text-primary text-sm font-medium whitespace-nowrap">
+          <span className="text-text-primary min-w-0 text-left text-sm font-medium">
             {localize('com_ui_context_window')}
           </span>
-          <span className="text-text-secondary flex items-center gap-1 text-xs font-medium whitespace-nowrap">
+          <span className="text-text-secondary flex min-w-0 items-center gap-1 text-xs font-medium">
             {maxTokens != null
               ? `${formatTokens(usedTokens)} / ${formatTokens(maxTokens)} (${Math.round(percent)}%)`
               : formatTokens(usedTokens)}
@@ -414,13 +414,13 @@ export default function Breakdown({
                     <HoverCardTrigger asChild>
                       <Button
                         type="button"
-                        variant="ghost"
+                        variant="quiet"
                         size="icon"
                         aria-label={localize('com_ui_context_insights')}
                         aria-expanded={insightsOpen}
                         aria-controls={insightsOpen ? insightsId : undefined}
                         data-testid="context-insights-toggle"
-                        className="text-text-secondary size-6"
+                        className="size-6"
                         onFocus={() => setInsightsOpen(true)}
                         onBlur={() => setInsightsOpen(false)}
                         onClick={() => setInsightsOpen(true)}
@@ -737,7 +737,7 @@ export default function Breakdown({
             {langfuseSessionUrl && (
               <>
                 <div className="border-border-light border-t" role="separator" />
-                <Button asChild variant="link" className="h-auto w-full justify-between gap-2 p-0">
+                <Button asChild variant="link" size="bare" className="w-full justify-between">
                   <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                     <span>{localize('com_ui_langfuse_view_session')}</span>
                     <ExternalLink className="size-4 shrink-0" aria-hidden="true" />

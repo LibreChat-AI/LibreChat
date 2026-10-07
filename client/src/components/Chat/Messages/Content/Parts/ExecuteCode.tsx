@@ -3,8 +3,8 @@ import { SquareTerminal } from 'lucide-react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { toolPanelSpacingClassName } from '../disclosure';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
@@ -13,6 +13,7 @@ import { AttachmentGroup } from './Attachment';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import Stdout from './Stdout';
 import { cn } from '~/utils';
@@ -117,16 +118,18 @@ export default function ExecuteCode({
       )
     : null;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!code,
-    onExpand,
-    runStepStatus,
-    extraError: backgroundFailed,
-    extraCancelled: cancelledInBackground,
-  });
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!code,
+      onExpand,
+      runStepStatus,
+      extraError: backgroundFailed,
+      extraCancelled: cancelledInBackground,
+      keepRow: backgroundHandle != null || intent != null,
+    });
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);
   const { ref: codePaneRef, onScroll: onCodePaneScroll } = useFollowScroll<HTMLPreElement>(
@@ -135,43 +138,47 @@ export default function ExecuteCode({
     showCode,
   );
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'));
+
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={
-            intent ??
-            (sandboxStarting ? localize('com_ui_sandbox_starting') : localize('com_ui_analyzing'))
-          }
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (backgroundFinishedText ?? intent ?? localize('com_ui_analyzing_finished'))
-          }
-          /** A backgrounded call's run step closes when dispatch returns the
-           *  handle, so its duration is the dispatch time — showing it would
-           *  misstate a detached task's runtime as seconds. The handle check
-           *  covers the live card; the persisted `backgrounded` marker covers
-           *  the card after harvest replaces the handle with real stdout
-           *  (and after any reload), when no transient signal survives. */
-          durationMs={
-            backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
-          }
-          icon={
-            <SquareTerminal
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={!!code?.length}
-          isExpanded={showCode}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div className={TOOL_ROW_CLASSES} ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={
+              intent ??
+              (sandboxStarting ? localize('com_ui_sandbox_starting') : localize('com_ui_analyzing'))
+            }
+            finishedText={finishedText}
+            /** A backgrounded call's run step closes when dispatch returns the
+             *  handle, so its duration is the dispatch time, and showing it would
+             *  misstate a detached task's runtime as seconds. The handle check
+             *  covers the live card; the persisted `backgrounded` marker covers
+             *  the card after harvest replaces the handle with real stdout
+             *  (and after any reload), when no transient signal survives. */
+            durationMs={
+              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            }
+            icon={
+              <SquareTerminal
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={!!code?.length}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           <div
@@ -185,7 +192,7 @@ export default function ExecuteCode({
               <pre
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
-                className="bg-surface-code-body max-h-[300px] overflow-auto p-4 font-mono text-xs"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
               >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? code}
@@ -195,7 +202,7 @@ export default function ExecuteCode({
             <PtcToolTrace
               toolCallId={toolCallId}
               expanded={showCode}
-              className={cn(code && 'border-border-light border-t')}
+              className={cn(code && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
               <div
@@ -203,15 +210,15 @@ export default function ExecuteCode({
                   /* No fill of its own: the output shows the panel's surface-secondary in both
                    * modes, which is the surface-primary-alt it was painted in light. */
                   'p-4 text-xs',
-                  code && 'border-border-light border-t',
+                  code && 'border-border-inset border-t',
                 )}
               >
-                <div className="text-text-secondary mb-1.5 text-[10px] font-medium tracking-wide uppercase">
+                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
                   {localize('com_ui_output')}
                 </div>
                 <div
                   className={cn(
-                    'max-h-[200px] overflow-auto',
+                    'max-h-[12.5rem] overflow-auto',
                     outputHasError ? 'text-status-error' : 'text-text-primary',
                   )}
                 >

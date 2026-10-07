@@ -21,6 +21,8 @@ const semanticProperties = [
   '--chart-widget-surface',
   '--chart-widget-stroke',
   '--switch-thumb',
+  '--surface-tooltip',
+  '--alert-error-fill',
   '--avatar-placeholder',
   '--avatar-text',
   '--table-header-text',
@@ -144,6 +146,34 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--theme-control-radius')).toBe('0.25rem');
     expect(root.style.getPropertyValue('--theme-surface-radius')).toBe('0.5rem');
     expect(root.style.getPropertyValue('--theme-motion-fast')).toBe('80ms');
+  });
+
+  it.each(['0', '.0', '0.0', '0.00'])('writes a chrome border alpha of %s as 0', (alpha) => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: alpha } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0',
+    );
+  });
+
+  it('leaves a non-zero chrome border alpha as written', () => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'faint-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0.5' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0.5',
+    );
   });
 
   /** The plain `rounded-*`, `font-sans` and `font-mono` utilities read these properties, so a
@@ -496,6 +526,15 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--border-field-focus')).toBe('30 31 32');
   });
 
+  it('maps a legacy theme canvas and ink onto the field fill and ink', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-text-primary': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--field-fill')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--field-text')).toBe('1 2 3');
+  });
+
   it('keeps the switch knob of a legacy theme on the surface it repainted', () => {
     const root = document.documentElement;
 
@@ -510,6 +549,23 @@ describe('applyTheme', () => {
     applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-switch-thumb': '1 2 3' }, root);
 
     expect(root.style.getPropertyValue('--switch-thumb')).toBe('1 2 3');
+  });
+
+  it('keeps the tooltip and the error alert of a legacy theme on the roles it repainted', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-status-error-subtle': '4 5 6' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('20 21 22');
+    expect(root.style.getPropertyValue('--alert-error-fill')).toBe('4 5 6');
+  });
+
+  it('leaves an explicit tooltip surface alone', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary': '20 21 22', 'rgb-surface-tooltip': '1 2 3' }, root);
+
+    expect(root.style.getPropertyValue('--surface-tooltip')).toBe('1 2 3');
   });
 
   it('keeps table column names of a legacy theme on its secondary text', () => {

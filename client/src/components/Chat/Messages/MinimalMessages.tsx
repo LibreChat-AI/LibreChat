@@ -1,4 +1,5 @@
 import React from 'react';
+import { MessageSurfaceContext } from './ui/surface';
 import { cn } from '~/utils';
 
 const MinimalMessages = React.forwardRef(
@@ -19,14 +20,16 @@ const MinimalMessages = React.forwardRef(
               <div className="relative h-full">
                 <div
                   ref={ref}
+                  className="overflow-y-auto"
                   style={{
                     height: '100%',
-                    overflowY: 'auto',
                     width: '100%',
                   }}
                 >
                   <div className="flex flex-col pb-9 text-sm">
-                    {props.children}
+                    <MessageSurfaceContext.Provider value="bg-surface-secondary">
+                      {props.children}
+                    </MessageSurfaceContext.Provider>
                     <div className="group h-0 w-full shrink-0" />
                   </div>
                 </div>

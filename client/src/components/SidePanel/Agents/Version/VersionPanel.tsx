@@ -54,6 +54,7 @@ export default function VersionPanel() {
       name: agentWithVersions.name,
       description: agentWithVersions.description,
       instructions: agentWithVersions.instructions,
+      instructionsPrompt: agentWithVersions.instructionsPrompt,
       artifacts: agentWithVersions.artifacts,
       capabilities: agentWithVersions.capabilities,
       tools: agentWithVersions.tools,
@@ -162,7 +163,10 @@ export default function VersionPanel() {
             </p>
           )}
         </div>
-        <span aria-hidden="true" className="h-10 w-10" />
+        <span
+          aria-hidden="true"
+          className="size-theme-button min-h-theme-target min-w-theme-target"
+        />
       </header>
       <div className="flex flex-col px-2 pt-2">
         <VersionContent

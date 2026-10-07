@@ -10,14 +10,23 @@ type ButtonVariantOptions =
       variant?:
         | 'default'
         | 'link'
+        | 'link-accent'
+        | 'hyperlink'
         | 'submit'
         | 'outline'
         | 'outline-toggle'
+        | 'floating'
         | 'choice'
         | 'subtle'
         | 'destructive'
+        | 'destructive-soft'
         | 'secondary'
         | 'ghost'
+        | 'quiet'
+        | 'message-action'
+        | 'inline-link'
+        | 'carousel-nav'
+        | 'toolbar'
         | 'media'
         | 'row-action'
         | 'row-action-reveal'
@@ -26,6 +35,8 @@ type ButtonVariantOptions =
         | 'header-action'
         | 'inline-edit'
         | 'card'
+        | 'disclosure'
+        | 'option'
         | null
         | undefined;
       size?:
@@ -39,12 +50,15 @@ type ButtonVariantOptions =
         | 'xs'
         | 'sm'
         | 'lg'
+        | 'wide'
+        | 'snug'
+        | 'bare'
         | 'theme'
         | 'row'
         | 'tile'
         | null
         | undefined;
-      shape?: 'default' | 'theme' | 'round' | null | undefined;
+      shape?: 'default' | 'soft' | 'theme' | 'round' | null | undefined;
     } & ClassProp)
   | undefined;
 
@@ -60,11 +74,25 @@ const buttonVariantRecipe = cva(
           'bg-button-primary text-text-inverted hover:bg-button-primary-hover hover:active:bg-surface-inverted-pressed',
         destructive:
           'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover',
+        /**
+         * A destructive action offered inline, such as a row's delete or a revoke beside its
+         * label. A theme whose `destructiveStyle` is `soft` tints it; the confirming button of a
+         * destructive dialog stays `destructive`, the strongest action on screen.
+         */
+        'destructive-soft':
+          'bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover theme-destructive-soft:bg-surface-destructive/10 theme-destructive-soft:text-text-destructive theme-destructive-soft:hover:bg-surface-destructive/14 theme-destructive-soft:hover:active:bg-surface-destructive/17',
         outline:
           'text-text-primary border border-border-light bg-transparent hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /**
+         * A control floating over scrolling content, such as the scroll-to-bottom chip. A theme that
+         * draws no chrome outline gives it an opaque fill and a lift instead, so it never reads as a
+         * bare glyph over the thread.
+         */
+        floating:
+          'border border-border-chrome bg-surface-chat/90 text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed theme-chrome-quiet:bg-surface-chat theme-chrome-quiet:shadow-md theme-chrome-quiet:hover:bg-surface-hover theme-chrome-quiet:hover:active:bg-surface-pressed',
         /** An outlined filter whose pressed state stays visible between activations. */
         'outline-toggle':
-          'text-text-primary border border-border-light bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
+          'text-text-primary border border-border-control bg-transparent transition-none hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary aria-pressed:border-border-heavy aria-pressed:bg-surface-active-alt aria-pressed:hover:bg-surface-active-alt',
         /**
          * A selectable answer inside a question card. `outline` is wrong here:
          * its `border-light` edge measures ~1.2:1 against the panel these sit
@@ -80,6 +108,23 @@ const buttonVariantRecipe = cva(
         secondary:
           'bg-surface-secondary text-text-primary hover:bg-surface-hover hover:active:bg-surface-pressed',
         ghost: 'hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** A ghost that rests in the secondary ink and rises to the primary one under the pointer,
+         *  for a control that should not compete with the content it sits beside. */
+        quiet:
+          'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
+        /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
+        'message-action':
+          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:text-text-primary',
+        /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
+         *  and a ring flush against the control. */
+        'inline-link':
+          'h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:ring-offset-0',
+        /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
+        'carousel-nav':
+          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
+        /** A compact text action in a toolbar, quiet until hovered. */
+        toolbar:
+          'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',
         /**
          * A control drawn over the user's own media (a lightbox toolbar, an image preview's close):
          * ghost-shaped, with the media ink and a tint of it on hover, so it stays legible on the
@@ -98,6 +143,11 @@ const buttonVariantRecipe = cva(
         'row-action-reveal':
           'shrink-0 rounded-md text-text-secondary transition-opacity hover:bg-surface-hover-alt hover:text-text-primary data-[open]:bg-surface-active data-[open]:text-text-primary data-[open]:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:focus-visible:opacity-100 [@media(hover:hover)]:group-focus-within:opacity-100 [@media(hover:hover)]:group-hover:opacity-100',
         link: 'text-text-primary underline-offset-4 hover:underline',
+        /** A link-weight action in the accent color, such as the alternate way to confirm a sign-in. */
+        'link-accent':
+          'text-accent-primary underline-offset-4 hover:text-accent-primary-hover hover:underline',
+        /** An action set inside a sentence in the hyperlink color, sized by its own text. */
+        hyperlink: 'text-link underline-offset-4 hover:underline',
         submit: 'bg-surface-submit text-text-on-status hover:bg-surface-submit-hover',
         /**
          * The toggle that heads a collapsible sidebar section, such as Chats,
@@ -133,7 +183,7 @@ const buttonVariantRecipe = cva(
          * lag rather than polish.
          */
         'header-action':
-          'rounded-xl border border-border-light bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
+          'rounded-xl border border-border-chrome bg-presentation text-text-primary duration-0 hover:bg-surface-active-alt hover:text-text-primary',
         /**
          * Text that turns into its own editor when activated, such as a workspace
          * title or description. It reads as the text it stands for, so the caller
@@ -148,25 +198,52 @@ const buttonVariantRecipe = cva(
          * around it owns the surface; it adds the hover fill and an inset ring,
          * and left-aligns its content, which the caller lays out.
          */
+        /**
+         * The header row that folds a tool call's details open: it reads as the
+         * line of text it labels, so it takes no fill under the pointer or while
+         * pressed, and a header with nothing to open keeps full opacity. Its ring
+         * is inset because the row sits flush against the panel it opens.
+         */
+        disclosure:
+          'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
+        /**
+         * A full-width answer row in an option list, such as the choices of an
+         * `ask_user_question`. The fill follows the pointer instantly rather than
+         * easing, so moving down a list reads as a cursor, while locking and
+         * unlocking fades slowly: only opacity transitions while enabled, and a
+         * disabled row, which cannot be hovered, eases its theme colors too.
+         * The duration rides on `enabled:`/`disabled:` so it outranks the base
+         * `duration-theme-fast` by specificity, which tailwind-merge cannot
+         * resolve between the two. Reduced motion drops both fades.
+         * `data-selected` marks the highlighted or chosen row.
+         */
+        option:
+          'w-full select-none justify-start gap-2.5 whitespace-normal text-left font-normal text-text-primary transition-opacity enabled:duration-500 disabled:duration-500 disabled:transition-all motion-reduce:transition-none motion-reduce:disabled:transition-none hover:bg-surface-hover hover:active:bg-surface-pressed data-[selected=true]:bg-surface-active data-[selected=true]:hover:bg-surface-active',
         card: 'justify-start whitespace-normal rounded-2xl text-left font-normal hover:bg-surface-hover focus-visible:ring-inset focus-visible:ring-offset-0',
       },
       size: {
-        default: 'h-theme-button px-4 py-2',
+        default: 'h-theme-button px-theme-button-x py-2',
         /** Default-height actions with less horizontal padding, such as Copy link. */
         dense: 'h-theme-button px-3 py-2',
         /** Compact text controls that share a toolbar row with a compact dropdown. */
-        compact: 'h-8 gap-1.5 px-2.5 py-2 text-xs',
+        compact: 'h-theme-button-compact gap-1.5 px-2.5 py-2 text-xs',
         /**
          * A chip, the text counterpart of `icon-xs`: the reset beside a list that
          * matched nothing, and anything else that offers a way out without asking
          * to be the thing the eye lands on.
          */
-        xs: 'h-7 rounded-md px-2.5 text-xs',
+        xs: 'h-theme-button-xs rounded-md px-2.5 text-xs',
         sm: 'h-theme-button-sm rounded-lg px-3',
-        lg: 'h-11 rounded-lg px-8',
-        icon: 'size-10',
-        'icon-sm': 'size-8 p-0',
-        'icon-xs': 'size-7',
+        lg: 'h-theme-button-lg rounded-lg px-8',
+        /** Default height with the generous pad of a dialog's confirming action. */
+        wide: 'h-theme-button px-8',
+        /** Default height with a snug pad, for a text action that sits close to its neighbors. */
+        snug: 'h-theme-button p-1',
+        /** Sized by its own text with no pad, for an action set inside a sentence. */
+        bare: 'h-auto p-0',
+        icon: 'size-theme-button',
+        'icon-sm': 'size-theme-icon-button-sm p-0',
+        'icon-xs': 'size-theme-button-xs',
         /**
          * A square icon control on the theme's control height — the size of
          * every button in the composer's action row, for a control that has to
@@ -181,12 +258,20 @@ const buttonVariantRecipe = cva(
       },
       shape: {
         default: 'rounded-lg',
+        /** The generous corner of a sign-in form's controls. */
+        soft: 'rounded-2xl',
         theme: 'rounded-theme-control',
         round: 'rounded-theme-control-round',
         unset: '',
       },
     },
     compoundVariants: [
+      /* An outlined icon button is chrome: a theme that draws no chrome outline leaves it ghost-shaped. */
+      {
+        variant: ['outline', 'subtle'],
+        size: ['icon', 'icon-sm', 'icon-xs', 'icon-theme'],
+        class: 'border-border-chrome',
+      },
       {
         variant: 'subtle',
         shape: 'unset',
@@ -194,12 +279,29 @@ const buttonVariantRecipe = cva(
       },
       /* A section heading is sized by its own text, so it opts out of the
        * default size recipe that every other caller supplies explicitly.
-       * Without this the default `h-10 px-4` is emitted after the variant and
-       * wins the merge, giving a 40px control in a 32px header row. */
+       * Without this the default size's height and padding are emitted after the variant and
+       * win the merge, giving a 40px control in a 32px header row. */
       {
         variant: 'section-header',
         size: 'default',
         class: 'h-auto px-1 py-2',
+      },
+      /* These carry their own box, which the default size's height and padding would otherwise win. */
+      { variant: 'message-action', size: 'default', class: 'size-auto p-1.5' },
+      { variant: 'inline-link', size: 'default', class: 'h-auto p-0' },
+      { variant: 'carousel-nav', size: 'default', class: 'h-auto p-2' },
+      { variant: 'toolbar', size: 'default', class: 'h-auto px-2 py-1' },
+      /* Sized by its own label, so a long option wraps instead of clipping. */
+      {
+        variant: 'option',
+        size: 'default',
+        class: 'h-auto px-2.5 py-2',
+      },
+      /* Sized and shaped by the row it heads, like `section-header`. */
+      {
+        variant: 'disclosure',
+        size: 'default',
+        class: 'h-auto rounded-none p-0',
       },
       /* Sized by the text it stands for, like `section-header`, so the default
        * size recipe must not pad it away from the content it lines up with. */

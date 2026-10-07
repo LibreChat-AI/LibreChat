@@ -173,10 +173,18 @@ function readRootLength(property: string, fallbackRem: number): number {
 
 type TableRowKind = 'dense' | 'compact' | 'titled';
 
+const SM_BREAKPOINT_QUERY = '(min-width: 640px)';
+
+function isBelowSm(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? !window.matchMedia(SM_BREAKPOINT_QUERY).matches
+    : false;
+}
+
 /**
  * A row's height in px. A dense row holds 2rem of controls between a quarter of the cell space
- * above and below; a compact row a 1.25rem text line between half the space above and below (its
- * size from `sm` up); a titled row is as tall as its title cell, a header-sized cell of twice the
+ * above and below; a compact row a 1.25rem text line between half the space above and below from
+ * `sm` up, and a 1rem line between a quarter of it below; a titled row is as tall as its title cell, a header-sized cell of twice the
  * space around a 1rem line. The dense and compact cells grow by the row rule under them; the title
  * cell's fixed height is a border box that already holds it.
  */
@@ -189,14 +197,14 @@ function readTableRowHeight(kind: TableRowKind): number {
   const stroke = readRootLength('--theme-table-row-stroke', 0);
   const heights: Record<TableRowKind, number> = {
     dense: 2 * rootSize + space / 2 + stroke,
-    compact: 1.25 * rootSize + space + stroke,
+    compact: isBelowSm() ? rootSize + space / 2 + stroke : 1.25 * rootSize + space + stroke,
     titled: rootSize + 2 * space,
   };
   return heights[kind];
 }
 
-/** The theme paints its appearance onto the root's inline style and class, so those are the
- *  changes worth re-reading on. */
+/** The theme paints its appearance onto the root's inline style and class, and the cell sizes
+ *  change at `sm`, so those are the changes worth re-reading on. */
 function subscribeToGeometry(onChange: () => void): () => void {
   if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') {
     return () => undefined;
@@ -206,11 +214,17 @@ function subscribeToGeometry(onChange: () => void): () => void {
     attributes: true,
     attributeFilter: ['style', 'class'],
   });
-  return () => observer.disconnect();
+  const breakpoint =
+    typeof window.matchMedia === 'function' ? window.matchMedia(SM_BREAKPOINT_QUERY) : null;
+  breakpoint?.addEventListener('change', onChange);
+  return () => {
+    observer.disconnect();
+    breakpoint?.removeEventListener('change', onChange);
+  };
 }
 
 /**
- * A table row's height in px (dense 40px, compact 36px, titled 48px by default), for geometry JavaScript has
+ * A table row's height in px (dense 40px, compact 36px or 24px below `sm`, titled 48px by default), for geometry JavaScript has
  * to know, such as a virtualized row. Follows a theme switch.
  */
 export function useTableRowHeight(kind: TableRowKind): number {

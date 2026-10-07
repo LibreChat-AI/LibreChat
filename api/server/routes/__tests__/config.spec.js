@@ -87,6 +87,7 @@ afterEach(() => {
   delete process.env.ALLOW_REGISTRATION;
   delete process.env.ALLOW_SOCIAL_LOGIN;
   delete process.env.ALLOW_PASSWORD_RESET;
+  delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
   delete process.env.DOMAIN_SERVER;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -179,6 +180,8 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('sharePointPickerSharePointScope');
       expect(response.body).not.toHaveProperty('conversationImportMaxFileSize');
       expect(response.body).not.toHaveProperty('insightsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
       expect(response.body).not.toHaveProperty('mcpApps');
     });
 
@@ -314,6 +317,16 @@ describe('GET /api/config', () => {
       expect(response.body.appTitle).toBe('Test App');
       expect(response.body).toHaveProperty('emailLoginEnabled');
       expect(response.body).toHaveProperty('serverDomain');
+    });
+
+    it('should expose the effective two-factor enforcement policy', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.twoFactorAuthenticationRequired).toBe(true);
     });
 
     it('should omit CloudFront cookie refresh from unauthenticated response (#12688)', async () => {
@@ -500,7 +513,7 @@ describe('GET /api/config', () => {
       expect(response.body.modelSpecs).toEqual({ list: [{ name: 'test-spec' }] });
       expect(response.body.balance).toEqual({ enabled: true, startBalance: 10000 });
       expect(response.body.webSearch).toEqual({ searchProvider: 'tavily' });
-      expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
+      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
     });
 
     it('does not advertise conversation moves unless the effective policy enables them', async () => {
@@ -525,7 +538,7 @@ describe('GET /api/config', () => {
           },
         },
       });
-      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
@@ -538,15 +551,22 @@ describe('GET /api/config', () => {
       expect(response.body.codeWorkspaceRecoveryVersion).toBe(1);
     });
 
-    it('advertises code environment decisions only after deployment-wide activation', async () => {
-      mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
-      const app = createApp(mockUser);
+    it.each([undefined, '1'])(
+      'advertises code environment decisions by default and when set to 1 (%p)',
+      async (version) => {
+        mockGetAppConfig.mockResolvedValue(baseAppConfig);
+        if (version === undefined) {
+          delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+        } else {
+          process.env.CODE_ENVIRONMENT_DECISION_VERSION = version;
+        }
+        const app = createApp(mockUser);
 
-      const response = await request(app).get('/api/config');
+        const response = await request(app).get('/api/config');
 
-      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
-    });
+        expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
+      },
+    );
 
     it.each(['0', '2', '1.0', 'true'])(
       'does not advertise unsupported code environment decision version %s',
@@ -649,6 +669,45 @@ describe('GET /api/config', () => {
       process.env.ENABLE_INSIGHTS = 'true';
       response = await request(app).get('/api/config');
       expect(response.body.insightsEnabled).toBe(true);
+    });
+
+    it.each([
+      ['unset', undefined, false],
+      ['disabled', { enabled: false }, false],
+      ['enabled', { enabled: true }, true],
+    ])(
+      'should advertise pull requests only when they are enabled (%s)',
+      async (_label, pullRequests, expected) => {
+        mockGetAppConfig.mockResolvedValue({
+          ...baseAppConfig,
+          endpoints: { agents: pullRequests ? { pullRequests } : {} },
+        });
+        const response = await request(createApp(mockUser)).get('/api/config');
+        expect(response.body.pullRequestsEnabled).toBe(expected);
+        /** The batch route's version rides with the flag, so a client never sees one without the other. */
+        if (expected) {
+          expect(response.body.pullRequestsBatchVersion).toBe(1);
+          expect(response.body.pullRequestsMaxConcurrentLookups).toBe(4);
+        } else {
+          expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
+          expect(response.body).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
+        }
+      },
+    );
+
+    it('advertises the configured lookup limit so a fallback client can keep to it', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        endpoints: { agents: { pullRequests: { enabled: true, maxConcurrentLookups: 2 } } },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.body.pullRequestsMaxConcurrentLookups).toBe(2);
+    });
+
+    it('should not advertise pull requests for a config with no endpoints', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.body.pullRequestsEnabled).toBe(false);
     });
 
     it('should advertise Langfuse fanout only when the toggle and collector URL are configured', async () => {

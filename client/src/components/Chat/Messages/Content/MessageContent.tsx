@@ -1,7 +1,7 @@
 import { memo, Suspense, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { Constants } from 'librechat-data-provider';
 import { Alert, DelayedRender } from '@librechat/client';
+import { Constants, parseThinkingContent } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
@@ -22,14 +22,6 @@ import store from '~/store';
 const ERROR_CONNECTION_TEXT = 'Error connecting to server, try refreshing the page.';
 const DELAYED_ERROR_TIMEOUT = 5500;
 const UNFINISHED_DELAY = 250;
-
-const parseThinkingContent = (text: string) => {
-  const thinkingMatch = text.match(/:::thinking([\s\S]*?):::/);
-  return {
-    thinkingContent: thinkingMatch ? thinkingMatch[1].trim() : '',
-    regularContent: thinkingMatch ? text.replace(/:::thinking[\s\S]*?:::/, '').trim() : text,
-  };
-};
 
 const LoadingFallback = () => (
   <div className="mb-[0.625rem]">
@@ -98,7 +90,7 @@ export const ErrorMessage = ({
   );
 };
 
-const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplayProps) => {
+export const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplayProps) => {
   const { isSubmitting = false, isLatestMessage = false } = useMessageContext();
   const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
   const collapseLongUserMessages = useRecoilValue(store.collapseLongUserMessages);
@@ -126,7 +118,7 @@ const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplay
       <CollapsibleText enabled={isCreatedByUser && collapseLongUserMessages}>
         <div
           className={cn(
-            'markdown prose message-content dark:prose-invert light w-full break-words',
+            'markdown prose message-content light w-full break-words',
             isSubmitting && 'submitting',
             showCursorState && text.length > 0 && 'result-streaming',
             isCreatedByUser && !enableUserMsgMarkdown && 'whitespace-pre-wrap',

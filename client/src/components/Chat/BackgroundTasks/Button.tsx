@@ -103,7 +103,7 @@ function BackgroundTasksButton({
             store={popover}
             aria-label={triggerLabel}
             data-testid="header-background-tasks-button"
-            className="border-border-light bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
+            className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
           >
             <ListTodo className="icon-md" aria-hidden="true" />
             {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (
@@ -129,7 +129,7 @@ function BackgroundTasksButton({
         finalFocus={disclosureRef}
         aria-label={title}
         className={cn(
-          'border-border-medium bg-surface-secondary text-text-primary z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col rounded-xl border shadow-lg focus:outline-none',
+          'border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel z-[200] flex max-h-[min(36rem,calc(100vh-5rem))] max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none',
           wide ? 'w-[36rem]' : 'w-80',
         )}
       >

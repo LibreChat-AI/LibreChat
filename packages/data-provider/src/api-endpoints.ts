@@ -76,6 +76,27 @@ export const messages = (params: q.MessagesListParams) => {
 
 export const messagesArtifacts = (messageId: string) => `${messagesRoot}/artifact/${messageId}`;
 
+/** One tool-call part of a stored message, in full. */
+export const messageToolCallPart = ({
+  conversationId,
+  messageId,
+  partIndex,
+  toolCallId,
+  stepId,
+  agentId,
+}: q.ToolCallPartParams) => {
+  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+  const query = [
+    ['toolCallId', toolCallId],
+    ['stepId', stepId],
+    ['agentId', agentId],
+  ]
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join('&');
+  return query === '' ? path : `${path}?${query}`;
+};
+
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
 const shareRoot = `${BASE_URL}/api/share`;
@@ -146,6 +167,11 @@ export const backgroundTasks = (conversationId: string) =>
 
 export const backgroundTasksCancel = (conversationId: string) =>
   `${backgroundTasks(conversationId)}/cancel`;
+
+export const conversationPullRequest = (conversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
+
+export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
 
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
@@ -461,6 +487,7 @@ export const getAllPromptGroups = () => `${prompts()}/all`;
 /* Scheduled chats */
 export const schedules = () => `${BASE_URL}/api/schedules`;
 export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
+export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
 export const runSchedule = (id: string) => `${schedule(id)}/run`;
 
 /* Skills */
@@ -588,6 +615,10 @@ export const feedback = (conversationId: string, messageId: string) =>
 
 // Two-Factor Endpoints
 export const enableTwoFactor = () => `${BASE_URL}/api/auth/2fa/enable`;
+export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
+export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
+export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
+export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;
@@ -643,3 +674,5 @@ export const getAllEffectivePermissions = (resourceType: ResourceType) =>
 // SharePoint Graph API Token
 export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
+
+export const resetToolApprovalGrants = (): string => `${BASE_URL}/api/agents/tools/approvals/reset`;

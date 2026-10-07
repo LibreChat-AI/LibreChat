@@ -79,7 +79,11 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
         return null;
       }
 
-      await AgentApiKey.updateOne({ _id: keyDoc._id }, { $set: { lastUsedAt: new Date() } });
+      AgentApiKey.updateOne({ _id: keyDoc._id }, { $set: { lastUsedAt: new Date() } }).catch(
+        (error: unknown) => {
+          logger.error('[validateAgentApiKey] Error updating lastUsedAt:', error);
+        },
+      );
 
       return {
         userId: keyDoc.userId,

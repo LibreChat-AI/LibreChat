@@ -29,6 +29,24 @@
     </style>
     <script>
       (function () {
+        /* Applied before first paint so the app does not flash at the wrong scale.
+         * A stored value outside the supported range is clamped rather than ignored,
+         * so the rendered scale cannot disagree with the value the setting shows. */
+        let uiScale = 1;
+        try {
+          const storedScale = JSON.parse(localStorage.getItem('uiScale'));
+          if (typeof storedScale === 'number' && Number.isFinite(storedScale)) {
+            uiScale = Math.min(1.5, Math.max(0.5, storedScale));
+          }
+        } catch (e) {
+          /* Web Storage denied or unparsable: the default scale applies. */
+        }
+        /* The stylesheet's :root already declares 1, so the default leaves the
+         * root's inline style untouched. */
+        if (uiScale !== 1) {
+          document.documentElement.style.setProperty('--ui-scale', String(uiScale));
+        }
+
         let theme = null;
         try {
           theme = localStorage.getItem('color-theme');
@@ -87,9 +105,15 @@
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
             const boot =
-              cached && cached.v === 1 && cached.modes && cached.modes[dark ? 'dark' : 'light'];
+              cached && cached.v === '__THEME_CACHE_VERSION__' && cached.modes && cached.modes[dark ? 'dark' : 'light'];
             if (boot && Array.isArray(boot.properties)) {
               let surface;
+              let canvas;
+              /* Only the conversation paints the canvas, and the redirects that land on it; other routes keep the split surface. */
+              const chatRoute =
+                path === '' ||
+                /^(?:c(?:\/|$)|prompts(?:\/new)?\/?$)/i.test(path) ||
+                (/^d(?:\/|$)/i.test(path) && !/^d\/prompts\/(?!new\/?$)[^/]/i.test(path));
               boot.properties.forEach(function (entry) {
                 if (typeof entry[0] === 'string' && entry[0].indexOf('--') === 0) {
                   root.style.setProperty(entry[0], String(entry[1]));
@@ -97,13 +121,19 @@
                    * whitespace between channels is accepted, as the theme validator does. */
                   const channels = String(entry[1]).trim().split(/\s+/);
                   if (
-                    entry[0] === '--surface-primary-alt' &&
+                    (entry[0] === '--surface-primary-alt' || entry[0] === '--surface-canvas') &&
                     channels.length === 3 &&
                     channels.every(function (channel) {
                       return /^\d{1,3}$/.test(channel);
                     })
                   ) {
-                    surface = channels.join(', ');
+                    /* The conversation paints `surface-canvas`; a cache from before that role
+                     * existed carries only the split surface it followed. */
+                    if (entry[0] === '--surface-canvas') {
+                      canvas = channels.join(', ');
+                    } else {
+                      surface = channels.join(', ');
+                    }
                   }
                 }
               });
@@ -116,8 +146,8 @@
                 },
               );
               root.setAttribute('data-theme-boot', '');
-              if (surface) {
-                backgroundColor = 'rgb(' + surface + ')';
+              if ((chatRoute && canvas) || surface) {
+                backgroundColor = 'rgb(' + ((chatRoute && canvas) || surface) + ')';
               }
             }
           } catch (e) {
@@ -206,10 +236,18 @@
             return false;
           }
         }
+        /* Every caller in this page shares one recovery: once a reload is underway, later
+         * chunk failures (Vite preload, unhandled rejection, error boundary) join it instead
+         * of tripping the loop guard and painting the error page before the reload lands. */
         window.__lcRecoverStaleAssets = function () {
+          if (window.__lcStaleAssetRecoveryPending === true) {
+            return true;
+          }
           if (!shouldRecover()) {
+            window.__lcRumPush('stale-asset-recovery-declined');
             return false;
           }
+          window.__lcStaleAssetRecoveryPending = true;
           window.__lcRumPush('stale-asset-recovery-start');
           var reload = function () {
             window.__lcRumPush('stale-asset-recovery-reload');
@@ -264,7 +302,9 @@
                 assetUrl: el.src || el.href,
                 optional: isRumBootstrap,
               });
-              if (isRumBootstrap) {
+              /* Caught optional imports must not reload the app. Required lazy imports
+               * recover at their own boundary; preload links only report diagnostics. */
+              if (isRumBootstrap || failedPreload) {
                 return;
               }
               window.__lcRecoverStaleAssets();

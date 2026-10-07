@@ -116,6 +116,7 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-field', '--theme-field-height', defaultAppearance.fieldHeight],
       ['py-theme-field-y', '--theme-field-padding-y', defaultAppearance.fieldPaddingY],
       ['font-theme-control', '--theme-control-font-weight', defaultAppearance.controlFontWeight],
+      ['px-theme-button-x', '--theme-button-padding-x', defaultAppearance.buttonPaddingX],
       ['px-theme-dialog-x', '--theme-dialog-padding-x', defaultAppearance.dialogPaddingX],
       [
         'font-theme-dialog-title-weight',
@@ -158,6 +159,34 @@ describe('LibreChat Tailwind preset', () => {
         defaultAppearance.largeSurfaceRadius,
       ],
       ['rounded-theme-tab', '--theme-tab-radius', defaultAppearance.tabRadius],
+      ['rounded-theme-popover', '--theme-popover-radius', defaultAppearance.popoverRadius],
+      ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
+      [
+        'rounded-theme-composer-action',
+        '--theme-composer-action-radius',
+        defaultAppearance.composerActionRadius,
+      ],
+      ['min-w-theme-tab', '--theme-tab-min-width', defaultAppearance.tabMinWidth],
+      ['min-w-theme-list', '--theme-list-min-width', defaultAppearance.listMinWidth],
+      ['max-h-theme-list', '--theme-list-max-height', defaultAppearance.listMaxHeight],
+      ['h-theme-button-xs', '--theme-button-height-xs', defaultAppearance.buttonHeightXs],
+      ['h-theme-button-lg', '--theme-button-height-lg', defaultAppearance.buttonHeightLg],
+      [
+        'h-theme-button-compact',
+        '--theme-button-height-compact',
+        defaultAppearance.buttonHeightCompact,
+      ],
+      ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],
+      ['size-theme-button', '--theme-button-height', defaultAppearance.buttonHeight],
+      [
+        'size-theme-icon-button-sm',
+        '--theme-icon-button-size-sm',
+        defaultAppearance.iconButtonSizeSm,
+      ],
+      ['size-theme-checkbox', '--theme-checkbox-size', defaultAppearance.checkboxSize],
+      ['size-theme-icon', '--theme-icon-size', defaultAppearance.iconSize],
+      ['size-theme-icon-md', '--theme-icon-size-md', defaultAppearance.iconSizeMd],
+      ['size-theme-icon-lg', '--theme-icon-size-lg', defaultAppearance.iconSizeLg],
       ['shadow-theme-surface', '--theme-elevation-surface', defaultAppearance.elevationSurface],
       ['duration-theme-fast', '--theme-motion-fast', defaultAppearance.motionFast],
       ['duration-theme-normal', '--theme-motion-normal', defaultAppearance.motionNormal],
@@ -183,6 +212,13 @@ describe('LibreChat Tailwind preset', () => {
     expect(css).toContain(
       `max(var(--theme-control-height, ${defaultAppearance.controlHeight}), 2.75rem)`,
     );
+
+    /** The target floor is WCAG 2.5.8's 24px, not a role a theme could lower. */
+    const target = await generate(['h-theme-target', 'min-h-theme-target', 'min-w-theme-target']);
+    ['height', 'min-height', 'min-width'].forEach((property) =>
+      expect(target).toContain(`${property}: 24px`),
+    );
+    expect(target).not.toContain('--theme-min-target-size');
 
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */
@@ -257,6 +293,9 @@ describe('LibreChat Tailwind preset', () => {
       dialogTitleSize: 'textLg',
       dialogTitleFontFamily: 'displayFontFamily',
       menuShadow: 'shadowLg',
+      popoverRadius: 'radius2xl',
+      menuPanelRadius: 'radiusXl',
+      composerActionRadius: 'roundControlRadius',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]
@@ -385,5 +424,49 @@ describe('radius, font and shadow scales', () => {
     });
     /** The surface elevation stays the alias it was, equal to `shadow-lg` by default. */
     expect(defaultAppearance.elevationSurface).toBe(defaultAppearance.shadowLg);
+  });
+});
+
+describe('Click UI spaces drawn by Tailwind steps', () => {
+  /** The steps of Click UI's `spaces` scale that no spacing role carries, each with the Tailwind
+   *  spacing step the application draws at the same size. */
+  const steps = {
+    'spaces.0': 0,
+    'spaces.1': 1,
+    'spaces.4': 4,
+    'spaces.5': 6,
+    'spaces.6': 8,
+    'spaces.7': 10,
+    'spaces.8': 16,
+  };
+
+  it('compiles each step to the Click UI space of the same size in every mode', async () => {
+    const snapshot = require('./themes/clickui.json');
+    const css = (
+      await generateApplication(Object.values(steps).map((step) => `p-${step}`))
+    ).replace(/\s+/g, ' ');
+    const base = /--spacing: ([0-9.]+)rem;/.exec(css)?.[1];
+
+    expect(base).toBe('0.25');
+    /** The size the last `.p-N` rule draws, in rem: `0px`, the base step, or a multiple of it. */
+    const drawn = (step) => {
+      const rules = [...css.matchAll(new RegExp(`\\.p-${step} \\{ padding: ([^;]+); \\}`, 'g'))];
+      const value = rules.at(-1)?.[1];
+      if (value === '0px') {
+        return 0;
+      }
+      if (value === 'var(--spacing)') {
+        return Number(base);
+      }
+      const multiple = /^calc\(var\(--spacing\) \* ([0-9.]+)\)$/.exec(value ?? '')?.[1];
+      return multiple === undefined ? undefined : Number(multiple) * Number(base);
+    };
+    Object.entries(steps).forEach(([token, step]) => {
+      ['light', 'dark'].forEach((mode) => {
+        const source = snapshot[mode][token];
+        const rem = source === '0' ? 0 : parseFloat(source);
+        expect([token, mode, drawn(step)]).toEqual([token, mode, rem]);
+      });
+    });
   });
 });

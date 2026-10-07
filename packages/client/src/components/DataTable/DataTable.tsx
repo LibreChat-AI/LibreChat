@@ -19,6 +19,7 @@ import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableCo
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
+import useRemScale from '~/hooks/useRemScale';
 import { MorphIcon } from '../MorphIcon';
 import { cn, logger } from '~/utils';
 import { Button } from '../Button';
@@ -51,7 +52,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   customActionsRenderer,
 }: DataTableProps<TData, TValue>): JSX.Element {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const remScale = useRemScale();
+  const isSmallScreen = useMediaQuery(`(max-width: ${768 * remScale}px)`);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<number | null>(null);
@@ -255,7 +257,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         );
       },
       meta: {
-        className: 'max-w-[20px] flex-1',
+        className: 'max-w-[1.25rem] flex-1',
       },
     };
 
@@ -305,7 +307,9 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     (index: number) => getRowId(data[index] as TData, index),
     [data, getRowId],
   );
-  const estimateSize = useCallback(() => rowHeight, [rowHeight]);
+  /** Rows are laid out in rem, so the virtualizer must measure in the same units. */
+  const scaledRowHeight = rowHeight * remScale;
+  const estimateSize = useCallback(() => scaledRowHeight, [scaledRowHeight]);
 
   const rowVirtualizer = useVirtualizer({
     enabled: virtualizationActive,
@@ -343,7 +347,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     tableBodyContent = (
       <SkeletonRows
         count={skeletonCount}
-        rowHeight={rowHeight}
+        rowHeight={scaledRowHeight}
         columns={tableColumns as ColumnDef<Record<string, unknown>>[]}
       />
     );
@@ -369,7 +373,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
               virtualIndex={virtualRow.index}
               selected={row.getIsSelected()}
               cellsVersion={cellsVersionRef.current}
-              style={{ height: rowHeight }}
+              style={{ height: scaledRowHeight }}
             />
           );
         })}
@@ -391,7 +395,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         virtualIndex={row.index}
         selected={row.getIsSelected()}
         cellsVersion={cellsVersionRef.current}
-        style={{ height: rowHeight }}
+        style={{ height: scaledRowHeight }}
       />
     ));
   }
@@ -419,6 +423,18 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       setOptimizedRowSelection({});
     }
   }, [debouncedTerm, filterValue, onFilterChange, setOptimizedRowSelection]);
+
+  /** TanStack Virtual memoizes its measurements on the item-size cache, not on
+   *  estimateSize, so a new estimate on its own leaves the previous scale's row
+   *  offsets in place. measure() drops that cache and forces a recompute. */
+  const measuredScaleRef = useRef(remScale);
+  useEffect(() => {
+    if (!virtualizationActive || measuredScaleRef.current === remScale) {
+      return;
+    }
+    measuredScaleRef.current = remScale;
+    rowVirtualizer.measure();
+  }, [remScale, virtualizationActive, rowVirtualizer]);
 
   // Recalculate virtual range when data or state changes
   useEffect(() => {
@@ -598,6 +614,9 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           {
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
+            /** Inherited by memoized cells and skeletons so one scaled breakpoint
+             * controls every table column without rebuilding the row model. */
+            '--data-table-desktop-display': isSmallScreen ? 'none' : 'table-cell',
           } as React.CSSProperties
         }
         role="region"
@@ -634,7 +653,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     ?.width;
                   let widthStyle: React.CSSProperties = {};
                   if (isSelectHeader) {
-                    widthStyle = { width: '32px', maxWidth: '32px', minWidth: '32px' };
+                    widthStyle = { width: '2rem', maxWidth: '2rem', minWidth: '2rem' };
                   } else if (metaWidth != null && metaWidth >= 1 && metaWidth <= 100) {
                     widthStyle = {
                       width: `${metaWidth}%`,
@@ -710,7 +729,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                         canSort && 'cursor-pointer',
                         meta?.className,
                         header.column.getIsResizing() && 'bg-surface-tertiary/60',
-                        isDesktopOnly && 'hidden md:table-cell',
+                        isDesktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
                       )}
                       style={widthStyle}
                       aria-sort={ariaSort}

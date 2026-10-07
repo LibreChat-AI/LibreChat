@@ -63,6 +63,9 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-chat': '255 255 255', // #fff (white)
   'rgb-surface-code': '247 247 248', // #f7f7f8 (gray-50)
   'rgb-surface-code-body': '255 255 255', // #fff (white)
+  'rgb-surface-code-inline': '227 227 227', // #e3e3e3 (gray-200)
+  'rgb-prose-bullet': '205 205 205', // #cdcdcd (gray-300)
+  'rgb-prose-quote-bar': '205 205 205', // #cdcdcd (gray-300)
   'rgb-surface-qr': '255 255 255', // #fff (white)
   'rgb-surface-inverted': '23 23 23', // #171717 (gray-850)
   'rgb-surface-inverted-hover': '47 47 47', // #2f2f2f (gray-700)
@@ -80,9 +83,29 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-medium-alt': '205 205 205', // #cdcdcd (gray-300)
   'rgb-border-heavy': '153 150 150', // #999696 (gray-400)
   'rgb-border-xheavy': '89 89 89', // #595959 (gray-500)
+  'rgb-drawer-edge': '247 247 248', // #f7f7f8 (gray-50, the drawer's own fill)
   'rgb-border-destructive': '220 38 38', // #dc2626 (red-600)
   'rgb-border-control': '227 227 227', // #e3e3e3 (gray-200), the stock field edge
   'rgb-border-field-focus': '33 33 33', // #212121 (gray-800, matching focus-control)
+  'rgb-focus-subtle': '153 150 150', // #999696 (gray-400, matching border-heavy)
+  'rgb-field-fill': '255 255 255', // #fff (white, matching surface-primary)
+  'rgb-field-text': '33 33 33', // #212121 (gray-800, matching text-primary)
+  'rgb-surface-tooltip': '255 255 255', // matching surface-primary
+  'rgb-text-tooltip': '33 33 33', // matching text-primary
+  'rgb-alert-error-fill': '254 242 242', // matching status-error-subtle
+  'rgb-alert-error-border': '252 165 165', // matching status-error-border
+  'rgb-surface-canvas': '247 247 248', // matching surface-primary-alt
+  'rgb-surface-user-message': '236 236 236', // matching surface-tertiary
+  'rgb-surface-card': '247 247 248', // matching surface-secondary
+  'rgb-surface-card-hover': '236 236 236', // matching surface-tertiary
+  'rgb-surface-nav-hover': '227 227 227', // matching surface-active-alt
+  'rgb-surface-nav-selected': '227 227 227', // matching surface-active-alt
+  'rgb-surface-tab-selected': '236 236 236', // matching surface-tertiary
+  'rgb-surface-menu': '255 255 255', // matching presentation
+  'rgb-surface-popover': '255 255 255', // matching surface-primary
+  'rgb-border-menu': '227 227 227', // matching border-light
+  'rgb-surface-composer': '255 255 255', // matching surface-chat
+  'rgb-surface-search': '247 247 248', // matching surface-secondary
   'rgb-surface-disabled': '236 236 236', // #ececec (gray-100)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '227 227 227', // #e3e3e3 (gray-200)

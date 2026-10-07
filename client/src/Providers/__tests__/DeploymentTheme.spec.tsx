@@ -170,7 +170,7 @@ describe('DeploymentTheme', () => {
         ...inlineTheme.modes,
         light: {
           ...inlineTheme.modes.light,
-          appearance: { controlRadius: '2px', futureSpacing: '3rem' },
+          appearance: { controlRadius: '2px', futureSpacing: '3.3125rem' },
         },
       },
     });
@@ -179,7 +179,7 @@ describe('DeploymentTheme', () => {
     await waitFor(() => expect(root().dataset.theme).toBe('acme'));
     expect(root().style.getPropertyValue('--surface-primary')).toBe('10 20 30');
     expect(root().style.getPropertyValue('--theme-control-radius')).toBe('2px');
-    expect(root().getAttribute('style')).not.toContain('3rem');
+    expect(root().getAttribute('style')).not.toContain('3.3125rem');
     expect(warn).toHaveBeenCalledWith(
       '[ThemeProvider] Unknown light appearance token ignored: futureSpacing',
     );
@@ -535,6 +535,57 @@ describe('DeploymentTheme cache', () => {
 
     await act(async () => answer(configWith(inlineTheme)));
     await waitFor(() => expect(root().dataset.theme).toBe('acme'));
+  });
+
+  it('keeps painting the signed-out answer while the signed-in one loads', async () => {
+    let signIn: () => void = () => undefined;
+    function SignIn() {
+      const setUser = useSetRecoilState(store.user);
+      signIn = () => setUser(user as TUser);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignIn />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => {
+      queryClient.removeQueries();
+      signIn();
+    });
+    expect(root().dataset.theme).toBe('clickhouse');
+  });
+
+  it('drops a signed-in answer when the identity ends before the signed-out one loads', async () => {
+    let signOut: () => void = () => undefined;
+    function SignOut() {
+      const setUser = useSetRecoilState(store.user);
+      signOut = () => setUser(undefined);
+      return null;
+    }
+    getStartupConfig.mockResolvedValueOnce(configWith('clickhouse'));
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, user as TUser)}>
+        <QueryClientProvider client={queryClient}>
+          <DeploymentTheme>
+            <SignOut />
+          </DeploymentTheme>
+        </QueryClientProvider>
+      </RecoilRoot>,
+    );
+    await waitFor(() => expect(root().dataset.theme).toBe('clickhouse'));
+
+    getStartupConfig.mockReturnValue(new Promise(() => undefined));
+    act(() => signOut());
+    await waitFor(() => expect(root().dataset.theme).toBeUndefined());
   });
 
   it('does not write a signed-out answer over the cache', async () => {

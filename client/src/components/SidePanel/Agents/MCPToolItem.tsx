@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Button } from '@librechat/client';
 import { Check, Clock, Code2, Captions, Info, Zap } from 'lucide-react';
-import type { AgentToolType } from 'librechat-data-provider';
+import type { AgentToolType, AgentToolApprovalMode } from 'librechat-data-provider';
+import ApprovalOption from './ApprovalOption';
 import OptionToggle from './OptionToggle';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -26,6 +27,11 @@ interface MCPToolItemProps {
   onToggleProgrammatic: () => void;
   onToggleBackground: () => void;
   onToggleIntent: () => void;
+  approvalConstraint?: 'ask' | 'deny';
+  approvalAgentId?: string;
+  approvalMode?: AgentToolApprovalMode;
+  approvalsEnabled?: boolean;
+  onApprovalModeChange?: (mode?: AgentToolApprovalMode) => void;
 }
 
 const iconButton = 'size-6 rounded-md';
@@ -48,6 +54,11 @@ export default function MCPToolItem({
   programmaticToolsAvailable,
   backgroundToolsEnabled,
   toolIntentsEnabled,
+  approvalMode,
+  approvalConstraint,
+  approvalAgentId,
+  approvalsEnabled,
+  onApprovalModeChange,
 }: MCPToolItemProps) {
   const localize = useLocalize();
   const [expanded, setExpanded] = useState(false);
@@ -130,6 +141,16 @@ export default function MCPToolItem({
               onToggle={onToggleIntent}
             />
           )}
+          {onApprovalModeChange && (
+            <ApprovalOption
+              constraint={approvalConstraint}
+              agentId={approvalAgentId}
+              toolName={tool.tool_id}
+              mode={approvalMode}
+              onChange={onApprovalModeChange}
+              disabled={!approvalsEnabled}
+            />
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -151,7 +172,7 @@ export default function MCPToolItem({
       <div
         id={detailsId}
         className={cn(
-          'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'resize-rows grid motion-reduce:transition-none',
           expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
         )}
       >

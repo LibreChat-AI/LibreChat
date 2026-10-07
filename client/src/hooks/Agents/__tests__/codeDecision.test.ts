@@ -1,11 +1,29 @@
 import type { TConversation } from 'librechat-data-provider';
-import { withSubmittedCodeDecision, hasSameCodeDecision } from '../codeDecision';
+import {
+  hasSameCodeDecision,
+  withSubmittedCodeDecision,
+  resolveSubmittedCodeApprovalMode,
+} from '../codeDecision';
 
 const selection = { environmentId: 'personal-vm', workspaceId: 'project-a' };
 const conversation = (overrides: Partial<TConversation> = {}): TConversation =>
   ({ conversationId: 'existing', ...overrides }) as TConversation;
 
 describe('withSubmittedCodeDecision', () => {
+  it('does not treat changed agent ownership as the same sealed route', () => {
+    const current = conversation({
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ ...selection, agentIds: ['primary'] }],
+    });
+    const submitted = {
+      codeEnvironmentMode: 'attached' as const,
+      codeWorkspaces: [{ ...selection, agentIds: ['reviewer'] }],
+    };
+    expect(hasSameCodeDecision(current, submitted)).toBe(false);
+    expect(withSubmittedCodeDecision(current, submitted)?.codeWorkspaces).toEqual(
+      submitted.codeWorkspaces,
+    );
+  });
   it('records the mode and selections the run was submitted with', () => {
     expect(
       withSubmittedCodeDecision(conversation(), {
@@ -89,4 +107,52 @@ it('treats empty and absent selections alike without treating an undecided chat 
     ),
   ).toBe(true);
   expect(hasSameCodeDecision({}, { codeEnvironmentMode: 'without_attached' })).toBe(false);
+});
+
+describe('resolveSubmittedCodeApprovalMode', () => {
+  const modes = ['ask', 'acceptEdits', 'fullAccess'] as const;
+
+  it('sends the gated ask for a turn resolved without a workspace', () => {
+    for (const requested of modes) {
+      expect(
+        resolveSubmittedCodeApprovalMode({
+          requested,
+          modes,
+          fallback: requested,
+          codeEnvironmentMode: 'without_attached',
+        }),
+      ).toBe('ask');
+    }
+  });
+
+  it('keeps the policy-offered pick for an attached turn and falls back otherwise', () => {
+    expect(
+      resolveSubmittedCodeApprovalMode({
+        requested: 'fullAccess',
+        modes,
+        fallback: 'ask',
+        codeEnvironmentMode: 'attached',
+      }),
+    ).toBe('fullAccess');
+    expect(
+      resolveSubmittedCodeApprovalMode({
+        requested: 'fullAccess',
+        modes: ['ask'],
+        fallback: 'ask',
+      }),
+    ).toBe('ask');
+    expect(resolveSubmittedCodeApprovalMode({ modes, fallback: 'acceptEdits' })).toBe(
+      'acceptEdits',
+    );
+  });
+
+  it('sends nothing when approvals are unsupported', () => {
+    expect(
+      resolveSubmittedCodeApprovalMode({
+        requested: 'fullAccess',
+        modes: [],
+        codeEnvironmentMode: 'without_attached',
+      }),
+    ).toBeUndefined();
+  });
 });

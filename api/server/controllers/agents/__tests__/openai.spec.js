@@ -412,6 +412,11 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
 }));
 
+const mockResolveLinkedInstructions = jest.fn();
+jest.mock('~/server/services/Endpoints/agents/linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockResolveLinkedInstructions),
+}));
+
 jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));

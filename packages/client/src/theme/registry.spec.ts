@@ -10,9 +10,11 @@ import {
   fromLegacyTheme,
   libreChatTheme,
   resolveTheme,
+  layerRoleSources,
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
@@ -259,6 +261,46 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-link-prose']).toBe('4 5 6');
   });
 
+  it('keeps the prose marker, quote bar and code chip on the roles they read before', () => {
+    const colors = {
+      'rgb-border-light': '1 1 1',
+      'rgb-border-medium': '2 2 2',
+      'rgb-surface-active-alt': '3 3 3',
+      'rgb-surface-hover-alt': '4 4 4',
+    };
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'prose-roles-reference',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const light = resolveTheme(theme, 'light').colors;
+    const dark = resolveTheme(theme, 'dark').colors;
+
+    expect([light['rgb-prose-bullet'], light['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
+    expect(light['rgb-surface-code-inline']).toBe('3 3 3');
+    expect([dark['rgb-prose-bullet'], dark['rgb-prose-quote-bar']]).toEqual(['2 2 2', '2 2 2']);
+    expect(dark['rgb-surface-code-inline']).toBe('4 4 4');
+  });
+
+  it('keeps the popover, selector and send corners on the scale steps a theme names', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'corner-reference',
+        modes: {
+          light: {
+            appearance: { radius2xl: '3px', radiusXl: '5px', roundControlRadius: '7px' },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.appearance.popoverRadius).toBe('3px');
+    expect(resolved.appearance.menuPanelRadius).toBe('5px');
+    expect(resolved.appearance.composerActionRadius).toBe('7px');
+  });
+
   it('derives omitted chart widget colors from the previous panel roles', () => {
     const resolved = resolveTheme(
       {
@@ -301,6 +343,65 @@ describe('theme registry', () => {
 
     expect(resolved.colors['rgb-chart-widget-surface']).toBe('40 41 42');
     expect(resolved.colors['rgb-chart-widget-stroke']).toBe('50 51 52');
+  });
+
+  it('keeps chrome and inset borders at the full border-light share unless a theme lowers them', () => {
+    const quiet: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0', insetBorderAlpha: '0.5' } } },
+    };
+    const loud: ThemeDefinition = {
+      version: 1,
+      name: 'loud-borders-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '2' } } },
+    };
+
+    expect(defaultAppearance.chromeBorderAlpha).toBe('1');
+    expect(defaultAppearance.insetBorderAlpha).toBe('1');
+    expect(validateThemeDefinition(quiet)).toEqual([]);
+    expect(resolveTheme(quiet, 'light').appearance).toMatchObject({
+      chromeBorderAlpha: '0',
+      insetBorderAlpha: '0.5',
+    });
+    expect(validateThemeDefinition(loud)).toEqual([
+      'Invalid appearance value for chromeBorderAlpha: 2',
+    ]);
+  });
+
+  it('keeps destructive actions solid unless a theme asks for the tint', () => {
+    const soft: ThemeDefinition = {
+      version: 1,
+      name: 'soft-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'soft' } } },
+    };
+    const bogus = {
+      version: 1,
+      name: 'bogus-destructive-reference',
+      modes: { light: { appearance: { destructiveStyle: 'outline' } } },
+    } as unknown as ThemeDefinition;
+
+    expect(defaultAppearance.destructiveStyle).toBe('fill');
+    expect(validateThemeDefinition(soft)).toEqual([]);
+    expect(resolveTheme(soft, 'light').appearance.destructiveStyle).toBe('soft');
+    expect(validateThemeDefinition(bogus)).toEqual([
+      'Invalid appearance value for destructiveStyle: outline',
+    ]);
+  });
+
+  it('rings subtle focus in the heavy border for a theme that predates the role', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'heavy-border-reference',
+        modes: { light: { colors: { 'rgb-border-heavy': '10 20 30' } } },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-focus-subtle']).toBe('10 20 30');
+    expect(defaultTheme['rgb-focus-subtle']).toBe(defaultTheme['rgb-border-heavy']);
+    expect(darkTheme['rgb-focus-subtle']).toBe(darkTheme['rgb-border-heavy']);
   });
 
   it('accepts table lengths in px or rem, zero included, and rejects other units', () => {
@@ -384,6 +485,29 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'dark').colors['rgb-avatar-placeholder']).toBe('30 31 32');
   });
 
+  it('keeps the drawer edge on the drawer fill in light and the heavy border in dark', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-border-xheavy': '30 31 32' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-drawer-edge',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-drawer-edge',
+        modes: {
+          dark: { colors: { 'rgb-border-xheavy': '30 31 32', 'rgb-drawer-edge': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'dark').colors['rgb-drawer-edge']).toBe('30 31 32');
+    expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
+  });
+
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
     const inherited = resolveTheme(
       {
@@ -461,6 +585,51 @@ describe('theme registry', () => {
 
     expect(explicit.colors['rgb-switch-thumb']).toBe('1 2 3');
     expect(untouched.colors['rgb-switch-thumb']).toBe(darkTheme['rgb-switch-thumb']);
+  });
+
+  it('keeps the tooltip and the error alert on the roles a theme repainted before they existed', () => {
+    const resolved = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-overlays',
+        modes: {
+          light: {
+            colors: {
+              'rgb-surface-primary': '20 21 22',
+              'rgb-text-primary': '1 2 3',
+              'rgb-status-error-subtle': '4 5 6',
+              'rgb-status-error-border': '7 8 9',
+            },
+          },
+        },
+      },
+      'light',
+    );
+
+    expect(resolved.colors['rgb-surface-tooltip']).toBe('20 21 22');
+    expect(resolved.colors['rgb-text-tooltip']).toBe('1 2 3');
+    expect(resolved.colors['rgb-alert-error-fill']).toBe('4 5 6');
+    expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
+  });
+
+  it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-tooltip',
+        modes: {
+          dark: { colors: { 'rgb-surface-primary': '20 21 22', 'rgb-surface-tooltip': '1 2 3' } },
+        },
+      },
+      'dark',
+    );
+    const untouched = resolveTheme(
+      { version: 1, name: 'no-surface', modes: { dark: { colors: {} } } },
+      'dark',
+    );
+
+    expect(explicit.colors['rgb-surface-tooltip']).toBe('1 2 3');
+    expect(untouched.colors['rgb-surface-tooltip']).toBe(darkTheme['rgb-surface-tooltip']);
   });
 
   it('keeps a self-sticking table header on the dialog surface a theme repainted', () => {
@@ -932,6 +1101,118 @@ describe('theme registry', () => {
     });
   });
 
+  describe('layering roles', () => {
+    const layerTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'layering-reference',
+      modes,
+    });
+
+    it('resolves every layer to the surface it followed before it had a name', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors } = resolveTheme(layerTheme({}), mode);
+        layerRoleSources.forEach(([role, light, dark]) => {
+          expect([role, colors[role]]).toEqual([role, colors[mode === 'dark' ? dark : light]]);
+        });
+      }
+    });
+
+    it('names the legacy surface of each layer outright', () => {
+      const legacy: Record<string, [string, string]> = {
+        'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+        'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-nav-hover': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-nav-selected': ['rgb-surface-active-alt', 'rgb-surface-active-alt'],
+        'rgb-surface-tab-selected': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
+        'rgb-surface-menu': ['rgb-presentation', 'rgb-presentation'],
+        'rgb-surface-popover': ['rgb-surface-primary', 'rgb-surface-secondary'],
+        'rgb-border-menu': ['rgb-border-light', 'rgb-border-light'],
+        'rgb-surface-composer': ['rgb-surface-chat', 'rgb-surface-chat'],
+        'rgb-surface-search': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+      };
+      expect(
+        Object.fromEntries(layerRoleSources.map(([role, light, dark]) => [role, [light, dark]])),
+      ).toEqual(legacy);
+    });
+
+    it('keeps a theme that repaints a surface on that layer, and lets it name the role', () => {
+      const { colors } = resolveTheme(
+        layerTheme({
+          light: {
+            colors: {
+              'rgb-surface-tertiary': '10 20 30',
+              'rgb-surface-primary-alt': '40 50 60',
+              'rgb-surface-card-hover': '1 2 3',
+            },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-surface-user-message']).toBe('10 20 30');
+      expect(colors['rgb-surface-tab-selected']).toBe('10 20 30');
+      expect(colors['rgb-surface-canvas']).toBe('40 50 60');
+      expect(colors['rgb-surface-card-hover']).toBe('1 2 3');
+    });
+  });
+
+  describe('field fill and ink', () => {
+    const fieldTheme = (modes: ThemeDefinition['modes']): ThemeDefinition => ({
+      version: 1,
+      name: 'field-fill-reference',
+      modes,
+    });
+
+    it('keeps fields clear and inked in the primary text by default', () => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { colors, appearance } = resolveTheme(fieldTheme({}), mode);
+        const base = mode === 'dark' ? darkTheme : defaultTheme;
+        expect(appearance.fieldFillStyle).toBe('transparent');
+        expect(colors['rgb-field-text']).toBe(base['rgb-text-primary']);
+        expect(colors['rgb-field-fill']).toBe(base['rgb-surface-primary']);
+      }
+    });
+
+    it('keeps a theme that predates the roles on its own ink and canvas', () => {
+      const { colors, appearance } = resolveTheme(
+        fieldTheme({
+          dark: { colors: { 'rgb-text-primary': '10 20 30', 'rgb-surface-primary': '40 50 60' } },
+        }),
+        'dark',
+      );
+      expect(colors['rgb-field-text']).toBe('10 20 30');
+      expect(colors['rgb-field-fill']).toBe('40 50 60');
+      expect(appearance.fieldFillStyle).toBe('transparent');
+    });
+
+    it('paints fields from their own roles when a theme names them', () => {
+      const { colors, appearance } = resolveTheme(
+        fieldTheme({
+          light: {
+            colors: { 'rgb-field-fill': '251 252 255', 'rgb-field-text': '48 46 50' },
+            appearance: { fieldFillStyle: 'fill' },
+          },
+        }),
+        'light',
+      );
+      expect(colors['rgb-field-fill']).toBe('251 252 255');
+      expect(colors['rgb-field-text']).toBe('48 46 50');
+      expect(colors['rgb-text-primary']).toBe(defaultTheme['rgb-text-primary']);
+      expect(appearance.fieldFillStyle).toBe('fill');
+    });
+
+    it('rejects a fill style it does not know and a translucent field color', () => {
+      const issues = (mode: ThemeDefinition['modes']['light']) =>
+        validateThemeDefinition(fieldTheme({ light: mode }));
+      expect(issues({ appearance: { fieldFillStyle: 'fill' } })).toEqual([]);
+      expect(issues({ appearance: { fieldFillStyle: 'glass' as 'fill' } })).toEqual([
+        'Invalid appearance value for fieldFillStyle: glass',
+      ]);
+      expect(issues({ colors: { 'rgb-field-fill': '1 2 3 / 0.5' } })).toHaveLength(1);
+    });
+  });
+
   it('rejects field and label values the shared validators refuse', () => {
     const issues = (appearance: Record<string, string>) =>
       validateThemeDefinition({
@@ -1051,6 +1332,76 @@ describe('theme registry', () => {
       'dark',
     );
     expect(appearance).toMatchObject({ focusRingWidth: '0.25rem', focusRingOffset: '-1px' });
+  });
+
+  it('keeps every control and icon size on the size it drew before it had a role', () => {
+    expect(defaultAppearance).toMatchObject({
+      iconSize: '1rem',
+      iconSizeLg: '1.5rem',
+      buttonHeightXs: '1.75rem',
+      buttonHeightLg: '2.75rem',
+      iconButtonSizeSm: '2rem',
+      fieldHeightLg: '3rem',
+      checkboxSize: '1rem',
+      listMinWidth: '8rem',
+      listMaxHeight: '24rem',
+    });
+  });
+
+  it("bounds a Select list's width and scroll height", () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'list-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
+    expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    [
+      { listMinWidth: 'auto' },
+      { listMinWidth: '-1rem' },
+      { listMaxHeight: '0' },
+      { listMaxHeight: '7rem' },
+      { listMaxHeight: '41rem' },
+      { listMaxHeight: '50vh' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
+  });
+
+  it('rejects a pointer target under 24px and a size that is not a positive length', () => {
+    const issues = (appearance: Record<string, string>) =>
+      validateThemeDefinition({
+        version: 1,
+        name: 'size-values',
+        modes: { light: { appearance } },
+      });
+
+    expect(
+      issues({
+        fieldHeightLg: '24px',
+        checkboxSize: '1.5rem',
+        iconSize: '20px',
+        iconSizeLg: '2rem',
+      }),
+    ).toEqual([]);
+    [
+      { fieldHeightLg: '20px' },
+      { fieldHeightLg: '1rem' },
+      { fieldHeightLg: '1.5em' },
+      { iconSize: '0' },
+      { iconSize: '1.5rem' },
+      { iconSize: '10px' },
+      { iconSizeLg: '0.75rem' },
+      { iconSizeLg: '40px' },
+      { checkboxSize: '8px' },
+      { checkboxSize: '2rem' },
+      { checkboxSize: 'auto' },
+      { buttonHeightLg: '-2rem' },
+      { buttonHeightXs: '1px' },
+      { iconSizeMd: '1rem' },
+      { iconButtonSizeSm: '20px' },
+      { iconButtonSizeSm: 'calc(2rem + 2px)' },
+    ].forEach((appearance) => expect(issues(appearance)).toHaveLength(1));
   });
 
   it('rejects a focus outline that would vanish or is not a fixed length', () => {
@@ -1796,4 +2147,42 @@ describe('theme registry', () => {
     expect(validateThemeDefinition(definition as ThemeDefinition)).toContain(expectedError);
     expect(() => resolveTheme(definition as ThemeDefinition, 'light')).toThrow(TypeError);
   });
+});
+
+describe('appearance families substitute through the emitted variables', () => {
+  const reference: ThemeDefinition = {
+    version: 1,
+    name: 'family-reference',
+    modes: {
+      light: {
+        appearance: {
+          radiusLg: '0.125rem',
+          fontFamily: 'Georgia, serif',
+          shadowMd: '0 1px 2px 0 rgb(0 0 0 / 0.3)',
+          controlHeight: '3rem',
+          spaceNormal: '1rem',
+        },
+      },
+    },
+  };
+  const emitted = (theme: ThemeDefinition) =>
+    new Map(describeResolvedTheme(resolveTheme(theme, 'light')).properties);
+
+  it.each([
+    ['radius', '--theme-radius-lg', '0.125rem'],
+    ['font', '--theme-font-family', 'Georgia, serif'],
+    ['shadow', '--theme-shadow-md', '0 1px 2px 0 rgb(0 0 0 / 0.3)'],
+    ['density (control height)', '--theme-control-height', '3rem'],
+    ['density (spacing)', '--theme-space-normal', '1rem'],
+  ])(
+    'changes the %s variable and only restates it for a reference theme',
+    (_family, property, value) => {
+      const base = emitted(libreChatTheme);
+      const themed = emitted(reference);
+
+      expect(base.get(property)).toBeDefined();
+      expect(themed.get(property)).toBe(value);
+      expect(themed.get(property)).not.toBe(base.get(property));
+    },
+  );
 });

@@ -72,11 +72,12 @@ const PresetsMenu: FC = () => {
             <Button
               size="icon"
               variant="outline"
+              shape="theme"
               tabIndex={0}
               id="presets-button"
               data-testid="presets-button"
               aria-label={localize('com_endpoint_examples')}
-              className="rounded-theme-control bg-presentation hover:bg-surface-hover h-9 w-9 shrink-0 duration-0"
+              className="bg-presentation h-9 w-9 shrink-0 duration-0"
             >
               <BookCopy className="icon-md" aria-hidden="true" />
             </Button>
@@ -90,7 +91,7 @@ const PresetsMenu: FC = () => {
           sideOffset={8}
           collisionPadding={16}
           aria-label={localize('com_endpoint_examples')}
-          className="rounded-theme-surface border-border-light bg-presentation text-text-primary z-50 max-h-[495px] overflow-x-hidden border shadow-lg md:min-w-[400px]"
+          className="rounded-theme-surface border-border-menu bg-surface-menu text-text-primary z-50 max-h-[min(30.9375rem,80vh)] overflow-x-hidden border shadow-lg md:min-w-[min(25rem,90vw)]"
         >
           <PresetItems
             presets={presetsQuery.data}

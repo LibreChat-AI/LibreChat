@@ -138,7 +138,7 @@ const Composer: ForwardRefExoticComponent<
       data-testid="composer-send-button"
       className={cn(CONTROL_CLASS, offeredActions.length > 0 && 'ml-auto')}
     >
-      <SendIcon size={24} />
+      <SendIcon className="size-6" />
     </button>
   );
 
@@ -198,7 +198,7 @@ const Composer: ForwardRefExoticComponent<
         /** Main chat's own field metrics (`ChatForm`'s `baseClasses`), so the
          *  two composers stand the same height and their surfaces line up
          *  when this panel is open beside the thread. */
-        className="text-text-primary placeholder:text-text-tertiary m-0 w-full resize-none bg-transparent px-3 py-[13px] focus:outline-hidden disabled:cursor-not-allowed md:py-3.5"
+        className="text-text-primary placeholder:text-text-tertiary m-0 w-full resize-none bg-transparent px-3 py-[0.8125rem] focus:outline-hidden disabled:cursor-not-allowed md:py-3.5"
       />
       {/* The row holds its height whether or not it carries secondary actions,
           so the surface cannot resize as a run changes what it offers. */}
@@ -222,7 +222,7 @@ const Composer: ForwardRefExoticComponent<
                   viewBox="0 0 24 24"
                   fill="none"
                   xmlns="http://www.w3.org/2000/svg"
-                  className="icon-lg text-surface-primary"
+                  className="icon-lg"
                   aria-hidden="true"
                 >
                   <rect x="7" y="7" width="10" height="10" rx="1.25" fill="currentColor" />

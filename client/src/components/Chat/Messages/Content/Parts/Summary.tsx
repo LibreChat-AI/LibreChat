@@ -4,7 +4,7 @@ import { ScrollText, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
-import { useMessagePartsHost } from '~/hooks/Chat/parts';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -45,7 +45,7 @@ const SummaryContent = memo(({ children, meta }: { children: React.ReactNode; me
   return (
     <div className="border-border-medium bg-surface-tertiary text-text-secondary relative rounded-3xl border p-4 pb-10">
       {meta && <span className="text-text-secondary mb-1 block text-xs">{meta}</span>}
-      <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>{children}</p>
+      <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{children}</p>
     </div>
   );
 });
@@ -77,16 +77,16 @@ const SummaryButton = memo(
     return (
       <div className="group/summary flex w-full items-center justify-between gap-2">
         <Button
-          variant="ghost"
+          variant="disclosure"
           onClick={onClick}
           aria-expanded={isExpanded}
           aria-controls={contentId}
           className={cn(
-            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 leading-[18px] font-normal hover:bg-transparent',
+            'group/button flex-1 gap-0 rounded-lg leading-[18px] font-normal',
             fontSize,
           )}
         >
-          <span className="relative mr-1.5 inline-flex h-[18px] w-[18px] items-center justify-center">
+          <span className="relative mr-1.5 inline-flex h-[1.125rem] w-[1.125rem] items-center justify-center">
             <ScrollText
               className="icon-sm text-text-secondary absolute opacity-100 transition-opacity group-hover/button:opacity-0"
               aria-hidden="true"
@@ -103,25 +103,22 @@ const SummaryButton = memo(
         </Button>
         {content && showCopyButton && (
           <Button
-            variant="ghost"
-            size="icon"
+            variant="message-action"
             onClick={onCopy}
             aria-label={
               isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
             }
             className={cn(
-              'text-text-secondary-alt size-auto rounded-lg p-1.5',
               isExpanded
                 ? 'opacity-0 group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100'
                 : 'opacity-0',
-              'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-text-primary focus-visible:opacity-100 focus-visible:ring-2',
+              'focus-visible:opacity-100',
             )}
           >
             <span className="sr-only">
               {isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')}
             </span>
-            <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+            <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
           </Button>
         )}
       </div>
@@ -171,10 +168,10 @@ const FloatingSummaryBar = memo(
               className={cn(
                 'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                 'hover:bg-surface-hover hover:text-text-primary',
-                'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+                'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
               )}
             >
-              <ChevronUp className="h-[18px] w-[18px]" aria-hidden="true" />
+              <ChevronUp className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />
             </button>
           }
         />
@@ -190,10 +187,10 @@ const FloatingSummaryBar = memo(
                 className={cn(
                   'bg-surface-secondary text-text-secondary-alt flex items-center justify-center rounded-lg p-1.5 shadow-xs',
                   'hover:bg-surface-hover hover:text-text-primary',
-                  'focus-visible:ring-border-heavy focus-visible:ring-2 focus-visible:outline-hidden',
+                  'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
                 )}
               >
-                <MorphIcon icon={isCopied ? Check : Copy} size={18} />
+                <MorphIcon icon={isCopied ? Check : Copy} className="h-[1.125rem] w-[1.125rem]" />
               </button>
             }
           />

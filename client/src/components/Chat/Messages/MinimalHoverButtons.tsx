@@ -3,7 +3,12 @@ import { Copy, Check } from 'lucide';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { TMessage, SearchResultData } from 'librechat-data-provider';
 import type { MarkdownVariant } from '~/utils/richtext';
-import { useLocalize, useCopyMessageToClipboard, hasCopyableText } from '~/hooks';
+import {
+  useLocalize,
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from '~/hooks';
 import { revealOnRowHoverClasses } from './styles';
 import { cn } from '~/utils';
 
@@ -17,17 +22,15 @@ type THoverButtons = {
 export default function MinimalHoverButtons({ message, searchResults, variant }: THoverButtons) {
   const localize = useLocalize();
   const [isCopied, setIsCopied] = useState(false);
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
   const copyToClipboard = useCopyMessageToClipboard({
-    text: message.text,
-    content: message.content,
+    ...clipboardSource,
     searchResults,
-    isCreatedByUser: message.isCreatedByUser,
-    error: message.error,
-    variant,
+    variant: clipboardSource.variant ?? variant,
   });
   const canCopy = useMemo(
-    () => hasCopyableText({ text: message.text, content: message.content, searchResults }),
-    [message.text, message.content, searchResults],
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
   );
 
   return (
@@ -38,23 +41,17 @@ export default function MinimalHoverButtons({ message, searchResults, variant }:
         }
         render={
           <Button
-            variant="ghost"
-            size="icon"
+            variant="message-action"
             aria-label={
               isCopied
                 ? localize('com_ui_copied_to_clipboard')
                 : localize('com_ui_copy_to_clipboard')
             }
-            className={cn(
-              'text-text-secondary-alt ml-0 flex size-auto items-center gap-1.5 rounded-lg p-1.5 text-xs',
-              'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-text-primary focus-visible:ring-2',
-              revealOnRowHoverClasses,
-            )}
+            className={cn('ml-0 flex items-center gap-1.5 text-xs', revealOnRowHoverClasses)}
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >
-            <MorphIcon icon={isCopied ? Check : Copy} size={19} />
+            <MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />
           </Button>
         }
       />

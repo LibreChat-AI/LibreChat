@@ -1,13 +1,14 @@
-import { memo, lazy, Suspense, useEffect, useRef } from 'react';
+import { memo, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
 import NewChat from './NewChat';
 
-const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
+const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
 
 /**
  * At full width there is nothing beside the drawer left to tap, so this close
@@ -22,6 +23,7 @@ function Header({
   expanded,
   onClose,
   onNewChat,
+  switchToHistory,
   onLeaveInsights,
   routeActiveId,
 }: {
@@ -29,6 +31,7 @@ function Header({
   expanded: boolean;
   onClose: () => void;
   onNewChat: (afterSlide?: () => void) => void;
+  switchToHistory: boolean;
   onLeaveInsights?: () => void;
   routeActiveId?: string;
 }) {
@@ -77,7 +80,7 @@ function Header({
         onNavigate={onClose}
         routeActiveId={routeActiveId}
       />
-      <NewChat onNewChat={onNewChat} />
+      <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
       <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
         <AccountSettings collapsed />
       </Suspense>

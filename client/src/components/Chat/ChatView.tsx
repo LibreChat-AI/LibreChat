@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
@@ -30,7 +30,7 @@ import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { composerLiftFamily } from './Input/Composer/state';
-import { showComposerTipsAtom } from '~/store/composerTips';
+import { OwnerTextProvider } from './Messages/PrivateText';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import Footer, { useConfiguredFooter } from './Footer';
 import { AskAnswerHostProvider } from './ask/state';
@@ -38,6 +38,7 @@ import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
+import Lia from '~/components/Lia';
 import Landing from './Landing';
 import Header from './Header';
 import { cn } from '~/utils';
@@ -53,13 +54,21 @@ function LoadingSpinner() {
   );
 }
 
-function ChatView({ index = 0, project }: { index?: number; project?: TChatProject }) {
+function ChatView({
+  index = 0,
+  project,
+  routePending = false,
+}: {
+  index?: number;
+  project?: TChatProject;
+  /** The route is loading another conversation, or failed to. */
+  routePending?: boolean;
+}) {
   const { conversationId } = useParams();
   const localize = useLocalize();
   const rootSubmission = useRecoilValue(store.submissionByIndex(index));
   const isSubmitting = useRecoilValue(store.isSubmittingFamily(index));
   const saveDrafts = useRecoilValue(store.saveDrafts);
-  const showComposerTips = useAtomValue(showComposerTipsAtom);
   const enterToSend = useRecoilValue(store.enterToSend);
   const autoSendText = useRecoilValue(store.autoSendText);
   const speechSettingsInitialized = useRecoilValue(store.speechSettingsInitialized);
@@ -79,6 +88,9 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
 
   /** Room an open composer popover needs below the composer; see the atom. */
   const composerLift = useAtomValue(composerLiftFamily(index));
+
+  /** Lia, the welcome screen mascot, stands on the composer band's top edge. */
+  const composerBandRef = useRef<HTMLDivElement>(null);
 
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
@@ -181,7 +193,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
             <ChatContext.Provider value={chatHelpers}>
               <AddedChatContext.Provider value={addedChatHelpers}>
                 <ApprovalProvider pendingAction={pendingAction}>
-                  <Presentation>
+                  <Presentation routePending={routePending}>
                     <TraceSurface conversationId={conversationId}>
                       <h1 className="sr-only">{pageHeading}</h1>
                       {/* Marks the header's controls as this pane's, so a pane-scoped
@@ -205,6 +217,7 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                           }
                           className={cn(
                             'flex flex-col',
+                            isLandingPage && 'relative',
                             isLandingPage
                               ? /* The gutter is reserved once per state, wherever the
                                centring happens. A conversation centres the composer
@@ -219,7 +232,13 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                             !isLandingPage && chatProjectId && 'pt-9',
                           )}
                         >
-                          {content}
+                          <OwnerTextProvider
+                            messages={messages}
+                            conversationId={conversationId}
+                            isSubmitting={chatHelpers.isSubmitting}
+                          >
+                            {content}
+                          </OwnerTextProvider>
                           {/* Named + opaque so a view transition (the ask_user_question
                         popover ⇄ chat-card morph) paints the whole composer band
                         over the travelling card instead of letting it show
@@ -228,8 +247,9 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                         is a stacking context; keep it above positioned tool glyphs
                         so they cannot paint through the approval preview. */}
                           <div
+                            ref={composerBandRef}
                             className={cn(
-                              'bg-surface-primary-alt relative z-10 w-full [view-transition-name:chat-form]',
+                              'bg-surface-canvas relative z-10 w-full [view-transition-name:chat-form]',
                               !isLandingPage && 'scrollbar-gutter-spacer',
                               isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
                             )}
@@ -245,10 +265,10 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                             ) : (
                               <ChatForm
                                 index={index}
+                                routePending={routePending}
                                 placeholder={chatFormPlaceholder}
                                 project={isProjectLandingPage ? project : undefined}
                                 isLandingPage={isLandingPage}
-                                showComposerTips={showComposerTips}
                                 enterToSend={enterToSend}
                                 autoSendText={autoSendText}
                                 speechSettingsInitialized={speechSettingsInitialized}
@@ -261,6 +281,11 @@ function ChatView({ index = 0, project }: { index?: number; project?: TChatProje
                               with the conversation that always showed it. */}
                             {!isLandingPage && configuredFooter && <Footer configuredOnly />}
                           </div>
+                          <Lia
+                            bandRef={composerBandRef}
+                            landing={isLandingPage}
+                            submission={rootSubmission}
+                          />
                         </div>
                         {isLandingPage && <Footer />}
                       </>

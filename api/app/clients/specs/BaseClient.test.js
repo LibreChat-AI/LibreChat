@@ -2,6 +2,11 @@ const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-prov
 const BaseClientClass = require('../BaseClient');
 const {
   ContentFilterError,
+  createPrivateTextIngress,
+  createModelBoundChatModelCallback,
+  getPrivateTextAdmission,
+  getPrivateTextInspectionTokens,
+  assertModelBoundContent,
   resolveTurnDeliveryRouting,
   buildSteerMedia,
   Tokenizer,
@@ -1597,7 +1602,7 @@ describe('BaseClient', () => {
 
       const chatMessages = await TestClient.loadHistory(conversationId, '1');
 
-      expect(getMessages).toHaveBeenCalledWith({ conversationId, user });
+      expect(getMessages).toHaveBeenCalledWith({ conversationId, user }, '+privateTextTokens');
       expect(chatMessages).toHaveLength(1);
       expect(chatMessages[0].text).toBe('Hello');
     });
@@ -1732,6 +1737,195 @@ describe('BaseClient', () => {
           responseMessageId: response.messageId,
         }),
       );
+    });
+
+    function protectedClient(history = [], legacyPii) {
+      const filters = {
+        messages: {
+          pii: {
+            action: 'redact',
+            fields: ['text'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: 'email', label: 'Email', regex: 'alice@example\\.com', category: 'email' },
+            ],
+          },
+        },
+      };
+      const req = {
+        user: { id: 'owner' },
+        path: '/',
+        body: { text: 'alice@example.com', clientRequestId: 'created-privacy' },
+        config: { filters, messageFilter: { pii: legacyPii } },
+      };
+      const next = jest.fn();
+      createPrivateTextIngress({
+        getFilters: () => filters,
+        getLegacyPii: () => legacyPii,
+        getKey: () => 'ab'.repeat(32),
+      })(req, { status: jest.fn().mockReturnThis(), json: jest.fn() }, next);
+      expect(next).toHaveBeenCalledTimes(1);
+      const client = initializeFakeClient(apiKey, { ...options, req }, history);
+      client.shouldDeferUserMessagePersistence = () => true;
+      client.assertStoredModelBoundContent = () =>
+        assertModelBoundContent({
+          legacyPii,
+          storedMessages: client.modelBoundStoredMessages,
+        });
+      client.assertBuiltModelBoundContent = () => {};
+      client.saveMessageToDatabase = jest.fn(async (message) => ({ message }));
+      const provider = jest.fn();
+      client.sendCompletion = jest.fn(async (payload) => {
+        const callback = createModelBoundChatModelCallback(
+          {
+            filters,
+            legacyPii,
+            storedMessages: client.modelBoundStoredMessages,
+            privateTextTokens: getPrivateTextInspectionTokens(client.modelBoundStoredMessages),
+          },
+          {
+            onContentRejected: client.modelBoundUserMessagePersistence?.cancel,
+            onContentAllowed: getPrivateTextAdmission(
+              req,
+              client.modelBoundUserMessagePersistence?.start,
+              client.privateTextStart,
+            ),
+          },
+        );
+        await callback.handleChatModelStart(undefined, [payload]);
+        provider();
+        return { completion: 'Safe reply' };
+      });
+      return { client, req, provider };
+    }
+
+    test('protected startup remains deferred until exact admission and the atomic write finishes', async () => {
+      const { client, req, provider } = protectedClient();
+      const committed = deferred();
+      let written;
+      client.saveMessageToDatabase.mockImplementationOnce((message) => {
+        written = message;
+        return committed.promise;
+      });
+      const onStart = jest.fn();
+      const sent = client.sendMessage(req.body.text, { onStart });
+      // Wait for the admission callback to begin the real deferred write.
+      for (let i = 0; i < 30 && !written; i++) {
+        await Promise.resolve();
+      }
+      expect(written).toBeDefined();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      committed.resolve({ message: written });
+      await sent;
+      expect(onStart).toHaveBeenCalledTimes(1);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
+        provider.mock.invocationCallOrder[0],
+      );
+    });
+
+    test('protected write failure prevents created and the provider call', async () => {
+      const { client, req, provider } = protectedClient();
+      client.saveMessageToDatabase.mockResolvedValueOnce({});
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test.each([false, true])(
+      'cancels protected Stop before native admission, pre-aborted: %s',
+      async (preAborted) => {
+        const { client, req, provider } = protectedClient();
+        const controller = new AbortController();
+        if (preAborted) {
+          controller.abort();
+        }
+        const ready = deferred();
+        const completion = deferred();
+        const onStart = jest.fn();
+        client.sendCompletion = jest.fn(async () => {
+          ready.resolve();
+          return completion.promise;
+        });
+        const sent = client.sendMessage(req.body.text, { abortController: controller, onStart });
+        const observed = sent.catch((error) => error);
+        await ready.promise;
+        if (!preAborted) {
+          controller.abort();
+        }
+        completion.resolve({ completion: 'Stopped before model' });
+        expect(await observed).toEqual(expect.objectContaining({ code: 'content_filter_block' }));
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
+    test.each(['user-id', 'user-id__1', 'user-id__invalid'])(
+      'rejects a protected persistence-skipping override %s before model invocation',
+      async (overrideUserMessageId) => {
+        const { client, req, provider } = protectedClient();
+        req.body.overrideUserMessageId = overrideUserMessageId;
+        const onStart = jest.fn();
+        await expect(client.sendMessage(req.body.text, { onStart })).rejects.toMatchObject({
+          code: 'content_filter_block',
+        });
+        expect(client.skipSaveUserMessage).toBe(true);
+        expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+        expect(onStart).not.toHaveBeenCalled();
+        expect(provider).not.toHaveBeenCalled();
+      },
+    );
+
+    test('retains protected admission for the normal browser override with writer index zero', async () => {
+      const { client, req, provider } = protectedClient();
+      req.body.overrideUserMessageId = 'normal-user-id__0';
+      const onStart = jest.fn();
+      await expect(client.sendMessage(req.body.text, { onStart })).resolves.toBeDefined();
+      expect(client.skipSaveUserMessage).toBe(false);
+      expect(onStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: 'normal-user-id',
+          privacyRevision: expect.any(String),
+        }),
+        expect.any(String),
+        true,
+      );
+      expect(provider).toHaveBeenCalledTimes(1);
+    });
+
+    test('a legacy history rejection leaves a transformed turn and conversation unsaved', async () => {
+      const history = [{ messageId: 'prior', text: 'LEGACY-SECRET', isCreatedByUser: true }];
+      const { client, req, provider } = protectedClient(history, {
+        starterPatterns: [],
+        customPatterns: [{ id: 'legacy', label: 'Legacy', regex: 'LEGACY-SECRET' }],
+      });
+      const onStart = jest.fn();
+      await expect(
+        client.sendMessage(req.body.text, {
+          conversationId: 'conversation',
+          parentMessageId: 'prior',
+          onStart,
+        }),
+      ).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+    });
+
+    test('an exact model-input rejection cancels the protected deferred write before created', async () => {
+      const { client, req, provider } = protectedClient();
+      const onStart = jest.fn();
+      client.buildMessages.mockResolvedValueOnce({
+        prompt: [{ role: 'user', content: 'alice@example.com' }],
+      });
+      await expect(client.sendMessage(req.body.text, { onStart })).rejects.toThrow();
+      expect(client.saveMessageToDatabase).not.toHaveBeenCalled();
+      expect(onStart).not.toHaveBeenCalled();
+      expect(provider).not.toHaveBeenCalled();
+      expect(client.modelBoundUserMessagePersistence.isPending()).toBe(false);
     });
 
     test('onStart is called with the correct arguments', async () => {
@@ -3745,12 +3939,13 @@ describe('BaseClient', () => {
     /* The stored path is an upload-time inference, so delivery resolves it again by the
      * routing settled for the agent running the turn. A test asserting a route has to
      * configure that route rather than rely on the stored value alone. */
-    const routeTo = (path, ...mimeTypes) => {
+    const routeTo = (path, mimeTypes, endpointConfig = {}) => {
       TestClient.options.req = {
         config: {
           fileConfig: {
             endpoints: {
               [EModelEndpoint.openAI]: {
+                ...endpointConfig,
                 defaultLLMDeliveryPath: {
                   overrides: Object.fromEntries(mimeTypes.map((mime) => [mime, path])),
                 },
@@ -3766,7 +3961,7 @@ describe('BaseClient', () => {
     };
 
     test('keeps a none image in returned files without adding image URLs', async () => {
-      routeTo('none', 'image/*');
+      routeTo('none', ['image/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -3787,7 +3982,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text after the current provider resolves none', () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const file = {
         file_id: 'none-pdf',
         filename: 'report.pdf',
@@ -3800,10 +3995,7 @@ describe('BaseClient', () => {
     });
 
     const routeCsvToTools = ({ textFallbackWithoutTools = true } = {}) => {
-      routeTo('none', 'text/csv');
-      TestClient.options.req.config.fileConfig.endpoints[
-        EModelEndpoint.openAI
-      ].textFallbackWithoutTools = textFallbackWithoutTools;
+      routeTo('none', ['text/csv'], { textFallbackWithoutTools });
     };
 
     test('injects the text stored for a tool-routed file when this turn runs no reader', () => {
@@ -4002,7 +4194,7 @@ describe('BaseClient', () => {
     });
 
     test('does not inject extracted text when the current provider resolves native delivery', () => {
-      routeTo('provider', 'application/pdf');
+      routeTo('provider', ['application/pdf']);
       const file = {
         file_id: 'provider-pdf',
         filename: 'report.pdf',
@@ -4022,7 +4214,7 @@ describe('BaseClient', () => {
        * extracted text, and extraction at delivery is Phase 2 work. So the model receives
        * nothing here either way, which the assertions state rather than imply, and the
        * change is limited to not downloading and encoding a file to no purpose. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4046,7 +4238,7 @@ describe('BaseClient', () => {
     test('re-resolves a converted image against the type it was routed on', async () => {
       /* Conversion rewrote the stored type, so resolving against that asks about a format
        * the administrator never configured a route for and delivers what they excluded. */
-      routeTo('none', 'image/png');
+      routeTo('none', ['image/png']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4179,7 +4371,7 @@ describe('BaseClient', () => {
     test('keeps an explicitly named destination even under a different provider', async () => {
       /* The user named this one, through the chooser or by requesting a tool resource,
        * and that decision is not this endpoint's to re-derive. */
-      routeTo('text', 'audio/*');
+      routeTo('text', ['audio/*']);
       const message = {};
       const file = {
         user: 'user1',
@@ -4199,7 +4391,7 @@ describe('BaseClient', () => {
     });
 
     test('keeps a none PDF in returned files without adding documents', async () => {
-      routeTo('none', 'application/pdf');
+      routeTo('none', ['application/pdf']);
       const message = {};
       const file = {
         user: 'user1',

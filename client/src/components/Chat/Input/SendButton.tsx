@@ -24,13 +24,13 @@ const SubmitButton = React.memo(
             label={localize('com_nav_send_message')}
             variant="submit"
             size="theme"
-            shape="theme"
+            shape="composer"
             disabled={props.disabled}
             data-testid="send-button"
             type="submit"
           >
             <span className="" data-state="closed">
-              <SendIcon size={24} />
+              <SendIcon className="size-6" />
             </span>
           </IconButton>
         }

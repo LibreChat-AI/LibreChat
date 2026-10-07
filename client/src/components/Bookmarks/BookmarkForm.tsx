@@ -84,7 +84,7 @@ const BookmarkForm = ({
       <div className="space-y-4">
         {/* Tag name input */}
         <div className="space-y-2">
-          <Label htmlFor="bookmark-tag" className="text-text-primary text-sm font-medium">
+          <Label htmlFor="bookmark-tag" className="text-sm font-medium">
             {localize('com_ui_bookmarks_title')}
           </Label>
           <Input
@@ -120,7 +120,7 @@ const BookmarkForm = ({
           <Label
             id="bookmark-description-label"
             htmlFor="bookmark-description"
-            className="text-text-primary text-sm font-medium"
+            className="text-sm font-medium"
           >
             {localize('com_ui_bookmarks_description')}
           </Label>
@@ -139,7 +139,7 @@ const BookmarkForm = ({
             disabled={false}
             placeholder={localize('com_ui_enter_description')}
             className={cn(
-              'border-border-light min-h-[100px] w-full resize-none rounded-lg border',
+              'border-border-light min-h-[6.25rem] w-full resize-none rounded-lg border',
               'text-text-primary bg-transparent px-3 py-2 text-sm',
               'placeholder:text-text-tertiary',
               'focus-visible:ring-border-heavy focus-visible:ring-1',
@@ -162,7 +162,7 @@ const BookmarkForm = ({
                   {...field}
                   checked={field.value}
                   onCheckedChange={field.onChange}
-                  className="size-4 cursor-pointer"
+                  className="cursor-pointer"
                   value={field.value?.toString()}
                   aria-label={localize('com_ui_bookmarks_add_to_conversation')}
                 />

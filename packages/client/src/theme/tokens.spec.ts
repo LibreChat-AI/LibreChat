@@ -3,6 +3,7 @@ import path from 'path';
 import fsp from 'fs/promises';
 import { compile } from 'tailwindcss';
 import { deserialize, serialize } from 'v8';
+import { themeColorTokens, themeDerivedColorTokens } from 'librechat-data-provider';
 import { defaultTheme } from './themes/default';
 
 /** Tailwind's compiler clones its theme with `structuredClone`, which jsdom does not provide.
@@ -20,13 +21,6 @@ const declarations = new Map(
   ).filter(([name]) => !name.endsWith('*')),
 );
 const declared = new Set(declarations.keys());
-
-/**
- * Theme properties consumed by stylesheets rather than by utilities: the shimmer animation and
- * the code-syntax palette are set in CSS, so they carry no `bg-`/`text-` class and need no
- * Tailwind color token.
- */
-const cssOnlyFamilies = /^(shimmer|syntax)-/;
 
 async function generate(
   candidates: string[],
@@ -64,21 +58,35 @@ async function generate(
 }
 
 describe('theme color tokens', () => {
-  it('exposes every theme color the registry can set', () => {
-    const missing = Object.keys(defaultTheme)
-      .map((property) => property.replace(/^rgb-/, ''))
-      .filter((token) => !cssOnlyFamilies.test(token) && !declared.has(token));
+  it('declares exactly the colors the registry names, in either direction', () => {
+    const registry = new Set<string>([
+      ...themeColorTokens.map((property) => property.replace(/^rgb-/, '')),
+      ...themeDerivedColorTokens,
+    ]);
 
-    expect(missing).toEqual([]);
+    expect([...registry].filter((token) => !declared.has(token))).toEqual([]);
+    expect([...declared].filter((token) => !registry.has(token))).toEqual([]);
   });
 
   it('lets a theme set every color token the stylesheet declares', () => {
     const registered = new Set(Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')));
     const unowned = [...declarations]
+      .filter(([token]) => !(themeDerivedColorTokens as readonly string[]).includes(token))
       .filter(([, reads]) => !reads.some((property) => registered.has(property)))
       .map(([token]) => token);
 
     expect(unowned).toEqual([]);
+  });
+
+  it('reads each derived color from roles a theme can set', () => {
+    const registered = new Set<string>(
+      Object.keys(defaultTheme).map((key) => key.replace(/^rgb-/, '')),
+    );
+    const orphaned = themeDerivedColorTokens.filter(
+      (token) => !declarations.get(token)?.some((property) => registered.has(property)),
+    );
+
+    expect(orphaned).toEqual([]);
   });
 
   it('resolves a token to the custom property the theme rewrites at runtime', async () => {
@@ -104,6 +112,41 @@ describe('theme color tokens', () => {
 
     expect(css).toContain('rgb(var(--border-light) / var(--border-light-alpha, 1))');
     expect(css).toContain('color-mix(in oklab, rgb(var(--surface-primary)) 50%');
+  });
+
+  it('draws the chrome and inset borders as border-light at the theme share', async () => {
+    const css = await generate(['border-border-chrome', 'border-border-inset']);
+
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+    expect(css).toContain(
+      'rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
+  });
+
+  it('draws the chrome heavy border as border-heavy at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-heavy']);
+
+    expect(css).toContain(
+      'rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
+  it('draws the chrome medium border as border-medium at the chrome share', async () => {
+    const css = await generate(['border-border-chrome-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)))',
+    );
+  });
+
+  it('draws the inset medium border as border-medium at the inset share', async () => {
+    const css = await generate(['border-border-inset-medium']);
+
+    expect(css).toContain(
+      'rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)))',
+    );
   });
 
   it.each(['./theme.css', '../../../../client/src/style.css'])(

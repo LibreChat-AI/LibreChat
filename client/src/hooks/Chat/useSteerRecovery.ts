@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import type { Snapshot } from 'recoil';
-import type { PendingSteer } from '~/store/families';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   getSteerErrorCode,
   isDefiniteSteerRejection,
