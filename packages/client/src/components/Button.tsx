@@ -115,14 +115,14 @@ const buttonVariantRecipe = cva(
           'text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /** An icon action under a message: a small padded square that rests in the alt secondary ink. */
         'message-action':
-          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:text-text-primary',
+          'size-auto rounded-lg p-1.5 text-text-secondary-alt hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary',
         /** A text action that reads as a link in a list or footer: no fill at rest or under the pointer,
          *  and a ring flush against the control. */
         'inline-link':
           'h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:ring-offset-0',
         /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
         'carousel-nav':
-          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
+          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:active:bg-surface-pressed hover:shadow-xl',
         /** A compact text action in a toolbar, quiet until hovered. */
         toolbar:
           'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',

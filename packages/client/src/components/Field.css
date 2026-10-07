@@ -7,17 +7,18 @@
    keeps that edge on pointer focus too, so it puts the edge back over the
    reset. The style is read from the `--theme-field-focus-style` property of the
    nearest themed root, so a field under a ring root nested in a border root is
-   reset again, and a browser without style queries keeps the default reset. */
-html[data-input-modality='pointer'] .lc-field:focus,
-html[data-input-modality='pointer'] .lc-field:focus-visible {
+   reset again, and a browser without style queries keeps the default reset. A field marked
+   `aria-invalid` keeps its destructive edge through both resets. */
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus,
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-visible {
   border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
   box-shadow: none;
   outline: none;
 }
 
 @container style(--theme-field-focus-style: border) {
-  html[data-input-modality='pointer'] .lc-field:is(:root *):focus,
-  html[data-input-modality='pointer'] .lc-field:is(:root *):focus-visible {
+  html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):is(:root *):focus,
+  html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):is(:root *):focus-visible {
     border-color: rgb(var(--border-field-focus, var(--focus-control)));
   }
 }

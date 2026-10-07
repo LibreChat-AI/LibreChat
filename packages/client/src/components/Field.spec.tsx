@@ -17,7 +17,7 @@ const FRAMED = [
   'text-text-primary',
   'placeholder:text-text-secondary',
   'focus-visible:ring-2',
-  'focus-visible:ring-ring-primary',
+  'focus-visible:ring-focus-control',
 ];
 
 describe('field variants', () => {

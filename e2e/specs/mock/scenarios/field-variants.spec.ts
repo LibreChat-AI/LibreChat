@@ -180,7 +180,7 @@ for (const theme of THEMES) {
       expect(auto).toEqual({ 'border-top-width': '0px', 'border-top-left-radius': '0px' });
     });
 
-    test(`a framed editor draws the medium border, the rounded box and the primary ring @scenario:field-framed-matches-editor-box`, async ({
+    test(`a framed editor draws the medium border, the rounded box and the focus-control ring @scenario:field-framed-matches-editor-box`, async ({
       page,
     }) => {
       const { TextareaAutosize } = await primitives();
@@ -196,7 +196,7 @@ for (const theme of THEMES) {
               'aria-label': 'legacy',
               id: 'legacy',
               className:
-                'rounded-xl border border-border-medium bg-transparent focus-visible:ring-2 focus-visible:ring-ring-primary text-text-primary placeholder:text-text-secondary',
+                'rounded-xl border border-border-medium bg-transparent focus-visible:ring-2 focus-visible:ring-focus-control text-text-primary placeholder:text-text-secondary',
             }),
           ),
         ),
@@ -240,6 +240,16 @@ for (const theme of THEMES) {
           destructive,
         );
       }
+
+      await page.evaluate(() =>
+        document.documentElement.setAttribute('data-input-modality', 'pointer'),
+      );
+      for (const id of ['bad', 'tbad']) {
+        const focused = await styleOf(page, `#${id}`, ['border-top-color'], true);
+        expect(focused['border-top-color']).toBe(destructive);
+      }
+      const okFocused = await styleOf(page, '#ok', ['border-top-color'], true);
+      expect(okFocused['border-top-color']).not.toBe(destructive);
     });
 
     test(`a nav button rests secondary, hovers on the nav fill and marks the current item with aria-pressed @scenario:button-nav-roles`, async ({

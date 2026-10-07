@@ -49,6 +49,12 @@ describe('Button', () => {
     expect(nav).toContain('size-theme-button');
   });
 
+  it('presses the message action and carousel arrows to the pressed fill like ghost', () => {
+    for (const variant of ['message-action', 'carousel-nav'] as const) {
+      expect(cn(buttonVariants({ variant }))).toContain('hover:active:bg-surface-pressed');
+    }
+  });
+
   it('offers the message, link, carousel and toolbar roles as variants', () => {
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('text-text-secondary-alt');
     expect(cn(buttonVariants({ variant: 'message-action' }))).toContain('p-1.5');

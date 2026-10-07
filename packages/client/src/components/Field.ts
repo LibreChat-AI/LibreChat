@@ -27,7 +27,3 @@ export const fieldInvalid: string = 'aria-invalid:border-border-destructive';
 
 /** A field set into a list or popover edge to edge, filling its row and leaving the frame to the host. */
 export const fieldEmbedded: string = 'bg-surface-tertiary-alt border-0 p-2 rounded-none text-sm';
-
-/** A caller-owned field inside a rounded frame of its own, such as a prompt or message editor. */
-export const fieldFramed: string =
-  'rounded-xl border border-border-medium bg-transparent text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-ring-primary';
