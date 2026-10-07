@@ -106,68 +106,70 @@ function DynamicTags({
       }`}
     >
       <HoverCard openDelay={300}>
-        <HoverCardTrigger className="grid h-full w-full content-between items-center gap-2">
-          <div className="flex w-full justify-between">
-            <Label
-              htmlFor={`${settingKey}-dynamic-input`}
-              className="text-left text-xs font-medium"
-            >
-              {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
-              {showDefault && (
-                <small className="high-contrast:opacity-100 opacity-40">
-                  (
-                  {typeof defaultValue === 'undefined' || !(defaultValue as string).length
-                    ? localize('com_endpoint_default_blank')
-                    : `${localize('com_endpoint_default')}: ${defaultValue}`}
-                  )
-                </small>
-              )}
-            </Label>
-          </div>
-          <div>
-            <div className="border-border-light bg-surface-secondary flex flex-wrap rounded-lg border break-all">
-              {currentTags && currentTags.length > 0 && (
-                <div className="flex w-full gap-1 p-1">
-                  {currentTags.map((tag: string, index: number) => (
-                    <Tag
-                      key={`${tag}-${index}`}
-                      label={tag}
-                      onClick={onTagClick}
-                      onRemove={() => {
-                        onTagRemove(index);
-                        if (inputRef.current) {
-                          inputRef.current.focus();
-                        }
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-              <Input
-                ref={inputRef}
-                id={`${settingKey}-dynamic-input`}
-                disabled={readonly}
-                value={tagText}
-                onKeyDown={(e) => {
-                  if (!currentTags) {
-                    return;
+        <HoverCardTrigger asChild>
+          <div className="grid h-full w-full content-between items-center gap-2">
+            <div className="flex w-full justify-between">
+              <Label
+                htmlFor={`${settingKey}-dynamic-input`}
+                className="text-left text-xs font-medium"
+              >
+                {labelCode ? (localize(label as TranslationKeys) ?? label) : label || settingKey}{' '}
+                {showDefault && (
+                  <small className="high-contrast:opacity-100 opacity-40">
+                    (
+                    {typeof defaultValue === 'undefined' || !(defaultValue as string).length
+                      ? localize('com_endpoint_default_blank')
+                      : `${localize('com_endpoint_default')}: ${defaultValue}`}
+                    )
+                  </small>
+                )}
+              </Label>
+            </div>
+            <div>
+              <div className="border-border-light bg-surface-secondary flex flex-wrap rounded-lg border break-all">
+                {currentTags && currentTags.length > 0 && (
+                  <div className="flex w-full gap-1 p-1">
+                    {currentTags.map((tag: string, index: number) => (
+                      <Tag
+                        key={`${tag}-${index}`}
+                        label={tag}
+                        onClick={onTagClick}
+                        onRemove={() => {
+                          onTagRemove(index);
+                          if (inputRef.current) {
+                            inputRef.current.focus();
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                <Input
+                  ref={inputRef}
+                  id={`${settingKey}-dynamic-input`}
+                  disabled={readonly}
+                  value={tagText}
+                  onKeyDown={(e) => {
+                    if (!currentTags) {
+                      return;
+                    }
+                    if (e.key === 'Backspace' && !tagText) {
+                      onTagRemove(currentTags.length - 1);
+                    }
+                    // Ignore the Enter that commits an IME composition (see useTextarea.ts).
+                    if (e.key === 'Enter' && !(e.nativeEvent.isComposing || e.keyCode === 229)) {
+                      onTagAdd();
+                    }
+                  }}
+                  onChange={(e) => setTagText(e.target.value)}
+                  placeholder={
+                    placeholderCode
+                      ? (localize(placeholder as TranslationKeys) ?? placeholder)
+                      : placeholder
                   }
-                  if (e.key === 'Backspace' && !tagText) {
-                    onTagRemove(currentTags.length - 1);
-                  }
-                  // Ignore the Enter that commits an IME composition (see useTextarea.ts).
-                  if (e.key === 'Enter' && !(e.nativeEvent.isComposing || e.keyCode === 229)) {
-                    onTagAdd();
-                  }
-                }}
-                onChange={(e) => setTagText(e.target.value)}
-                placeholder={
-                  placeholderCode
-                    ? (localize(placeholder as TranslationKeys) ?? placeholder)
-                    : placeholder
-                }
-                className={cn('bg-surface-secondary flex h-9 max-h-9 border-none px-3 py-2')}
-              />
+                  className={cn('bg-surface-secondary flex h-9 max-h-9 border-none px-3 py-2')}
+                />
+              </div>
             </div>
           </div>
         </HoverCardTrigger>
