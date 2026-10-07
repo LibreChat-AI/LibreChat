@@ -137,7 +137,7 @@ export default function VersionItem({
                 {versionTitle}
               </span>
               {isActive && (
-                <span className="bg-status-success-subtle text-status-success inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+                <span className="bg-status-success-subtle text-status-success text-3xs inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold tracking-wide uppercase">
                   <span
                     className="bg-status-success-strong size-1.5 rounded-full"
                     aria-hidden="true"
@@ -146,7 +146,7 @@ export default function VersionItem({
                 </span>
               )}
               {!isActive && isLatest && (
-                <span className="bg-surface-tertiary text-text-secondary rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase">
+                <span className="bg-surface-tertiary text-text-secondary text-3xs rounded-full px-2 py-0.5 font-semibold tracking-wide uppercase">
                   {localize('com_ui_latest')}
                 </span>
               )}
@@ -165,10 +165,10 @@ export default function VersionItem({
                   side="left"
                   render={
                     <Button
-                      variant="ghost"
+                      variant="quiet"
                       size="icon"
                       aria-label={localize('com_ui_agent_version_restore')}
-                      className="border-border-light text-text-secondary hover:border-border-medium size-7 shrink-0 rounded-lg border opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100"
+                      className="border-border-light hover:border-border-medium size-7 shrink-0 border opacity-0 transition-all group-hover:opacity-100 focus-visible:opacity-100"
                     >
                       <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden="true" />
                     </Button>

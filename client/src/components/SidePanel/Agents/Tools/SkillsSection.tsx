@@ -417,7 +417,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               >
                 <Plus className="h-4 w-4" aria-hidden="true" />
                 <span className="text-xs">{localize('com_ui_skills_add_row')}</span>
-                <span className="text-text-secondary text-[11px]">
+                <span className="text-text-secondary text-2xs">
                   {localize('com_ui_skills_empty_hint')}
                 </span>
               </button>

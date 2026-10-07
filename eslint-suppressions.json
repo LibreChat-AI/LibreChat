@@ -1328,71 +1328,37 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 18
-    }
-  },
-  "client/src/components/SidePanel/Agents/ActionsTable/Columns.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/ActionsTable/Skeleton.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/ActionsTable/Table.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Advanced/AdvancedButton.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 14
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/AdvancedPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 17
+      "count": 8
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/AgentHandoffs.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/AgentList.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
-  "client/src/components/SidePanel/Agents/Advanced/MaxAgentSteps.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Advanced/ui.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
     "shadcn/no-restyle": {
       "count": 8
     }
   },
-  "client/src/components/SidePanel/Agents/AgentConfig.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
+  "client/src/components/SidePanel/Agents/Advanced/ui.tsx": {
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 4
+    }
+  },
+  "client/src/components/SidePanel/Agents/AgentConfig.tsx": {
+    "shadcn/no-restyle": {
+      "count": 6
     }
   },
   "client/src/components/SidePanel/Agents/AgentFooter.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Agents/AgentSelect.tsx": {
@@ -1401,73 +1367,28 @@
     }
   },
   "client/src/components/SidePanel/Agents/AgentTool.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 5
-    },
     "shadcn/no-restyle": {
-      "count": 9
-    }
-  },
-  "client/src/components/SidePanel/Agents/Background.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Code/Background.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Code/Files.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Code/Settings.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 7
     }
   },
   "client/src/components/SidePanel/Agents/FileContext.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
       "count": 14
     }
   },
-  "client/src/components/SidePanel/Agents/FileSearch.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Images.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
   "client/src/components/SidePanel/Agents/MCPIcon.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    },
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 7
     }
   },
   "client/src/components/SidePanel/Agents/MCPToolItem.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Agents/ModelPanel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 12
     }
   },
   "client/src/components/SidePanel/Agents/OptionToggle.tsx": {
@@ -1480,67 +1401,37 @@
   },
   "client/src/components/SidePanel/Agents/Search/Action.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Agents/Tools/CategoryFilter.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/ItemDialog/ItemDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/ItemDialog/ItemDialogHeader.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/McpSection.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/ToolSection.tsx": {
-    "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/MarketplaceSidebar.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-restyle": {
       "count": 3
     }
   },
+  "client/src/components/SidePanel/Agents/Tools/ItemDialog/sections/ToolSection.tsx": {
+    "shadcn/no-restyle": {
+      "count": 3
+    }
+  },
+  "client/src/components/SidePanel/Agents/Tools/MarketplaceSidebar.tsx": {
+    "shadcn/no-restyle": {
+      "count": 2
+    }
+  },
   "client/src/components/SidePanel/Agents/Tools/SkillsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 7
+      "count": 5
     }
   },
   "client/src/components/SidePanel/Agents/Tools/SkillsSection.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 8
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/ToolCard.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 4
-    },
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 7
     }
   },
   "client/src/components/SidePanel/Agents/Tools/ToolRow.tsx": {
@@ -1550,25 +1441,12 @@
   },
   "client/src/components/SidePanel/Agents/Tools/ToolsMarketplaceDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
-    }
-  },
-  "client/src/components/SidePanel/Agents/Tools/ToolsSection.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 3
-    }
-  },
-  "client/src/components/SidePanel/Agents/Version/VersionButton.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
+      "count": 5
     }
   },
   "client/src/components/SidePanel/Agents/Version/VersionItem.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 2
-    },
     "shadcn/no-restyle": {
-      "count": 9
+      "count": 7
     }
   },
   "client/src/components/SidePanel/Agents/Version/VersionPanel.tsx": {
@@ -1578,7 +1456,7 @@
   },
   "client/src/components/SidePanel/ArtifactsPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/SidePanel/Builder/Action.tsx": {

@@ -36,11 +36,11 @@ export default function AdvancedPanel() {
     <div className="mb-1 flex w-full flex-col gap-4 text-sm">
       <header className="grid grid-cols-[auto_1fr_auto] items-center gap-2 pt-1">
         <Button
-          variant="ghost"
+          variant="quiet"
           size="icon"
           onClick={() => setActivePanel(Panel.builder)}
           aria-label={localize('com_ui_back_to_builder')}
-          className="border-border-light text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary shrink-0 rounded-xl border focus-visible:ring-2"
+          className="border-border-light hover:bg-surface-secondary shrink-0 rounded-xl border"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={1.75} aria-hidden="true" />
         </Button>
@@ -77,10 +77,10 @@ export default function AdvancedPanel() {
               description={currentAgentId}
               render={
                 <Button
-                  variant="ghost"
+                  variant="quiet"
                   onClick={handleCopyAgentId}
                   aria-label={localize('com_ui_agent_id_copy')}
-                  className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary focus-visible:ring-text-primary h-auto gap-1.5 rounded-lg px-2 py-1 focus-visible:ring-2"
+                  className="hover:bg-surface-secondary h-auto gap-1.5 px-2 py-1"
                 >
                   <code className="max-w-[9.375rem] truncate font-mono text-xs">
                     {currentAgentId}

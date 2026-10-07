@@ -275,7 +275,7 @@ export default function ToolsMarketplaceDialog({
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder={localize('com_ui_tools_marketplace_search')}
                   aria-label={localize('com_ui_tools_marketplace_search')}
-                  className="bg-transparent pl-9"
+                  className="pl-9"
                 />
               </div>
             </div>

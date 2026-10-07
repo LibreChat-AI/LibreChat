@@ -152,16 +152,13 @@ export default function MCPToolItem({
             />
           )}
           <Button
-            variant="ghost"
+            variant="quiet"
             size="icon"
             onClick={() => setExpanded((value) => !value)}
             aria-expanded={expanded}
             aria-controls={detailsId}
             aria-label={localize('com_ui_tools_info')}
-            className={cn(
-              iconButton,
-              expanded ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary',
-            )}
+            className={cn(iconButton, expanded && 'text-text-primary')}
           >
             <Info className="size-4" aria-hidden="true" />
           </Button>

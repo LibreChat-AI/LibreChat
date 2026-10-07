@@ -228,7 +228,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
           onChange={(e) => setSearch(e.target.value)}
           placeholder={localize('com_ui_search_skills')}
           aria-label={localize('com_ui_search_skills')}
-          className="h-[2.625rem] bg-transparent pl-9"
+          className="h-[2.625rem] pl-9"
         />
       </div>
       <CategoryFilter options={categoryOptions} value={category} onChange={setCategory} />
@@ -237,7 +237,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
 
   return (
     <OGDialog open={open} onOpenChange={onOpenChange}>
-      <OGDialogContent className="border-border-medium w-11/12 max-w-[56.25rem] overflow-hidden rounded-2xl p-0 shadow-xl md:max-h-[92vh]">
+      <OGDialogContent className="border-border-medium w-11/12 max-w-[56.25rem] overflow-hidden p-0 shadow-xl md:max-h-[92vh]">
         <OGDialogDescription className="sr-only">
           {localize('com_ui_skills_dialog_description')}
         </OGDialogDescription>

@@ -141,9 +141,9 @@ interface RemoveButtonProps {
 export function RemoveButton({ onClick, label }: RemoveButtonProps) {
   return (
     <Button
-      variant="ghost"
-      size="icon"
-      className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary size-auto shrink-0 p-1"
+      variant="quiet"
+      size="snug"
+      className="hover:bg-surface-secondary size-auto shrink-0"
       onClick={onClick}
       aria-label={label}
     >
@@ -197,7 +197,7 @@ export function ListMeta({ label, count, max }: ListMetaProps) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-text-secondary text-xs font-medium">{label}</span>
-      <span className="text-text-tertiary text-[10px] font-medium whitespace-nowrap tabular-nums">
+      <span className="text-text-tertiary text-3xs font-medium whitespace-nowrap tabular-nums">
         {count} / {max}
       </span>
     </div>
