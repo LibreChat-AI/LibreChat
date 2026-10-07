@@ -234,25 +234,6 @@ async function verifyLangfuseCredentials(
       };
     }
 
-    const publicResponse = await fetch(`${destination.baseUrl}/api/public/ingestion`, {
-      method: 'POST',
-      headers: mergeHeaders(headers, {
-        Authorization: `Bearer ${publicKey}`,
-        'X-Langfuse-Public-Key': publicKey,
-        'Content-Type': 'application/json',
-      }),
-      body: JSON.stringify({ batch: [] }),
-      signal,
-      ...redirectPolicyFor(headers),
-    });
-    if (!publicResponse.ok) {
-      return {
-        success: false,
-        ...getLangfuseTestFailure(publicResponse.status),
-        responseStatus: publicResponse.status >= 500 ? 502 : 400,
-      };
-    }
-
     return { success: true, projectId };
   } catch (error) {
     logger.error('[adminLangfuse] connection verification error:', error);
