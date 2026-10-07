@@ -2198,6 +2198,29 @@ describe('SkillFile methods', () => {
     expect(after?.version).toBe(4);
   });
 
+  it('deleteSkillFile preserves a concurrently replaced file when its revision changed', async () => {
+    const { skill } = await methods.createSkill(makeSkillInput());
+    await methods.upsertSkillFile({
+      skillId: skill._id,
+      relativePath: 'references/guide.md',
+      file_id: 'current-revision',
+      filename: 'guide.md',
+      filepath: '/guide',
+      source: 'local',
+      mimeType: 'text/markdown',
+      bytes: 1,
+      author: owner._id,
+    });
+
+    await expect(
+      methods.deleteSkillFile(skill._id, 'references/guide.md', 'stale-revision'),
+    ).resolves.toEqual({ deleted: false });
+    expect(await methods.getSkillFileByPath(skill._id, 'references/guide.md')).toMatchObject({
+      file_id: 'current-revision',
+    });
+    expect(await methods.getSkillById(skill._id)).toMatchObject({ fileCount: 1, version: 2 });
+  });
+
   it('rejects invalid paths via upsertSkillFile', async () => {
     const { skill } = await methods.createSkill(makeSkillInput());
     await expect(

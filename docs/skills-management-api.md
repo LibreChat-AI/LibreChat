@@ -57,7 +57,8 @@ rejected. Delete the same path to remove the file. Update `SKILL.md` through the
 field with `expectedVersion`, not the file endpoint. File writes use replacement semantics without a version precondition; serialize writers
 to the same path. After a file write, read the Skill again before a versioned metadata/body update: file writes also
 increment the parent version. Storage selection stays server-controlled. File JSON reads omit content for
-binary or oversized files; raw download mode is not supported on this surface.
+binary or oversized files; raw download mode is not supported on this surface. File deletion completes
+storage cleanup before returning success and reports a conflict if another writer replaced the path.
 
 Git-synced and deployment-provided Skills are readable but cannot be changed through this API.
 Change their upstream source instead. Browser routes keep their existing behavior.

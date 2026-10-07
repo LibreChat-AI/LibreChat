@@ -208,6 +208,12 @@ export const skillContracts: EndpointContract[] = [
     responses: [
       { status: 200, description: 'The file was deleted', schema: skillFileDeleteResponseSchema },
       ...errorResponses,
+      {
+        status: 409,
+        description:
+          'The file changed while it was being deleted, or the bound account is being deleted',
+        schema: z.union([agentManagementErrorSchema, accountDeletionResponseSchema]),
+      },
     ],
   },
   {

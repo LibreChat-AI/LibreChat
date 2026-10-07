@@ -1090,6 +1090,7 @@ export function createSkillMethods(
   deleteSkillFile: (
     skillId: Types.ObjectId | string,
     relativePath: string,
+    expectedFileId?: string,
   ) => Promise<{ deleted: boolean }>;
   getSkillFileByPath: (
     skillId: Types.ObjectId | string,
@@ -1938,9 +1939,14 @@ export function createSkillMethods(
   async function deleteSkillFile(
     skillId: Types.ObjectId | string,
     relativePath: string,
+    expectedFileId?: string,
   ): Promise<{ deleted: boolean }> {
     const SkillFile = mongoose.models.SkillFile as Model<ISkillFileDocument>;
-    const res = await SkillFile.deleteOne({ skillId, relativePath });
+    const res = await SkillFile.deleteOne({
+      skillId,
+      relativePath,
+      ...(expectedFileId != null ? { file_id: expectedFileId } : {}),
+    });
     if (!res.deletedCount) {
       return { deleted: false };
     }

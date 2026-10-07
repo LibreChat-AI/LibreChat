@@ -2156,11 +2156,18 @@
             }
           },
           "409": {
-            "description": "The bound account is being deleted",
+            "description": "The file changed while it was being deleted, or the bound account is being deleted",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AccountDeletionConflict"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AccountDeletionConflict"
+                    }
+                  ]
                 }
               }
             }

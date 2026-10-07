@@ -91,7 +91,7 @@ beforeEach(async () => {
     findPubliclyAccessibleResources: publiclyAccessible,
     hasPublicPermission: publicStatus,
     grantPermission: async () => undefined,
-    getStrategyFunctions: () => ({}),
+    getStrategyFunctions: () => ({ deleteFile: async () => undefined }),
     isValidObjectIdString: (id) => typeof id === 'string' && /^[a-f\d]{24}$/i.test(id),
   });
   const management = createSkillManagementHandlers({
