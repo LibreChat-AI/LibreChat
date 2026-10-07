@@ -248,6 +248,8 @@ async function uploadFileToAzure({
  *
  * @param {object} _req - The Express request object.
  * @param {string} fileURL - The URL of the blob.
+ * @param {object} [options]
+ * @param {AbortSignal} [options.signal] - Aborts the blob download when signaled.
  * @returns {Promise<ReadableStream>} A readable stream of the blob.
  */
 async function getAzureFileStream(_req, fileURL, { signal } = {}) {
