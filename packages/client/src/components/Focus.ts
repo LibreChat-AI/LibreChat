@@ -1,10 +1,6 @@
 import { cva } from 'class-variance-authority';
 
-export type FocusOutline = 'native' | 'hidden' | 'ring';
-
-/** The keyboard ring the `Button` variants draw, in the `focus-control` role. */
-export const focusRing: string =
-  'ring-offset-surface-primary focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-control focus-visible:ring-offset-2';
+export type FocusOutline = 'native' | 'hidden';
 
 /**
  * Whether a control keeps the browser's focus outline. `hidden` is for a caller that
@@ -20,7 +16,6 @@ export const focusOutlineVariants: (props?: { focusOutline?: FocusOutline | null
       focusOutline: {
         native: '',
         hidden: 'focus-visible:outline-hidden',
-        ring: focusRing,
       },
     },
     defaultVariants: {

@@ -2,7 +2,6 @@ import React from 'react';
 import '@testing-library/jest-dom';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
-import { Tabs, TabsList, TabsTrigger } from './Tabs';
 import InputWithDropdown from './InputWithDropDown';
 import { InputCombobox } from './InputCombobox';
 import { SecretInput } from './SecretInput';
@@ -104,21 +103,5 @@ describe('shared control keyboard focus', () => {
 
     await user.tab();
     expect(ringHost).not.toHaveClass('ring-focus-control');
-  });
-
-  it('rings the tab triggers in the focus role', () => {
-    render(
-      <Tabs defaultValue="a">
-        <TabsList>
-          <TabsTrigger value="a">One</TabsTrigger>
-        </TabsList>
-      </Tabs>,
-    );
-
-    expect(screen.getByRole('tab', { name: 'One' })).toHaveClass(
-      'focus-visible:outline-hidden',
-      'focus-visible:ring-2',
-      'focus-visible:ring-focus-control',
-    );
   });
 });
