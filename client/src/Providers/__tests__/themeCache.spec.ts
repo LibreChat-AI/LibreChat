@@ -1,5 +1,11 @@
-import { clickHouseTheme } from '@librechat/client';
-import { themeRoleFingerprint } from 'librechat-data-provider';
+import { themeRoleFingerprint, THEME_CACHE_EPOCH } from 'librechat-data-provider';
+import {
+  darkTheme,
+  defaultTheme,
+  clickHouseTheme,
+  highContrastDarkTheme,
+  highContrastLightTheme,
+} from '@librechat/client';
 import type { ThemeCacheEntry } from '../themeCache';
 import {
   themeOwner,
@@ -151,5 +157,32 @@ describe('theme cache storage', () => {
     localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...cached, v: 0 }));
     expect(readThemeCache()).toBeUndefined();
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+  });
+});
+
+/**
+ * The cache version keys on the role set and a hand-bumped epoch, so a release that changes what
+ * the built-in themes (default, dark, high contrast, ClickHouse) resolve to (a palette value, a fallback, an emitted attribute) without
+ * adding a role would replay stale styling at boot. This pin makes that change fail here: bump
+ * `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
+ */
+describe('resolver output pin', () => {
+  const digest = (text: string): string => {
+    let hash = 5381;
+    for (let i = 0; i < text.length; i++) {
+      hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+    }
+    return hash.toString(36);
+  };
+
+  it('moves only together with THEME_CACHE_EPOCH', () => {
+    const { modes } = buildThemeCache(OWNER, 'clickhouse', clickHouseTheme);
+    const builtIns = [darkTheme, defaultTheme, highContrastDarkTheme, highContrastLightTheme];
+    expect({ epoch: THEME_CACHE_EPOCH, digest: digest(JSON.stringify([modes, builtIns])) }).toEqual(
+      {
+        epoch: 1,
+        digest: '4cd0v8',
+      },
+    );
   });
 });
