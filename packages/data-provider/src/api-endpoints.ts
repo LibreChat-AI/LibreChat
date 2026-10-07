@@ -1,5 +1,6 @@
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
+import type * as t from './types';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -567,6 +568,11 @@ export const adminLangfuseConnection = () => `${BASE_URL}/api/admin/langfuse/con
 export const adminLangfuseConnectionTest = () => `${adminLangfuseConnection()}/test`;
 export const adminLangfuseSessionLink = (conversationId: string) =>
   `${adminLangfuseConnection()}/session/${encodeURIComponent(conversationId)}`;
+export const adminLangfusePromptSync = () => `${BASE_URL}/api/admin/langfuse/prompt-sync`;
+export const adminLangfusePrompts = (params: t.TLangfusePromptListParams = {}) =>
+  `${BASE_URL}/api/admin/langfuse/prompts${buildQuery(params)}`;
+export const adminLangfusePrompt = (name: string, version?: number) =>
+  `${BASE_URL}/api/admin/langfuse/prompts/${encodeURIComponent(name)}${buildQuery({ version })}`;
 
 /* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
 export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;

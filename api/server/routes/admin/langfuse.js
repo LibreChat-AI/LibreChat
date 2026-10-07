@@ -52,5 +52,8 @@ router.get('/connection', handlers.getConnection);
 router.get('/connection/session/:conversationId', handlers.getSessionLink);
 router.put('/connection', handlers.updateConnection);
 router.post('/connection/test', handlers.testConnection);
+router.put('/prompt-sync', handlers.updatePromptSync);
+router.get('/prompts', handlers.listPrompts);
+router.get('/prompts/:name', handlers.getPrompt);
 
 module.exports = router;

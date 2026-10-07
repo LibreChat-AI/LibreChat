@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { PrincipalType, PrincipalModel } from 'librechat-data-provider';
 import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
 import type {
@@ -8,12 +9,32 @@ import type {
   TLangfuseConnectionTestRequest,
   TLangfuseConnectionTestResponse,
   TLangfuseSessionLinkResponse,
+  TUpdateLangfusePromptSyncRequest,
+  TLangfusePromptListResponse,
+  TLangfusePromptGetResponse,
+  TLangfusePromptErrorBody,
 } from 'librechat-data-provider';
-import type { IConfig, MessageMethods } from '@librechat/data-schemas';
+import type { AppConfig, IConfig, MessageMethods } from '@librechat/data-schemas';
 import type { Types, ClientSession } from 'mongoose';
 import type { Response } from 'express';
+import type {
+  LangfusePromptConnection,
+  LangfuseTextPromptSelector,
+  LangfusePromptRequestErrorCode,
+} from '~/langfuse/prompts';
 import type { LangfuseTenantDestination } from '~/langfuse/tenantDestinations';
 import type { ServerRequest } from '~/types/http';
+import {
+  resolveLangfusePromptConnection,
+  listLangfusePrompts,
+  getLangfuseTextPrompt,
+  LangfusePromptRequestError,
+} from '~/langfuse/prompts';
+import {
+  isLangfuseConnectionAvailable,
+  isLangfusePromptSyncAvailable,
+  getLangfusePromptSyncTimeoutMs,
+} from '~/langfuse/policy';
 import {
   getLangfuseTenantDestinations,
   resolveLangfuseTenantDestination,
@@ -21,7 +42,6 @@ import {
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
-import { isLangfuseConnectionAvailable } from '~/langfuse/policy';
 import { resolveLangfuseSession } from '~/langfuse/session';
 import { mergeHeaders } from '~/utils/headers';
 
@@ -90,6 +110,7 @@ function readStoredLangfuse(config: IConfig | null): TCustomConfig['langfuse'] {
 function buildStatus(config: IConfig | null): TLangfuseConnectionStatus {
   const stored = readStoredLangfuse(config);
   const configured = Boolean(stored?.publicKey && stored?.secretKey);
+  const promptSyncAvailable = isLangfusePromptSyncAvailable();
   return {
     configured,
     enabled: configured && stored?.enabled === true,
@@ -98,6 +119,10 @@ function buildStatus(config: IConfig | null): TLangfuseConnectionStatus {
     publicKey: stored?.publicKey,
     secretKeyPreview: stored?.secretKeyPreview,
     updatedAt: config?.updatedAt ? new Date(config.updatedAt).toISOString() : undefined,
+    promptSync: {
+      available: promptSyncAvailable,
+      enabled: promptSyncAvailable && stored?.promptSync?.enabled === true,
+    },
   };
 }
 
@@ -134,6 +159,56 @@ function rejectWhenConnectionUnavailable(res: Response): Response | undefined {
   }
 
   return res.status(404).json({ error: 'Langfuse connection settings are not available' });
+}
+
+const promptSyncUpdateSchema: z.ZodType<TUpdateLangfusePromptSyncRequest> = z
+  .object({ enabled: z.boolean() })
+  .strict();
+
+const trimmedPromptString = (maxLength: number) => z.string().trim().min(1).max(maxLength);
+
+const promptListQuerySchema = z.object({
+  name: trimmedPromptString(256).optional(),
+  label: trimmedPromptString(256).optional(),
+  tag: trimmedPromptString(256).optional(),
+  page: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  fromUpdatedAt: z.string().datetime().optional(),
+  toUpdatedAt: z.string().datetime().optional(),
+});
+
+const promptNameParamSchema = trimmedPromptString(256);
+
+const promptVersionQuerySchema = z.coerce
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER)
+  .optional();
+
+/** HTTP status for a `LangfusePromptRequestError`. A Langfuse `unauthorized`
+ *  never maps to 401/403: the LibreChat client treats either as its own
+ *  session expiring and reacts by refreshing the token or signing out. */
+function promptRequestErrorStatus(code: LangfusePromptRequestErrorCode): number {
+  return code === 'timeout' ? 504 : 502;
+}
+
+/** Maps a thrown Langfuse prompt request failure to the stable `{ code }`
+ *  contract. Never forwards the upstream body, headers or credentials; logs
+ *  only the error's own code/status/message, which `prompts.ts` guarantees
+ *  are free of secrets. */
+function respondToPromptRequestError(res: Response, error: unknown, logPrefix: string): Response {
+  if (error instanceof LangfusePromptRequestError) {
+    logger.error(logPrefix, error);
+    const body: TLangfusePromptErrorBody =
+      error.code === 'upstream' && error.status != null
+        ? { code: error.code, status: error.status }
+        : { code: error.code };
+    return res.status(promptRequestErrorStatus(error.code)).json(body);
+  }
+
+  logger.error(logPrefix, error);
+  return res.status(500).json({ code: 'upstream' } satisfies TLangfusePromptErrorBody);
 }
 
 type LangfuseVerificationFailure = {
@@ -285,6 +360,9 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
   getSessionLink: (req: ServerRequest, res: Response) => Promise<Response>;
   updateConnection: (req: ServerRequest, res: Response) => Promise<Response>;
   testConnection: (req: ServerRequest, res: Response) => Promise<Response>;
+  updatePromptSync: (req: ServerRequest, res: Response) => Promise<Response>;
+  listPrompts: (req: ServerRequest, res: Response) => Promise<Response>;
+  getPrompt: (req: ServerRequest, res: Response) => Promise<Response>;
 } {
   const {
     findConfigByPrincipal,
@@ -300,6 +378,62 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     return options
       ? findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID, options)
       : findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID);
+  }
+
+  /** Shared 404 gate for the prompt-sync routes. `updatePromptSync` only
+   *  needs the env-availability check: it is itself the write path for the
+   *  stored switch, so it has nothing stored to compare against. */
+  function rejectWhenPromptSyncUnavailable(res: Response): Response | undefined {
+    if (!isLangfusePromptSyncAvailable()) {
+      return res.status(404).json({ error: 'Langfuse prompt sync is not available' });
+    }
+    return undefined;
+  }
+
+  /** Tenant-switch gate for the list/get prompt routes. Reads the stored base
+   *  config once — the same source `buildStatus` reads — and hands that one
+   *  document back to the caller so it can also become the connection's
+   *  tenant-owned fields (destination, keys, `promptSync`) instead of the
+   *  cached `req.config`: a rotated destination or key can then never be
+   *  paired with a stale credential from another instance's config cache.
+   *  Checking `promptSync.enabled` off this same read also keeps this gate
+   *  from disagreeing with the toggle's own status response through the
+   *  config cache's TTL or across instances. */
+  async function gatePromptSyncTenantSwitch(
+    res: Response,
+  ): Promise<
+    | { response: Response; stored?: undefined }
+    | { response?: undefined; stored: TCustomConfig['langfuse'] }
+  > {
+    const disabledResponse = rejectWhenPromptSyncUnavailable(res);
+    if (disabledResponse) {
+      return { response: disabledResponse };
+    }
+
+    const stored = readStoredLangfuse(await findBaseConfig());
+    if (stored?.promptSync?.enabled !== true) {
+      return {
+        response: res.status(404).json({ error: 'Langfuse prompt sync is not available' }),
+      };
+    }
+
+    return { stored };
+  }
+
+  /** The connection a list/get prompt request resolves against: deployment/
+   *  yaml-only fields such as `headers` still come from `req.config`, while
+   *  everything the connection tab writes comes from the gate's single stored
+   *  read, so the same document authorizes the request and supplies its
+   *  credentials. */
+  function resolvePromptSyncConnection(
+    req: ServerRequest,
+    stored: TCustomConfig['langfuse'],
+  ): LangfusePromptConnection | null {
+    const appConfig = {
+      ...req.config,
+      langfuse: { ...req.config?.langfuse, ...stored },
+    } as AppConfig;
+    return resolveLangfusePromptConnection(appConfig, { tenantId: getTenantId(req) });
   }
 
   async function getConnection(req: ServerRequest, res: Response): Promise<Response> {
@@ -548,5 +682,115 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     }
   }
 
-  return { getConnection, getSessionLink, updateConnection, testConnection };
+  async function updatePromptSync(req: ServerRequest, res: Response): Promise<Response> {
+    const disabledResponse = rejectWhenPromptSyncUnavailable(res);
+    if (disabledResponse) {
+      return disabledResponse;
+    }
+
+    const parsedBody = promptSyncUpdateSchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      return res.status(400).json({ code: 'invalid_request' } satisfies TLangfusePromptErrorBody);
+    }
+
+    try {
+      // `includeInactive` so an inactive base config keeps its own `priority`
+      // on this patch, matching `updateConnection` — toggling prompt sync must
+      // never reactivate a config an admin deactivated for other reasons.
+      const existing = await findBaseConfig({ includeInactive: true });
+      const updated = await patchConfigFields(
+        PrincipalType.ROLE,
+        BASE_CONFIG_PRINCIPAL_ID,
+        PrincipalModel.ROLE,
+        { 'langfuse.promptSync.enabled': parsedBody.data.enabled },
+        existing?.priority ?? DEFAULT_PRIORITY,
+      );
+
+      invalidateConfigCaches?.(getTenantId(req))?.catch((err) =>
+        logger.error('[adminLangfuse] Cache invalidation failed after prompt sync update:', err),
+      );
+
+      // An inactive config is invisible to `getConnection` (which reads
+      // without `includeInactive`), so report the same empty status here
+      // rather than echoing back fields nobody else can see.
+      return res.status(200).json(buildStatus(updated?.isActive === false ? null : updated));
+    } catch (error) {
+      logger.error('[adminLangfuse] updatePromptSync error:', error);
+      return res.status(500).json({ error: 'Failed to update Langfuse prompt sync setting' });
+    }
+  }
+
+  async function listPrompts(req: ServerRequest, res: Response): Promise<Response> {
+    const gate = await gatePromptSyncTenantSwitch(res);
+    if (gate.response) {
+      return gate.response;
+    }
+
+    const parsedQuery = promptListQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      return res.status(400).json({ code: 'invalid_request' } satisfies TLangfusePromptErrorBody);
+    }
+
+    const connection = resolvePromptSyncConnection(req, gate.stored);
+    if (!connection) {
+      return res.status(409).json({ code: 'not_configured' } satisfies TLangfusePromptErrorBody);
+    }
+
+    try {
+      const result = await listLangfusePrompts(connection, parsedQuery.data, {
+        timeoutMs: getLangfusePromptSyncTimeoutMs(),
+      });
+      return res.status(200).json(result satisfies TLangfusePromptListResponse);
+    } catch (error) {
+      return respondToPromptRequestError(res, error, '[adminLangfuse] listPrompts error:');
+    }
+  }
+
+  async function getPrompt(req: ServerRequest, res: Response): Promise<Response> {
+    const gate = await gatePromptSyncTenantSwitch(res);
+    if (gate.response) {
+      return gate.response;
+    }
+
+    const parsedName = promptNameParamSchema.safeParse((req.params as { name?: string }).name);
+    const parsedVersion = promptVersionQuerySchema.safeParse(
+      (req.query as { version?: unknown }).version,
+    );
+    if (!parsedName.success || !parsedVersion.success) {
+      return res.status(400).json({ code: 'invalid_request' } satisfies TLangfusePromptErrorBody);
+    }
+
+    const connection = resolvePromptSyncConnection(req, gate.stored);
+    if (!connection) {
+      return res.status(409).json({ code: 'not_configured' } satisfies TLangfusePromptErrorBody);
+    }
+
+    const selector: LangfuseTextPromptSelector =
+      parsedVersion.data != null ? { version: parsedVersion.data } : { label: 'production' };
+
+    try {
+      const result = await getLangfuseTextPrompt(connection, parsedName.data, selector, {
+        timeoutMs: getLangfusePromptSyncTimeoutMs(),
+      });
+      if (!result.ok) {
+        const status = result.error.code === 'not_found' ? 404 : 422;
+        return res
+          .status(status)
+          .json({ code: result.error.code } satisfies TLangfusePromptErrorBody);
+      }
+      return res.status(200).json(result.value satisfies TLangfusePromptGetResponse);
+    } catch (error) {
+      return respondToPromptRequestError(res, error, '[adminLangfuse] getPrompt error:');
+    }
+  }
+
+  return {
+    getConnection,
+    getSessionLink,
+    updateConnection,
+    testConnection,
+    updatePromptSync,
+    listPrompts,
+    getPrompt,
+  };
 }

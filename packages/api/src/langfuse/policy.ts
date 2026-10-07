@@ -74,6 +74,29 @@ export function isLangfuseTraceSampled(traceId: string): boolean {
   return traceIdAccumulation(traceId) < Math.floor(sampleRate * MAX_TRACE_ID_ACCUMULATION);
 }
 
+const DEFAULT_PROMPT_SYNC_TIMEOUT_MS = 10_000;
+const MIN_PROMPT_SYNC_TIMEOUT_MS = 1_000;
+const MAX_PROMPT_SYNC_TIMEOUT_MS = 60_000;
+
+export function isLangfusePromptSyncAvailable(): boolean {
+  return isTrueEnv(process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE);
+}
+
+export function getLangfusePromptSyncTimeoutMs(): number {
+  const value = normalizeString(process.env.LANGFUSE_PROMPT_SYNC_TIMEOUT_MS);
+  if (value == null) {
+    return DEFAULT_PROMPT_SYNC_TIMEOUT_MS;
+  }
+
+  const timeoutMs = Number(value);
+  if (!Number.isFinite(timeoutMs)) {
+    return DEFAULT_PROMPT_SYNC_TIMEOUT_MS;
+  }
+  return Math.round(
+    Math.min(MAX_PROMPT_SYNC_TIMEOUT_MS, Math.max(MIN_PROMPT_SYNC_TIMEOUT_MS, timeoutMs)),
+  );
+}
+
 export function isLangfuseConnectionAvailable(): boolean {
   if (!isLangfuseTracingEnabled()) {
     return false;
