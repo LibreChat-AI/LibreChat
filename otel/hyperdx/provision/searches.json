@@ -2,7 +2,7 @@
   {
     "name": "Usage timeline",
     "source": "Usage timeline",
-    "select": "Timestamp, ServiceName, UserId, ConversationId, Body, Model, TotalTokens, Cost, DurationMs, Rating",
+    "select": "Timestamp, ServiceName, UserId, ConversationId, Body, Model, TotalTokens, Cost, DurationMs, Rating, Reason, Comment, Input, Output, StatusMessage, TimeToFirstTokenMs",
     "where": "",
     "whereLanguage": "lucene",
     "orderBy": "Timestamp DESC",

@@ -1,10 +1,11 @@
 <!--
   HyperDX's ClickHouse account on the instance it shares with Langfuse.
 
-  Langfuse keeps prompts and responses in the `default` database, so HyperDX and
-  its collector connect as a user that can see only the `hyperdx` database, plus
-  the content-free `analytics` views (analytics.sql) that HyperDX's usage
-  timeline and dashboards read. The password comes from the container
+  HyperDX and its collector connect as a user that can see only the `hyperdx`
+  database and the `analytics` views (analytics.sql) that HyperDX's usage
+  timeline and dashboards read, not Langfuse's tables in `default`. The views
+  include conversation content: messages, replies, prompts and feedback
+  comments. The password comes from the container
   environment and is never written here.
 
   Mounted into /etc/clickhouse-server/users.d/ by docker-compose.override.yml and

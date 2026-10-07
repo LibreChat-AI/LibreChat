@@ -6,11 +6,36 @@
     "from": { "databaseName": "analytics", "tableName": "timeline" },
     "timestampValueExpression": "Timestamp",
     "displayedTimestampValueExpression": "Timestamp",
-    "defaultTableSelectExpression": "Timestamp, ServiceName, UserId, Body, Model, TotalTokens, Cost",
+    "defaultTableSelectExpression": "Timestamp, ServiceName, UserId, Body, Model, TotalTokens, Cost, Rating, Reason",
     "serviceNameExpression": "ServiceName",
     "severityTextExpression": "SeverityText",
     "bodyExpression": "Body",
     "implicitColumnExpression": "Body",
-    "eventAttributesExpression": "LogAttributes"
+    "eventAttributesExpression": "LogAttributes",
+    "traceIdExpression": "TraceId",
+    "traceSourceId": "Conversation traces"
+  },
+  {
+    "kind": "trace",
+    "name": "Conversation traces",
+    "connection": "ClickHouse",
+    "from": { "databaseName": "analytics", "tableName": "spans" },
+    "timestampValueExpression": "Timestamp",
+    "displayedTimestampValueExpression": "Timestamp",
+    "defaultTableSelectExpression": "Timestamp, ServiceName, SpanName, UserId, ConversationId, Model, Duration, StatusCode, StatusMessage",
+    "implicitColumnExpression": "Input",
+    "durationExpression": "Duration",
+    "durationPrecision": 9,
+    "traceIdExpression": "TraceId",
+    "spanIdExpression": "SpanId",
+    "parentSpanIdExpression": "ParentSpanId",
+    "spanNameExpression": "SpanName",
+    "spanKindExpression": "SpanKind",
+    "statusCodeExpression": "StatusCode",
+    "statusMessageExpression": "StatusMessage",
+    "serviceNameExpression": "ServiceName",
+    "eventAttributesExpression": "SpanAttributes",
+    "resourceAttributesExpression": "ResourceAttributes",
+    "logSourceId": "Usage timeline"
   }
 ]

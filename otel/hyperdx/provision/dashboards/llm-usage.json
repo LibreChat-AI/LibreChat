@@ -117,8 +117,64 @@
       "id": "timeline", "x": 0, "y": 36, "w": 24, "h": 14,
       "config": {
         "name": "Event timeline", "source": "Usage timeline", "displayType": "search",
-        "select": "Timestamp, ServiceName, UserId, ConversationId, Body, Model, TotalTokens, Cost, DurationMs, Rating",
+        "select": "Timestamp, ServiceName, UserId, ConversationId, Body, Model, TotalTokens, Cost, DurationMs, Rating, Reason, Comment",
         "where": "", "whereLanguage": "lucene"
+      }
+    },
+    {
+      "id": "feedback-reasons", "x": 0, "y": 50, "w": 12, "h": 8,
+      "config": {
+        "name": "Feedback by reason", "source": "Usage timeline", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "ServiceName = 'feedback' AND Reason != ''", "whereLanguage": "sql", "groupBy": "Reason", "granularity": "auto"
+      }
+    },
+    {
+      "id": "feedback-comments", "x": 12, "y": 50, "w": 12, "h": 8,
+      "config": {
+        "name": "Feedback with reasons and comments", "source": "Usage timeline", "displayType": "search",
+        "select": "Timestamp, UserId, ConversationId, Rating, Reason, Comment",
+        "where": "ServiceName = 'feedback'", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "conversations", "x": 0, "y": 58, "w": 24, "h": 14,
+      "config": {
+        "name": "Conversations (message and reply)", "source": "Usage timeline", "displayType": "search",
+        "select": "Timestamp, UserId, ConversationId, Input, Output",
+        "where": "ServiceName = 'chat'", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "tool-calls", "x": 0, "y": 72, "w": 12, "h": 8,
+      "config": {
+        "name": "Tool calls by tool", "source": "Conversation traces", "displayType": "stacked_bar",
+        "select": [{ "aggFn": "count", "valueExpression": "", "aggCondition": "" }],
+        "where": "SpanKind = 'TOOL'", "whereLanguage": "sql", "groupBy": "SpanName", "granularity": "auto"
+      }
+    },
+    {
+      "id": "ttft", "x": 12, "y": 72, "w": 12, "h": 8,
+      "config": {
+        "name": "Time to first token by model (p95, ms)", "source": "Usage timeline", "displayType": "line",
+        "select": [{ "aggFn": "quantile", "level": 0.95, "valueExpression": "TimeToFirstTokenMs", "aggCondition": "" }],
+        "where": "ServiceName = 'llm' AND TimeToFirstTokenMs > 0", "whereLanguage": "sql", "groupBy": "Model", "granularity": "auto"
+      }
+    },
+    {
+      "id": "steps", "x": 0, "y": 80, "w": 24, "h": 14,
+      "config": {
+        "name": "Agent steps and tool calls (input and output)", "source": "Conversation traces", "displayType": "search",
+        "select": "Timestamp, UserId, ConversationId, SpanKind, SpanName, Duration, Input, Output",
+        "where": "ServiceName NOT IN ('chat', 'llm')", "whereLanguage": "sql"
+      }
+    },
+    {
+      "id": "failures", "x": 0, "y": 94, "w": 24, "h": 10,
+      "config": {
+        "name": "Errors (every step, with its message)", "source": "Conversation traces", "displayType": "search",
+        "select": "Timestamp, UserId, ConversationId, ServiceName, SpanName, Model, StatusMessage",
+        "where": "StatusCode = 'Error'", "whereLanguage": "sql"
       }
     }
   ]
