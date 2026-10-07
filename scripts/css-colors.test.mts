@@ -175,3 +175,10 @@ test('a token source exempts its custom properties only', () => {
   const css = ':root { --x: 255 0 0; --y: #fff; }\na { color: #fff; width: calc(1 * 2); }';
   assert.deepEqual(findCssColorLiterals(css, [], true), [{ line: 2, literal: '#fff' }]);
 });
+
+test('reads literal origins and fallbacks of a relative colour', () => {
+  assert.deepEqual(literals('a { color: rgb(from #ff0000 r g b); }'), ['#ff0000']);
+  assert.deepEqual(literals('a { color: color(from #fff srgb r g b); }'), ['#fff']);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, #fff) r g b); }'), ['#fff']);
+  assert.deepEqual(literals('a { color: rgb(from var(--base) r g b); }'), []);
+});
