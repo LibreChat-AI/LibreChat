@@ -69,6 +69,7 @@ describe('Button', () => {
     expect(floating).toContain('bg-surface-chat/90');
     expect(floating).toContain('theme-chrome-quiet:bg-surface-chat');
     expect(floating).toContain('theme-chrome-quiet:shadow-md');
+    expect(floating).toContain('theme-chrome-quiet:hover:active:bg-surface-pressed');
   });
 
   it('outlines a toggle in the control border', () => {
