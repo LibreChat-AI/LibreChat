@@ -1,5 +1,17 @@
-import { libreChatTheme, clickHouseTheme } from '@librechat/client';
-import { themeRoleFingerprint, THEME_CACHE_EPOCH } from 'librechat-data-provider';
+import {
+  themeRoleFingerprint,
+  THEME_CACHE_EPOCH,
+  themeAppearanceTokens,
+} from 'librechat-data-provider';
+import {
+  resolveTheme,
+  themeBrandTokens,
+  themeColorTokens,
+  libreChatTheme,
+  clickHouseTheme,
+  validateThemeDefinition,
+} from '@librechat/client';
+import type { ThemeDefinition } from '@librechat/client';
 import type { ThemeCacheEntry } from '../themeCache';
 import {
   themeOwner,
@@ -155,41 +167,120 @@ describe('theme cache storage', () => {
 });
 
 /**
- * The cache version keys on the role set and a hand-bumped epoch, so a release that changes what
- * a cacheable theme resolves to (a palette value, a fallback, an emitted attribute) without
- * adding a role would replay stale styling at boot. The pin covers exactly the definitions that
- * can enter the cache: `librechat`, `clickhouse` and an inline definition with role overrides and the fallbacks around them. The
- * high-contrast palettes are not replayed by the boot script, so they are not pinned. A change
- * fails here: bump `THEME_CACHE_EPOCH` in `packages/data-provider/src/theme.ts`, then update the pin.
+ * The baseline the resolver's output is pinned to. The cache version keys on the role set and a
+ * hand-bumped `THEME_CACHE_EPOCH`, so a release that changes what a cacheable theme resolves to
+ * without adding a role would replay stale styling at boot. The digest covers `librechat`,
+ * `clickhouse` (the definitions that can enter the cache; the boot script never replays one under
+ * high contrast) and one definition per role that overrides only that role, so every fallback
+ * path is covered and a new role joins on its own.
  */
-describe('resolver output pin', () => {
-  const digest = (text: string): string => {
-    let hash = 5381;
-    for (let i = 0; i < text.length; i++) {
-      hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
-    }
-    return hash.toString(36);
-  };
+const PIN = { roles: 'xbzud8', epoch: 1, digest: 'cjwevq' };
 
-  it('moves only together with THEME_CACHE_EPOCH', () => {
-    const resolved = [
-      buildThemeCache(OWNER, 'librechat', libreChatTheme).modes,
-      buildThemeCache(OWNER, 'clickhouse', clickHouseTheme).modes,
-      buildThemeCache(OWNER, 'inline', {
-        version: 1,
-        name: 'inline',
-        modes: {
-          light: { colors: { 'rgb-text-primary': '10 20 30' } },
-          dark: { colors: { 'rgb-text-primary': '230 220 210' } },
-        },
-      }).modes,
-    ];
-    expect({
-      epoch: THEME_CACHE_EPOCH,
-      digest: digest(JSON.stringify(resolved)),
-    }).toEqual({
-      epoch: 1,
-      digest: 'f37285',
-    });
+const digestOf = (text: string): string => {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) {
+    hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+};
+
+const APPEARANCE_CANDIDATES = [
+  '0.5rem',
+  '1.25rem',
+  'soft',
+  'dim',
+  'fill',
+  '600',
+  '0.5',
+  '150ms',
+  '9rem',
+  '0 1px 2px 0 rgb(0 0 0 / 0.2)',
+  'ui-sans-serif, sans-serif',
+  '1.5',
+  'ring',
+  'border',
+  'none',
+];
+
+/** One definition per role, overriding only that role with a value no default uses. */
+function roleFixtures(): ThemeDefinition[] {
+  const base = { version: 1 as const };
+  const colors = themeColorTokens.map((token) => ({
+    ...base,
+    name: token,
+    modes: {
+      light: { colors: { [token]: '1 2 3' } },
+      dark: { colors: { [token]: '4 5 6' } },
+    },
+  }));
+  const brands = themeBrandTokens.map((token) => ({
+    ...base,
+    name: token,
+    brands: { [token]: '#123456' },
+    modes: { light: {}, dark: {} },
+  }));
+  const missing: string[] = [];
+  const appearance = themeAppearanceTokens.flatMap((token) => {
+    const valid = APPEARANCE_CANDIDATES.map((value) => ({
+      ...base,
+      name: token,
+      modes: {
+        light: { appearance: { [token]: value } },
+        dark: { appearance: { [token]: value } },
+      },
+    })).find((theme) => validateThemeDefinition(theme as ThemeDefinition).length === 0);
+    if (!valid) {
+      missing.push(token);
+    }
+    return valid ? [valid] : [];
+  });
+  if (missing.length > 0) {
+    throw new Error(`Add valid samples to APPEARANCE_CANDIDATES for: ${missing.join(', ')}`);
+  }
+  return [...colors, ...brands, ...appearance] as ThemeDefinition[];
+}
+
+const resolvedOutput = () => {
+  const named: [string, ThemeDefinition][] = [
+    ['librechat', libreChatTheme],
+    ['clickhouse', clickHouseTheme],
+  ];
+  const definitions = [...named.map(([, theme]) => theme), ...roleFixtures()];
+  return definitions.map((theme) => ({
+    light: resolveTheme(theme, 'light'),
+    dark: resolveTheme(theme, 'dark'),
+  }));
+};
+
+/** What the contributor has to do, or an empty string when the pin is current. */
+function pinStatus(actual: { roles: string; epoch: number; digest: string }): string {
+  if (actual.roles !== PIN.roles) {
+    return `The role set changed, which already retires cached entries: do not bump THEME_CACHE_EPOCH. Set PIN to ${JSON.stringify({ roles: actual.roles, epoch: PIN.epoch, digest: actual.digest })}.`;
+  }
+  if (actual.digest !== PIN.digest) {
+    return `The resolved output changed without a role change: bump THEME_CACHE_EPOCH to ${PIN.epoch + 1} in packages/data-provider/src/theme.ts and set PIN to ${JSON.stringify({ roles: actual.roles, epoch: PIN.epoch + 1, digest: actual.digest })}.`;
+  }
+  if (actual.epoch !== PIN.epoch) {
+    return `THEME_CACHE_EPOCH is ${actual.epoch}; set PIN.epoch to match.`;
+  }
+  return '';
+}
+
+describe('resolver output pin', () => {
+  const current = () => ({
+    roles: themeRoleFingerprint().split('.').pop() as string,
+    epoch: THEME_CACHE_EPOCH,
+    digest: digestOf(JSON.stringify(resolvedOutput())),
+  });
+
+  it('matches the resolved output of every cacheable definition and role fixture', () => {
+    expect(pinStatus(current())).toBe('');
+  });
+
+  it('tells a role change from an output change', () => {
+    const actual = { ...PIN };
+    expect(pinStatus({ ...actual, roles: 'other' })).toMatch(/do not bump THEME_CACHE_EPOCH/);
+    expect(pinStatus({ ...actual, digest: 'other' })).toMatch(/bump THEME_CACHE_EPOCH to/);
+    expect(pinStatus({ ...actual, epoch: actual.epoch + 1 })).toMatch(/set PIN.epoch/);
   });
 });
