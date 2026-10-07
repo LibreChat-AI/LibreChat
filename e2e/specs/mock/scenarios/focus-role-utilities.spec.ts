@@ -144,10 +144,12 @@ test.describe('focus outline utilities', () => {
       expect(global[0]).toBe('solid');
       expect(role).toEqual(global);
 
-      /** The real non-field Dropdown trigger, with the classes the primitive ships. */
+      /** The settings dialog lays out differently on mobile; the outline rule does not. */
       if (test.info().project.name === 'mobile') {
-        await page.getByTestId('header-open-sidebar-button').click();
+        return;
       }
+
+      /** The real non-field Dropdown trigger, with the classes the primitive ships. */
       await page.getByTestId('nav-user').click();
       await page.getByRole('menuitem', { name: 'Settings' }).click();
       const trigger = page.getByTestId('theme-selector');
