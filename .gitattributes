@@ -1,3 +1,8 @@
 # Force LF line endings for shell scripts and git hooks (required for cross-platform compatibility)
 .husky/* text eol=lf
 *.sh text eol=lf
+
+# Files OpenTofu reads and hashes (image tags, task triggers): CRLF on one
+# machine would change the hashes and redeploy on every apply from the other.
+librechat.*.yaml text eol=lf
+otel/** text eol=lf
