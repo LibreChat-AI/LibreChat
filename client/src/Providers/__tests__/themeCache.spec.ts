@@ -182,7 +182,7 @@ describe('theme cache storage', () => {
  * - definitions with one or both mode blocks absent.
  * A new role, or a new fallback, joins by construction.
  */
-const PIN = { fingerprint: '1.2.leqd1k', inputs: '6tsx5o', fixed: 'g0tykq', sampled: '1pr5mkz' };
+const PIN = { fingerprint: '1.2.leqd1k', digest: '1fm6x5m' };
 
 const digestOf = (text: string): string => {
   let hash = 5381;
@@ -251,11 +251,19 @@ const define = (
 const BARE = define('bare', () => ({}), 'both');
 const isValid = (theme: ThemeDefinition): boolean => validateThemeDefinition(theme).length === 0;
 
+/** Every candidate the validator accepts for each appearance role, pinned so a narrowing or widening shows. */
+const ACCEPTED: Record<string, string[]> = Object.fromEntries(
+  themeAppearanceTokens.map((token) => [
+    token,
+    APPEARANCE_CANDIDATES.filter((value) =>
+      isValid(define(token, () => ({ appearance: { [token]: value } }), 'both')),
+    ),
+  ]),
+);
+
 /** The first sample the validator accepts for an appearance role, and `none` when it takes it. */
 function appearanceSamples(token: string): string[] {
-  const accepted = APPEARANCE_CANDIDATES.filter((value) =>
-    isValid(define(token, () => ({ appearance: { [token]: value } }), 'both')),
-  );
+  const accepted = ACCEPTED[token];
   if (accepted.length === 0) {
     throw new Error(`Add a valid sample for the appearance role ${token} to APPEARANCE_CANDIDATES`);
   }
@@ -403,38 +411,18 @@ const persistedOutput = () => {
   ].sort((a, b) => byCodePoint(a.key, b.key));
   return fixtures.map(({ key, theme }) => {
     const { light, dark } = buildThemeCache(OWNER, key, theme).modes;
-    return [key, canonical(light), canonical(dark)] as const;
+    return [key, canonical(light), canonical(dark)];
   });
 };
-
-/** Fixtures built from SAMPLES, whose input moves when a validator accepts another candidate. */
-const isSampled = (key: string): boolean =>
-  key.startsWith('appearance:') || key.startsWith('derived:appearance:');
-
-/** Output digests split by whether the fixture depends on the generated samples. */
-function outputDigests(): { fixed: string; sampled: string } {
-  const output = persistedOutput();
-  return {
-    fixed: digestOf(JSON.stringify(output.filter(([key]) => !isSampled(key)))),
-    sampled: digestOf(JSON.stringify(output.filter(([key]) => isSampled(key)))),
-  };
-}
 
 /** What the contributor has to do, or an empty string when the pin is current. */
 function pinStatus(actual: typeof PIN): string {
   const refreshed = JSON.stringify(actual);
-  const bump = `bump THEME_CACHE_EPOCH in packages/data-provider/src/theme.ts, then set PIN to ${refreshed}.`;
   if (actual.fingerprint !== PIN.fingerprint) {
     return `The cache version changed (role set, theme version or epoch), which already retires cached entries: set PIN to ${refreshed}.`;
   }
-  if (actual.fixed !== PIN.fixed) {
-    return `The persisted output changed without a version change: ${bump}`;
-  }
-  if (actual.inputs !== PIN.inputs) {
-    return `The generated fixture inputs changed (an appearance sample the validator now accepts), not the resolver: set PIN to ${refreshed}.`;
-  }
-  if (actual.sampled !== PIN.sampled) {
-    return `The persisted output changed without a version change: ${bump}`;
+  if (actual.digest !== PIN.digest) {
+    return `The persisted output or the accepted appearance values changed without a version change: bump THEME_CACHE_EPOCH in packages/data-provider/src/theme.ts, then set PIN to the refreshed fingerprint and digest (digest ${actual.digest}).`;
   }
   return '';
 }
@@ -443,8 +431,7 @@ describe('resolver output pin', () => {
   it('matches the persisted output of every cacheable definition and generated fixture', () => {
     const status = pinStatus({
       fingerprint: themeRoleFingerprint(),
-      inputs: digestOf(JSON.stringify(SAMPLES)),
-      ...outputDigests(),
+      digest: digestOf(JSON.stringify({ accepted: ACCEPTED, output: persistedOutput() })),
     });
     expect(status).toBe('');
   });
@@ -458,12 +445,7 @@ describe('resolver output pin', () => {
 
   it('tells a version change from an output change', () => {
     expect(pinStatus({ ...PIN, fingerprint: 'other' })).toMatch(/cache version changed/);
-    expect(pinStatus({ ...PIN, inputs: 'other' })).toMatch(/fixture inputs changed/);
-    expect(pinStatus({ ...PIN, inputs: 'other', fixed: 'other' })).toMatch(
-      /bump THEME_CACHE_EPOCH/,
-    );
-    expect(pinStatus({ ...PIN, fixed: 'other' })).toMatch(/bump THEME_CACHE_EPOCH/);
-    expect(pinStatus({ ...PIN, sampled: 'other' })).toMatch(/bump THEME_CACHE_EPOCH/);
+    expect(pinStatus({ ...PIN, digest: 'other' })).toMatch(/bump THEME_CACHE_EPOCH/);
     expect(pinStatus(PIN)).toBe('');
   });
 });
