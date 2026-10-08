@@ -411,13 +411,64 @@ describe('PullRequestRowMark', () => {
     await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
   });
 
-  it('does not open the card from a row the pointer has not moved over', async () => {
+  it('opens the card from a single sampled move into the row', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark({}, true);
     await screen.findByTestId('convo-pull-request');
     movePointerOver(screen.getByTestId('row-title'));
+    expect(await screen.findByTestId('pull-request-card')).toHaveTextContent(pr.title);
+  });
+
+  it('does not open the card when the row scrolls under a still pointer', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    /* The pointer rests at one spot; the list then scrolls the row under it. */
+    fireEvent.mouseMove(document.body, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
+    fireEvent.mouseMove(title, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
+    fireEvent.mouseMove(title, { screenX: 50, screenY: 50, movementX: 0, movementY: 0 });
     await new Promise((resolve) => setTimeout(resolve, 250));
     expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('does not open the card after the row is clicked before the hover delay ends', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    movePointerOver(title);
+    fireEvent.mouseDown(title);
+    fireEvent.mouseUp(title);
+    fireEvent.click(title);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('returns focus to the icon when a card opened from the row is dismissed', async () => {
+    /* jsdom has no layout, and Ariakit only restores focus to an element it can see. */
+    const rects = jest
+      .spyOn(Element.prototype, 'getClientRects')
+      .mockReturnValue([new DOMRect(0, 0, 16, 16)] as unknown as DOMRectList);
+    try {
+      mockGetMany.mockResolvedValue(answer('convo-1', pr));
+      renderMark({}, true);
+      const mark = await screen.findByTestId('convo-pull-request');
+      const title = screen.getByTestId('row-title');
+      movePointerOver(title);
+      movePointerOver(title);
+      await screen.findByTestId('pull-request-card');
+      const link = screen.getByTestId('pull-request-github-link');
+      link.focus();
+      fireEvent.keyDown(link, { key: 'Escape' });
+      await waitFor(() =>
+        expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument(),
+      );
+      await waitFor(() => expect(mark).toHaveFocus());
+    } finally {
+      rects.mockRestore();
+    }
   });
 
   it('does not open the row when the card is clicked', async () => {
