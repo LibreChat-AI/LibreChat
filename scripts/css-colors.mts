@@ -50,11 +50,12 @@ const RELATIVE_COLOR = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\
 const CHANNEL_KEYWORD = /(?<![\w-])(?:[rgbhslwcaxyz]|alpha)(?![\w-])/i;
 const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
-const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*${CHANNEL})?`;
+const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
 const TRIPLET = new RegExp(
   `^\\s*${BARE_TRIPLET}\\s*$|var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)`,
 );
+const TRIPLET_FALLBACK = new RegExp(`^var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)$`);
 const NAMED = new RegExp(`(?<![\\w.-])(?:${NAMED_COLORS.join('|')})(?![\\w.-])`, 'gi');
 /** Properties whose values are identifiers or names, where a colour keyword is not a colour. */
 const NON_COLOR_PROPERTY =
@@ -124,10 +125,19 @@ function relativeTokens(text: string, start: number): Token[] {
   return tokens;
 }
 
-const isFixedChannel = (channel: string): boolean =>
-  /^[\d.+-]/.test(channel) ||
-  /^none$/i.test(channel) ||
-  (/^[\w-]+\(/.test(channel) && !/^var\(/i.test(channel) && !CHANNEL_KEYWORD.test(channel));
+const isFixedFallback = (channel: string): boolean => {
+  const fallback = /^var\(\s*--[\w-]+\s*,\s*([\s\S]*)\)$/i.exec(channel)?.[1];
+  return fallback !== undefined && isFixedChannel(fallback.trim());
+};
+
+function isFixedChannel(channel: string): boolean {
+  return (
+    /^[\d.+-]/.test(channel) ||
+    /^none$/i.test(channel) ||
+    isFixedFallback(channel) ||
+    (/^[\w-]+\(/.test(channel) && !/^var\(/i.test(channel) && !CHANNEL_KEYWORD.test(channel))
+  );
+}
 
 /**
  * A relative colour keeps its origin's channels by name (`r g b`); a number, `none` or a function
@@ -139,7 +149,10 @@ function relativeLiterals(text: string): Array<{ literal: string; offset: number
     const offset = match.index ?? 0;
     const bodyStart = offset + match[0].length;
     const isColorFunction = /^color\(/i.test(match[0]);
-    const [, ...rest] = relativeTokens(text, bodyStart);
+    const [origin, ...rest] = relativeTokens(text, bodyStart);
+    if (origin && TRIPLET_FALLBACK.test(origin.text)) {
+      return [{ literal: text.slice(offset, origin.end), offset }];
+    }
     const channels = rest.slice(isColorFunction ? 1 : 0, isColorFunction ? 4 : 3);
     const fixed = channels.find((channel) => isFixedChannel(channel.text));
     return fixed ? [{ literal: text.slice(offset, fixed.end), offset }] : [];
