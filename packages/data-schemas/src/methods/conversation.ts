@@ -3900,6 +3900,12 @@ export function createConversationMethods(
         nextCursor = Buffer.from(JSON.stringify(composite)).toString('base64');
       }
 
+      /* Stamped by the replica that selected the decision, so a row from one that predates it
+         is told apart from an ordinary chat, which carries no decision either. */
+      for (const convo of convos) {
+        convo.codeDecisionListed = true;
+      }
+
       if (sharedIds != null) {
         for (const convo of convos) {
           convo.isShared = sharedIds.has(convo.conversationId);

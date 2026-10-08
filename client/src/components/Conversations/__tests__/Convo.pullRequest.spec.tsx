@@ -8,10 +8,9 @@ const mockStartup: {
   current: {
     pullRequestsEnabled?: boolean;
     pullRequestsBatchVersion?: number;
-    pullRequestsCodeScoped?: boolean;
   };
 } = {
-  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1, pullRequestsCodeScoped: true },
+  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
 };
 const mockMarkProps: Array<Record<string, unknown>> = [];
 /** What the mock mark reports to the row, as the real one does once it has text to show. */
@@ -90,10 +89,15 @@ import Conversation from '../Convo';
 const conversation = {
   conversationId: 'convo-1',
   title: 'Tool Approval UI',
+  codeDecisionListed: true,
   codeEnvironmentMode: 'attached',
   codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
 } as TConversation;
-const ordinary = { conversationId: 'convo-1', title: 'Tool Approval UI' } as TConversation;
+const ordinary = {
+  conversationId: 'convo-1',
+  title: 'Tool Approval UI',
+  codeDecisionListed: true,
+} as TConversation;
 
 const renderRow = (props: { isGenerating?: boolean; convo?: TConversation } = {}) =>
   render(
@@ -116,7 +120,6 @@ describe('Conversation row pull request', () => {
     mockStartup.current = {
       pullRequestsEnabled: true,
       pullRequestsBatchVersion: 1,
-      pullRequestsCodeScoped: true,
     };
   });
 
@@ -192,9 +195,8 @@ describe('Conversation row pull request', () => {
     expect(rowButton().getAttribute('aria-describedby')).toBeNull();
   });
 
-  it('keeps asking for every row on a server that does not list the code decision', () => {
-    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
-    renderRow({ convo: ordinary });
+  it('keeps asking for a row its replica did not stamp, since it cannot be told from an ordinary chat', () => {
+    renderRow({ convo: { ...ordinary, codeDecisionListed: undefined } as TConversation });
     expect(screen.getByTestId('convo-pull-request')).toBeInTheDocument();
   });
 

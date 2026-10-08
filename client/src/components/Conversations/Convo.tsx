@@ -82,9 +82,10 @@ function Conversation({
   const showPullRequest =
     startupConfig?.pullRequestsEnabled === true &&
     startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
-    /* Rows of a server that lists no code decision cannot be told apart, so they all ask, as
-       before; once it lists them, only code conversations can have a pull request. */
-    (startupConfig.pullRequestsCodeScoped !== true || isCodeConversation(conversation)) &&
+    /* A row the listing replica stamped carries its code decision, so only code conversations
+       ask. One without the stamp (an older replica, a row inserted from the cache) cannot be
+       told apart from an ordinary chat and keeps asking, as before. */
+    (conversation.codeDecisionListed !== true || isCodeConversation(conversation)) &&
     !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);

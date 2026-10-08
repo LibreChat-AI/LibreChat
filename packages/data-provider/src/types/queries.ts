@@ -60,6 +60,7 @@ export type MinimalConversation = Pick<
   /** Lets a row tell a code conversation, the only kind that can have a pull request. */
   | 'codeEnvironmentMode'
   | 'codeWorkspaces'
+  | 'codeDecisionListed'
 >;
 
 export type ConversationListResponse = {

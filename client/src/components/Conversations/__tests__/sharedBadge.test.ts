@@ -53,4 +53,10 @@ describe('conversation list memoization of the shared badge', () => {
 
     expect(areConversationListItemFieldsEqual(baseConversation, attached)).toBe(false);
   });
+
+  it('treats the listing replica stamping the decision as a re-render', () => {
+    const stamped = { ...baseConversation, codeDecisionListed: true } as TConversation;
+
+    expect(areConversationListItemFieldsEqual(baseConversation, stamped)).toBe(false);
+  });
 });

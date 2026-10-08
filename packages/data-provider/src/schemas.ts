@@ -1195,6 +1195,8 @@ export const tConversationSchema = z.object({
   pinned: z.boolean().optional(),
   /** Server-derived: an active shared link exists for this conversation. Not persisted. */
   isShared: z.boolean().optional(),
+  /** Server-derived on list rows: the listing replica returned the code decision. Not persisted. */
+  codeDecisionListed: z.boolean().optional(),
   codeApprovalMode: z.enum(CODE_APPROVAL_MODES).optional(),
   codeEnvironmentMode: z.enum(CODE_ENVIRONMENT_MODES).optional(),
   codeWorkspaces: z

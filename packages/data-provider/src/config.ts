@@ -3156,10 +3156,6 @@ export type TStartupConfig = {
   /** `endpoints.agents.pullRequests.maxConcurrentLookups`, so the single-route fallback of an
    *  upgrade in progress keeps to the limit the operator configured. */
   pullRequestsMaxConcurrentLookups?: number;
-  /** Present with `pullRequestsEnabled` once this server's conversation list carries the code
-   *  decision of each row, so the sidebar can ask only code conversations for a pull request.
-   *  A server without it lists rows that cannot be told apart, and its client asks for all. */
-  pullRequestsCodeScoped?: true;
   /** Manual context compaction, gated by the same `summarization.enabled`
    *  switch that governs the automatic detour. */
   compactionEnabled?: boolean;

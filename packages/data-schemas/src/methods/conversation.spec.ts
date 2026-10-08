@@ -1509,6 +1509,7 @@ describe('Conversation Operations', () => {
       expect(conversations.find((row) => row.conversationId === plainId)).not.toHaveProperty(
         'codeEnvironmentMode',
       );
+      expect(conversations.every((row) => row.codeDecisionListed === true)).toBe(true);
     });
 
     it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
