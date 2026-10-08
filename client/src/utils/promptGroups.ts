@@ -1,10 +1,10 @@
 import { InfiniteCollections, QueryKeys } from 'librechat-data-provider';
-import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import type {
   PromptGroupListResponse,
   PromptGroupListData,
   TPromptGroup,
 } from 'librechat-data-provider';
+import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import {
   addData,
   deleteData,
@@ -93,17 +93,46 @@ export const findPromptGroup = (
   );
 };
 
+const restartUnresolvedAllPromptGroups = (
+  queryClient: QueryClient,
+  queryKey: string[],
+): boolean => {
+  const state = queryClient.getQueryState(queryKey);
+  /**
+   * An idle, never-fetched list must not be seeded partial; its first fetch
+   * includes the mutation. A first fetch already in flight may have read the
+   * database before the mutation and settle stale (invalidating alone does not
+   * cancel a data-less fetch in React Query v4), and an errored fetch never
+   * retries on its own because retry and refetch triggers are off.
+   */
+  if (!state || state.data === undefined) {
+    if (state && (state.fetchStatus === 'fetching' || state.status === 'error')) {
+      void queryClient.cancelQueries(queryKey).then(() => queryClient.invalidateQueries(queryKey));
+    }
+    return true;
+  }
+  return false;
+};
+
 export const addGroupToAll = (queryClient: QueryClient, newGroup: TPromptGroup) => {
-  addToCacheList<TPromptGroup>(queryClient, [QueryKeys.allPromptGroups], newGroup);
+  const queryKey = [QueryKeys.allPromptGroups];
+  if (restartUnresolvedAllPromptGroups(queryClient, queryKey)) {
+    return;
+  }
+  addToCacheList<TPromptGroup>(queryClient, queryKey, newGroup);
 };
 
 export const updateGroupInAll = (
   queryClient: QueryClient,
   updatedGroup: Partial<TPromptGroup> & { _id: string },
 ) => {
+  const queryKey = [QueryKeys.allPromptGroups];
+  if (restartUnresolvedAllPromptGroups(queryClient, queryKey)) {
+    return;
+  }
   updateCacheList<TPromptGroup>({
     queryClient,
-    queryKey: [QueryKeys.allPromptGroups],
+    queryKey,
     searchProperty: '_id',
     updateData: updatedGroup,
     searchValue: updatedGroup._id,
@@ -111,5 +140,9 @@ export const updateGroupInAll = (
 };
 
 export const removeGroupFromAll = (queryClient: QueryClient, groupId: string) => {
-  removeFromCacheList<TPromptGroup>(queryClient, [QueryKeys.allPromptGroups], '_id', groupId);
+  const queryKey = [QueryKeys.allPromptGroups];
+  if (restartUnresolvedAllPromptGroups(queryClient, queryKey)) {
+    return;
+  }
+  removeFromCacheList<TPromptGroup>(queryClient, queryKey, '_id', groupId);
 };

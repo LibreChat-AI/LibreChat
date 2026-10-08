@@ -1501,6 +1501,7 @@ export const _internal: {
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+const POTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.template';
 const ODS_MIME = 'application/vnd.oasis.opendocument.spreadsheet';
 const CSV_MIME_PATTERN = /^(text\/csv|application\/csv|text\/comma-separated-values)$/i;
 
@@ -1541,7 +1542,7 @@ function baseMime(mime: string): string {
  * `text/csv`), which then routed to the SPREADSHEET bucket on the
  * client expecting full HTML and got raw text instead.
  */
-export type OfficeHtmlBucket = 'docx' | 'spreadsheet' | 'csv' | 'pptx';
+export type OfficeHtmlBucket = 'docx' | 'spreadsheet' | 'csv' | 'presentation';
 
 const OFFICE_EXTENSIONS: Record<string, OfficeHtmlBucket> = {
   docx: 'docx',
@@ -1549,7 +1550,8 @@ const OFFICE_EXTENSIONS: Record<string, OfficeHtmlBucket> = {
   xlsx: 'spreadsheet',
   xls: 'spreadsheet',
   ods: 'spreadsheet',
-  pptx: 'pptx',
+  pptx: 'presentation',
+  potx: 'presentation',
 };
 
 /**
@@ -1608,8 +1610,8 @@ export function officeHtmlBucket(name: string, mimeType: string): OfficeHtmlBuck
   if (excelMimeTypes.test(normalized) || normalized === ODS_MIME) {
     return 'spreadsheet';
   }
-  if (normalized === PPTX_MIME) {
-    return 'pptx';
+  if (normalized === PPTX_MIME || normalized === POTX_MIME) {
+    return 'presentation';
   }
   return null;
 }
@@ -1632,7 +1634,7 @@ export async function bufferToOfficeHtml(
       return csvToHtml(buffer);
     case 'spreadsheet':
       return excelSheetToHtml(buffer);
-    case 'pptx':
+    case 'presentation':
       return pptxToHtml(buffer);
     default:
       return null;

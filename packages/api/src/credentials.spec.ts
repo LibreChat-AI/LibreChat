@@ -109,6 +109,57 @@ describe('credentials', () => {
     }
   });
 
+  it.each([
+    ['passphrase', 'not-a-hex-key'],
+    ['short AES-128 key', 'a'.repeat(32)],
+    ['short AES-192 key', 'a'.repeat(48)],
+    ['odd-length key', 'a'.repeat(63)],
+    ['trailing non-hex', `${'a'.repeat(64)}!`],
+    ['whitespace', ` ${'a'.repeat(64)}`],
+  ])('refuses startup for a configured %s without logging the key', (_case, value) => {
+    process.env.CREDS_KEY = value;
+
+    expect(() => bootstrapCredentials()).toThrow(
+      '[credentials] CREDS_KEY must be exactly 64 hexadecimal characters (32 bytes).',
+    );
+    expect(() => bootstrapCredentials()).not.toThrow(value);
+    expect(getCredentialRuntimeState()).toBeUndefined();
+    expect(fs.existsSync(tempFile)).toBe(false);
+    expect(process.env.CREDS_KEY).toBe(value);
+  });
+
+  it.each([
+    ['passphrase', 'not-hex'],
+    ['short IV', 'b'.repeat(30)],
+    ['overlong IV', 'b'.repeat(64)],
+    ['trailing non-hex', `${'b'.repeat(32)}!`],
+  ])(
+    'refuses startup for a configured %s even when temporary credentials exist',
+    (_case, value) => {
+      fs.writeFileSync(tempFile, `CREDS_IV=${'b'.repeat(32)}\n`);
+      process.env.CREDS_IV = value;
+
+      expect(() => bootstrapCredentials()).toThrow(
+        '[credentials] CREDS_IV must be exactly 32 hexadecimal characters (16 bytes).',
+      );
+      expect(getCredentialRuntimeState()).toBeUndefined();
+      expect(process.env.CREDS_KEY).toBeUndefined();
+      expect(process.env.CREDS_IV).toBe(value);
+    },
+  );
+
+  it('accepts exact-length uppercase hex credentials without replacing them', () => {
+    process.env.CREDS_KEY = 'A'.repeat(64);
+    process.env.CREDS_IV = 'B'.repeat(32);
+
+    const state = bootstrapCredentials();
+
+    expect(state.sources.CREDS_KEY).toBe('environment');
+    expect(state.sources.CREDS_IV).toBe('environment');
+    expect(process.env.CREDS_KEY).toBe('A'.repeat(64));
+    expect(process.env.CREDS_IV).toBe('B'.repeat(32));
+  });
+
   it('preserves explicitly configured JWT secrets for backward compatibility', () => {
     process.env.JWT_SECRET = 'short-but-explicit';
     process.env.JWT_REFRESH_SECRET = 'another-explicit-value';
@@ -120,6 +171,46 @@ describe('credentials', () => {
     expect(state.sources.JWT_SECRET).toBe('environment');
     expect(state.sources.JWT_REFRESH_SECRET).toBe('environment');
     expect(state.generated).toEqual(['CREDS_KEY', 'CREDS_IV']);
+  });
+
+  it.each([
+    ['JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef'],
+    ['JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418'],
+  ] as const)('rejects retired default %s values', (name, value) => {
+    process.env[name] = value;
+
+    expect(() => bootstrapCredentials()).toThrow(
+      `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+    );
+  });
+
+  it.each([
+    ['JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef'],
+    ['JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418'],
+  ] as const)('rejects retired default %s values from temporary credentials', (name, value) => {
+    fs.writeFileSync(tempFile, `${name}=${value}\n`);
+
+    expect(() => bootstrapCredentials()).toThrow(
+      `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+    );
+  });
+
+  it('rejects a retired default adopted from a concurrent temporary credential write', () => {
+    fs.writeFileSync(tempFile, `CREDS_KEY=${'a'.repeat(64)}\nCREDS_IV=${'b'.repeat(32)}\n`);
+    fs.writeFileSync(
+      `${tempFile}.lock`,
+      [
+        `CREDS_KEY=${'a'.repeat(64)}`,
+        `CREDS_IV=${'b'.repeat(32)}`,
+        'JWT_SECRET=16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef',
+        `JWT_REFRESH_SECRET=${'c'.repeat(64)}`,
+      ].join('\n'),
+      { mode: 0o600 },
+    );
+
+    expect(() => bootstrapCredentials()).toThrow(
+      '[credentials] JWT_SECRET uses a retired default value. Configure a unique replacement before starting LibreChat.',
+    );
   });
 
   it('does not overwrite an explicitly selected environment file', () => {

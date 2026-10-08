@@ -393,6 +393,53 @@ describe('Langfuse feedback scores', () => {
     expect(getFetchMock()).toHaveBeenCalledTimes(1);
   });
 
+  it('records the sampling decision of the run a failed turn stands for', async () => {
+    process.env.LANGFUSE_SAMPLE_RATE = '0.5';
+    await loadFeedback();
+    const { getLangfuseTraceMessageFields } = await import('./destinations');
+    const { isLangfuseTraceSampled } = await import('./policy');
+    const { traceIdForMessage } = await import('./trace');
+    const ids = Array.from({ length: 64 }, (_, index) => `id-${index}`);
+    const sampled = (id: string) => isLangfuseTraceSampled(traceIdForMessage(id));
+    const runId = ids.find(sampled) as string;
+    const rowId = ids.find((id) => !sampled(id)) as string;
+
+    await expect(getLangfuseTraceMessageFields(undefined, rowId, { runId })).resolves.toEqual({
+      langfuseSampled: true,
+      langfuseDestinationIds: [expect.any(String)],
+      langfuseRunId: runId,
+    });
+    await expect(getLangfuseTraceMessageFields(undefined, runId)).resolves.not.toHaveProperty(
+      'langfuseRunId',
+    );
+    await expect(getLangfuseTraceMessageFields(undefined, rowId)).resolves.toMatchObject({
+      langfuseSampled: false,
+    });
+  });
+
+  it('names the run of a failed turn only when that run was created', async () => {
+    await loadFeedback();
+    const { getFailedTurnTraceFields } = await import('./destinations');
+
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: false,
+      }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, { messageId: 'user-1_', runId: null, runCreated: true }),
+    ).resolves.toEqual({});
+    await expect(
+      getFailedTurnTraceFields(undefined, {
+        messageId: 'user-1_',
+        runId: 'run-1',
+        runCreated: true,
+      }),
+    ).resolves.toMatchObject({ langfuseSampled: true, langfuseRunId: 'run-1' });
+  });
+
   it('keeps the central destination identity stable when credentials rotate', async () => {
     const { sendFeedbackScore } = await loadFeedback();
     const { getLangfuseTraceDestinationIds } = await import('./destinations');
@@ -1202,5 +1249,237 @@ describe('Langfuse feedback scores', () => {
     });
 
     expect(getFetchMock()).not.toHaveBeenCalled();
+  });
+  it('captures no destinations when central export is suppressed without a fanout route', async () => {
+    delete process.env.LANGFUSE_PUBLIC_KEY;
+    delete process.env.LANGFUSE_SECRET_KEY;
+    process.env.LANGFUSE_FANOUT_TENANT_DESTINATIONS = 'eu=http://tenant-langfuse:3000';
+    await loadFeedback();
+    const { getLangfuseTraceDestinationIds } = await import('./destinations');
+
+    /** `resolveLangfuseExportPlan` reports `disabled` for this shape — no fanout
+     *  route to fall back on — so capturing the configured connection would let
+     *  later feedback reach a project the trace never went to. */
+    await expect(
+      getLangfuseTraceDestinationIds(
+        appConfigWithLangfuse({
+          publicKey: 'tenant-public-key',
+          secretKey: encryptedTenantSecret(),
+          destination: 'eu',
+        }),
+        'trace-id',
+        true,
+        { centralTraceExportEnabled: false },
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it('records no restriction when a suppressed-central trace has no identifiable destination', async () => {
+    enableTenantFanout();
+    process.env.LANGFUSE_FANOUT_TENANT_DESTINATIONS = 'eu=http://tenant-langfuse:3000';
+    await loadFeedback();
+    const { getLangfuseTraceDestinationIds } = await import('./destinations');
+
+    /** Tenant `projectId` is optional, so this eligible destination carries no
+     *  stable id. An empty list would reject it at feedback time and drop the
+     *  rating; the opt-out is re-asserted through `sendFeedbackScore` instead. */
+    await expect(
+      getLangfuseTraceDestinationIds(
+        appConfigWithLangfuse({
+          publicKey: 'tenant-public-key',
+          secretKey: encryptedTenantSecret(),
+          destination: 'eu',
+          projectId: undefined,
+        }),
+        'trace-id',
+        true,
+        { centralTraceExportEnabled: false },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('sends unrestricted suppressed-central feedback to the tenant only', async () => {
+    enableTenantFanout();
+    process.env.LANGFUSE_BASE_URL = 'http://central-langfuse:3000';
+    process.env.LANGFUSE_FANOUT_TENANT_DESTINATIONS = 'eu=http://tenant-langfuse:3000';
+    const { sendFeedbackScore } = await loadFeedback();
+
+    /** The trace reached the tenant through its fanout route while central export
+     *  was suppressed, and left no destination ids to filter on. The rating has to
+     *  follow the same policy: tenant receives it, central stays excluded. */
+    await sendFeedbackScore({
+      traceId: 'trace-id',
+      feedback: { rating: 'thumbsUp' },
+      destinationIds: undefined,
+      centralTraceExportEnabled: false,
+      appConfig: appConfigWithLangfuse({
+        publicKey: 'tenant-public-key',
+        secretKey: encryptedTenantSecret(),
+        destination: 'eu',
+        projectId: undefined,
+      }),
+    });
+
+    expect(getFetchMock()).toHaveBeenCalledTimes(1);
+    expect(getFetchMock()).toHaveBeenCalledWith(
+      'http://tenant-langfuse:3000/api/public/scores',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: getTenantAuthorization(),
+        }),
+      }),
+    );
+  });
+
+  it('sends configured headers with score creation', async () => {
+    process.env.LANGFUSE_BASE_URL = 'https://langfuse.internal';
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: { rating: 'thumbsUp' },
+      appConfig: appConfigWithLangfuse({
+        headers: { 'CF-Access-Client-Id': 'proxy-client' },
+      }),
+    });
+
+    expect(getFetchMock()).toHaveBeenCalledWith(
+      'https://langfuse.internal/api/public/scores',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'CF-Access-Client-Id': 'proxy-client',
+          Authorization: getCentralAuthorization(),
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+  });
+
+  it('refuses redirects on requests carrying custom headers', async () => {
+    process.env.LANGFUSE_BASE_URL = 'https://langfuse.internal';
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: { rating: 'thumbsUp' },
+      appConfig: appConfigWithLangfuse({
+        headers: { 'X-Proxy-Token': 'proxy-token' },
+      }),
+    });
+
+    /** Node drops `Authorization` across a cross-origin redirect but keeps
+     *  arbitrary headers, so following one would hand the gateway credential
+     *  to a host that passed no origin check. */
+    const [, init] = getFetchMock().mock.calls[0] as [string, RequestInit];
+    expect(init.redirect).toBe('error');
+  });
+
+  it('keeps default redirect handling when no custom headers are configured', async () => {
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: { rating: 'thumbsUp' },
+      appConfig: appConfigWithLangfuse({}),
+    });
+
+    const [, init] = getFetchMock().mock.calls[0] as [string, RequestInit];
+    expect(init.redirect).toBeUndefined();
+  });
+
+  it('withholds configured headers from an unconfigured origin', async () => {
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: { rating: 'thumbsUp' },
+      appConfig: appConfigWithLangfuse({
+        headers: { 'CF-Access-Client-Id': 'internal-gateway-token' },
+      }),
+    });
+
+    /** Default central export is Langfuse Cloud, which the operator never
+     *  pointed at — a gateway credential must not be disclosed to it. */
+    const [url, init] = getFetchMock().mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://cloud.langfuse.com/api/public/scores');
+    expect(JSON.stringify(init.headers)).not.toContain('internal-gateway-token');
+  });
+
+  it('sends configured headers with score deletion', async () => {
+    process.env.LANGFUSE_BASE_URL = 'https://langfuse.internal';
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: null,
+      appConfig: appConfigWithLangfuse({
+        headers: { 'CF-Access-Client-Id': 'proxy-client' },
+      }),
+    });
+
+    expect(getFetchMock()).toHaveBeenCalledWith(
+      expect.stringContaining('/api/public/scores/'),
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({
+          'CF-Access-Client-Id': 'proxy-client',
+          Authorization: getCentralAuthorization(),
+        }),
+      }),
+    );
+  });
+
+  it.each(['Authorization', 'authorization', 'AUTHORIZATION'])(
+    'never lets a configured %s header displace the Langfuse authorization',
+    async (headerName) => {
+      const { sendFeedbackScore } = await loadFeedback();
+
+      await sendFeedbackScore({
+        traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+        feedback: { rating: 'thumbsUp' },
+        appConfig: appConfigWithLangfuse({
+          headers: { [headerName]: 'Bearer proxy-token' },
+        }),
+      });
+
+      const [, init] = getFetchMock().mock.calls[0] as [string, RequestInit];
+      const headers = init.headers as Record<string, string>;
+      /** A surviving case variant would be *appended* by fetch, sending a
+       *  combined "Bearer proxy-token, Basic ..." value rather than ours. */
+      expect(
+        Object.keys(headers).filter((key) => key.toLowerCase() === 'authorization'),
+      ).toHaveLength(1);
+      expect(Object.values(headers)).toContain(getCentralAuthorization());
+      expect(Object.values(headers)).not.toContain('Bearer proxy-token');
+    },
+  );
+
+  it('sends configured headers with the central project identity lookup', async () => {
+    delete process.env.LANGFUSE_PROJECT_ID;
+    process.env.LANGFUSE_BASE_URL = 'https://langfuse.internal';
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'discovered-project' }] }), { status: 200 }),
+    );
+    const { sendFeedbackScore } = await loadFeedback();
+
+    await sendFeedbackScore({
+      traceId: '86d413435f8b0d7f32d4d010ce769e2e',
+      feedback: { rating: 'thumbsUp' },
+      appConfig: appConfigWithLangfuse({
+        headers: { 'CF-Access-Client-Id': 'proxy-client' },
+      }),
+    });
+
+    expect(getFetchMock()).toHaveBeenCalledWith(
+      'https://langfuse.internal/api/public/projects',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'CF-Access-Client-Id': 'proxy-client',
+          Authorization: getCentralAuthorization(),
+        }),
+      }),
+    );
   });
 });

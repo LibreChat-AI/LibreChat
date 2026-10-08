@@ -1,7 +1,7 @@
 import React from 'react';
-import { UIResourceRenderer } from '@mcp-ui/client';
 import { useOptionalMessagesConversation, useOptionalMessagesOperations } from '~/Providers';
 import { useConversationUIResources } from '~/hooks/Messages/useConversationUIResources';
+import UIResourceRenderer, { isSupportedUIResource } from './Renderer';
 import { handleUIAction } from '~/utils';
 import { useLocalize } from '~/hooks';
 
@@ -34,6 +34,10 @@ export function MCPUIResource(props: MCPUIResourceProps) {
     );
   }
 
+  if (!isSupportedUIResource(uiResource)) {
+    return null;
+  }
+
   try {
     return (
       <span className="mx-1 inline-block w-full align-middle">
@@ -42,7 +46,6 @@ export function MCPUIResource(props: MCPUIResourceProps) {
           onUIAction={async (result) => handleUIAction(result, ask)}
           htmlProps={{
             autoResizeIframe: { width: true, height: true },
-            sandboxPermissions: 'allow-popups',
           }}
         />
       </span>

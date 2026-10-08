@@ -1,6 +1,4 @@
-import fs from 'node:fs';
 import { expect, test } from '@playwright/test';
-import type { Page, TestInfo } from '@playwright/test';
 import {
   MOCK_ENDPOINTS,
   NEW_CHAT_PATH,
@@ -15,194 +13,14 @@ import {
   END_MARKER,
   SENTENCE,
 } from './payload';
-
-type RenderTally = Record<string, { count: number; time: number }>;
-
-type PerfSnapshot = {
-  renders: RenderTally;
-  longTasks: number[];
-  /** Milliseconds between the phase's anchor render and this snapshot, on
-   *  the page's own clock: the first ThinkingContent render (assistant
-   *  content = stream start) when one occurred, else the first render after
-   *  the reset (typing phase), else the reset itself. Idle request-setup
-   *  time before the assistant renders never pads the interval. */
-  elapsedMs: number;
-};
-
-type PerfGlobal = {
-  renders: RenderTally;
-  longTasks: number[];
-  startedAt: number;
-  firstRenderAt: number | null;
-  firstStreamRenderAt: number | null;
-  drain(): void;
-  reset(): void;
-};
-
-declare global {
-  interface Window {
-    __PERF__: PerfGlobal;
-  }
-}
-
-/**
- * The react-scan bundle is injected from disk so the repo does not need it as
- * a dependency; point REACT_SCAN_PATH at `react-scan/dist/auto.global.js`.
- */
-function resolveReactScanPath(): string {
-  const fromEnv = process.env.REACT_SCAN_PATH;
-  if (fromEnv && fs.existsSync(fromEnv)) {
-    return fromEnv;
-  }
-  return require.resolve('react-scan/dist/auto.global.js');
-}
-
-const TALLY_SETUP = `(() => {
-  const perf = {
-    renders: Object.create(null),
-    longTasks: [],
-    observer: null,
-    startedAt: performance.now(),
-    firstRenderAt: null,
-    firstStreamRenderAt: null,
-    drain() {
-      if (!this.observer) {
-        return;
-      }
-      for (const entry of this.observer.takeRecords()) {
-        this.longTasks.push(entry.duration);
-      }
-    },
-    reset() {
-      this.drain();
-      this.renders = Object.create(null);
-      this.longTasks = [];
-      this.startedAt = performance.now();
-      this.firstRenderAt = null;
-      this.firstStreamRenderAt = null;
-    },
-  };
-  window.__PERF__ = perf;
-  try {
-    perf.observer = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        perf.longTasks.push(entry.duration);
-      }
-    });
-    perf.observer.observe({ type: 'longtask', buffered: true });
-  } catch (_error) {
-    /* longtask unsupported: totals stay empty */
-  }
-  const nameOf = (fiber) => {
-    let type = fiber && fiber.type;
-    for (let depth = 0; depth < 4 && type; depth += 1) {
-      if (typeof type === 'function') {
-        return type.displayName || type.name || null;
-      }
-      if (typeof type === 'object') {
-        if (type.displayName) {
-          return type.displayName;
-        }
-        type = type.type || type.render;
-        continue;
-      }
-      return String(type);
-    }
-    return null;
-  };
-  const configure = () => {
-    if (typeof window.reactScan !== 'function') {
-      return false;
-    }
-    window.reactScan({
-      enabled: true,
-      log: false,
-      showToolbar: false,
-      animationSpeed: 'off',
-      trackUnnecessaryRenders: false,
-      dangerouslyForceRunInProduction: true,
-      onRender: (fiber, renders) => {
-        if (perf.firstRenderAt == null) {
-          perf.firstRenderAt = performance.now();
-        }
-        for (const render of renders) {
-          const name = render.componentName || nameOf(fiber) || 'anonymous';
-          if (perf.firstStreamRenderAt == null && name === 'ThinkingContent') {
-            perf.firstStreamRenderAt = performance.now();
-          }
-          let slot = perf.renders[name];
-          if (!slot) {
-            slot = { count: 0, time: 0 };
-            perf.renders[name] = slot;
-          }
-          slot.count += render.count || 1;
-          slot.time += render.time || 0;
-        }
-      },
-    });
-    return true;
-  };
-  if (!configure()) {
-    const timer = setInterval(() => {
-      if (configure()) {
-        clearInterval(timer);
-      }
-    }, 50);
-  }
-})();`;
-
-async function snapshotPerf(page: Page): Promise<PerfSnapshot> {
-  return page.evaluate(() => {
-    window.__PERF__.drain();
-    return {
-      renders: window.__PERF__.renders,
-      longTasks: window.__PERF__.longTasks.slice(),
-      elapsedMs:
-        performance.now() -
-        (window.__PERF__.firstStreamRenderAt ??
-          window.__PERF__.firstRenderAt ??
-          window.__PERF__.startedAt),
-    };
-  });
-}
-
-async function resetPerf(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    window.__PERF__.reset();
-  });
-}
-
-function totals(snapshot: PerfSnapshot): { renders: number; time: number } {
-  let renders = 0;
-  let time = 0;
-  for (const slot of Object.values(snapshot.renders)) {
-    renders += slot.count;
-    time += slot.time;
-  }
-  return { renders, time };
-}
-
-function topComponents(snapshot: PerfSnapshot, limit: number): string[] {
-  return Object.entries(snapshot.renders)
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, limit)
-    .map(
-      ([name, slot]) =>
-        `${name.padEnd(28)} renders=${String(slot.count).padStart(6)} time=${slot.time.toFixed(1)}ms`,
-    );
-}
-
-async function attachSnapshot(
-  testInfo: TestInfo,
-  name: string,
-  snapshot: PerfSnapshot,
-  extra: Record<string, number>,
-): Promise<void> {
-  await testInfo.attach(name, {
-    body: JSON.stringify({ ...extra, ...snapshot }, null, 2),
-    contentType: 'application/json',
-  });
-}
+import {
+  attachSnapshot,
+  installReactScan,
+  resetPerf,
+  snapshotPerf,
+  topComponents,
+  totals,
+} from '../perf/scan';
 
 test.describe('reasoning stream perf (react-scan)', () => {
   test('one long unsplit reasoning + markdown reply stays render-bounded', async ({
@@ -216,8 +34,10 @@ test.describe('reasoning stream perf (react-scan)', () => {
     const textChunks = countModelChunks(textSection);
     const sectionCount = (textSection.match(/## Section /g) ?? []).length;
 
-    await page.addInitScript({ content: fs.readFileSync(resolveReactScanPath(), 'utf8') });
-    await page.addInitScript({ content: TALLY_SETUP });
+    /** The payload always opens with reasoning, so the first ThinkingContent
+     *  render is the first assistant-content paint — anchor the measured
+     *  interval there. */
+    await installReactScan(page, 'ThinkingContent');
     /** Stream with the reasoning box EXPANDED — the heavier layout path a
      *  user gets with "Show Thinking" enabled — so the measured interval
      *  covers live paragraph layout inside the box, not just the collapsed

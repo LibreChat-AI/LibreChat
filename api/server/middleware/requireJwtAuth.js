@@ -1,38 +1,29 @@
 const cookies = require('cookie');
-const jwt = require('jsonwebtoken');
 const passport = require('passport');
 const { logger } = require('@librechat/data-schemas');
 const {
   isEnabled,
+  isTokenRetired,
+  createRequiredTwoFactorGate,
+  clearCloudFrontCookies,
   tenantContextMiddleware,
   getAuthFailureReasonCategory,
   buildSafeAuthLogContext,
   maybeRefreshCloudFrontAuthCookiesMiddleware,
   recordRumProxyRequest,
+  getValidOpenIdReuseUserId,
+  generateTwoFactorSetupToken,
+  isTwoFactorEnrollmentRequired,
 } = require('@librechat/api');
+const { getUserById } = require('~/models');
 
 const hasPassportStrategy = (strategy) =>
   typeof passport._strategy === 'function' && passport._strategy(strategy) != null;
 
-const getValidOpenIdReuseUserId = (parsedCookies) => {
-  const openidUserId = parsedCookies.openid_user_id;
-  if (!openidUserId || !process.env.JWT_REFRESH_SECRET) {
-    return null;
-  }
-
-  try {
-    const payload = jwt.verify(openidUserId, process.env.JWT_REFRESH_SECRET);
-    return typeof payload === 'object' && payload != null && typeof payload.id === 'string'
-      ? payload.id
-      : null;
-  } catch {
-    return null;
-  }
-};
-
 const getAuthenticatedUserId = (user) => user?.id?.toString?.() ?? user?._id?.toString?.();
 const refreshCloudFrontCookies =
   maybeRefreshCloudFrontAuthCookiesMiddleware ?? ((_req, _res, next) => next());
+const ACCOUNT_DELETION_CODE = 'ACCOUNT_DELETION_IN_PROGRESS';
 
 const getAuthTokenSource = (req) => {
   const authorization = req.headers.authorization;
@@ -46,7 +37,7 @@ const getAuthStrategies = (req) => {
   const tokenProvider = parsedCookies.token_provider;
   const openidReuseEnabled = isEnabled(process.env.OPENID_REUSE_TOKENS);
   const openidJwtAvailable = openidReuseEnabled && hasPassportStrategy('openidJwt');
-  const openIdReuseUserId = getValidOpenIdReuseUserId(parsedCookies);
+  const openIdReuseUserId = getValidOpenIdReuseUserId(parsedCookies.openid_user_id);
   const useOpenIdJwt =
     tokenProvider === 'openid' && openidJwtAvailable && openIdReuseUserId != null;
 
@@ -79,6 +70,15 @@ const getRumProxyEndpoint = (req) => {
 
 const isOpenIdReuseUser = (strategy, user, openIdReuseUserId) =>
   strategy !== 'openidJwt' || getAuthenticatedUserId(user) === openIdReuseUserId;
+
+const requiredTwoFactorGate = createRequiredTwoFactorGate({
+  clearCloudFrontCookies,
+  getUserById,
+  warn: (message) => logger.warn(message),
+  generateSetupToken: generateTwoFactorSetupToken,
+  enrollmentRequired: isTwoFactorEnrollmentRequired,
+  tokenRetired: isTokenRetired,
+});
 
 /**
  * Custom Middleware to handle JWT authentication, with support for OpenID token reuse.
@@ -182,6 +182,7 @@ const requireJwtAuth = (req, res, next) => {
         logAuthenticationFailure({ strategy, info, status, err });
         return res.status(status || 401).json({
           message: info?.message || 'Unauthorized',
+          ...(info?.code === ACCOUNT_DELETION_CODE && { code: ACCOUNT_DELETION_CODE }),
         });
       }
       if (strategy === 'openidJwt' && getAuthenticatedUserId(user) !== openIdReuseUserId) {
@@ -199,11 +200,13 @@ const requireJwtAuth = (req, res, next) => {
       req.user = user;
       req.authStrategy = strategy;
       logFallbackSuccess(strategy);
-      tenantContextMiddleware(req, res, (tenantErr) => {
-        if (tenantErr) {
-          return next(tenantErr);
-        }
-        refreshCloudFrontCookies(req, res, next);
+      return requiredTwoFactorGate(req, res, next, () => {
+        tenantContextMiddleware(req, res, (tenantErr) => {
+          if (tenantErr) {
+            return next(tenantErr);
+          }
+          refreshCloudFrontCookies(req, res, next);
+        });
       });
     })(req, res, next);
   };

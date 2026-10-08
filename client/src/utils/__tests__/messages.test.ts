@@ -1,9 +1,11 @@
 import { QueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import type { TMessage, TConversation } from 'librechat-data-provider';
+import type { TEndpointsConfig } from 'librechat-data-provider';
 import type { LocalizeFunction, TMessageProps } from '~/common';
 import {
   clearMessagesCache,
+  clearArchivedConversationMessagesCache,
   clearDeletedConversationMessagesCache,
   isValidTimestamp,
   getMessageAriaLabel,
@@ -11,6 +13,9 @@ import {
   getHeaderPrefixForScreenReader,
   areMessageFieldsEqual,
   areMessageRowPropsEqual,
+  isSameTailRelation,
+  isSubmittableMessage,
+  createDualMessageContent,
 } from '../messages';
 
 const translations: Record<string, string> = {
@@ -98,6 +103,66 @@ describe('clearDeletedConversationMessagesCache', () => {
     clearDeletedConversationMessagesCache(queryClient, conversationId);
 
     expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toBeUndefined();
+    expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual(
+      newConversationMessages,
+    );
+  });
+});
+
+describe('clearArchivedConversationMessagesCache', () => {
+  it('clears the new-conversation cache that still shows the archived chat', () => {
+    const queryClient = new QueryClient();
+    const conversationId = 'conversation-1';
+    const messages = [makeMessage({ conversationId })];
+    queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
+    queryClient.setQueryData(
+      [QueryKeys.messages, Constants.NEW_CONVO],
+      messages.map((message) => ({ ...message })),
+    );
+
+    clearArchivedConversationMessagesCache(queryClient, conversationId);
+
+    expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual([]);
+  });
+
+  it('clears a shared new-conversation cache before its message IDs are hydrated', () => {
+    const queryClient = new QueryClient();
+    const conversationId = 'conversation-1';
+    const messages = [makeMessage({ conversationId: Constants.NEW_CONVO as string })];
+    queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
+    queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], messages);
+
+    clearArchivedConversationMessagesCache(queryClient, conversationId);
+
+    expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual([]);
+  });
+
+  it('keeps the archived conversation history so reopening it from the archive is instant', () => {
+    const queryClient = new QueryClient();
+    const conversationId = 'conversation-1';
+    const messages = [makeMessage({ conversationId })];
+    queryClient.setQueryData([QueryKeys.messages, conversationId], messages);
+    queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], messages);
+
+    clearArchivedConversationMessagesCache(queryClient, conversationId);
+
+    expect(queryClient.getQueryData([QueryKeys.messages, conversationId])).toEqual(messages);
+  });
+
+  it('preserves an unrelated new-conversation message cache', () => {
+    const queryClient = new QueryClient();
+    const conversationId = 'conversation-1';
+    const newConversationMessages = [
+      makeMessage({ messageId: 'new-message', conversationId: Constants.NEW_CONVO as string }),
+    ];
+    queryClient.setQueryData(
+      [QueryKeys.messages, conversationId],
+      [makeMessage({ conversationId })],
+    );
+    queryClient.setQueryData([QueryKeys.messages, Constants.NEW_CONVO], newConversationMessages);
+
+    clearArchivedConversationMessagesCache(queryClient, conversationId);
+
     expect(queryClient.getQueryData([QueryKeys.messages, Constants.NEW_CONVO])).toEqual(
       newConversationMessages,
     );
@@ -223,6 +288,55 @@ describe('getMessageTimestamp', () => {
     expect(() => getMessageTimestamp(iso, 'not a locale!!')).not.toThrow();
     expect(getMessageTimestamp(iso, 'not a locale!!')).not.toBeNull();
   });
+
+  /** Every message row formats its timestamp on each render; constructing the
+   *  Intl formatters per call made them the costliest function of a send. */
+  it('reuses its formatters across calls for the same locale and clock', () => {
+    const { DateTimeFormat, RelativeTimeFormat } = Intl;
+    const replaceIntl = (key: 'DateTimeFormat' | 'RelativeTimeFormat', value: unknown) =>
+      Object.defineProperty(Intl, key, { value, configurable: true, writable: true });
+    const constructed = { absolute: 0, relative: 0 };
+    replaceIntl(
+      'DateTimeFormat',
+      class extends DateTimeFormat {
+        constructor(...args: ConstructorParameters<typeof DateTimeFormat>) {
+          super(...args);
+          constructed.absolute += 1;
+        }
+      },
+    );
+    replaceIntl(
+      'RelativeTimeFormat',
+      class extends RelativeTimeFormat {
+        constructor(...args: ConstructorParameters<typeof RelativeTimeFormat>) {
+          super(...args);
+          constructed.relative += 1;
+        }
+      },
+    );
+    try {
+      const iso = new Date(NOW - 5 * 60 * 1000).toISOString();
+      const first = getMessageTimestamp(iso, 'fr-CA', true);
+      const second = getMessageTimestamp(iso, 'fr-CA', true);
+      getMessageTimestamp(iso, 'fr-CA', true);
+
+      expect(second).toEqual(first);
+      expect(constructed).toEqual({ absolute: 1, relative: 1 });
+
+      getMessageTimestamp(iso, 'fr-CA', false);
+      expect(constructed).toEqual({ absolute: 2, relative: 1 });
+    } finally {
+      replaceIntl('DateTimeFormat', DateTimeFormat);
+      replaceIntl('RelativeTimeFormat', RelativeTimeFormat);
+    }
+  });
+
+  it('keeps a formatter per clock format', () => {
+    const iso = new Date(2026, 5, 12, 15, 5).toISOString();
+
+    expect(getMessageTimestamp(iso, 'en-US', true)?.absolute).toMatch(/3:05\sPM/);
+    expect(getMessageTimestamp(iso, 'en-US', false)?.absolute).toMatch(/15:05/);
+  });
 });
 
 const noop = () => {};
@@ -236,6 +350,7 @@ const makeFieldsMsg = (over: Partial<TMessage> = {}): TMessage =>
     text: 'hello',
     error: false,
     unfinished: false,
+    finish_reason: 'stop',
     createdAt: '2026-07-01T00:00:00.000Z',
     depth: 0,
     isCreatedByUser: false,
@@ -257,9 +372,11 @@ const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
   ['text', { text: 'changed' }],
   ['error', { error: true }],
   ['unfinished', { unfinished: true }],
+  ['finish_reason', { finish_reason: 'tool_call_limit' }],
   ['createdAt', { createdAt: '2026-07-02T00:00:00.000Z' }],
   ['depth', { depth: 3 }],
   ['isCreatedByUser', { isCreatedByUser: true }],
+  ['isUserSubmitted', { isUserSubmitted: true }],
   ['children length', { children: [makeFieldsMsg(), makeFieldsMsg()] }],
   ['content reference', { content: [] as TMessage['content'] }],
   ['model', { model: 'gpt-5' }],
@@ -342,5 +459,121 @@ describe('areMessageRowPropsEqual', () => {
         makeProps({ message: makeFieldsMsg({ text: 'edited' }) }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('isSameTailRelation', () => {
+  const tailProps = (
+    messageId: string,
+    depth: number,
+    latestMessageId: string | undefined,
+    latestMessageDepth: number | undefined,
+  ) => ({
+    message: makeMessage({ messageId, depth }),
+    latestMessageId,
+    latestMessageDepth,
+  });
+
+  it('ignores a tail move that neither reaches nor leaves the row', () => {
+    expect(isSameTailRelation(tailProps('a', 1, 'b', 3), tailProps('a', 1, 'c_', 5))).toBe(true);
+    expect(isSameTailRelation(tailProps('a', 1, 'c_', 5), tailProps('a', 1, 'c', 5))).toBe(true);
+  });
+
+  it('re-renders the row the tail leaves', () => {
+    expect(isSameTailRelation(tailProps('b', 3, 'b', 3), tailProps('b', 3, 'c_', 5))).toBe(false);
+  });
+
+  it('re-renders the row the tail reaches', () => {
+    expect(isSameTailRelation(tailProps('c', 5, 'c_', 5), tailProps('c', 5, 'c', 5))).toBe(false);
+  });
+
+  it('re-renders when the tail depth reaches or leaves the row depth', () => {
+    expect(isSameTailRelation(tailProps('x', 3, 'b', 3), tailProps('x', 3, 'c', 5))).toBe(false);
+  });
+
+  it('re-renders when the tail becomes known or unknown', () => {
+    expect(isSameTailRelation(tailProps('a', 1, 'b', 3), tailProps('a', 1, undefined, 3))).toBe(
+      false,
+    );
+  });
+});
+
+describe('isSubmittableMessage', () => {
+  it('accepts non-whitespace text without files', () => {
+    expect(isSubmittableMessage('Hello')).toBe(true);
+    expect(isSubmittableMessage('  Hello  ', 0)).toBe(true);
+  });
+
+  it('rejects an empty draft with no files', () => {
+    expect(isSubmittableMessage('')).toBe(false);
+    expect(isSubmittableMessage('   ')).toBe(false);
+    expect(isSubmittableMessage(undefined)).toBe(false);
+    expect(isSubmittableMessage(null)).toBe(false);
+  });
+
+  it('accepts an empty draft when files are attached', () => {
+    expect(isSubmittableMessage('', 1)).toBe(true);
+    expect(isSubmittableMessage('   ', 2)).toBe(true);
+    expect(isSubmittableMessage(undefined, 1)).toBe(true);
+  });
+
+  it('accepts text alongside files', () => {
+    expect(isSubmittableMessage('Translate this', 1)).toBe(true);
+  });
+});
+
+describe('createDualMessageContent', () => {
+  /** Custom endpoints carry their configured name (e.g. "Together AI") in
+   *  `endpoint` at runtime, which `TConversation` types as `EModelEndpoint`. */
+  const asConvo = (convo: Partial<Omit<TConversation, 'endpoint'>> & { endpoint: string }) =>
+    convo as unknown as TConversation;
+  const agentIds = (parts: ReturnType<typeof createDualMessageContent>) =>
+    parts.map((part) => (part as unknown as { agentId: string }).agentId);
+
+  it('encodes the model spec label into ephemeral agent ids', () => {
+    const parts = createDualMessageContent(
+      asConvo({ endpoint: 'Together AI', model: 'Qwen/Qwen2.5-72B-Instruct', spec: 'fast-qwen' }),
+      asConvo({ endpoint: 'openAI', model: 'gpt-4o', modelLabel: 'My GPT' }),
+      undefined,
+      [{ name: 'fast-qwen', label: 'Fast Qwen' }],
+    );
+    expect(agentIds(parts)).toEqual([
+      'Together AI__Qwen/Qwen2.5-72B-Instruct___Fast Qwen',
+      'openAI__gpt-4o___My GPT____1',
+    ]);
+  });
+
+  it('falls back to the endpoint modelDisplayLabel when no labels are set', () => {
+    const endpointsConfig = {
+      'Together AI': { modelDisplayLabel: 'Together' },
+    } as unknown as TEndpointsConfig;
+    const parts = createDualMessageContent(
+      asConvo({ endpoint: 'Together AI', model: 'mixtral-8x7b' }),
+      asConvo({ endpoint: 'Together AI', model: 'mixtral-8x7b' }),
+      endpointsConfig,
+    );
+    expect(agentIds(parts)).toEqual([
+      'Together AI__mixtral-8x7b___Together',
+      'Together AI__mixtral-8x7b___Together____1',
+    ]);
+  });
+
+  it('omits the sender segment entirely when no label resolves', () => {
+    const parts = createDualMessageContent(
+      asConvo({ endpoint: 'Together AI', model: 'mixtral-8x7b' }),
+      asConvo({ endpoint: 'Together AI', model: 'mixtral-8x7b' }),
+    );
+    expect(agentIds(parts)).toEqual([
+      'Together AI__mixtral-8x7b',
+      'Together AI__mixtral-8x7b____1',
+    ]);
+  });
+
+  it('passes real agent ids through, suffixing only the added agent', () => {
+    const parts = createDualMessageContent(
+      asConvo({ endpoint: 'agents', agent_id: 'agent_abc123' }),
+      asConvo({ endpoint: 'agents', agent_id: 'agent_abc123' }),
+    );
+    expect(agentIds(parts)).toEqual(['agent_abc123', 'agent_abc123____1']);
   });
 });

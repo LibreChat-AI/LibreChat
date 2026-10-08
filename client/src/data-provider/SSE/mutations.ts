@@ -1,6 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
 import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
 export interface AbortStreamParams {
@@ -48,12 +49,13 @@ export const abortStream = async (params: AbortStreamParams): Promise<AbortStrea
 };
 
 /**
- * React Query mutation hook for aborting a generation stream.
+ * React Query mutation hook for aborting a generation stream, through the host's transport.
  * Use this when the user explicitly clicks the stop button.
  */
 export function useAbortStreamMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: abortStream,
+    mutationFn: transport.abort,
   });
 }
 
@@ -132,8 +134,10 @@ export function useSubmitToolApprovalMutation() {
 
 export interface SubmitAskAnswerParams extends ResumeAgentFields {
   actionId: string;
-  /** Free-form answer to the agent's ask-user question. */
-  answer: string;
+  /** Free-form answer for a legacy single-question pause. */
+  answer?: string;
+  /** Answers keyed by question id for a batched pause. */
+  answers?: Record<string, string>;
 }
 
 /**
@@ -141,11 +145,12 @@ export interface SubmitAskAnswerParams extends ResumeAgentFields {
  * POSTs to the shared resume route; the continuation streams over the existing SSE.
  */
 export const submitAskAnswer = async (params: SubmitAskAnswerParams): Promise<ResumeResponse> => {
-  const { actionId, answer, ...fields } = params;
+  const { actionId, answer, answers, ...fields } = params;
   return postGenerationRequest<ResumeResponse>(`${apiBaseUrl()}/api/agents/chat/resume`, {
     ...buildResumeBase(fields),
     actionId,
-    answer,
+    ...(answer != null && { answer }),
+    ...(answers != null && { answers }),
   });
 };
 
@@ -168,6 +173,10 @@ export interface SteerMessageParams {
   text: string;
   /** Attachment refs steered with the message (already uploaded). */
   files?: TMessage['files'];
+  /** Quoted excerpts steered with the message ("Add to chat" selections). The
+   *  server normalizes them like a normal send's quotes and merges them into
+   *  the model-bound turn at the injection boundary. */
+  quotes?: string[];
   /**
    * Ask the server to seal the live model stream at the next provider-safe
    * boundary rather than waiting for a tool step. Never a rejection reason:
@@ -187,6 +196,10 @@ export interface SteerMessageResponse {
   /** Whether the seal request was actually armed; see {@link SteerMessageParams.preempt}. */
   preempt?: boolean;
   preemptRevision?: number;
+  /** Echoed when the durable item carries the sent quotes. Absent on a
+   *  pre-quotes server (which 202s while dropping them) — the client then
+   *  re-stages the excerpts as composer chips instead of losing them. */
+  quotesAccepted?: boolean;
   /** Receipt replay after this item already left the durable queue. */
   settled?: boolean;
   /** Settled specifically by terminal drain; restore as a queued follow-up. */
@@ -209,10 +222,12 @@ export const steerMessage = async (params: SteerMessageParams): Promise<SteerMes
   );
 };
 
-/** React Query mutation hook for steering; the injection arrives on the SSE. */
+/** React Query mutation hook for steering, through the host's transport; the injection
+ *  arrives on the SSE. */
 export function useSteerMessageMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: steerMessage,
+    mutationFn: transport.steer,
   });
 }
 
@@ -244,8 +259,9 @@ export const cancelSteerMessage = async (
 };
 
 export function useCancelSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: cancelSteerMessage,
+    mutationFn: transport.cancelSteer,
   });
 }
 
@@ -277,7 +293,8 @@ export const armSteerMessage = async (params: ArmSteerParams): Promise<ArmSteerR
 };
 
 export function useArmSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: armSteerMessage,
+    mutationFn: transport.armSteer,
   });
 }

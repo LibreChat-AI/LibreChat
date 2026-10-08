@@ -1,7 +1,8 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { JSX } from 'react/jsx-runtime';
+import { Inbox, SearchX } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ArrowUp, ArrowDown, ArrowDownUp } from 'lucide-react';
+import { ArrowUp, ArrowDown, ArrowDownUp } from 'lucide';
 import {
   useReactTable,
   getCoreRowModel,
@@ -13,11 +14,13 @@ import {
   type Table as TTable,
 } from '@tanstack/react-table';
 import type { DataTableProps, ProcessedDataRow } from './DataTable.types';
+import { useDebounced, useTableRowHeight, useOptimizedRowSelection } from './DataTable.hooks';
 import { SelectionCheckbox, MemoizedTableRow, SkeletonRows } from './DataTableComponents';
 import { Table, TableBody, TableHead, TableHeader, TableCell, TableRow } from '../Table';
-import { useDebounced, useOptimizedRowSelection } from './DataTable.hooks';
 import { useMediaQuery, useLocalize } from '~/hooks';
 import { DataTableSearch } from './DataTableSearch';
+import useRemScale from '~/hooks/useRemScale';
+import { MorphIcon } from '../MorphIcon';
 import { cn, logger } from '~/utils';
 import { Button } from '../Button';
 import { Label } from '../Label';
@@ -49,7 +52,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
   customActionsRenderer,
 }: DataTableProps<TData, TValue>): JSX.Element {
   const localize = useLocalize();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const remScale = useRemScale();
+  const isSmallScreen = useMediaQuery(`(max-width: ${768 * remScale}px)`);
 
   const tableContainerRef = useRef<HTMLDivElement>(null);
   const scrollTimeoutRef = useRef<number | null>(null);
@@ -62,10 +66,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     virtualization: {
       overscan = 10,
       minRows = 50,
-      rowHeight = 56,
+      rowHeight: configuredRowHeight,
       fastOverscanMultiplier = 4,
     } = {},
   } = config || {};
+
+  /** A dense row follows the theme's cell space and row rule, 40px by default; a caller that
+   *  sizes its own rows still wins. */
+  const denseRowHeight = useTableRowHeight('dense');
+  const rowHeight = configuredRowHeight ?? denseRowHeight;
 
   const virtualizationActive = data.length >= minRows;
 
@@ -248,7 +257,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         );
       },
       meta: {
-        className: 'max-w-[20px] flex-1',
+        className: 'max-w-[1.25rem] flex-1',
       },
     };
 
@@ -290,14 +299,32 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     onRowSelectionChange: setOptimizedRowSelection,
   });
 
+  /* The virtualizer rebuilds its measurement options whenever one of them changes
+     identity, and that notify re-renders this component. Both options below are
+     read during render, so defining them inline would notify on every render and
+     loop until React aborts with "Too many re-renders". */
+  const getItemKey = useCallback(
+    (index: number) => getRowId(data[index] as TData, index),
+    [data, getRowId],
+  );
+  /** Rows are laid out in rem, so the virtualizer must measure in the same units. */
+  const scaledRowHeight = rowHeight * remScale;
+  const estimateSize = useCallback(() => scaledRowHeight, [scaledRowHeight]);
+
   const rowVirtualizer = useVirtualizer({
     enabled: virtualizationActive,
     count: data.length,
     getScrollElement: () => tableContainerRef.current,
-    getItemKey: (index) => getRowId(data[index] as TData, index),
-    estimateSize: useCallback(() => rowHeight, [rowHeight]),
+    getItemKey,
+    estimateSize,
     overscan: dynamicOverscan,
   });
+
+  /** The virtualizer caches every row's size, so a theme that changes the row height after mount
+   *  has to drop those sizes, or offsets and the total height keep the old one. */
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeight, rowVirtualizer]);
 
   // Only read the virtualizer when active; the non-virtualized branch renders rows directly,
   // so engaging it for small tables is wasted render-phase work.
@@ -312,6 +339,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
   const showSkeletons = isLoading || (isFetching && !isFetchingNextPage);
   const shouldShowSearch = enableSearch && onFilterChange;
+  const showToolbar = Boolean(shouldShowSearch || customActionsRenderer);
 
   // Render table body based on loading state and virtualization
   let tableBodyContent: React.ReactNode;
@@ -319,6 +347,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
     tableBodyContent = (
       <SkeletonRows
         count={skeletonCount}
+        rowHeight={scaledRowHeight}
         columns={tableColumns as ColumnDef<Record<string, unknown>>[]}
       />
     );
@@ -344,7 +373,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
               virtualIndex={virtualRow.index}
               selected={row.getIsSelected()}
               cellsVersion={cellsVersionRef.current}
-              style={{ height: rowHeight }}
+              style={{ height: scaledRowHeight }}
             />
           );
         })}
@@ -366,7 +395,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
         virtualIndex={row.index}
         selected={row.getIsSelected()}
         cellsVersion={cellsVersionRef.current}
-        style={{ height: rowHeight }}
+        style={{ height: scaledRowHeight }}
       />
     ));
   }
@@ -394,6 +423,18 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       setOptimizedRowSelection({});
     }
   }, [debouncedTerm, filterValue, onFilterChange, setOptimizedRowSelection]);
+
+  /** TanStack Virtual memoizes its measurements on the item-size cache, not on
+   *  estimateSize, so a new estimate on its own leaves the previous scale's row
+   *  offsets in place. measure() drops that cache and forces a recompute. */
+  const measuredScaleRef = useRef(remScale);
+  useEffect(() => {
+    if (!virtualizationActive || measuredScaleRef.current === remScale) {
+      return;
+    }
+    measuredScaleRef.current = remScale;
+    rowVirtualizer.measure();
+  }, [remScale, virtualizationActive, rowVirtualizer]);
 
   // Recalculate virtual range when data or state changes
   useEffect(() => {
@@ -548,30 +589,34 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
   return (
     <div
-      className={cn(
-        'relative flex w-full flex-col overflow-hidden rounded-lg border border-border-light bg-surface-primary',
-        'h-[calc(100vh-8rem)] max-h-[80vh]',
-        className,
-      )}
+      /* Transparent so the rows read as a list on whatever surface hosts them, and
+         the height follows the rows up to the cap so a short list doesn't leave a
+         tall empty box below it. */
+      className={cn('relative flex w-full flex-col overflow-hidden', 'max-h-[80vh]', className)}
       role="region"
       aria-label={localize('com_ui_data_table')}
     >
-      <div className="flex w-full shrink-0 items-center gap-2 border-b border-border-light md:gap-3">
-        {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
-        {customActionsRenderer &&
-          customActionsRenderer({
-            selectedCount,
-            selectedRows,
-            table: table as unknown as TTable<ProcessedDataRow<TData>>,
-          })}
-      </div>
+      {showToolbar && (
+        <div className="border-border-light flex w-full shrink-0 items-center gap-2 border-b pr-2 md:gap-3">
+          {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
+          {customActionsRenderer &&
+            customActionsRenderer({
+              selectedCount,
+              selectedRows,
+              table: table as unknown as TTable<ProcessedDataRow<TData>>,
+            })}
+        </div>
+      )}
       <div
         ref={tableContainerRef}
-        className="overflow-anchor-none relative min-h-0 flex-1 overflow-auto will-change-scroll"
+        className="relative flex min-h-0 flex-1 flex-col overflow-auto will-change-scroll"
         style={
           {
             WebkitOverflowScrolling: 'touch',
             overscrollBehavior: 'contain',
+            /** Inherited by memoized cells and skeletons so one scaled breakpoint
+             * controls every table column without rebuilding the row model. */
+            '--data-table-desktop-display': isSmallScreen ? 'none' : 'table-cell',
           } as React.CSSProperties
         }
         role="region"
@@ -582,12 +627,15 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           role="table"
           aria-label={localize('com_ui_data_table')}
           aria-rowcount={data.length}
-          className="table-auto"
+          /* Separated borders let the row cells carry a rounded hover highlight;
+             collapsed borders drop `border-radius` on table cells entirely. */
+          className="shrink-0 table-auto border-separate border-spacing-0"
           unwrapped={true}
         >
-          <TableHeader className="sticky top-0 z-10 bg-surface-secondary">
+          {/* Each header cell carries its own opaque fill (see below). */}
+          <TableHeader filled={false}>
             {headerGroups.map((headerGroup) => (
-              <TableRow key={headerGroup.id}>
+              <TableRow key={headerGroup.id} className="border-0 hover:bg-transparent">
                 {headerGroup.headers.map((header) => {
                   const isDesktopOnly =
                     (header.column.columnDef.meta as { desktopOnly?: boolean } | undefined)
@@ -605,7 +653,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                     ?.width;
                   let widthStyle: React.CSSProperties = {};
                   if (isSelectHeader) {
-                    widthStyle = { width: '32px', maxWidth: '32px', minWidth: '32px' };
+                    widthStyle = { width: '2rem', maxWidth: '2rem', minWidth: '2rem' };
                   } else if (metaWidth != null && metaWidth >= 1 && metaWidth <= 100) {
                     widthStyle = {
                       width: `${metaWidth}%`,
@@ -635,35 +683,53 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="h-auto w-full justify-start gap-1 px-0 py-0 font-medium hover:bg-transparent md:gap-2"
+                        className="group text-table-header-text hover:text-text-primary h-auto w-full justify-start gap-1 px-0 py-0 text-xs font-medium tracking-wide uppercase hover:bg-transparent md:gap-1.5"
                         onClick={header.column.getToggleSortingHandler()}
                       >
                         {renderedHeader}
-                        <span className="text-text-primary" aria-hidden="true">
-                          {{
-                            asc: <ArrowUp className="size-4 text-text-primary" />,
-                            desc: <ArrowDown className="size-4 text-text-primary" />,
-                          }[header.column.getIsSorted() as string] ?? (
-                            <ArrowDownUp className="size-4 text-text-primary" />
-                          )}
+                        <span aria-hidden="true">
+                          <MorphIcon
+                            icon={
+                              {
+                                asc: ArrowUp,
+                                desc: ArrowDown,
+                              }[header.column.getIsSorted() as string] ?? ArrowDownUp
+                            }
+                            className={cn(
+                              'size-3.5',
+                              /* The neutral marker is noise on every unsorted column, so it
+                                 only surfaces once the header is a pointer or keyboard target. */
+                              !sortDirection &&
+                                'opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100',
+                            )}
+                          />
                         </span>
                       </Button>
                     );
                   } else {
-                    headerContent = <div className="flex items-center">{renderedHeader}</div>;
+                    headerContent = (
+                      <div className="text-table-header-text flex items-center text-xs font-medium tracking-wide uppercase">
+                        {renderedHeader}
+                      </div>
+                    );
                   }
 
                   return (
                     <TableHead
                       key={header.id}
                       scope="col"
+                      size="compact"
                       className={cn(
-                        'border-b border-border-light px-2 py-2 md:px-3 md:py-2',
+                        /* Stuck per cell rather than on <thead>, which does not stay
+                           put once the table uses separated borders. The fill has to
+                           be opaque or virtualized rows show through it, so it is its
+                           own role, the dialog surface by default. */
+                        'border-border-light bg-table-header-fill sticky top-0 z-10 border-b px-3 md:px-4',
                         isSelectHeader && 'px-0 text-center',
-                        canSort && 'cursor-pointer hover:bg-surface-tertiary',
+                        canSort && 'cursor-pointer',
                         meta?.className,
                         header.column.getIsResizing() && 'bg-surface-tertiary/60',
-                        isDesktopOnly && 'hidden md:table-cell',
+                        isDesktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
                       )}
                       style={widthStyle}
                       aria-sort={ariaSort}
@@ -699,11 +765,18 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
 
         {!isLoading && !showSkeletons && rows.length === 0 && (
           <div
-            className="flex flex-col items-center justify-center py-12"
+            className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12"
             role="status"
             aria-live="polite"
           >
-            <Label className="text-center text-text-secondary">
+            <span className="bg-surface-tertiary text-text-tertiary flex size-11 items-center justify-center rounded-full">
+              {searchTerm ? (
+                <SearchX className="size-5" aria-hidden="true" />
+              ) : (
+                <Inbox className="size-5" aria-hidden="true" />
+              )}
+            </span>
+            <Label className="text-text-secondary text-center text-sm">
               {searchTerm ? localize('com_ui_no_search_results') : localize('com_ui_no_data')}
             </Label>
           </div>

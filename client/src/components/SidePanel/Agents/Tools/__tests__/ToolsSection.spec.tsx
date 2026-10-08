@@ -2,9 +2,11 @@ import React from 'react';
 import '@testing-library/jest-dom/extend-expect';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { AgentItem } from '../items/types';
+import { makeSkill } from 'test/itemFactories';
 import ToolsSection from '../ToolsSection';
 
 let mockSelected: AgentItem[] = [];
+let mockAgentTools: string[] = [];
 let mockFileEntries: {
   contextFiles: unknown[];
   knowledgeFiles: unknown[];
@@ -37,7 +39,7 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useListSkillsQuery: () => ({ data: { skills: [] } }),
+  useSkillsInfiniteQuery: () => ({ data: { pages: [{ skills: [] }] } }),
   useDeleteAgentAction: () => ({ mutate: jest.fn() }),
 }));
 
@@ -47,7 +49,7 @@ jest.mock('~/hooks/MCP', () => ({
 }));
 
 jest.mock('../hooks', () => ({
-  useAgentItems: () => ({ catalog: [], selected: mockSelected, tools: [] }),
+  useAgentItems: () => ({ catalog: [], selected: mockSelected, tools: mockAgentTools }),
   useResolvedSkills: (skills?: unknown[]) => skills,
   useAgentFileEntries: () => mockFileEntries,
   useUninstallToolCredentials: () => jest.fn(),
@@ -58,8 +60,39 @@ jest.mock('../ToolRow', () => ({
   default: ({ item, onRemove }: { item: AgentItem; onRemove: (item: AgentItem) => void }) => (
     <button type="button" aria-label={`remove-${item.id}`} onClick={() => onRemove(item)}>
       {item.id}
+      {item.kind === 'mcp' ? <span>{item.toolCount}</span> : null}
     </button>
   ),
+}));
+
+jest.mock('../SkillsSection', () => ({
+  __esModule: true,
+  default: ({
+    items,
+    onAdd,
+    onRemove,
+  }: {
+    items: AgentItem[];
+    onAdd: () => void;
+    onRemove: (item: AgentItem) => void;
+  }) => (
+    <div data-testid="skills-section">
+      <button type="button" aria-label="skills-add" onClick={onAdd} />
+      {items[0] && (
+        <button
+          type="button"
+          aria-label={`skills-remove-${items[0].id}`}
+          onClick={() => onRemove(items[0])}
+        />
+      )}
+    </div>
+  ),
+}));
+
+jest.mock('../SkillsDialog', () => ({
+  __esModule: true,
+  default: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="skills-dialog-open" /> : null,
 }));
 
 jest.mock('../ItemDialog/ItemDialog', () => ({
@@ -87,10 +120,14 @@ jest.mock('@librechat/client', () => ({
   Switch: ({
     id,
     checked,
+    disabled,
+    'aria-labelledby': ariaLabelledBy,
     onCheckedChange,
   }: {
     id?: string;
     checked?: boolean;
+    disabled?: boolean;
+    'aria-labelledby'?: string;
     onCheckedChange?: (value: boolean) => void;
   }) => (
     <button
@@ -98,6 +135,8 @@ jest.mock('@librechat/client', () => ({
       id={id}
       role="switch"
       aria-checked={checked}
+      aria-labelledby={ariaLabelledBy}
+      disabled={disabled}
       onClick={() => onCheckedChange?.(!checked)}
     />
   ),
@@ -120,9 +159,18 @@ const fileSearchItem: AgentItem = {
   description: '',
   iconKey: 'file_search',
 };
+const skillItem: AgentItem = {
+  kind: 'skill',
+  id: 's1',
+  name: 'Skill',
+  description: '',
+  iconKey: 'skill',
+  skill: makeSkill({ _id: 's1', name: 'Skill' }),
+};
 
 beforeEach(() => {
   mockSelected = [];
+  mockAgentTools = [];
   mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
   mockFormValues = {};
   mockSetValue.mockClear();
@@ -134,12 +182,10 @@ describe('ToolsSection', () => {
     expect(screen.getByText('com_ui_tools_section_title')).toBeInTheDocument();
   });
 
-  test('renders a separate Skills section', () => {
+  test('renders the SkillsSection component', () => {
     render(<ToolsSection agentId="a" />);
-    expect(screen.getByText('com_ui_skills')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_add_skills' })).toBeInTheDocument();
+    expect(screen.getByTestId('skills-section')).toBeInTheDocument();
   });
-
   test('renders Add button that opens the marketplace dialog', () => {
     render(<ToolsSection agentId="a" />);
     const addButton = screen.getByRole('button', { name: 'com_ui_add_tools' });
@@ -147,10 +193,66 @@ describe('ToolsSection', () => {
     expect(screen.getByTestId('marketplace-open')).toBeInTheDocument();
   });
 
-  test('renders empty state for both sections when nothing is selected', () => {
+  test('wires SkillsSection add and remove callbacks', () => {
+    mockSelected = [skillItem];
+    mockFormValues = {
+      skills: ['s1'],
+      skills_enabled: true,
+      skills_scope: 'selected',
+      skill_authoring_enabled: true,
+    };
+    render(<ToolsSection agentId="a" />);
+    fireEvent.click(screen.getByRole('button', { name: 'skills-add' }));
+    expect(screen.getByTestId('skills-dialog-open')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'skills-remove-s1' }));
+
+    expect(mockSetValue).toHaveBeenCalledWith('skills', [], { shouldDirty: true });
+    expect(mockSetValue).not.toHaveBeenCalledWith(
+      'skills_enabled',
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockSetValue).not.toHaveBeenCalledWith(
+      'skills_scope',
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockSetValue).not.toHaveBeenCalledWith(
+      'skill_authoring_enabled',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  test('renders the Tools empty state when nothing is selected', () => {
     render(<ToolsSection agentId="a" />);
     expect(screen.getByText('com_ui_tools_empty')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_skills_empty')).toBeInTheDocument();
+  });
+
+  test('counts every enumerable MCP tool when the server is attached by wildcard', () => {
+    mockAgentTools = ['sys__all__sys_mcp_runtime'];
+    mockSelected = [
+      {
+        kind: 'mcp',
+        id: 'runtime',
+        name: 'runtime',
+        description: '',
+        iconKey: 'mcp',
+        toolCount: 0,
+        server: {
+          serverName: 'runtime',
+          tools: [{ tool_id: 'search_mcp_runtime' }, { tool_id: 'read_mcp_runtime' }],
+          isConfigured: true,
+          isConnected: true,
+          metadata: { name: 'runtime', pluginKey: 'runtime', description: '' },
+        } as never,
+      },
+    ];
+
+    render(<ToolsSection agentId="a" />);
+
+    expect(screen.getByRole('button', { name: 'remove-runtime' })).toHaveTextContent('2');
   });
 
   test('opens the config dialog instead of toggling when a file-backed built-in holds files', () => {
@@ -170,68 +272,58 @@ describe('ToolsSection', () => {
     expect(screen.queryByTestId('item-dialog')).not.toBeInTheDocument();
     expect(mockSetValue).toHaveBeenCalledWith('file_search', false, { shouldDirty: true });
   });
+
+  test('clears programmatic MCP callers when Code Interpreter is removed', () => {
+    mockSelected = [
+      {
+        kind: 'builtin',
+        id: 'execute_code',
+        name: 'Run Code',
+        description: '',
+        iconKey: 'execute_code',
+      },
+    ];
+    mockFormValues = {
+      tool_options: {
+        search: { allowed_callers: ['code_execution'], defer_loading: true },
+        direct: { allowed_callers: ['direct'] },
+      },
+    };
+
+    render(<ToolsSection agentId="a" />);
+    fireEvent.click(screen.getByRole('button', { name: 'remove-execute_code' }));
+
+    expect(mockSetValue).toHaveBeenCalledWith('execute_code', false, { shouldDirty: true });
+    expect(mockSetValue).toHaveBeenCalledWith(
+      'tool_options',
+      {
+        search: { defer_loading: true },
+        direct: { allowed_callers: ['direct'] },
+      },
+      { shouldDirty: true },
+    );
+  });
 });
 
-describe('use all skills toggle', () => {
-  test('renders off inside the Skills section by default', () => {
+test.each(['subagents', 'handoffs'] as const)(
+  'removing %s only writes that tool’s fields',
+  (id) => {
+    mockSelected = [{ kind: 'builtin', id, name: '', description: '', iconKey: id }];
+    const subagents = {
+      enabled: true,
+      allowSelf: false,
+      shareFiles: true,
+      agent_ids: ['reviewer'],
+    };
+    const handoff = { from: 'parent', to: 'reviewer' };
+    const direct = { from: 'parent', to: ['left', 'right'] };
+    mockFormValues = { subagents, edges: [handoff, direct] };
     render(<ToolsSection agentId="a" />);
-    expect(screen.getByText('com_ui_skills_use_all')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_skills_use_all_hint')).toBeInTheDocument();
-    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
-  });
-
-  test('turning it on clears the selection and enables the master flag', () => {
-    mockFormValues = { skills: ['s1'], skills_enabled: true };
-    render(<ToolsSection agentId="a" />);
-    fireEvent.click(screen.getByRole('switch'));
-    expect(mockSetValue).toHaveBeenCalledWith('skills', [], { shouldDirty: true });
-    expect(mockSetValue).toHaveBeenCalledWith('skills_enabled', true, { shouldDirty: true });
-  });
-
-  test('while on, hides Add and the skill list and shows the All badge', () => {
-    mockFormValues = { skills: [], skills_enabled: true };
-    render(<ToolsSection agentId="a" />);
-    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
-    expect(screen.queryByRole('button', { name: 'com_ui_add_skills' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /com_ui_skills_empty/ })).not.toBeInTheDocument();
-    expect(screen.getByText('com_ui_all_proper')).toBeInTheDocument();
-  });
-
-  test('clicking the label does not toggle the switch', () => {
-    render(<ToolsSection agentId="a" />);
-    fireEvent.click(screen.getByText('com_ui_skills_use_all'));
-    expect(mockSetValue).not.toHaveBeenCalled();
-  });
-
-  test('turning it off restores the previously selected skills', () => {
-    mockFormValues = { skills: ['s1'], skills_enabled: true };
-    const { rerender } = render(<ToolsSection agentId="a" />);
-    fireEvent.click(screen.getByRole('switch'));
-    mockFormValues = { skills: [], skills_enabled: true };
-    rerender(<ToolsSection agentId="a" />);
-    mockSetValue.mockClear();
-    fireEvent.click(screen.getByRole('switch'));
-    expect(mockSetValue).toHaveBeenCalledWith('skills', ['s1'], { shouldDirty: true });
-    expect(mockSetValue).toHaveBeenCalledWith('skills_enabled', true, { shouldDirty: true });
-  });
-
-  test('does not restore a stash from a different agent', () => {
-    mockFormValues = { skills: ['s1'], skills_enabled: true };
-    const { rerender } = render(<ToolsSection agentId="a" />);
-    fireEvent.click(screen.getByRole('switch'));
-    mockFormValues = { skills: [], skills_enabled: true };
-    rerender(<ToolsSection agentId="b" />);
-    mockSetValue.mockClear();
-    fireEvent.click(screen.getByRole('switch'));
-    expect(mockSetValue).toHaveBeenCalledWith('skills', [], { shouldDirty: true });
-    expect(mockSetValue).toHaveBeenCalledWith('skills_enabled', false, { shouldDirty: true });
-  });
-
-  test('turning it off with nothing stashed disables the master flag', () => {
-    mockFormValues = { skills: [], skills_enabled: true };
-    render(<ToolsSection agentId="a" />);
-    fireEvent.click(screen.getByRole('switch'));
-    expect(mockSetValue).toHaveBeenCalledWith('skills', [], { shouldDirty: true });
-    expect(mockSetValue).toHaveBeenCalledWith('skills_enabled', false, { shouldDirty: true });
-  });
-});
+    fireEvent.click(screen.getByRole('button', { name: `remove-${id}` }));
+    expect(mockSetValue.mock.calls).toEqual(
+      id === 'subagents'
+        ? [['subagents', { ...subagents, enabled: false }, { shouldDirty: true }]]
+        : [['edges', [direct], { shouldDirty: true }]],
+    );
+  },
+);

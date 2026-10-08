@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { Provider as JotaiProvider } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import MultiMessage from '../MultiMessage';
@@ -32,6 +33,22 @@ jest.mock('~/components/Messages/MessageContent', () => ({
 }));
 jest.mock('../MessageParts', () => ({ __esModule: true, default: createRowStub() }));
 jest.mock('../Message', () => ({ __esModule: true, default: createRowStub() }));
+jest.mock('~/components/Chat/Subagents/EventSubagentActivityGroup', () => ({
+  __esModule: true,
+  default: ({
+    parentMessageIds,
+    hasParallelContent,
+  }: {
+    parentMessageIds: string[];
+    hasParallelContent?: boolean;
+  }) => (
+    <div
+      data-testid="event-subagent-activity"
+      data-parent-message-ids={parentMessageIds.join(',')}
+      data-has-parallel-content={String(hasParallelContent)}
+    />
+  ),
+}));
 
 const msg = (messageId: string): TMessage =>
   ({
@@ -47,19 +64,192 @@ const msg = (messageId: string): TMessage =>
 const tree = (ids: string[]) => ids.map((id) => msg(id));
 
 const treeElement = (ids: string[]) => (
-  <RecoilRoot>
-    <MultiMessage
-      messageId="parent-1"
-      messagesTree={tree(ids)}
-      currentEditId={null}
-      setCurrentEditId={jest.fn()}
-    />
-  </RecoilRoot>
+  <JotaiProvider>
+    <RecoilRoot>
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={tree(ids)}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />
+    </RecoilRoot>
+  </JotaiProvider>
 );
 
 const displayed = () => screen.getAllByTestId('row')[0].textContent;
 
 describe('MultiMessage sibling selection', () => {
+  it('hosts event activity for structured and legacy message rows', () => {
+    const structured = msg('structured');
+    const legacy = { ...msg('legacy'), content: undefined } as TMessage;
+    const view = render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[structured]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-parent-message-ids',
+      'structured,parent-1',
+    );
+
+    view.rerender(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[legacy]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-parent-message-ids',
+      'legacy,parent-1',
+    );
+  });
+
+  it('places a user-anchored event group after the assistant response', () => {
+    const assistant = msg('assistant');
+    const user = {
+      ...msg('user'),
+      isCreatedByUser: true,
+      parentMessageId: 'root',
+      children: [assistant],
+    } as TMessage;
+    assistant.parentMessageId = 'user';
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="root"
+          messagesTree={[user]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByTestId('event-subagent-activity')).toHaveLength(1);
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-parent-message-ids',
+      'assistant,user',
+    );
+    expect(
+      screen
+        .getByText('assistant')
+        .compareDocumentPosition(screen.getByTestId('event-subagent-activity')),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it('hides merged event activity while its user anchor is being edited', () => {
+    const assistant = { ...msg('assistant'), parentMessageId: 'user' } as TMessage;
+    const user = {
+      ...msg('user'),
+      isCreatedByUser: true,
+      parentMessageId: 'root',
+      children: [assistant],
+    } as TMessage;
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="root"
+          messagesTree={[user]}
+          currentEditId="user"
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.queryByTestId('event-subagent-activity')).not.toBeInTheDocument();
+  });
+
+  it('matches the wider layout of a parallel assistant response', () => {
+    const assistant = {
+      ...msg('assistant'),
+      /** Two agents, so the response really does lay out columns. */
+      content: [
+        { type: 'text', text: 'primary', agentId: 'agent_a', groupId: 1 },
+        { type: 'text', text: 'added', agentId: 'agent_b____1', groupId: 1 },
+      ],
+    } as unknown as TMessage;
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[assistant]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-has-parallel-content',
+      'true',
+    );
+  });
+
+  it('keeps the standard width when a group is backed by one agent', () => {
+    /** A multi-agent graph stamps a group id on every starting node, so an
+     *  ordinary agent that merely has subagents available carries one on its
+     *  OWN output. Widening for columns that never arrive is the regression. */
+    const assistant = {
+      ...msg('assistant'),
+      content: [
+        { type: 'text', text: 'thinking', agentId: 'agent_a', groupId: 1 },
+        { type: 'text', text: 'answer', agentId: 'agent_a', groupId: 1 },
+      ],
+    } as unknown as TMessage;
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[assistant]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-has-parallel-content',
+      'false',
+    );
+  });
+
+  it('renders assistant content containing an undefined streaming placeholder', () => {
+    const assistant = {
+      ...msg('assistant'),
+      content: [undefined, { type: 'text', text: 'answer' }],
+    } as unknown as TMessage;
+
+    render(
+      <RecoilRoot>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[assistant]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByTestId('row')).toHaveTextContent('assistant');
+    expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
+      'data-has-parallel-content',
+      'false',
+    );
+  });
+
   it('shows the newest sibling by default and follows a newly appended one', () => {
     const view = render(treeElement(['a', 'b']));
     expect(displayed()).toBe('b');
@@ -191,5 +381,48 @@ describe('MultiMessage sibling selection', () => {
 
     view.rerender(treeFor('parent-a', ['a1', 'a2']));
     expect(displayed()).toBe('a1');
+  });
+});
+
+describe('MultiMessage row mount window', () => {
+  const { RowMountProvider } =
+    jest.requireActual<typeof import('~/hooks/Messages')>('~/hooks/Messages');
+
+  const chain = (): TMessage => {
+    const leaf = { ...msg('m2'), parentMessageId: 'm1', depth: 2 } as TMessage;
+    const mid = { ...msg('m1'), parentMessageId: 'm0', depth: 1, children: [leaf] } as TMessage;
+    return { ...msg('m0'), depth: 0, children: [mid] } as TMessage;
+  };
+
+  const windowedTree = (mountWindow: { start: number; end: number } | null) => (
+    <RecoilRoot>
+      <RowMountProvider mountWindow={mountWindow}>
+        <MultiMessage
+          messageId="parent-1"
+          messagesTree={[chain()]}
+          currentEditId={null}
+          setCurrentEditId={jest.fn()}
+        />
+      </RowMountProvider>
+    </RecoilRoot>
+  );
+
+  it('renders every row without a window', () => {
+    render(windowedTree(null));
+    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m0', 'm1', 'm2']);
+  });
+
+  it('gates rows outside the window while the recursion continues below them', () => {
+    render(windowedTree({ start: 2, end: 2 }));
+    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m2']);
+  });
+
+  it('mounts newly windowed rows above without disturbing deeper rows', () => {
+    const view = render(windowedTree({ start: 2, end: 2 }));
+    view.rerender(windowedTree({ start: 1, end: 2 }));
+    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m1', 'm2']);
+
+    view.rerender(windowedTree(null));
+    expect(screen.getAllByTestId('row').map((r) => r.textContent)).toEqual(['m0', 'm1', 'm2']);
   });
 });

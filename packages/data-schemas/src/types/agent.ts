@@ -2,9 +2,12 @@ import { Document, Types } from 'mongoose';
 import type {
   GraphEdge,
   MemoryScope,
+  SkillsScope,
   AgentToolOptions,
   AgentToolResources,
   AgentSubagentsConfig,
+  AgentGitIdentity,
+  AgentInstructionsPrompt,
 } from 'librechat-data-provider';
 
 export interface ISupportContact {
@@ -30,6 +33,8 @@ export interface IAgent extends Omit<Document, 'model'> {
   tools?: string[];
   skills?: string[];
   skills_enabled?: boolean;
+  skill_authoring_enabled?: boolean;
+  skills_scope?: SkillsScope;
   tool_kwargs?: Array<unknown>;
   actions?: string[];
   author: Types.ObjectId;
@@ -37,6 +42,14 @@ export interface IAgent extends Omit<Document, 'model'> {
   hide_sequential_outputs?: boolean;
   end_after_tools?: boolean;
   stateful_code_sessions?: boolean;
+  stateful_code_environment?: 'user' | 'agent-user' | 'conversation';
+  code_environment_id?: string;
+  code_environment_ids?: string[];
+  code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
+  git_identity?: AgentGitIdentity | null;
+  /** Links these instructions to a native prompt group revision instead of inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
   /** @deprecated Use edges instead */
   agent_ids?: string[];
   edges?: GraphEdge[];

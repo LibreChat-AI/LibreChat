@@ -63,8 +63,8 @@ export async function getReplayablePendingMCPOAuthStart({
     const flowId = MCPOAuthHandler.generateFlowId(userId, serverName, getTenantId());
     const flowState = await flowManager.getFlowState(flowId, MCP_OAUTH_FLOW_TYPE);
     return getReplayablePendingMCPOAuthStartFromFlow(flowState);
-  } catch (error) {
-    logger.warn(`[MCP OAuth] Failed to inspect pending flow for ${serverName}:`, error);
+  } catch {
+    logger.warn('[MCP OAuth] Failed to inspect pending flow');
     return undefined;
   }
 }

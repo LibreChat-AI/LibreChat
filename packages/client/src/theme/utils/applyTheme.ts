@@ -1,11 +1,25 @@
-import type { IThemeAppearance, IThemeRGB, ResolvedThemeDefinition } from '../types';
-import { themeAppearanceProperties, themeColorTokens } from '../registry';
+import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
+import {
+  controlBorderFallback,
+  focusFallbacks,
+  overlayFallbacks,
+  pressedFallbacks,
+  primaryButtonFallbacks,
+  primaryInkFallbacks,
+  primaryInkRoles,
+  MARK_NEIGHBOURHOOD,
+  themeAppearanceProperties,
+  themeBrandTokens,
+  themeColorTokens,
+} from '../registry';
 
 const colorProperty = (token: keyof IThemeRGB): `--${string}` => `--${token.slice(4)}`;
+const brandProperty = (token: keyof IThemeBrands): `--${string}` => `--${token}`;
 
 export const themeOwnedProperties: readonly string[] = Object.freeze([
   ...themeColorTokens.map(colorProperty),
   ...Object.values(themeAppearanceProperties),
+  ...themeBrandTokens.map(brandProperty),
 ]);
 
 const rgbPattern = /^(\d{1,3})\s+(\d{1,3})\s+(\d{1,3})$/;
@@ -15,7 +29,10 @@ function validateRGB(rgb: string): boolean {
   return match !== null && match.slice(1).every((channel) => Number(channel) <= 255);
 }
 
-function mapColors(colors: IThemeRGB): Array<[string, string]> {
+/** `base` is the bundled palette for the mode being applied. The adapter writes
+ *  only the keys a theme names, so a derivation whose source the theme inherits
+ *  rather than restates has nothing to read without it. */
+function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
     if (value !== undefined) {
@@ -31,29 +48,214 @@ function mapColors(colors: IThemeRGB): Array<[string, string]> {
     variables.push(['--surface-composer-hover', colors['rgb-surface-hover']]);
   }
 
+  /**
+   * Stored and environment themes predate the shimmer stops, and this adapter
+   * applies only the keys a theme names — so without this they would keep the
+   * stock sweep while every other color moved, and in dark mode the CSS cannot
+   * recover: `.dark` declares a base outright, so the `--text-primary` fallback
+   * never runs. The bright stop follows the theme's primary text color, which
+   * is what it already resolves to in light. The dip has no legacy counterpart
+   * and stays at its default: it is the faded half of the sweep, carried at low
+   * alpha, so it reads as dimmed against any base.
+   */
+  if (colors['rgb-shimmer-base'] === undefined && colors['rgb-text-primary'] !== undefined) {
+    variables.push(['--shimmer-base', colors['rgb-text-primary']]);
+  }
+
+  if (colors['rgb-text-muted'] === undefined && colors['rgb-text-tertiary'] !== undefined) {
+    variables.push(['--text-muted', colors['rgb-text-tertiary']]);
+  }
+
+  if (
+    colors['rgb-chart-widget-surface'] === undefined &&
+    colors['rgb-surface-primary'] !== undefined
+  ) {
+    variables.push(['--chart-widget-surface', colors['rgb-surface-primary']]);
+  }
+
+  /** The switch knob was painted `surface-primary` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-switch-thumb'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--switch-thumb', colors['rgb-surface-primary']]);
+  }
+
+  /** The field fill follows the canvas, as in `resolveTheme`. */
+  if (colors['rgb-field-fill'] === undefined && colors['rgb-surface-primary'] !== undefined) {
+    variables.push(['--field-fill', colors['rgb-surface-primary']]);
+  }
+
+  Object.entries(overlayFallbacks(colors)).forEach(([role, value]) => {
+    variables.push([colorProperty(role as keyof IThemeRGB), value]);
+  });
+
+  if (colors['rgb-table-header-text'] === undefined && colors['rgb-text-secondary'] !== undefined) {
+    variables.push(['--table-header-text', colors['rgb-text-secondary']]);
+  }
+
+  if (colors['rgb-table-header-fill'] === undefined && colors['rgb-surface-dialog'] !== undefined) {
+    variables.push(['--table-header-fill', colors['rgb-surface-dialog']]);
+  }
+
+  if (colors['rgb-chart-widget-stroke'] === undefined && colors['rgb-border-light'] !== undefined) {
+    variables.push(['--chart-widget-stroke', colors['rgb-border-light']]);
+  }
+
+  if (colors['rgb-focus-subtle'] === undefined && colors['rgb-border-heavy'] !== undefined) {
+    variables.push(['--focus-subtle', colors['rgb-border-heavy']]);
+  }
+
+  const legacyControlBorder = controlBorderFallback(colors);
+  if (legacyControlBorder !== undefined) {
+    variables.push(['--border-control', legacyControlBorder]);
+  }
+
+  const focus = focusFallbacks(colors);
+  if (colors['rgb-focus-outline'] === undefined && focus['rgb-focus-outline'] !== undefined) {
+    variables.push(['--focus-outline', focus['rgb-focus-outline']]);
+  }
+  if (colors['rgb-focus-control'] === undefined && focus['rgb-focus-control'] !== undefined) {
+    variables.push(['--focus-control', focus['rgb-focus-control']]);
+  }
+  if (
+    colors['rgb-border-field-focus'] === undefined &&
+    focus['rgb-border-field-focus'] !== undefined
+  ) {
+    variables.push(['--border-field-focus', focus['rgb-border-field-focus']]);
+  }
+
+  const pressed = pressedFallbacks(colors);
+  if (colors['rgb-surface-pressed'] === undefined && pressed['rgb-surface-pressed'] !== undefined) {
+    variables.push(['--surface-pressed', pressed['rgb-surface-pressed']]);
+  }
+  if (
+    colors['rgb-surface-inverted-pressed'] === undefined &&
+    pressed['rgb-surface-inverted-pressed'] !== undefined
+  ) {
+    variables.push(['--surface-inverted-pressed', pressed['rgb-surface-inverted-pressed']]);
+  }
+
+  const primary = primaryButtonFallbacks(colors);
+  if (colors['rgb-button-primary'] === undefined && primary['rgb-button-primary'] !== undefined) {
+    variables.push(['--button-primary', primary['rgb-button-primary']]);
+  }
+  if (
+    colors['rgb-button-primary-hover'] === undefined &&
+    primary['rgb-button-primary-hover'] !== undefined
+  ) {
+    variables.push(['--button-primary-hover', primary['rgb-button-primary-hover']]);
+  }
+
+  const inks = primaryInkFallbacks(colors);
+  primaryInkRoles.forEach((role) => {
+    const ink = inks[role];
+    if (colors[role] === undefined && ink !== undefined) {
+      variables.push([`--${role.slice(4)}`, ink]);
+    }
+  });
+
+  /**
+   * Same rule as `resolveTheme`: a theme that paints what the mark is measured
+   * against coordinated the `status-success-strong` the mark wore before it had
+   * a token, so it keeps that fill rather than taking LibreChat's stock blue.
+   * This adapter writes only the keys a theme names, so the inherited value
+   * arrives through `base`, the bundled palette for the mode being applied.
+   */
+  const ownsMarkSurroundings = MARK_NEIGHBOURHOOD.some((token) => colors[token] !== undefined);
+  const inheritedSuccess =
+    colors['rgb-status-success-strong'] ?? base?.['rgb-status-success-strong'];
+  if (
+    ownsMarkSurroundings &&
+    colors['rgb-status-verified'] === undefined &&
+    inheritedSuccess !== undefined
+  ) {
+    variables.push(['--status-verified', inheritedSuccess]);
+  }
+
   return variables;
+}
+
+/** The `theme-chrome-quiet:` variant matches the literal `0`, so every spelling of zero is written as it. */
+function canonicalAppearance(key: keyof IThemeAppearance, value: string): string {
+  return key === 'chromeBorderAlpha' && Number(value) === 0 ? '0' : value;
 }
 
 function mapAppearance(appearance: IThemeAppearance): Array<[string, string]> {
   return Object.entries(themeAppearanceProperties).map(([key, property]) => [
     property,
-    appearance[key as keyof IThemeAppearance],
+    canonicalAppearance(key as keyof IThemeAppearance, appearance[key as keyof IThemeAppearance]),
   ]);
 }
+
+/**
+ * Mirrors the applied theme's `disabledStyle` on the root for host stylesheets and tests. Absent
+ * means the default `dim` style. The `theme-disabled:` variants read the inherited
+ * `--theme-disabled-style` property instead, so the nearest themed root decides.
+ */
+export const THEME_DISABLED_ATTRIBUTE = 'data-theme-disabled';
+
+/**
+ * Marks a root other than the document one that a legacy palette themes. The stylesheet points
+ * the avatar backdrop at that root's own secondary surface, or its tertiary one under a `.dark`
+ * ancestor, as the document root's alias does, so the backdrop follows a later mode change.
+ */
+export const THEME_SCOPE_ATTRIBUTE = 'data-theme-scope';
+
+/**
+ * Mirrors the applied theme's `fieldFocusStyle` on the root, like `THEME_DISABLED_ATTRIBUTE`.
+ * The `theme-field-border:` variant and `Field.css` read the inherited
+ * `--theme-field-focus-style` property instead, so the nearest themed root decides.
+ */
+export const THEME_FIELD_FOCUS_ATTRIBUTE = 'data-theme-field-focus';
+
+/**
+ * Marks a root that `client/index.html` painted from the cached deployment theme before the
+ * bundle ran. The provider drops that copy before it snapshots the root, so a later restore
+ * returns to the stylesheet rather than to a theme the server may since have withdrawn.
+ */
+export const THEME_BOOT_ATTRIBUTE = 'data-theme-boot';
 
 export function clearAppliedTheme(root: HTMLElement = document.documentElement): void {
   themeOwnedProperties.forEach((property) => root.style.removeProperty(property));
   root.removeAttribute('data-theme');
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_SCOPE_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  root.removeAttribute(THEME_BOOT_ATTRIBUTE);
+}
+
+/** What `applyResolvedTheme` writes on the root, as plain data a boot script can replay. */
+export type ResolvedThemeStyle = {
+  properties: Array<[string, string]>;
+  attributes: Record<string, string>;
+};
+
+export function describeResolvedTheme(theme: ResolvedThemeDefinition): ResolvedThemeStyle {
+  return {
+    properties: [
+      ...mapColors(theme.colors),
+      ...mapAppearance(theme.appearance),
+      ...themeBrandTokens.map(
+        (token) => [brandProperty(token), theme.brands[token]] as [string, string],
+      ),
+    ],
+    attributes: {
+      'data-theme': theme.name,
+      ...(theme.appearance.disabledStyle === 'fill' && { [THEME_DISABLED_ATTRIBUTE]: 'fill' }),
+      ...(theme.appearance.fieldFocusStyle === 'border' && {
+        [THEME_FIELD_FOCUS_ATTRIBUTE]: 'border',
+      }),
+    },
+  };
 }
 
 export function applyResolvedTheme(
   theme: ResolvedThemeDefinition,
   root: HTMLElement = document.documentElement,
 ): void {
-  const variables = [...mapColors(theme.colors), ...mapAppearance(theme.appearance)];
-
-  variables.forEach(([property, value]) => root.style.setProperty(property, value));
-  root.dataset.theme = theme.name;
+  const { properties, attributes } = describeResolvedTheme(theme);
+  properties.forEach(([property, value]) => root.style.setProperty(property, value));
+  root.removeAttribute(THEME_DISABLED_ATTRIBUTE);
+  root.removeAttribute(THEME_FIELD_FOCUS_ATTRIBUTE);
+  Object.entries(attributes).forEach(([name, value]) => root.setAttribute(name, value));
 }
 
 /**
@@ -63,12 +265,16 @@ export function applyResolvedTheme(
 export default function applyTheme(
   themeRGB?: IThemeRGB,
   root: HTMLElement = document.documentElement,
+  base?: IThemeRGB,
 ): void {
   if (!themeRGB) {
     return;
   }
 
-  mapColors(themeRGB).forEach(([property, value]) => {
+  if (root !== root.ownerDocument.documentElement) {
+    root.setAttribute(THEME_SCOPE_ATTRIBUTE, '');
+  }
+  mapColors(themeRGB, base).forEach(([property, value]) => {
     if (!validateRGB(value)) {
       console.error(`Invalid RGB value for ${property}: ${value}`);
       return;

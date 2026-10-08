@@ -1,12 +1,15 @@
 import { logger } from '@librechat/data-schemas';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type * as t from './types';
 import {
   cancelMCPToolsChanged,
   getMCPAppToolsPublicationGeneration,
+  getMCPToolCatalogGeneration,
   notifyMCPToolsChanged,
 } from './toolsChanged';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from './capabilities';
 import { canUseAppConnection, isUserSourced } from './utils';
 import { MCPConnection } from './connection';
 
@@ -14,6 +17,7 @@ const CONNECT_CONCURRENCY = 3;
 
 interface ConnectionLoadOptions {
   continueOnError?: boolean;
+  expectedConfig?: t.ParsedServerConfig;
   refreshTools?: boolean;
 }
 
@@ -28,6 +32,7 @@ interface ConnectionLoadOptions {
  */
 export class ConnectionsRepository {
   protected connections: Map<string, MCPConnection> = new Map();
+  private readonly connectionConfigGenerations = new Map<string, string>();
   protected oauthOpts: t.OAuthConnectionOptions | undefined;
   private readonly ownerId: string | undefined;
   private readonly connectionOperations = new Map<string, Promise<void>>();
@@ -60,6 +65,42 @@ export class ConnectionsRepository {
     return result;
   }
 
+  private async isExpectedConfigCurrent(
+    serverName: string,
+    expectedGeneration: string,
+  ): Promise<boolean> {
+    const currentConfig = await MCPServersRegistry.getInstance().getServerConfig(
+      serverName,
+      this.ownerId,
+    );
+    return (
+      currentConfig != null &&
+      getMCPAppToolsPublicationGeneration(currentConfig) === expectedGeneration
+    );
+  }
+
+  private configChangedError(serverName: string): McpError {
+    return new McpError(
+      ErrorCode.InvalidRequest,
+      `[MCP] Configuration for server "${serverName}" changed during connection checkout.`,
+    );
+  }
+
+  private async returnExpectedConnection(
+    serverName: string,
+    connection: MCPConnection,
+    expectedGeneration?: string,
+  ): Promise<MCPConnection> {
+    if (
+      !expectedGeneration ||
+      (await this.isExpectedConfigCurrent(serverName, expectedGeneration))
+    ) {
+      return connection;
+    }
+    await this.disconnectConnection(serverName);
+    throw this.configChangedError(serverName);
+  }
+
   /** Checks whether this repository can connect to a specific server */
   async has(serverName: string): Promise<boolean> {
     const config = await MCPServersRegistry.getInstance().getServerConfig(serverName, this.ownerId);
@@ -69,6 +110,11 @@ export class ConnectionsRepository {
       await this.disconnect(serverName);
     }
     return canConnect;
+  }
+
+  /** The connection currently pooled for a server, without loading, validating or creating one. */
+  public getPooledConnection(serverName: string): MCPConnection | undefined {
+    return this.connections.get(serverName);
   }
 
   /** Gets or creates a connection for the specified server with lazy loading */
@@ -89,10 +135,18 @@ export class ConnectionsRepository {
     if (this.shuttingDown) {
       return null;
     }
-    const serverConfig = await MCPServersRegistry.getInstance().getServerConfig(
-      serverName,
-      this.ownerId,
-    );
+    const registry = MCPServersRegistry.getInstance();
+    const currentConfig = await registry.getServerConfig(serverName, this.ownerId);
+    const expectedGeneration = options.expectedConfig
+      ? getMCPAppToolsPublicationGeneration(options.expectedConfig)
+      : undefined;
+    const currentGeneration = currentConfig
+      ? getMCPAppToolsPublicationGeneration(currentConfig)
+      : undefined;
+    if (expectedGeneration && expectedGeneration !== currentGeneration) {
+      throw this.configChangedError(serverName);
+    }
+    const serverConfig = options.expectedConfig ?? currentConfig;
 
     const existingConnection = this.connections.get(serverName);
     if (!serverConfig || !this.isAllowedToConnectToServer(serverConfig)) {
@@ -100,30 +154,29 @@ export class ConnectionsRepository {
       return null;
     }
     if (existingConnection) {
-      // Check if config was cached/updated since connection was created
-      if (serverConfig.updatedAt && existingConnection.isStale(serverConfig.updatedAt)) {
-        logger.info(
-          `${this.prefix(serverName)} Existing connection for ${serverName} is outdated. Recreating a new connection.`,
-          {
-            connectionCreated: new Date(existingConnection.createdAt).toISOString(),
-            configCachedAt: new Date(serverConfig.updatedAt).toISOString(),
-          },
-        );
-
-        // Disconnect stale connection
+      if (
+        expectedGeneration &&
+        this.connectionConfigGenerations.get(serverName) !== expectedGeneration
+      ) {
         await this.disconnectConnection(serverName);
-        // Fall through to create new connection
+      } else if (serverConfig.updatedAt && existingConnection.isStale(serverConfig.updatedAt)) {
+        logger.info(`${this.prefix()} Existing connection is outdated; recreating`, {
+          connectionCreated: new Date(existingConnection.createdAt).toISOString(),
+          configCachedAt: new Date(serverConfig.updatedAt).toISOString(),
+        });
+        await this.disconnectConnection(serverName);
       } else if (await existingConnection.isConnected()) {
-        return existingConnection;
+        return this.returnExpectedConnection(serverName, existingConnection, expectedGeneration);
       } else {
         await this.disconnectConnection(serverName);
       }
     }
-    const registry = MCPServersRegistry.getInstance();
     const { allowedDomains, allowedAddresses, useSSRFProtection } =
       await registry.resolveAllowlists({ userId: this.ownerId });
     const publicationGeneration =
-      this.ownerId === undefined ? getMCPAppToolsPublicationGeneration(serverConfig) : undefined;
+      this.ownerId === undefined
+        ? getMCPToolCatalogGeneration(serverConfig, STANDARD_MCP_CAPABILITY_PROFILE)
+        : undefined;
     const connection = await MCPConnectionFactory.create(
       {
         serverName,
@@ -132,14 +185,26 @@ export class ConnectionsRepository {
         useSSRFProtection,
         allowedDomains,
         allowedAddresses,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
       },
       this.oauthOpts,
     );
 
     if (this.shuttingDown) {
       await connection.dispose();
-      await cancelMCPToolsChanged({ userId: this.ownerId, serverName });
+      await cancelMCPToolsChanged({
+        userId: this.ownerId,
+        serverName,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
       return null;
+    }
+
+    if (expectedGeneration) {
+      if (!(await this.isExpectedConfigCurrent(serverName, expectedGeneration))) {
+        await connection.dispose();
+        throw this.configChangedError(serverName);
+      }
     }
 
     let toolsChangedGeneration = 0;
@@ -156,24 +221,42 @@ export class ConnectionsRepository {
         userId: this.ownerId,
         publicationGeneration,
         publicationRevision,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
       });
       void latestToolsChangedPublication;
     });
 
     this.connections.set(serverName, connection);
+    this.connectionConfigGenerations.set(
+      serverName,
+      getMCPAppToolsPublicationGeneration(serverConfig),
+    );
     if (this.ownerId === undefined && options.refreshTools !== false) {
+      /** The snapshot carries ordering reserved before its own `tools/list`, so this
+       * first-connect publication is ordered against concurrent replicas exactly as a
+       * list_changed refresh is. An app-level write that cannot be ordered is dropped, which
+       * left agents with a permanently empty catalog when this path populated it (#14857). */
       if (connection.client.getServerCapabilities()?.tools == null) {
+        const ordering = await connection.reserveToolsPublicationRevision();
+        /** The refresh path reserves again under backoff. Publishing unordered instead would be
+         * dropped in silence, leaving whatever this server last advertised in place. */
+        if (ordering.orderingUnavailable) {
+          await connection.refreshToolList();
+          return this.returnExpectedConnection(serverName, connection, expectedGeneration);
+        }
         await notifyMCPToolsChanged({
           tools: [],
           serverName,
           serverConfig,
           publicationGeneration,
+          publicationRevision: ordering.publicationRevision,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         });
-        return connection;
+        return this.returnExpectedConnection(serverName, connection, expectedGeneration);
       }
       const initialGeneration = toolsChangedGeneration;
       const snapshot = await connection.fetchToolsSnapshot();
-      if (snapshot.complete) {
+      if (snapshot.complete && !snapshot.orderingUnavailable) {
         if (toolsChangedGeneration !== initialGeneration) {
           await latestToolsChangedPublication;
         } else {
@@ -182,13 +265,15 @@ export class ConnectionsRepository {
             serverName,
             serverConfig,
             publicationGeneration,
+            publicationRevision: snapshot.publicationRevision,
+            capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
           });
         }
       } else {
         await connection.refreshToolList();
       }
     }
-    return connection;
+    return this.returnExpectedConnection(serverName, connection, expectedGeneration);
   }
 
   /** Gets or creates connections for multiple servers concurrently */
@@ -207,7 +292,7 @@ export class ConnectionsRepository {
             if (!options.continueOnError) {
               throw error;
             }
-            logger.warn(`${this.prefix(name)} Failed to establish connection`, error);
+            logger.warn(`${this.prefix()} Failed to establish connection`);
             return [name, null];
           }
         }),
@@ -238,17 +323,26 @@ export class ConnectionsRepository {
   private async disconnectConnection(serverName: string): Promise<void> {
     const connection = this.connections.get(serverName);
     if (!connection) {
-      await cancelMCPToolsChanged({ userId: this.ownerId, serverName });
+      await cancelMCPToolsChanged({
+        userId: this.ownerId,
+        serverName,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
       return;
     }
     this.connections.delete(serverName);
+    this.connectionConfigGenerations.delete(serverName);
     try {
       connection.removeAllListeners?.('toolsChanged');
       await connection.dispose();
-    } catch (err) {
-      logger.error(`${this.prefix(serverName)} Error disposing`, err);
+    } catch {
+      logger.error(`${this.prefix()} Error disposing`);
     } finally {
-      await cancelMCPToolsChanged({ userId: this.ownerId, serverName });
+      await cancelMCPToolsChanged({
+        userId: this.ownerId,
+        serverName,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
     }
   }
 
@@ -265,8 +359,8 @@ export class ConnectionsRepository {
   }
 
   // Returns formatted log prefix for server messages
-  protected prefix(serverName: string): string {
-    return `[MCP][${serverName}]`;
+  protected prefix(): string {
+    return this.ownerId ? `[MCP][User: ${this.ownerId}]` : '[MCP]';
   }
 
   /**

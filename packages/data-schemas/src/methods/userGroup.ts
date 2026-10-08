@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { AsyncLocalStorage } from 'async_hooks';
-import { CacheKeys, PrincipalType } from 'librechat-data-provider';
+import { CacheKeys, PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { TPrincipalSearchResult } from 'librechat-data-provider';
 import type { Model, ClientSession, FilterQuery } from 'mongoose';
 import type { CacheStore, IGroup, IRole, IUser } from '~/types';
@@ -11,6 +11,11 @@ import { escapeRegExp } from '~/utils/string';
 export interface UserGroupDeps {
   /** Returns the USER_PRINCIPALS cache store when principal caching is enabled. From getLogStores. */
   getCache?: (key: string) => CacheStore | undefined;
+  /**
+   * Notified after membership caches are invalidated so access caches derived from
+   * memberships (e.g. prompt group access IDs) drop their stale entries too.
+   */
+  onMemberGroupsInvalidated?: () => void | Promise<void>;
 }
 
 type PendingGroupLookup = { promise: Promise<Types.ObjectId[]>; markStale: () => void };
@@ -32,17 +37,57 @@ type DeferredInvalidation = {
   invalidate: () => Promise<void>;
 };
 
-/** One queue (and one `ended` listener) per session, so many mutations in one transaction
- * cannot trip the emitter's max-listeners warning. Weak keys drop abandoned sessions. */
+/** One queue and one set of lifecycle hooks per session, so many mutations in one
+ * transaction cannot trip the emitter's max-listeners warning. */
 const sessionInvalidations = new WeakMap<ClientSession, DeferredInvalidation[]>();
+const hookedSessions = new WeakSet<ClientSession>();
+
+async function drainSessionInvalidations(session: ClientSession): Promise<void> {
+  const queue = sessionInvalidations.get(session);
+  if (!queue) {
+    return;
+  }
+  sessionInvalidations.delete(session);
+  await Promise.all(queue.map((entry) => entry.run(entry.invalidate).catch(() => undefined)));
+}
+
+function hookSessionLifecycle(session: ClientSession): void {
+  if (hookedSessions.has(session)) {
+    return;
+  }
+  hookedSessions.add(session);
+
+  const commitTransaction = session.commitTransaction.bind(session);
+  session.commitTransaction = async (
+    ...args: Parameters<ClientSession['commitTransaction']>
+  ): Promise<void> => {
+    await commitTransaction(...args);
+    await drainSessionInvalidations(session);
+  };
+
+  const abortTransaction = session.abortTransaction.bind(session);
+  session.abortTransaction = async (
+    ...args: Parameters<ClientSession['abortTransaction']>
+  ): Promise<void> => {
+    try {
+      await abortTransaction(...args);
+    } finally {
+      sessionInvalidations.delete(session);
+    }
+  };
+
+  session.once('ended', () => {
+    sessionInvalidations.delete(session);
+  });
+}
 
 /**
- * Runs cache invalidation immediately, or defers it to session end for transactional
+ * Runs cache invalidation immediately, or defers it to commit for transactional
  * writes. Mid-transaction invalidation would let concurrent readers re-cache pre-commit
  * state with no later correction; deferring keeps the existing entry serving the
- * still-committed old memberships until the transaction commits or aborts.
+ * still-committed old memberships until the transaction commits. Aborts discard the queue.
  */
-function runAfterTransaction(
+export function runAfterTransaction(
   session: ClientSession | undefined,
   invalidate: () => Promise<void>,
 ): Promise<void> {
@@ -57,12 +102,7 @@ function runAfterTransaction(
   }
   const newQueue: DeferredInvalidation[] = [deferred];
   sessionInvalidations.set(session, newQueue);
-  session.once('ended', () => {
-    sessionInvalidations.delete(session);
-    for (const entry of newQueue) {
-      entry.run(entry.invalidate).catch(() => undefined);
-    }
-  });
+  hookSessionLifecycle(session);
   return Promise.resolve();
 }
 
@@ -437,11 +477,26 @@ export function createUserGroupMethods(
    * non-fatal; the cache TTL bounds any residual staleness (e.g. mutations
    * running under a different tenant context than the member's reads).
    */
+  /**
+   * Notifies dependent access caches after memberships have been evicted, never
+   * before: a dependent rebuild that runs first would read the stale membership
+   * and cache its derived IDs under the freshly bumped generation, surviving
+   * the membership eviction that should have prevented them.
+   */
+  const notifyMemberGroupsInvalidated = async (): Promise<void> => {
+    try {
+      await deps.onMemberGroupsInvalidated?.();
+    } catch {
+      /** Dependent cache invalidation must not block membership updates. */
+    }
+  };
+
   async function invalidateMemberGroupsCache(
     memberIds: Array<string | Types.ObjectId | undefined | null>,
   ): Promise<void> {
     const cache = getPrincipalsCache();
     if (!cache?.delete) {
+      await notifyMemberGroupsInvalidated();
       return;
     }
     const cacheKeys = new Set<string>();
@@ -459,14 +514,19 @@ export function createUserGroupMethods(
     if (cacheKeys.size > INVALIDATION_CLEAR_THRESHOLD && cache.clear) {
       return clearMemberGroupsCache();
     }
-    await dropMemberKeys(cache, cacheKeys);
-    scheduleSecondInvalidation(cache, () => dropMemberKeys(cache, cacheKeys));
+    const evict = async (): Promise<void> => {
+      await dropMemberKeys(cache, cacheKeys);
+      await notifyMemberGroupsInvalidated();
+    };
+    await evict();
+    scheduleSecondInvalidation(cache, evict);
   }
 
   /** Clears the whole membership cache when affected members cannot be enumerated. */
   async function clearMemberGroupsCache(): Promise<void> {
     const cache = getPrincipalsCache();
     if (!cache?.clear) {
+      await notifyMemberGroupsInvalidated();
       return;
     }
     const clearAll = async (): Promise<void> => {
@@ -479,6 +539,7 @@ export function createUserGroupMethods(
       } catch {
         /** Cache failures must not block membership updates. */
       }
+      await notifyMemberGroupsInvalidated();
     };
     await clearAll();
     scheduleSecondInvalidation(cache, clearAll);
@@ -1016,7 +1077,7 @@ export function createUserGroupMethods(
   function transformUserToTPrincipalSearchResult(
     user: Pick<
       IUser,
-      'id' | 'name' | 'email' | 'username' | 'avatar' | 'provider' | 'idOnTheSource'
+      'id' | 'name' | 'email' | 'username' | 'avatar' | 'provider' | 'idOnTheSource' | 'role'
     >,
   ): TPrincipalSearchResult {
     return {
@@ -1029,6 +1090,7 @@ export function createUserGroupMethods(
       provider: user.provider,
       source: 'local',
       idOnTheSource: user.idOnTheSource || user.id,
+      isAdmin: user.role === SystemRoles.ADMIN,
     };
   }
 
@@ -1076,7 +1138,7 @@ export function createUserGroupMethods(
 
     if (!typeFilter || typeFilter.includes(PrincipalType.USER)) {
       /** Note: searchUsers is imported from ~/models and needs to be passed in or implemented */
-      const userFields = 'name email username avatar provider idOnTheSource';
+      const userFields = 'name email username avatar provider idOnTheSource role';
       /** For now, we'll use a direct query instead of searchUsers */
       const User = mongoose.models.User as Model<IUser>;
       const regex = new RegExp(escapedPattern, 'i');
@@ -1101,6 +1163,7 @@ export function createUserGroupMethods(
               avatar: user.avatar,
               provider: user.provider,
               idOnTheSource: user.idOnTheSource,
+              role: user.role,
             }),
           ),
         ),
@@ -1138,6 +1201,7 @@ export function createUserGroupMethods(
               name: role.name,
               source: 'local' as const,
               idOnTheSource: role.name,
+              isAdmin: role.name === SystemRoles.ADMIN,
             })),
           ),
         );

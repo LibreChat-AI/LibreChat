@@ -4,10 +4,10 @@ const {
   isPendingActionStale,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
-const { getConvo } = require('~/models');
+const { getConvoOwnership } = require('~/models');
 
 module.exports = createMessageRequestMiddleware({
-  getConvo,
+  getConvo: getConvoOwnership,
   getJob: (conversationId) => GenerationJobManager.getJob(conversationId),
   isPendingActionStale,
   logger,

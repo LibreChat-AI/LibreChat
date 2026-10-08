@@ -1,6 +1,11 @@
 import { logger } from '@librechat/data-schemas';
 import type * as t from '~/mcp/types';
-import { getMCPAppToolsPublicationGeneration, setMCPToolsChangedHandler } from '~/mcp/toolsChanged';
+import {
+  setMCPToolsChangedHandler,
+  setMCPToolsChangedRevisionHandler,
+  getMCPToolCatalogGeneration,
+} from '~/mcp/toolsChanged';
+import { STANDARD_MCP_CAPABILITY_PROFILE } from '~/mcp/capabilities';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
 import { MCPConnection } from '~/mcp/connection';
@@ -33,10 +38,12 @@ const mockRegistryInstance = {
   shouldEnableSSRFProtection: mockShouldEnableSSRFProtection,
   getAllowedDomains: mockGetAllowedDomains,
   getAllowedAddresses: mockGetAllowedAddresses,
+  getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
   resolveAllowlists: jest.fn(async () => ({
     allowedDomains: mockGetAllowedDomains(),
     allowedAddresses: mockGetAllowedAddresses(),
     useSSRFProtection: mockShouldEnableSSRFProtection(),
+    mcpApps: { enabled: true, legacyHtmlEnabled: true },
   })),
 };
 
@@ -83,6 +90,7 @@ describe('ConnectionsRepository', () => {
       disconnect: jest.fn().mockResolvedValue(undefined),
       dispose: jest.fn().mockResolvedValue(undefined),
       fetchToolsSnapshot: jest.fn().mockResolvedValue({ tools: [], complete: true }),
+      reserveToolsPublicationRevision: jest.fn().mockResolvedValue({}),
       refreshToolList: jest.fn().mockResolvedValue(undefined),
       createdAt: Date.now(),
       isStale: jest.fn().mockReturnValue(false),
@@ -101,6 +109,7 @@ describe('ConnectionsRepository', () => {
 
   afterEach(() => {
     setMCPToolsChangedHandler(null);
+    setMCPToolsChangedRevisionHandler(null);
     jest.clearAllMocks();
   });
 
@@ -137,12 +146,88 @@ describe('ConnectionsRepository', () => {
           allowedDomains: null,
           allowedAddresses: null,
           dbSourced: false,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         },
         undefined,
       );
       expect(repository['connections'].get('server1')).toBe(mockConnection);
       expect(mockConnection.fetchToolsSnapshot).toHaveBeenCalledTimes(1);
       expect(mockConnection.refreshToolList).not.toHaveBeenCalled();
+    });
+
+    it('creates an operator connection only for the expected current config', async () => {
+      const expectedConfig = mockServerConfigs.server1;
+
+      await expect(repository.get('server1', { expectedConfig })).resolves.toBe(mockConnection);
+
+      expect(MCPConnectionFactory.create).toHaveBeenCalledWith(
+        expect.objectContaining({ serverConfig: expectedConfig }),
+        undefined,
+      );
+    });
+
+    it('rejects a stale expected config without evicting the current pooled connection', async () => {
+      repository['connections'].set('server1', mockConnection);
+      const staleConfig = { ...mockServerConfigs.server1, url: 'http://localhost:3999' };
+
+      await expect(repository.get('server1', { expectedConfig: staleConfig })).rejects.toThrow(
+        'changed during connection checkout',
+      );
+
+      expect(repository.getPooledConnection('server1')).toBe(mockConnection);
+      expect(mockConnection.dispose).not.toHaveBeenCalled();
+    });
+
+    it('disposes a new connection when the current config changes before publication', async () => {
+      let releaseCreation!: () => void;
+      let markCreationStarted!: () => void;
+      const creationHeld = new Promise<void>((resolve) => {
+        releaseCreation = resolve;
+      });
+      const creationStarted = new Promise<void>((resolve) => {
+        markCreationStarted = resolve;
+      });
+      (MCPConnectionFactory.create as jest.Mock).mockImplementationOnce(async () => {
+        markCreationStarted();
+        await creationHeld;
+        return mockConnection;
+      });
+
+      const load = repository.get('server1', { expectedConfig: mockServerConfigs.server1 });
+      await creationStarted;
+      mockServerConfigs.server1 = { ...mockServerConfigs.server1, url: 'http://localhost:3999' };
+      releaseCreation();
+
+      await expect(load).rejects.toThrow('changed during connection checkout');
+      expect(mockConnection.dispose).toHaveBeenCalledTimes(1);
+      expect(repository.getPooledConnection('server1')).toBeUndefined();
+    });
+
+    it('refuses an app connection for a server declaring chat-only headers', async () => {
+      mockServerConfigs.server1 = {
+        ...mockServerConfigs.server1,
+        requestHeaders: { 'X-Workspace': 'workspace-1' },
+      } as t.ParsedServerConfig;
+
+      const result = await repository.get('server1');
+
+      /** A shared session would carry these into its own `initialize` and
+       *  `tools/list`, which every later catalog read reuses. */
+      expect(result).toBeNull();
+      expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+    });
+
+    it('still creates a user-owned connection for a server declaring chat-only headers', async () => {
+      mockServerConfigs.server1 = {
+        ...mockServerConfigs.server1,
+        requestHeaders: { 'X-Workspace': 'workspace-1' },
+      } as t.ParsedServerConfig;
+      const userRepository = new ConnectionsRepository('user-1');
+
+      const result = await userRepository.get('server1');
+
+      expect(result).toBe(mockConnection);
+      expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(1);
     });
 
     it('serializes concurrent creation so only one connection is retained', async () => {
@@ -176,13 +261,78 @@ describe('ConnectionsRepository', () => {
         expect.objectContaining({
           serverName: 'server1',
           tools: [],
-          publicationGeneration: getMCPAppToolsPublicationGeneration(mockServerConfigs.server1),
+          publicationGeneration: getMCPToolCatalogGeneration(mockServerConfigs.server1),
         }),
       );
       expect(loaded).toBe(false);
 
       releasePublication?.();
       await expect(load).resolves.toBe(mockConnection);
+    });
+
+    /** An app-level write that carries no revision cannot be ordered and is dropped, so the
+     * ordering reserved for this snapshot has to reach the publication (#14857). */
+    it('publishes the initial app snapshot under the revision it was fetched with', async () => {
+      mockConnection.fetchToolsSnapshot.mockResolvedValue({
+        tools: [],
+        complete: true,
+        publicationRevision: '4',
+      });
+      const handler = jest.fn();
+      setMCPToolsChangedHandler(handler);
+
+      await repository.get('server1');
+
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ serverName: 'server1', publicationRevision: '4' }),
+      );
+    });
+
+    it('reserves ordering for a server that advertises no tools capability', async () => {
+      (mockConnection.client.getServerCapabilities as jest.Mock).mockReturnValue({});
+      mockConnection.reserveToolsPublicationRevision = jest
+        .fn()
+        .mockResolvedValue({ publicationRevision: '9' });
+      const handler = jest.fn();
+      setMCPToolsChangedHandler(handler);
+
+      await repository.get('server1');
+
+      expect(mockConnection.fetchToolsSnapshot).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({ serverName: 'server1', tools: [], publicationRevision: '9' }),
+      );
+    });
+
+    /** An unordered publication is dropped in silence, so a server left with no way to order
+     * its empty catalog has to retry rather than leave the previous one advertised. */
+    it('retries an empty catalog it could not reserve ordering for', async () => {
+      (mockConnection.client.getServerCapabilities as jest.Mock).mockReturnValue({});
+      mockConnection.reserveToolsPublicationRevision = jest
+        .fn()
+        .mockResolvedValue({ orderingUnavailable: true });
+      const handler = jest.fn();
+      setMCPToolsChangedHandler(handler);
+
+      await repository.get('server1');
+
+      expect(mockConnection.refreshToolList).toHaveBeenCalledTimes(1);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('retries a fetched catalog it could not reserve ordering for', async () => {
+      mockConnection.fetchToolsSnapshot.mockResolvedValue({
+        tools: [],
+        complete: true,
+        orderingUnavailable: true,
+      });
+      const handler = jest.fn();
+      setMCPToolsChangedHandler(handler);
+
+      await repository.get('server1');
+
+      expect(mockConnection.refreshToolList).toHaveBeenCalledTimes(1);
+      expect(handler).not.toHaveBeenCalled();
     });
 
     it('can defer the initial app tool refresh for startup synchronization', async () => {
@@ -269,6 +419,7 @@ describe('ConnectionsRepository', () => {
           allowedDomains: null,
           allowedAddresses: null,
           dbSourced: false,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         },
         undefined,
       );
@@ -312,6 +463,7 @@ describe('ConnectionsRepository', () => {
           allowedDomains: null,
           allowedAddresses: null,
           dbSourced: false,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         },
         undefined,
       );
@@ -445,10 +597,9 @@ describe('ConnectionsRepository', () => {
       expect(result.has('server1')).toBe(false);
       expect(result.get('server2')).toBe(mockConnection);
       expect(result.get('server3')).toBe(mockConnection);
-      expect(mockLogger.warn).toHaveBeenCalledWith(
-        '[MCP][server1] Failed to establish connection',
-        expect.any(Error),
-      );
+      expect(mockLogger.warn).toHaveBeenCalledWith('[MCP] Failed to establish connection');
+      expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain('server1');
+      expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain('server unavailable');
     });
   });
 
@@ -471,10 +622,9 @@ describe('ConnectionsRepository', () => {
 
       expect(mockConnection.dispose).toHaveBeenCalled();
       expect(repository['connections'].has('server1')).toBe(false);
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        '[MCP][server1] Error disposing',
-        disconnectError,
-      );
+      expect(mockLogger.error).toHaveBeenCalledWith('[MCP] Error disposing');
+      expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(disconnectError.message);
+      expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('server1');
     });
   });
 

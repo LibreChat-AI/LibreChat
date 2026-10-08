@@ -1,18 +1,25 @@
 import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { HumanMessage } from '@librechat/agents/langchain/messages';
 import { MongoDBSaver } from '@langchain/langgraph-checkpoint-mongodb';
 import { emptyCheckpoint, ERROR, INTERRUPT } from '@langchain/langgraph-checkpoint';
 import {
   getAgentCheckpointer,
+  hasDurableAgentInterruptCheckpoint,
   captureAgentCheckpointGeneration,
   deleteAgentCheckpoint,
-  deleteAgentCheckpoints,
+  deleteOwnedAgentCheckpoints,
+  forkAgentEventCheckpoint,
+  captureAgentEventCheckpoint,
   LazyMongoSaver,
   CheckpointTooLargeError,
   LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
+  LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY,
+  setupCheckpointIndexes,
   __resetCheckpointerForTests,
 } from './checkpointer';
+import { createCheckpointNamespace } from '../stream/checkpoints';
 
 /**
  * Integration tests for the durable Mongo checkpointer seam, against a real
@@ -46,6 +53,7 @@ async function seedInterruptCheckpoint(
   saver: MongoDBSaver,
   threadId: string,
   checkpointNamespace = '',
+  interruptId = 'interrupt-current',
 ) {
   const { config, checkpoint, metadata } = putArgs(threadId, checkpointNamespace);
   await saver.putWrites(
@@ -56,7 +64,7 @@ async function seedInterruptCheckpoint(
         checkpoint_id: checkpoint.id,
       },
     },
-    [[INTERRUPT, 'approve?']],
+    [[INTERRUPT, { id: interruptId, value: 'approve?' }]],
     'task-1',
   );
   await saver.put(config, checkpoint, metadata);
@@ -95,6 +103,68 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
     expect(ttlIndex?.expireAfterSeconds).toBe(3600);
   });
 
+  it('verifies that an interrupt write has its matching durable checkpoint', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    expect(saver).toBeDefined();
+    const missingIdentity = {
+      checkpointId: 'missing-checkpoint',
+      interruptId: 'interrupt-current',
+    };
+    await expect(
+      hasDurableAgentInterruptCheckpoint('verified-pause', MONGO_CFG, missingIdentity),
+    ).resolves.toBe(false);
+
+    const checkpoint = await seedInterruptCheckpoint(saver!, 'verified-pause');
+    const identity = {
+      checkpointId: checkpoint.id,
+      interruptId: 'interrupt-current',
+    };
+
+    await expect(
+      hasDurableAgentInterruptCheckpoint('verified-pause', MONGO_CFG, identity),
+    ).resolves.toBe(true);
+    await expect(
+      hasDurableAgentInterruptCheckpoint('verified-pause', MONGO_CFG, missingIdentity),
+    ).resolves.toBe(false);
+    await expect(
+      hasDurableAgentInterruptCheckpoint('verified-pause', MONGO_CFG, {
+        ...identity,
+        interruptId: 'interrupt-stale',
+      }),
+    ).resolves.toBe(false);
+    await mongoose.connection.db!.collection('agent_checkpoints').deleteMany({
+      thread_id: 'verified-pause',
+    });
+    await expect(
+      hasDurableAgentInterruptCheckpoint('verified-pause', MONGO_CFG, identity),
+    ).resolves.toBe(false);
+  });
+
+  it("uses Mongoose's selected database instead of the MongoClient URI default", async () => {
+    await mongoose.disconnect();
+    await mongoose.connect(mongoServer.getUri('driver_default'), { dbName: 'active_app' });
+    __resetCheckpointerForTests();
+
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    expect(saver).toBeDefined();
+    await seedInterruptCheckpoint(saver!, 'db-selection-pause');
+
+    expect(
+      await mongoose.connection.db!.collection('agent_checkpoints').countDocuments({
+        thread_id: 'db-selection-pause',
+      }),
+    ).toBe(1);
+    expect(
+      await mongoose.connection
+        .getClient()
+        .db('driver_default')
+        .collection('agent_checkpoints')
+        .countDocuments({
+          thread_id: 'db-selection-pause',
+        }),
+    ).toBe(0);
+  });
+
   it('returns undefined for the memory type (SDK MemorySaver fallback) even when connected', async () => {
     expect(await getAgentCheckpointer({ type: 'memory' })).toBeUndefined();
   });
@@ -103,6 +173,213 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
     const a = await getAgentCheckpointer(MONGO_CFG);
     const b = await getAgentCheckpointer(MONGO_CFG);
     expect(a).toBe(b);
+  });
+
+  it('persists clean event-actor exits and forks only the committed checkpoint', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = `actor-${new mongoose.Types.ObjectId().toString()}`;
+    const checkpoint = emptyCheckpoint();
+    const config = {
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'event-actor/base',
+        [LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY]: 'event-1',
+      },
+    };
+    await saver!.put(config, checkpoint, {
+      source: 'input',
+      step: -1,
+      parents: {},
+    });
+
+    await expect(
+      captureAgentEventCheckpoint(threadId, 'event-actor/base', 'event-1', MONGO_CFG),
+    ).resolves.toEqual({
+      threadId,
+      checkpointId: checkpoint.id,
+      checkpointNs: 'event-actor/base',
+    });
+    await expect(
+      forkAgentEventCheckpoint(
+        { threadId, checkpointId: checkpoint.id, checkpointNs: 'event-actor/base' },
+        'event-actor/fork',
+        'event-2',
+        MONGO_CFG,
+      ),
+    ).resolves.toEqual({
+      threadId,
+      checkpointId: checkpoint.id,
+      checkpointNs: 'event-actor/fork',
+    });
+    expect(
+      await mongoose.connection
+        .db!.collection('agent_checkpoints')
+        .countDocuments({ thread_id: threadId }),
+    ).toBe(2);
+  });
+
+  it('replaces checkpoint-carried Skill context while preserving the committed base', async () => {
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = `actor-${new mongoose.Types.ObjectId().toString()}`;
+    const checkpoint = emptyCheckpoint();
+    checkpoint.channel_values.messages = [
+      new HumanMessage({ content: 'ordinary history' }),
+      new HumanMessage({
+        content: 'old skill body',
+        additional_kwargs: { isMeta: true, source: 'skill', skillName: 'analysis' },
+      }),
+    ];
+    checkpoint.channel_versions.messages = 1;
+    const sourceConfig = {
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'event-actor/base',
+        [LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY]: 'event-1',
+      },
+    };
+    await saver!.put(sourceConfig, checkpoint, {
+      source: 'input',
+      step: -1,
+      parents: {},
+    });
+
+    await forkAgentEventCheckpoint(
+      { threadId, checkpointId: checkpoint.id, checkpointNs: 'event-actor/base' },
+      'event-actor/fork',
+      'event-2',
+      MONGO_CFG,
+      {
+        source: 'skill',
+        messages: [
+          new HumanMessage({
+            content: 'current skill body',
+            additional_kwargs: { isMeta: true, source: 'skill', skillName: 'analysis' },
+          }),
+        ],
+      },
+    );
+
+    const source = await saver!.getTuple(sourceConfig);
+    const fork = await saver!.getTuple({
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        checkpoint_id: checkpoint.id,
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'event-actor/fork',
+        [LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY]: 'event-2',
+      },
+    });
+    expect(
+      (source?.checkpoint.channel_values.messages as HumanMessage[]).map(
+        (message) => message.content,
+      ),
+    ).toEqual(['ordinary history', 'old skill body']);
+    expect(
+      (fork?.checkpoint.channel_values.messages as HumanMessage[]).map(
+        (message) => message.content,
+      ),
+    ).toEqual(['ordinary history', 'current skill body']);
+  });
+
+  it('warm-continues from a copied actor head without mutating the committed base', async () => {
+    const { StateGraph, START, END, Annotation } = await import('@langchain/langgraph');
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = `actor-${new mongoose.Types.ObjectId().toString()}`;
+    const State = Annotation.Root({
+      events: Annotation<string[]>({
+        reducer: (left, right) => [...left, ...right],
+        default: () => [],
+      }),
+    });
+    const graph = new StateGraph(State)
+      .addNode('observe', (state: { events: string[] }) => ({
+        events: [`seen:${state.events[state.events.length - 1]}`],
+      }))
+      .addEdge(START, 'observe')
+      .addEdge('observe', END)
+      .compile({ checkpointer: saver as never });
+    const config = (checkpointNamespace: string, invocationId: string, checkpointId?: string) => ({
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: checkpointNamespace,
+        [LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY]: invocationId,
+        ...(checkpointId == null ? {} : { checkpoint_id: checkpointId }),
+      },
+      durability: 'exit' as const,
+    });
+
+    await graph.invoke({ events: ['event-1'] }, config('event-actor/base', 'event-1'));
+    const base = await captureAgentEventCheckpoint(
+      threadId,
+      'event-actor/base',
+      'event-1',
+      MONGO_CFG,
+    );
+    expect(base).not.toBeNull();
+    const fork = await forkAgentEventCheckpoint(base!, 'event-actor/fork', 'event-2', MONGO_CFG);
+    expect(fork).not.toBeNull();
+
+    const warm = await graph.invoke(
+      { events: ['event-2'] },
+      config('event-actor/fork', 'event-2', fork!.checkpointId),
+    );
+    expect(warm.events).toEqual(['event-1', 'seen:event-1', 'event-2', 'seen:event-2']);
+    const committedBase = await saver!.getTuple({
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        checkpoint_id: base!.checkpointId,
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'event-actor/base',
+      },
+    });
+    expect(committedBase?.checkpoint.channel_values.events).toEqual(['event-1', 'seen:event-1']);
+  });
+
+  it('cold-rebuilds in a fresh namespace when an invalidated head id is not copied', async () => {
+    const { StateGraph, START, END, Annotation } = await import('@langchain/langgraph');
+    const saver = await getAgentCheckpointer(MONGO_CFG);
+    const threadId = `actor-${new mongoose.Types.ObjectId().toString()}`;
+    const State = Annotation.Root({
+      events: Annotation<string[]>({
+        reducer: (left, right) => [...left, ...right],
+        default: () => [],
+      }),
+    });
+    const graph = new StateGraph(State)
+      .addNode('observe', (state: { events: string[] }) => ({
+        events: [`seen:${state.events[state.events.length - 1]}`],
+      }))
+      .addEdge(START, 'observe')
+      .addEdge('observe', END)
+      .compile({ checkpointer: saver as never });
+    const config = (checkpointNamespace: string, invocationId: string, checkpointId?: string) => ({
+      configurable: {
+        thread_id: threadId,
+        checkpoint_ns: '',
+        [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: checkpointNamespace,
+        [LIBRECHAT_EVENT_ACTOR_INVOCATION_KEY]: invocationId,
+        ...(checkpointId == null ? {} : { checkpoint_id: checkpointId }),
+      },
+      durability: 'exit' as const,
+    });
+
+    await graph.invoke({ events: ['legacy-before'] }, config('event-actor/base', 'event-1'));
+    const base = await captureAgentEventCheckpoint(
+      threadId,
+      'event-actor/base',
+      'event-1',
+      MONGO_CFG,
+    );
+    expect(base).not.toBeNull();
+
+    const rebuilt = await graph.invoke(
+      { events: ['event-after-legacy'] },
+      config('event-actor/cold', 'event-2', base!.checkpointId),
+    );
+    expect(rebuilt.events).toEqual(['event-after-legacy', 'seen:event-after-legacy']);
   });
 
   it('deleteAgentCheckpoint prunes a thread’s persisted checkpoint', async () => {
@@ -201,6 +478,33 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
     expect(await saver!.getTuple(readConfig(threadB))).toBeDefined();
   });
 
+  it('scheduled namespace capture prunes root and nested writes while preserving a replacement', async () => {
+    const db = mongoose.connection.db!;
+    const threadId = 'scheduled-owned-run';
+    const namespace = createCheckpointNamespace('owner', 'tenant');
+    const replacement = createCheckpointNamespace('owner', 'tenant');
+    const rows = [namespace, `${namespace}|child`, replacement, ''].map((checkpoint_ns) => ({
+      thread_id: threadId,
+      checkpoint_ns,
+      checkpoint_id: 'same-checkpoint-id',
+    }));
+    for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
+      await db.collection(name).insertMany(rows.map((row) => ({ ...row })));
+    }
+    const capture = await captureAgentCheckpointGeneration(threadId, MONGO_CFG, {
+      checkpointNamespace: namespace,
+      throwOnError: true,
+    });
+    expect(capture?.checkpointIds).toContain('same-checkpoint-id');
+    await deleteAgentCheckpoint(threadId, MONGO_CFG, capture, { throwOnError: true });
+    for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
+      expect(await db.collection(name).distinct('checkpoint_ns', { thread_id: threadId })).toEqual(
+        expect.arrayContaining([replacement, '']),
+      );
+      expect(await db.collection(name).countDocuments({ thread_id: threadId })).toBe(2);
+    }
+  });
+
   it('generation-scoped cleanup preserves a replacement checkpoint on the same thread', async () => {
     const saver = await getAgentCheckpointer(MONGO_CFG);
     const threadId = `convo-${new mongoose.Types.ObjectId().toString()}`;
@@ -231,6 +535,41 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
       await mongoose.connection
         .db!.collection('agent_checkpoint_writes')
         .countDocuments({ thread_id: threadId, checkpoint_id: resumed.id }),
+    ).toBe(0);
+  });
+
+  it('legacy capture and cleanup preserve ordinary owned payload even with matching checkpoint IDs', async () => {
+    const saver = (await getAgentCheckpointer(MONGO_CFG))!;
+    const threadId = 'legacy-owner-collision';
+    const legacy = await seedInterruptCheckpoint(saver, threadId);
+    const ownedNamespace = createCheckpointNamespace('other-owner', 'tenant');
+    const db = mongoose.connection.db!;
+    for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
+      const row = await db.collection(name).findOne({ thread_id: threadId });
+      const { _id, ...payload } = row!;
+      await db.collection(name).insertOne({ ...payload, checkpoint_ns: ownedNamespace });
+      await db
+        .collection(name)
+        .insertOne({ ...payload, checkpoint_id: 'only-owned', checkpoint_ns: ownedNamespace });
+    }
+    const captured = await captureAgentCheckpointGeneration(threadId, MONGO_CFG);
+    expect(captured.checkpointIds).toEqual([legacy.id]);
+    await deleteAgentCheckpoint(threadId, MONGO_CFG, captured, { throwOnError: true });
+    await deleteAgentCheckpoint(threadId, MONGO_CFG, undefined, { throwOnError: true });
+    for (const name of ['agent_checkpoints', 'agent_checkpoint_writes']) {
+      const rows = await db.collection(name).find({ thread_id: threadId }).toArray();
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.checkpoint_ns === ownedNamespace)).toBe(true);
+    }
+    await deleteAgentCheckpoint(threadId, MONGO_CFG, undefined, {
+      checkpointNamespace: ownedNamespace,
+      throwOnError: true,
+    });
+    expect(await db.collection('agent_checkpoints').countDocuments({ thread_id: threadId })).toBe(
+      0,
+    );
+    expect(
+      await db.collection('agent_checkpoint_writes').countDocuments({ thread_id: threadId }),
     ).toBe(0);
   });
 
@@ -342,39 +681,46 @@ describe('checkpointer (mongodb-memory-server integration)', () => {
     await expect(deleteAgentCheckpoint(undefined, MONGO_CFG)).resolves.toBeUndefined();
   });
 
-  it('deleteAgentCheckpoints bulk-prunes exactly the given threads (checkpoints AND writes)', async () => {
-    // The bulk path behind conversation deletion / delete-all / account deletion:
-    // one $in deleteMany per collection instead of two round-trips per thread.
+  it('bulk-deletes only an owned generation scope when thread IDs collide', async () => {
     const saver = await getAgentCheckpointer(MONGO_CFG);
-    const threadA = `convo-${new mongoose.Types.ObjectId().toString()}`;
-    const threadB = `convo-${new mongoose.Types.ObjectId().toString()}`;
-    const threadC = `convo-${new mongoose.Types.ObjectId().toString()}`;
+    const threadId = `collision-${new mongoose.Types.ObjectId().toString()}`;
+    const ownedNamespace = createCheckpointNamespace('owner', 'tenant');
+    await seedInterruptCheckpoint(saver!, threadId, ownedNamespace);
+    await seedInterruptCheckpoint(saver!, threadId, `${ownedNamespace}|subgraph`);
+    await seedInterruptCheckpoint(saver!, threadId, 'foreign-generation');
+    await seedInterruptCheckpoint(saver!, threadId, '');
 
-    await seedInterruptCheckpoint(saver!, threadA);
-    await seedInterruptCheckpoint(saver!, threadB);
-    await seedInterruptCheckpoint(saver!, threadC);
+    await deleteOwnedAgentCheckpoints('owner', 'tenant', [threadId, threadId], MONGO_CFG);
 
-    // Falsy entries are skipped rather than widening the delete.
-    await deleteAgentCheckpoints([threadA, undefined, threadB, null], MONGO_CFG);
-
-    expect(await saver!.getTuple(readConfig(threadA))).toBeUndefined();
-    expect(await saver!.getTuple(readConfig(threadB))).toBeUndefined();
-    expect(await saver!.getTuple(readConfig(threadC))).toBeDefined();
-
-    const db = mongoose.connection.db!;
-    const writesFilter = { thread_id: { $in: [threadA, threadB] } };
-    expect(await db.collection('agent_checkpoints').countDocuments(writesFilter)).toBe(0);
-    expect(await db.collection('agent_checkpoint_writes').countDocuments(writesFilter)).toBe(0);
-    // The untouched thread keeps its interrupt write row.
+    expect(await saver!.getTuple(readConfig(threadId, ownedNamespace))).toBeUndefined();
     expect(
-      await db.collection('agent_checkpoint_writes').countDocuments({ thread_id: threadC }),
-    ).toBe(1);
+      await saver!.getTuple(readConfig(threadId, `${ownedNamespace}|subgraph`)),
+    ).toBeUndefined();
+    expect(await saver!.getTuple(readConfig(threadId, 'foreign-generation'))).toBeDefined();
+    expect(await saver!.getTuple(readConfig(threadId, ''))).toBeDefined();
+    const db = mongoose.connection.db!;
+    expect(
+      await db.collection('agent_checkpoint_writes').countDocuments({
+        thread_id: threadId,
+        checkpoint_ns: { $in: [ownedNamespace, `${ownedNamespace}|subgraph`] },
+      }),
+    ).toBe(0);
+    expect(
+      await db.collection('agent_checkpoint_writes').countDocuments({ thread_id: threadId }),
+    ).toBe(2);
   });
 
-  it('deleteAgentCheckpoints is a no-op for an empty or all-falsy list', async () => {
-    await expect(deleteAgentCheckpoints([], MONGO_CFG)).resolves.toBeUndefined();
-    await expect(deleteAgentCheckpoints([undefined, null], MONGO_CFG)).resolves.toBeUndefined();
-    await expect(deleteAgentCheckpoints(undefined, MONGO_CFG)).resolves.toBeUndefined();
+  it('propagates a bulk checkpoint deletion failure for retry', async () => {
+    const deletion = jest
+      .spyOn(mongoose.mongo.Collection.prototype, 'deleteMany')
+      .mockRejectedValueOnce(new Error('checkpoint deletion unavailable'));
+    try {
+      await expect(
+        deleteOwnedAgentCheckpoints('owner', 'tenant', ['conversation-1'], MONGO_CFG),
+      ).rejects.toThrow('checkpoint deletion unavailable');
+    } finally {
+      deletion.mockRestore();
+    }
   });
 });
 
@@ -858,5 +1204,232 @@ describe('LazyMongoSaver checkpoint size guard (mongodb-memory-server integratio
     const channels = (tuple?.pendingWrites ?? []).map((w) => w[1]);
     expect(channels).toContain(INTERRUPT);
     expect(channels).toContain(NO_WRITES); // flushed, not dropped
+  });
+});
+
+describe('setupCheckpointIndexes on a single-index-build engine (mongodb-memory-server)', () => {
+  const CHECKPOINTS = 'single_build_checkpoints';
+  const WRITES = 'single_build_checkpoint_writes';
+  /** Amazon DocumentDB: "Existing index build in progress on the same collection." */
+  const INDEX_BUILD_ALREADY_IN_PROGRESS = 40333;
+
+  const clientForSaver = () =>
+    mongoose.connection.getClient() as unknown as ConstructorParameters<
+      typeof MongoDBSaver
+    >[0]['client'];
+
+  /** Bound to Mongoose's database the way `buildMongoSaver` binds it, so the
+   * index assertions below read the collections the saver actually built. */
+  const makeSaver = () =>
+    new LazyMongoSaver({
+      client: clientForSaver(),
+      dbName: mongoose.connection.db?.databaseName,
+      checkpointCollectionName: CHECKPOINTS,
+      checkpointWritesCollectionName: WRITES,
+      ttl: 3600,
+    });
+
+  function indexBuildInProgressError(): Error {
+    return new mongoose.mongo.MongoServerError({
+      ok: 0,
+      code: INDEX_BUILD_ALREADY_IN_PROGRESS,
+      errmsg:
+        'Existing index build in progress on the same collection. Collection is limited to a single index build at a time.',
+    });
+  }
+
+  interface IndexBuild {
+    collectionName: string;
+    indexName: string;
+    build: () => Promise<string>;
+  }
+
+  /**
+   * Routes every `createIndex` through `handler`, naming the index the way the
+   * server would. Patched on the driver prototype because the saver fetches a
+   * fresh `Collection` handle per call.
+   */
+  function patchCreateIndex(handler: (build: IndexBuild) => Promise<string>): () => void {
+    const prototype = mongoose.mongo.Collection.prototype;
+    const createIndex = prototype.createIndex;
+    prototype.createIndex = function (this: mongoose.mongo.Collection, spec, options) {
+      const indexName =
+        options?.name ??
+        Object.entries(spec)
+          .map(([field, direction]) => `${field}_${direction}`)
+          .join('_');
+      return handler({
+        collectionName: this.collectionName,
+        indexName,
+        build: () => createIndex.call(this, spec, options),
+      });
+    };
+    return () => {
+      prototype.createIndex = createIndex;
+    };
+  }
+
+  /**
+   * Turns the in-memory MongoDB into a single-index-build engine for the two
+   * checkpoint collections: a build that arrives while another is in flight on
+   * the same collection is rejected the way DocumentDB rejects it, instead of
+   * being serialized the way MongoDB does. Re-creating an index that already
+   * exists starts no build on either engine, so it always passes through.
+   */
+  function enforceSingleIndexBuild(): { rejected: () => number; restore: () => void } {
+    const inFlight = new Set<string>();
+    const built = new Set<string>();
+    let rejected = 0;
+    const restore = patchCreateIndex(async ({ collectionName, indexName, build }) => {
+      const key = `${collectionName}:${indexName}`;
+      if ((collectionName !== CHECKPOINTS && collectionName !== WRITES) || built.has(key)) {
+        return build();
+      }
+      if (inFlight.has(collectionName)) {
+        rejected += 1;
+        throw indexBuildInProgressError();
+      }
+      inFlight.add(collectionName);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const name = await build();
+        built.add(key);
+        return name;
+      } finally {
+        inFlight.delete(collectionName);
+      }
+    });
+    return { rejected: () => rejected, restore };
+  }
+
+  async function indexNames(collectionName: string): Promise<string[]> {
+    const indexes = await mongoose.connection.db!.collection(collectionName).indexes();
+    return indexes.map((index) => index.name ?? '');
+  }
+
+  it('models the engine: a raw setup() loses one build per collection', async () => {
+    const engine = enforceSingleIndexBuild();
+    try {
+      const errors = await makeSaver().setup();
+
+      expect(errors.map((error) => (error as { code?: number }).code)).toEqual([
+        INDEX_BUILD_ALREADY_IN_PROGRESS,
+        INDEX_BUILD_ALREADY_IN_PROGRESS,
+      ]);
+      expect(engine.rejected()).toBe(2);
+    } finally {
+      engine.restore();
+    }
+  });
+
+  it('re-runs setup() until every checkpoint index exists', async () => {
+    const engine = enforceSingleIndexBuild();
+    try {
+      await expect(
+        setupCheckpointIndexes(makeSaver(), { peerBuildPollMs: 1, peerBuildDeadlineMs: 5_000 }),
+      ).resolves.toEqual([]);
+
+      expect(engine.rejected()).toBe(2);
+      expect(await indexNames(CHECKPOINTS)).toEqual(
+        expect.arrayContaining(['thread_ns_checkpoint_idx', 'upserted_at_1']),
+      );
+      expect(await indexNames(WRITES)).toEqual(
+        expect.arrayContaining(['thread_ns_checkpoint_task_idx', 'upserted_at_1']),
+      );
+    } finally {
+      engine.restore();
+    }
+  });
+
+  it('returns errors that are not a concurrent build without re-running setup()', async () => {
+    const restore = patchCreateIndex(async ({ collectionName, build }) => {
+      if (collectionName !== WRITES) {
+        return build();
+      }
+      throw new mongoose.mongo.MongoServerError({
+        ok: 0,
+        code: 67,
+        errmsg: 'CannotCreateIndex: bad index spec',
+      });
+    });
+    try {
+      const saver = makeSaver();
+      const setup = jest.spyOn(saver, 'setup');
+
+      const errors = await setupCheckpointIndexes(saver, {
+        peerBuildPollMs: 1,
+        peerBuildDeadlineMs: 5_000,
+      });
+
+      expect(errors.map((error) => error.message)).toEqual([
+        'CannotCreateIndex: bad index spec',
+        'CannotCreateIndex: bad index spec',
+      ]);
+      expect(setup).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('proceeds with the conflict reported once the peer-build deadline passes', async () => {
+    const restore = patchCreateIndex(async ({ collectionName, build }) => {
+      if (collectionName !== CHECKPOINTS) {
+        return build();
+      }
+      throw indexBuildInProgressError();
+    });
+    try {
+      const errors = await setupCheckpointIndexes(makeSaver(), {
+        peerBuildPollMs: 1,
+        peerBuildDeadlineMs: 20,
+      });
+
+      expect(errors.map((error) => (error as { code?: number }).code)).toEqual([
+        INDEX_BUILD_ALREADY_IN_PROGRESS,
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('keeps the failures reported beside a conflict that outlasts the deadline', async () => {
+    const restore = patchCreateIndex(async ({ collectionName }) => {
+      if (collectionName === CHECKPOINTS) {
+        throw indexBuildInProgressError();
+      }
+      throw new mongoose.mongo.MongoServerError({
+        ok: 0,
+        code: 67,
+        errmsg: 'CannotCreateIndex: bad index spec',
+      });
+    });
+    try {
+      const errors = await setupCheckpointIndexes(makeSaver(), {
+        peerBuildPollMs: 1,
+        peerBuildDeadlineMs: 20,
+      });
+
+      expect(errors.map((error) => (error as { code?: number }).code).sort()).toEqual([
+        INDEX_BUILD_ALREADY_IN_PROGRESS,
+        67,
+        67,
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('propagates a setup() rejection that is not a build conflict', async () => {
+    /** The driver validates collection names server-side and `setup()` settles
+     * every build with `Promise.allSettled`, so there is no rejection path to
+     * trigger for real; a rejecting stand-in covers the contract that such a
+     * rejection reaches the caller's in-process fallback instead of being
+     * reported as an index error. */
+    const saver = makeSaver();
+    saver.setup = () => Promise.reject(new Error('client closed'));
+
+    await expect(setupCheckpointIndexes(saver, { peerBuildPollMs: 1 })).rejects.toThrow(
+      'client closed',
+    );
   });
 });

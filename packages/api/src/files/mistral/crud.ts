@@ -23,6 +23,8 @@ import type {
 import { decryptConfigSecret, isEncryptedSecretPayload } from '~/admin/secrets';
 import { logAxiosError, createAxiosInstance } from '~/utils/axios';
 import { applySSRFSafeAgentIfDirect } from '~/auth/agent';
+import { hasActiveFilePolicy } from '~/protection/files';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { applyAxiosProxyConfig } from '~/utils/proxy';
 import { readFileAsBuffer } from '~/utils/files';
 import { loadServiceKey } from '~/utils/key';
@@ -53,6 +55,18 @@ interface OCRContext {
     authFields: string[];
     optional?: Set<string>;
   }) => Promise<Record<string, string | undefined>>;
+}
+
+function createProtectedProviderError(
+  message: string,
+  error: unknown,
+  contentProtected: boolean,
+): Error | null {
+  if (!contentProtected) {
+    return null;
+  }
+  logger.error(message, getSafeErrorMetadata(error));
+  return new Error(message);
 }
 
 /**
@@ -110,12 +124,14 @@ export async function getSignedUrl({
   expiry = 24,
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   allowedAddresses,
+  contentProtected = false,
 }: {
   apiKey: string;
   fileId: string;
   expiry?: number;
   baseURL?: string;
   allowedAddresses?: string[] | null;
+  contentProtected?: boolean;
 }): Promise<MistralSignedUrlResponse> {
   const config: AxiosRequestConfig = {
     headers: {
@@ -131,6 +147,14 @@ export async function getSignedUrl({
     .get(`${baseURL}/files/${fileId}/url?expiry=${expiry}`, config)
     .then((res) => res.data)
     .catch((error) => {
+      const protectedError = createProtectedProviderError(
+        'Error fetching signed URL.',
+        error,
+        contentProtected,
+      );
+      if (protectedError) {
+        throw protectedError;
+      }
       logger.error('Error fetching signed URL:', error.message);
       throw error;
     });
@@ -152,6 +176,7 @@ export async function performOCR({
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   documentType = 'document_url',
   allowedAddresses,
+  contentProtected = false,
 }: {
   url: string;
   apiKey: string;
@@ -159,6 +184,7 @@ export async function performOCR({
   baseURL?: string;
   documentType?: 'document_url' | 'image_url';
   allowedAddresses?: string[] | null;
+  contentProtected?: boolean;
 }): Promise<OCRResult> {
   const documentKey = documentType === 'image_url' ? 'image_url' : 'document_url';
 
@@ -189,6 +215,14 @@ export async function performOCR({
     )
     .then((res) => res.data)
     .catch((error) => {
+      const protectedError = createProtectedProviderError(
+        'Error performing OCR.',
+        error,
+        contentProtected,
+      );
+      if (protectedError) {
+        throw protectedError;
+      }
       logger.error('Error performing OCR:', error.message);
       throw error;
     });
@@ -207,11 +241,13 @@ export async function deleteMistralFile({
   apiKey,
   baseURL = DEFAULT_MISTRAL_BASE_URL,
   allowedAddresses,
+  contentProtected = false,
 }: {
   fileId: string;
   apiKey: string;
   baseURL?: string;
   allowedAddresses?: string[] | null;
+  contentProtected?: boolean;
 }): Promise<void> {
   const config: AxiosRequestConfig = {
     headers: {
@@ -224,9 +260,16 @@ export async function deleteMistralFile({
 
   try {
     const result = await axios.delete(`${baseURL}/files/${fileId}`, config);
-    logger.debug(`Mistral file ${fileId} deleted successfully:`, result.data);
+    if (contentProtected) {
+      logger.debug(`Mistral file ${fileId} deleted successfully`);
+    } else {
+      logger.debug(`Mistral file ${fileId} deleted successfully:`, result.data);
+    }
   } catch (error) {
-    logger.error(`Error deleting Mistral file ${fileId}:`, error);
+    const message = `Error deleting Mistral file ${fileId}.`;
+    if (!createProtectedProviderError(message, error, contentProtected)) {
+      logger.error(`Error deleting Mistral file ${fileId}:`, error);
+    }
   }
 }
 
@@ -372,7 +415,11 @@ function processOCRResult(ocrResult: OCRResult): { text: string; images: string[
 /**
  * Creates an error message for OCR operations
  */
-function createOCRError(error: unknown, baseMessage: string): Error {
+function createOCRError(error: unknown, baseMessage: string, contentProtected: boolean): Error {
+  const protectedError = createProtectedProviderError(baseMessage, error, contentProtected);
+  if (protectedError) {
+    return protectedError;
+  }
   const axiosError = error as AxiosError<MistralOCRError>;
   const detail = axiosError?.response?.data?.detail;
   const message = detail || baseMessage;
@@ -400,6 +447,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
   let mistralFileId: string | undefined;
   let apiKey: string | undefined;
   let baseURL: string | undefined;
+  const contentProtected = hasActiveFilePolicy(context.req.config?.filters);
 
   const allowedAddresses = context.req.config?.ocr?.allowedAddresses;
 
@@ -424,6 +472,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
       baseURL,
       fileId: mistralFile.id,
       allowedAddresses,
+      contentProtected,
     });
 
     const documentType = getDocumentType(context.file);
@@ -434,6 +483,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
       apiKey,
       model,
       allowedAddresses,
+      contentProtected,
     });
 
     if (!ocrResult || !ocrResult.pages || ocrResult.pages.length === 0) {
@@ -444,7 +494,13 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
     const { text, images } = processOCRResult(ocrResult);
 
     if (mistralFileId && apiKey && baseURL) {
-      await deleteMistralFile({ fileId: mistralFileId, apiKey, baseURL, allowedAddresses });
+      await deleteMistralFile({
+        fileId: mistralFileId,
+        apiKey,
+        baseURL,
+        allowedAddresses,
+        contentProtected,
+      });
     }
 
     return {
@@ -456,9 +512,15 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
     };
   } catch (error) {
     if (mistralFileId && apiKey && baseURL) {
-      await deleteMistralFile({ fileId: mistralFileId, apiKey, baseURL, allowedAddresses });
+      await deleteMistralFile({
+        fileId: mistralFileId,
+        apiKey,
+        baseURL,
+        allowedAddresses,
+        contentProtected,
+      });
     }
-    throw createOCRError(error, 'Error uploading document to Mistral OCR API:');
+    throw createOCRError(error, 'Error uploading document to Mistral OCR API:', contentProtected);
   }
 };
 
@@ -478,6 +540,7 @@ export const uploadMistralOCR = async (context: OCRContext): Promise<MistralOCRU
 export const uploadAzureMistralOCR = async (
   context: OCRContext,
 ): Promise<MistralOCRUploadResult> => {
+  const contentProtected = hasActiveFilePolicy(context.req.config?.filters);
   try {
     const { apiKey, baseURL } = await loadAuthConfig(context);
     const model = getModelConfig(context.req.config?.ocr);
@@ -498,6 +561,7 @@ export const uploadAzureMistralOCR = async (
       url: `${base64Prefix}${base64}`,
       documentType,
       allowedAddresses,
+      contentProtected,
     });
 
     if (!ocrResult || !ocrResult.pages || ocrResult.pages.length === 0) {
@@ -516,7 +580,11 @@ export const uploadAzureMistralOCR = async (
       images,
     };
   } catch (error) {
-    throw createOCRError(error, 'Error uploading document to Azure Mistral OCR API:');
+    throw createOCRError(
+      error,
+      'Error uploading document to Azure Mistral OCR API:',
+      contentProtected,
+    );
   }
 };
 
@@ -624,12 +692,14 @@ async function performGoogleVertexOCR({
   projectId,
   model,
   documentType = 'document_url',
+  contentProtected = false,
 }: {
   url: string;
   accessToken: string;
   projectId: string;
   model: string;
   documentType?: 'document_url' | 'image_url';
+  contentProtected?: boolean;
 }): Promise<OCRResult> {
   const location = process.env.GOOGLE_LOC || 'us-central1';
   const modelId = model || 'mistral-ocr-2505';
@@ -677,6 +747,14 @@ async function performGoogleVertexOCR({
       return res.data;
     })
     .catch((error) => {
+      const protectedError = createProtectedProviderError(
+        'Error calling Google Vertex AI Mistral OCR.',
+        error,
+        contentProtected,
+      );
+      if (protectedError) {
+        throw protectedError;
+      }
       if (error.response?.data) {
         logger.error('Vertex AI error response: ' + JSON.stringify(error.response.data, null, 2));
       }
@@ -705,6 +783,7 @@ async function performGoogleVertexOCR({
 export const uploadGoogleVertexMistralOCR = async (
   context: OCRContext,
 ): Promise<MistralOCRUploadResult> => {
+  const contentProtected = hasActiveFilePolicy(context.req.config?.filters);
   try {
     const { serviceAccount, accessToken } = await loadGoogleAuthConfig();
     const model = getModelConfig(context.req.config?.ocr);
@@ -722,6 +801,7 @@ export const uploadGoogleVertexMistralOCR = async (
       projectId: serviceAccount.project_id!,
       model,
       documentType,
+      contentProtected,
     });
 
     if (!ocrResult || !ocrResult.pages || ocrResult.pages.length === 0) {
@@ -740,6 +820,10 @@ export const uploadGoogleVertexMistralOCR = async (
       images,
     };
   } catch (error) {
-    throw createOCRError(error, 'Error uploading document to Google Vertex AI Mistral OCR:');
+    throw createOCRError(
+      error,
+      'Error uploading document to Google Vertex AI Mistral OCR:',
+      contentProtected,
+    );
   }
 };

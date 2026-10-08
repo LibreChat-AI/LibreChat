@@ -12,9 +12,12 @@ export function hasConfigurableSettings(item: AgentItem): boolean {
     case 'builtin':
       return (
         item.id === 'artifacts' ||
+        item.id === 'execute_code' ||
         item.id === 'file_search' ||
         item.id === 'context' ||
         item.id === 'memory' ||
+        item.id === 'subagents' ||
+        item.id === 'handoffs' ||
         (item.id === 'web_search' && item.userProvidedAuth === true)
       );
     case 'tool':

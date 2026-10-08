@@ -60,3 +60,26 @@ export function emitChunkWithReceipt(
   }
   return Promise.resolve(transport.emitChunk(streamId, event, generationId));
 }
+
+/**
+ * Publish an observational chunk while surfacing operational transport failure.
+ *
+ * The public Redis `emitChunk` contract intentionally preserves legacy best-effort
+ * behavior for generation streaming. Detached activity needs the stronger signal so
+ * its per-task circuit can stop issuing a failing Redis command for every token.
+ */
+export async function emitObservedChunk(
+  transport: IEventTransport,
+  streamId: string,
+  event: unknown,
+): Promise<void> {
+  const capability = chunkPublicationCapabilities.get(transport);
+  if (!capability) {
+    await transport.emitChunk(streamId, event);
+    return;
+  }
+  const receipt = await capability(streamId, event);
+  if (receipt === undefined) {
+    throw new Error('Observed chunk publication failed');
+  }
+}

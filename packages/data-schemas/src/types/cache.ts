@@ -5,7 +5,8 @@
  */
 export interface CacheStore {
   get: (key: string) => Promise<unknown>;
-  set: (key: string, value: unknown) => Promise<unknown>;
+  /** The optional ttl overrides the store's namespace default for this entry. */
+  set: (key: string, value: unknown, ttl?: number) => Promise<unknown>;
   delete?: (key: string) => Promise<unknown>;
   clear?: () => Promise<unknown>;
   /** True when the store is shared across processes (e.g. Redis-backed). */

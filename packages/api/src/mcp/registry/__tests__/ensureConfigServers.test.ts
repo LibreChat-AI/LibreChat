@@ -88,6 +88,24 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     ).toEqual({});
   });
 
+  it('routes each config-source initialization through the supplied limiter', async () => {
+    let limitCalls = 0;
+    const limit = async <T>(task: () => Promise<T>): Promise<T> => {
+      limitCalls += 1;
+      return task();
+    };
+
+    const result = await registry.ensureConfigServers(
+      { first: sseConfig, second: altSseConfig },
+      limit,
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({ first: expect.any(Object), second: expect.any(Object) }),
+    );
+    expect(limitCalls).toBe(2);
+  });
+
   it('should skip unchanged YAML-named servers but still process config-only servers', async () => {
     await registry.addServer('yaml_server', yamlConfig, 'CACHE');
     inspectSpy.mockClear();
@@ -150,6 +168,44 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     });
 
     expect(result).toHaveProperty('yaml_remote');
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should lazy-init YAML server when admin overrides only the requestHeaders field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    };
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(
+      (result.yaml_remote as { requestHeaders?: Record<string, string> }).requestHeaders,
+    ).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+    });
+    expect(inspectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('should lazy-init YAML server when admin overrides only the OBO field', async () => {
+    await registry.addServer('yaml_remote', sseConfig, 'CACHE');
+    inspectSpy.mockClear();
+
+    const overrideConfig: t.MCPOptions = {
+      ...sseConfig,
+      obo: { scopes: 'api://mcp-server/Mcp.Tools.ReadWrite' },
+    };
+    const result = await registry.ensureConfigServers({
+      yaml_remote: overrideConfig,
+    });
+
+    expect(result).toHaveProperty('yaml_remote');
+    expect(result.yaml_remote.obo).toEqual({ scopes: 'api://mcp-server/Mcp.Tools.ReadWrite' });
     expect(inspectSpy).toHaveBeenCalledTimes(1);
   });
 

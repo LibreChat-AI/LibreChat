@@ -58,6 +58,25 @@ describe('useRemoveMCPTool', () => {
     expect(mockShowToast).toHaveBeenCalledTimes(1);
   });
 
+  test('does not remove a longer configured server whose tool key shares the suffix', () => {
+    const tools = [
+      `search${Constants.mcp_delimiter}bar`,
+      `search${Constants.mcp_delimiter}foo_mcp_bar`,
+    ];
+    let next: string[] = [];
+    const { result } = renderHook(() => useRemoveMCPTool({ serverNames: ['bar', 'foo mcp bar'] }), {
+      wrapper: makeWrapper(tools, (value) => {
+        next = value;
+      }),
+    });
+
+    act(() => {
+      result.current.removeTool('bar');
+    });
+
+    expect(next).toEqual([`search${Constants.mcp_delimiter}foo_mcp_bar`]);
+  });
+
   test('ignores an empty server name', () => {
     let called = false;
     const { result } = renderHook(() => useRemoveMCPTool(), {

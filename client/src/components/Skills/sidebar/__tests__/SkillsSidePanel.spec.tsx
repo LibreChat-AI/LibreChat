@@ -41,7 +41,12 @@ jest.mock('~/components/ui', () => {
   const PanelContent = ReactModule.forwardRef<HTMLDivElement, { children?: React.ReactNode }>(
     ({ children }, ref) => <div ref={ref}>{children}</div>,
   );
-  return { PanelContent };
+  /** SkillList renders its body through Collapse, which keeps children mounted
+   *  and marks them hidden when closed rather than unmounting them. */
+  const Collapse = ({ open, children }: { open: boolean; children?: React.ReactNode }) => (
+    <div aria-hidden={!open || undefined}>{children}</div>
+  );
+  return { PanelContent, Collapse };
 });
 
 jest.mock('../FilterSkills', () => ({

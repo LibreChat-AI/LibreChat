@@ -21,7 +21,9 @@ export type BuiltinId =
    * toggling ride `agent.tools` exactly like a plugin — see the special cases
    * in `selectors.ts` / `mutations.ts`.
    */
-  | 'ask_user_question';
+  | 'ask_user_question'
+  | `${AgentCapabilities.subagents}`
+  | 'handoffs';
 
 export type AgentItemStatus = 'needs_setup';
 
@@ -79,6 +81,13 @@ export interface ActionItem extends ItemBase {
 }
 
 export type AgentItem = BuiltinItem | ToolItem | McpItem | SkillItem | ActionItem;
+
+/** A live state shown beside an item, such as an MCP server's connection. */
+export interface ItemStatus {
+  label: string;
+  /** Semantic `bg-status-*` fill for the dot that accompanies the label. */
+  tone: string;
+}
 
 export type ItemFilter = {
   search?: string;

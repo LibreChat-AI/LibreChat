@@ -236,6 +236,141 @@ beforeEach(async () => {
 });
 
 describe('MCP authority proofs', () => {
+  test('materializes every snapshot namespace before opening the transaction', async () => {
+    /** Amazon DocumentDB rejects in-transaction statements against collections
+     * that do not exist, and `asMCPError` reports that as `proof_unavailable`
+     * — so a deployment that has never written a PluginAuth or Token row
+     * cannot resolve any authority proof. Dropping those namespaces here
+     * reproduces that state; the resolve must recreate them and succeed. */
+    const optionalNamespaces = ['PluginAuth', 'Token'] as const;
+    for (const modelName of optionalNamespaces) {
+      await models[modelName].collection.drop().catch(() => undefined);
+    }
+    const existing = await mongoose.connection.db!.listCollections().toArray();
+    const names = new Set(existing.map((collection) => collection.name));
+    for (const modelName of optionalNamespaces) {
+      expect(names.has(models[modelName].collection.collectionName)).toBe(false);
+    }
+
+    /** Dropping the credential namespaces also empties the credential state,
+     * so the target must expect the post-drop revision — the point under test
+     * is that the transaction OPENS against missing namespaces, not that the
+     * credential is unchanged. */
+    const proof = await resolve([
+      target(
+        SERVER_NAME,
+        serverId.toHexString(),
+        serverSourceRevision,
+        null,
+        createMCPAuthorityCredentialRevision(['API_KEY'], []),
+      ),
+    ]);
+
+    expect(proof.servers).toHaveLength(1);
+    const after = await mongoose.connection.db!.listCollections().toArray();
+    const afterNames = new Set(after.map((collection) => collection.name));
+    for (const modelName of optionalNamespaces) {
+      expect(afterNames.has(models[modelName].collection.collectionName)).toBe(true);
+    }
+  });
+
+  test('retries namespace creation after a transient failure instead of caching it', async () => {
+    /** A swallowed transient failure would settle the once-per-process memo,
+     * skip creation for every later request, and strand authority proofs on
+     * `proof_unavailable` long after the condition cleared. */
+    /** Zero cooldown: this test covers the retry-after-transient-failure side
+     * of the boundary; the storm-suppression side is covered below. */
+    const retryMethods = createMCPAuthorityMethods(mongoose, {
+      snapshotNamespaceRetryCooldownMs: 0,
+    });
+    const target = () => ({
+      serverName: SERVER_NAME,
+      source: 'database' as const,
+      databaseId: serverId.toHexString(),
+      sourceRevision: serverSourceRevision,
+      expectedCredentialRevision: credentialSourceRevision,
+      expectedOAuthGrantGeneration: 'oauth-generation-1',
+      resolvedConfig: {
+        type: 'sse' as const,
+        url: `https://${SERVER_NAME}.example/mcp`,
+        customUserVars: { API_KEY: { title: 'API key', description: 'Credential' } },
+      },
+      requiresOAuth: true,
+    });
+    const resolveWith = () =>
+      inTenant(() =>
+        retryMethods.resolveMCPAuthorityProof({
+          userId: userId.toHexString(),
+          tenantId: TENANT_ID,
+          boot,
+          targets: [target()],
+        }),
+      );
+
+    const createSpy = jest
+      .spyOn(models.PluginAuth, 'createCollection')
+      .mockRejectedValueOnce(Object.assign(new Error('transient cluster failure'), { code: 91 }));
+    try {
+      await expect(resolveWith()).rejects.toBeInstanceOf(MCPAuthorityProofError);
+    } finally {
+      createSpy.mockRestore();
+    }
+
+    /** The memo must have been cleared: the next call retries creation and
+     * succeeds now that the transient condition is gone. */
+    await expect(resolveWith()).resolves.toEqual(
+      expect.objectContaining({ servers: expect.any(Array) }),
+    );
+  });
+
+  test('throttles namespace preflight retries while a failure persists', async () => {
+    /** A persistent failure must not turn every authority request into another
+     * serial DDL preflight — that is a retry storm precisely while the database
+     * is unhealthy. */
+    const throttledMethods = createMCPAuthorityMethods(mongoose, {
+      snapshotNamespaceRetryCooldownMs: 60_000,
+    });
+    const resolveOnce = () =>
+      inTenant(() =>
+        throttledMethods.resolveMCPAuthorityProof({
+          userId: userId.toHexString(),
+          tenantId: TENANT_ID,
+          boot,
+          targets: [
+            {
+              serverName: SERVER_NAME,
+              source: 'database' as const,
+              databaseId: serverId.toHexString(),
+              sourceRevision: serverSourceRevision,
+              expectedCredentialRevision: credentialSourceRevision,
+              expectedOAuthGrantGeneration: 'oauth-generation-1',
+              resolvedConfig: {
+                type: 'sse' as const,
+                url: `https://${SERVER_NAME}.example/mcp`,
+                customUserVars: { API_KEY: { title: 'API key', description: 'Credential' } },
+              },
+              requiresOAuth: true,
+            },
+          ],
+        }),
+      );
+
+    const createSpy = jest
+      .spyOn(models.PluginAuth, 'createCollection')
+      .mockRejectedValue(Object.assign(new Error('not authorized'), { code: 13 }));
+    try {
+      await expect(resolveOnce()).rejects.toBeInstanceOf(MCPAuthorityProofError);
+      const afterFirst = createSpy.mock.calls.length;
+      await expect(resolveOnce()).rejects.toBeInstanceOf(MCPAuthorityProofError);
+      await expect(resolveOnce()).rejects.toBeInstanceOf(MCPAuthorityProofError);
+      /** The two requests inside the cooldown replayed the recorded failure
+       * without issuing another creation. */
+      expect(createSpy.mock.calls.length).toBe(afterFirst);
+    } finally {
+      createSpy.mockRestore();
+    }
+  });
+
   test('creates one immutable shared snapshot and current per-server revisions', async () => {
     const proof = await resolve();
 

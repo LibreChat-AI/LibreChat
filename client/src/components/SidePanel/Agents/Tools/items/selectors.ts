@@ -4,10 +4,14 @@ import {
   normalizeServerName,
   buildServerNameAliases,
 } from 'librechat-data-provider';
-import type { Action } from 'librechat-data-provider';
+import type { Action, AgentSubagentsConfig, GraphEdge } from 'librechat-data-provider';
 import type { AgentItem, AgentItemKind } from './types';
+import { isFileBackedCapabilityEnabled } from './capabilities';
+import { isHandoffEdge } from './orchestration';
 
 export interface FormSelection {
+  subagents?: AgentSubagentsConfig;
+  edges?: GraphEdge[];
   execute_code: boolean;
   web_search: boolean;
   file_search: boolean;
@@ -35,18 +39,24 @@ export function itemKey(item: Pick<AgentItem, 'kind' | 'id'>): string {
 function isBuiltinSelected(item: AgentItem, form: FormSelection): boolean {
   if (item.kind !== 'builtin') return false;
   switch (item.id) {
+    /** File-backed built-ins share their on/off rule with removal and persistence
+     *  (see `capabilities.ts`), so the three cannot drift apart again. */
     case 'execute_code':
-      return form.execute_code || form.code_files.length > 0;
+      return isFileBackedCapabilityEnabled(form.execute_code, form.code_files.length);
     case 'web_search':
       return form.web_search;
     case 'file_search':
-      return form.file_search || form.knowledge_files.length > 0;
+      return isFileBackedCapabilityEnabled(form.file_search, form.knowledge_files.length);
     case 'memory':
       return form.memory;
     case 'artifacts':
       return Boolean(form.artifacts);
     case 'context':
       return form.context_files.length > 0;
+    case 'subagents':
+      return form.subagents?.enabled === true;
+    case 'handoffs':
+      return form.edges?.some(isHandoffEdge) === true;
     case 'ask_user_question':
       // Native tool presented as a builtin — selection lives in agent.tools.
       return form.tools.includes('ask_user_question');
@@ -74,9 +84,8 @@ export function mcpServerToken(serverName: string): string {
  * Server-wide wildcard token (`sys__all__sys_mcp_<serverName>`). Unlike the
  * UI-only `mcp_server` placeholder (skipped at runtime), `mcp_all` is resolved
  * by the backend into ALL of the server's tools at chat-turn time. Used for
- * request-scoped servers (runtime `{{LIBRECHAT_BODY_*}}` placeholders) whose
- * tools cannot be enumerated outside a chat turn, so per-tool selection is
- * impossible and the server must be attached as a whole.
+ * ready servers whose catalog is unavailable without user credentials or chat
+ * fields. Per-tool selection is unavailable, so the server attaches as a whole.
  */
 export function mcpAllToken(serverName: string): string {
   return `${Constants.mcp_all}${Constants.mcp_delimiter}${serverName}`;
@@ -102,6 +111,22 @@ export function matchesMcpServer(
 ): boolean {
   const prefixed = `${MCP_PREFIX}${serverName}`;
   const normalized = normalizeServerName(serverName);
+  const aliases = allServerNames?.length ? buildServerNameAliases(allServerNames) : undefined;
+  if (aliases && allServerNames) {
+    /** Exact `mcp_<server>` entries need the same single-owner resolution as
+     *  tool-key suffixes. A literal configured name wins over another name
+     *  that merely normalizes to it; otherwise the alias registry maps the
+     *  normalized spelling back to its raw owner. Without this early global
+     *  check, each colliding target could independently satisfy its own exact
+     *  comparison and one token would select/remove both servers. */
+    if (token.startsWith(MCP_PREFIX)) {
+      const exactName = token.slice(MCP_PREFIX.length);
+      const exactOwner = allServerNames.includes(exactName) ? exactName : aliases.get(exactName);
+      if (exactOwner != null) {
+        return exactOwner === serverName;
+      }
+    }
+  }
   if (
     token === mcpServerToken(serverName) ||
     token === serverName ||
@@ -110,13 +135,12 @@ export function matchesMcpServer(
   ) {
     return true;
   }
-  if (allServerNames?.length) {
+  if (aliases && allServerNames) {
     /** Boundary-exact: resolve the token ONCE against every configured
      *  server (longest match, both spellings) — a normalized name that
      *  itself contains the delimiter (`foo mcp bar` → `foo_mcp_bar`) must
      *  not ALSO suffix-match a server named `bar`, or both cards select
      *  together and removing one strips the other's tool. */
-    const aliases = buildServerNameAliases(allServerNames);
     const [, parsed] = splitMCPToolKey(token, [...allServerNames, ...aliases.keys()]);
     if (parsed == null) {
       return false;

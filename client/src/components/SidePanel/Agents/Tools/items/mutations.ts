@@ -3,6 +3,9 @@ import type { AgentItem } from './types';
 
 export type TogglePatch =
   | { type: 'builtin'; field: AgentCapabilities; value: boolean | string }
+  | { type: 'subagents'; enabled: boolean }
+  | { type: 'handoffs-remove' }
+  | { type: 'configure' }
   | { type: 'tool-add'; id: string }
   | { type: 'tool-remove'; id: string }
   | { type: 'skill-add'; id: string }
@@ -13,6 +16,12 @@ export type TogglePatch =
   | { type: 'action-remove'; actionId: string };
 
 function builtinTogglePatch(id: string, selected: boolean): TogglePatch {
+  if (id === 'subagents') {
+    return { type: 'subagents', enabled: !selected };
+  }
+  if (id === 'handoffs') {
+    return selected ? { type: 'handoffs-remove' } : { type: 'configure' };
+  }
   if (id === 'ask_user_question') {
     // Native tool presented as a builtin — it has no capability field; the
     // toggle edits agent.tools exactly like a plugin.
@@ -49,25 +58,4 @@ export function computeToggleAction(item: AgentItem, state: { selected: boolean 
   return state.selected
     ? { type: 'action-remove', actionId: item.id }
     : { type: 'action-add', actionId: item.id };
-}
-
-/**
- * `skills_enabled` is the master opt-in for the skill allowlist, and an empty
- * allowlist with the flag on means the FULL accessible catalog ("use all
- * skills"). Selection edits sync the flag to the selection: any non-empty
- * selection needs the flag on to take effect (this also heals agents saved
- * with the since-removed Advanced kill switch off while skills were still
- * selected), and clearing the selection turns it off so the agent doesn't
- * silently escalate to the full catalog. Returns `undefined` when the flag
- * already matches. The "use all skills" state (flag on, empty selection) is
- * only ever set by its explicit toggle, never by selection edits.
- */
-export function skillsEnabledTransition(
-  next: string[],
-  enabled: boolean | undefined,
-): boolean | undefined {
-  if (next.length > 0) {
-    return enabled === true ? undefined : true;
-  }
-  return enabled === true ? false : undefined;
 }

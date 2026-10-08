@@ -1,6 +1,7 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { Button, useRemScale } from '@librechat/client';
+import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ToolArtifactType } from '~/utils/artifacts';
 import {
@@ -13,35 +14,32 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
+import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
 import Image from '~/components/Chat/Messages/Content/Image';
+import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import ToolMermaidArtifact from './ToolMermaidArtifact';
 import ToolArtifactCard from './ToolArtifactCard';
 import { useAttachmentLink } from './LogLink';
-import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
-import { cn, getFileType } from '~/utils';
+import { cn } from '~/utils';
 
 const COLLAPSED_MAX_HEIGHT = 320;
+const OVERFLOW_TOLERANCE = 1;
 
 /**
- * Card-shaped placeholder for a code-execution office file whose
- * inline preview is still rendering (or failed). Visually mirrors
- * `ToolArtifactCard`'s chrome — same rounded card, split body +
- * download — so when the deferred render lands and the routing
- * upgrades to the real `PanelArtifact` card the user sees a smooth
- * transition between two card-shaped things, not a jarring jump from
- * a small file chip to a big artifact card.
+ * Row placeholder for a code-execution office file whose inline preview
+ * is still rendering (or failed). Takes `ArtifactRow`'s exact box — same
+ * glyph slot, title, trailing download — so when the deferred render
+ * lands and the routing upgrades to the real `PanelArtifact` the row
+ * stays put instead of the list reflowing around a new shape.
  *
- * The body is non-interactive while pending (there's no panel to
- * open yet). On `'failed'` the body is also non-interactive — the
- * download button is the only meaningful action since extraction
- * never produced anything to render. Status reads via the spinner /
- * alert subtitle inside the card, mirroring `ToolArtifactCard`'s
- * "click to open" subtitle slot.
+ * Non-interactive in both states: while pending there is no panel to
+ * open yet, and on `'failed'` extraction never produced anything to
+ * render, so download is the only meaningful action. Status reads from
+ * the spinner / alert glyph plus the trailing text.
  */
-const PreviewPlaceholderCard = memo(
+const PreviewPlaceholderRow = memo(
   ({
     attachment,
     status,
@@ -60,63 +58,43 @@ const PreviewPlaceholderCard = memo(
       user: file.user,
       source: file.source,
     });
-    const fileType = getFileType('artifact');
     const visibleFilename = displayFilename(attachment.filename);
     const subtitleText =
       status === 'pending'
         ? localize('com_ui_preview_preparing')
         : localize('com_ui_preview_failed');
     return (
-      <div className="group relative my-2 inline-flex max-w-fit items-stretch gap-px overflow-hidden rounded-xl text-sm text-text-primary shadow-sm">
-        <div
-          aria-disabled="true"
+      <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm')}>
+        <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+          {status === 'pending' ? (
+            <Loader2 className="size-4 shrink-0 animate-spin" />
+          ) : (
+            <AlertCircle className="size-4 shrink-0" />
+          )}
+        </span>
+        <span
+          className="min-w-0 truncate font-medium"
+          title={status === 'failed' ? (previewError ?? subtitleText) : visibleFilename}
           aria-busy={status === 'pending'}
-          className="relative overflow-hidden rounded-l-xl border-border-light bg-surface-tertiary"
-          title={status === 'failed' ? (previewError ?? subtitleText) : undefined}
         >
-          <div className="w-fit p-2">
-            <div className="flex flex-row items-center gap-2">
-              {/* Don't pass `file` here — it triggers `SourceIcon`'s
-                  Terminal overlay for code-exec files (matches the
-                  `metadata.fileIdentifier` marker), which is the
-                  download-chip look. The artifact card doesn't show
-                  that overlay; the placeholder shouldn't either, so
-                  the pending→resolved transition is visually seamless. */}
-              <FilePreview fileType={fileType} className="relative" />
-              <div className="overflow-hidden text-left">
-                <div className="truncate font-medium" title={visibleFilename}>
-                  {visibleFilename}
-                </div>
-                <div className="flex items-center gap-1.5 truncate text-xs text-text-secondary">
-                  {status === 'pending' ? (
-                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />
-                  )}
-                  <span className="truncate">{subtitleText}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <button
+          {visibleFilename}
+        </span>
+        <span className="min-w-0 shrink-[100] truncate text-xs font-normal">{subtitleText}</span>
+        <Button
           type="button"
+          variant="ghost"
+          size="icon"
           onClick={handleDownload}
           aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
-          title={localize('com_ui_download')}
-          className={cn(
-            'flex shrink-0 items-center justify-center px-3 transition-colors duration-200',
-            'rounded-r-xl bg-surface-tertiary text-text-secondary hover:bg-surface-hover hover:text-text-primary',
-            'border-l border-border-light focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
-          )}
+          className="text-text-secondary size-5 shrink-0 rounded focus-visible:ring-offset-0"
         >
           <Download className="size-4" aria-hidden="true" />
-        </button>
+        </Button>
       </div>
     );
   },
 );
-PreviewPlaceholderCard.displayName = 'PreviewPlaceholderCard';
+PreviewPlaceholderRow.displayName = 'PreviewPlaceholderRow';
 
 const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> }) => {
   const [isVisible, setIsVisible] = useState(false);
@@ -154,7 +132,6 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
     return (
       <div
         className={cn(
-          'file-attachment-container',
           'transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
@@ -164,7 +141,7 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
           WebkitFontSmoothing: 'subpixel-antialiased',
         }}
       >
-        <PreviewPlaceholderCard
+        <PreviewPlaceholderRow
           attachment={attachment}
           status={previewStatus}
           previewError={previewError}
@@ -175,7 +152,6 @@ const FileAttachment = memo(({ attachment }: { attachment: Partial<TAttachment> 
   return (
     <div
       className={cn(
-        'file-attachment-container',
         'transition-all duration-300 ease-out',
         isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
       )}
@@ -260,8 +236,8 @@ const FileAttachmentGroup = memo(({ attachments }: { attachments: TAttachment[] 
         onClick={() => setIsExpanded((prev) => !prev)}
         className={cn(
           'inline-flex w-full max-w-full items-center gap-2 rounded-lg py-1 pr-2 text-sm',
-          'text-text-secondary transition-colors hover:text-text-primary',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy',
+          'text-text-secondary hover:text-text-primary transition-colors',
+          'focus-visible:ring-focus-subtle focus-visible:ring-2 focus-visible:outline-hidden',
         )}
       >
         <FilesIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -317,13 +293,13 @@ const TextAttachment = memo(
     showFileChip?: boolean;
   }) => {
     const localize = useLocalize();
+    const remScale = useRemScale();
+    const collapsedMaxHeight = COLLAPSED_MAX_HEIGHT * remScale;
+    const overflowTolerance = OVERFLOW_TOLERANCE * remScale;
     const preId = useId();
     const preRef = useRef<HTMLPreElement>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [expanded, setExpanded] = useState(false);
-    // Decided once after layout: does the text actually overflow the collapsed
-    // height? Char count is a poor proxy (a 100-char file with many newlines can
-    // overflow; 800 chars of dense single-line text may not), so we measure.
     const [overflowed, setOverflowed] = useState(false);
     const file = attachment as TFile & TAttachmentMetadata;
     const { handleDownload } = useAttachmentLink({
@@ -347,15 +323,15 @@ const TextAttachment = memo(
       if (!el) {
         return;
       }
-      setOverflowed(el.scrollHeight > COLLAPSED_MAX_HEIGHT + 1);
-    }, [text]);
+      setOverflowed(el.scrollHeight > collapsedMaxHeight + overflowTolerance);
+    }, [text, collapsedMaxHeight, overflowTolerance]);
 
     const isClamped = overflowed && !expanded;
 
     return (
       <div
         className={cn(
-          'text-attachment-container flex w-full flex-col gap-1.5',
+          'flex w-full flex-col gap-1.5',
           'transition-all duration-300 ease-out',
           isVisible ? 'translate-y-0 opacity-100' : 'translate-y-2 opacity-0',
         )}
@@ -375,9 +351,9 @@ const TextAttachment = memo(
             buttonClassName="bg-surface-secondary hover:cursor-pointer hover:bg-surface-hover active:bg-surface-secondary focus:bg-surface-hover hover:border-border-heavy active:border-border-heavy"
           />
         )}
-        <div className="overflow-hidden rounded-lg bg-surface-secondary">
+        <div className="bg-surface-secondary overflow-hidden rounded-lg">
           {!showFileChip && (
-            <div className="flex items-center justify-between gap-2 border-b border-border-light px-3 py-2">
+            <div className="border-border-inset flex items-center justify-between gap-2 border-b px-3 py-2">
               <span className="min-w-0 truncate text-sm font-medium" title={visibleFilename}>
                 {visibleFilename}
               </span>
@@ -387,7 +363,7 @@ const TextAttachment = memo(
                   onClick={handleDownload}
                   aria-label={`${localize('com_ui_download')} ${visibleFilename}`}
                   title={localize('com_ui_download')}
-                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-focus-subtle flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
                 >
                   <Download className="size-4" aria-hidden="true" />
                 </button>
@@ -399,10 +375,10 @@ const TextAttachment = memo(
               id={preId}
               ref={preRef}
               className={cn(
-                'whitespace-pre-wrap break-words font-mono text-sm leading-6 text-text-primary',
+                'text-text-primary font-mono text-sm leading-6 break-words whitespace-pre-wrap',
                 isClamped ? 'overflow-hidden' : 'overflow-auto',
               )}
-              style={isClamped ? { maxHeight: COLLAPSED_MAX_HEIGHT } : undefined}
+              style={isClamped ? { maxHeight: collapsedMaxHeight } : undefined}
             >
               {text}
             </pre>
@@ -412,7 +388,7 @@ const TextAttachment = memo(
                 onClick={() => setExpanded((prev) => !prev)}
                 aria-expanded={expanded}
                 aria-controls={preId}
-                className="mt-2 text-xs text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-heavy"
+                className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle mt-2 text-xs transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
               >
                 {expanded ? localize('com_ui_collapse') : localize('com_ui_show_all')}
               </button>
@@ -437,7 +413,6 @@ const ImageAttachment = memo(({ attachment }: { attachment: TAttachment }) => {
   return (
     <div
       className={cn(
-        'image-attachment-container',
         'transition-all duration-500 ease-out',
         isLoaded ? 'scale-100 opacity-100' : 'scale-[0.98] opacity-0',
       )}
@@ -538,7 +513,7 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
   const textAttachments: TAttachment[] = [];
   /* Pending-preview chips share this row with their future selves —
    * `type` is null while pending so the renderer falls back to
-   * FileAttachment (PreviewPlaceholderCard); on resolution it switches
+   * FileAttachment (PreviewPlaceholderRow); on resolution it switches
    * to PanelArtifact in place. */
   const panelRow: Array<{ attachment: TAttachment; type: ToolArtifactType | null }> = [];
   const mermaidArtifacts: TAttachment[] = [];
@@ -579,13 +554,11 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
   // engines (V8 ≥ 7.0) so equal-weight entries keep their input order.
   fileAttachments.sort(bySalience);
   textAttachments.sort(bySalience);
-  /* Sort only the typed (resolved) entries; pending placeholders bubble
-   * to the end of the row so resolved siblings catch the eye first. */
-  const resolvedPanel = panelRow.filter(
-    (e): e is { attachment: TAttachment; type: ToolArtifactType } => e.type != null,
-  );
-  const pendingPanel = panelRow.filter((e) => e.type == null);
-  resolvedPanel.sort(byEntrySalience);
+  /* Pending placeholders sort by the same salience as their resolved
+   * selves — `attachmentSalience` reads only `bytes`, which resolution
+   * does not change — so a row keeps its slot across the loading-to-ready
+   * transition instead of jumping once the preview lands. */
+  const orderedPanel = [...panelRow].sort(byEntrySalience);
   mermaidArtifacts.sort(bySalience);
   imageAttachments.sort(bySalience);
 
@@ -608,23 +581,28 @@ export function AttachmentGroup({ attachments }: { attachments?: TAttachment[] }
       {groupedFileAttachments.length > 0 && (
         <FileAttachmentGroup attachments={groupedFileAttachments} />
       )}
-      {(resolvedPanel.length > 0 || pendingPanel.length > 0) && (
-        <div className="my-2 flex flex-wrap items-center gap-2">
-          {resolvedPanel.map(({ attachment, type }, index) => (
-            <PanelArtifact
-              attachment={attachment}
-              type={type}
-              key={renderAttachmentKey('artifact', attachment, index)}
-            />
-          ))}
-          {pendingPanel.map(({ attachment }, index) =>
-            attachment.filepath ? (
+      {orderedPanel.length > 0 && (
+        <div className="my-2 flex w-full max-w-full flex-col" data-testid="artifact-row-group">
+          {orderedPanel.map(({ attachment, type }, index) => {
+            if (type != null) {
+              return (
+                <PanelArtifact
+                  attachment={attachment}
+                  type={type}
+                  key={renderAttachmentKey('artifact', attachment, index)}
+                />
+              );
+            }
+            if (!attachment.filepath) {
+              return null;
+            }
+            return (
               <FileAttachment
                 attachment={attachment}
                 key={renderAttachmentKey('pending', attachment, index)}
               />
-            ) : null,
-          )}
+            );
+          })}
         </div>
       )}
       {mermaidArtifacts.length > 0 && (

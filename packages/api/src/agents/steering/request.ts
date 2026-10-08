@@ -17,6 +17,7 @@ import {
 import { toSteerFileRef, collectFileIds, buildOwnerFilter } from './refs';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { isSteeringSupported } from './runtime';
+import { getReferencedQuotes } from '~/utils';
 
 /** Attachment cap per steer, mirroring the composer's practical limits. */
 export const STEER_MAX_FILES = 10;
@@ -48,6 +49,10 @@ export interface SteerRequestBody {
   text?: unknown;
   clientSteerId?: unknown;
   files?: unknown;
+  /** Quoted excerpts steered with the message ("Add to chat" selections);
+   *  normalized like the chat route's quotes and merged into the model-bound
+   *  turn at the injection boundary. */
+  quotes?: unknown;
   /** Ask the generating replica to seal the live model stream at the next
    *  provider-safe boundary instead of waiting for a tool step. NEVER a
    *  rejection reason: on an SDK without the capability the steer still
@@ -125,6 +130,12 @@ export interface SteerRequestDeps {
    * and its rollout gate. Direct package callers that omit it retain the
    * current-package (v2) behavior. */
   generationProtocolVersion?: GenerationProtocolVersion;
+  /** Refuse a legacy v1 enqueue that cannot persist `clientSteerId` receipts.
+   * Background/event deliveries use this to make retrying an ambiguous
+   * outcome safe instead of potentially injecting the same instruction twice. */
+  requireIdempotentDelivery?: boolean;
+  /** Best-effort cancellation observed immediately before durable mutation. */
+  signal?: AbortSignal;
   /** Owner-scoped file fetch (`db.getFiles`-shaped). When present, every
    *  client-supplied ref must resolve to an owned DB doc at enqueue and the
    *  queued refs are replaced with DB-derived ones. */
@@ -154,6 +165,10 @@ function parseExpectedGenerationCreatedAt(value: unknown): { value?: number; inv
     return { invalid: true };
   }
   return { value };
+}
+
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
 }
 
 /** Sanitizes client-supplied attachment refs via the shared ref picker;
@@ -220,14 +235,45 @@ function hasTenantMismatch(
   return metadata?.tenantId != null && metadata.tenantId !== user.tenantId;
 }
 
+/** DELIBERATELY quote-independent and display-metadata-independent: the
+ *  legacy 3-field hash saw these same file refs before `llmDeliveryPath` was
+ *  added, so a lost-ACK retry can replay its receipt across rollout versions.
+ *  Quote identity is enforced separately via
+ *  `SteerReceipt.requestedQuotesFingerprint`, which only quote-aware readers
+ *  consult. */
 function steerFingerprint(
   text: string,
   files: Partial<TFile>[] | undefined,
   preempt: boolean,
 ): string {
+  const stableFiles = (files ?? []).map((file) =>
+    Object.fromEntries(Object.entries(file).filter(([key]) => key !== 'llmDeliveryPath')),
+  );
   return createHash('sha256')
-    .update(JSON.stringify({ text, files: files ?? [], preempt }))
+    .update(JSON.stringify({ text, files: stableFiles, preempt }))
     .digest('base64url');
+}
+
+/** Normalized-quote identity stored beside (never inside) the fingerprint. */
+function quotesFingerprint(quotes: string[]): string {
+  return createHash('sha256').update(JSON.stringify(quotes)).digest('base64url');
+}
+
+/** Whether a receipt's recorded quote identity accepts this request's quotes.
+ *  An ABSENT record means the receipt was written by a pre-quotes replica (or
+ *  for a quote-less request) — quotes were never part of its contract, so any
+ *  retry of the same words replays (the item carries no quotes; the missing
+ *  `quotesAccepted` echo keeps the client's copy on its chip). A present
+ *  record must match exactly: reusing a clientSteerId with different quotes
+ *  is the same conflict a content-hash mismatch signals. */
+function receiptQuotesCompatible(
+  recorded: string | undefined,
+  requested: string[] | null,
+): boolean {
+  if (recorded == null) {
+    return true;
+  }
+  return requested != null && quotesFingerprint(requested) === recorded;
 }
 
 function receiptResponse(conversationId: string, receipt: SteerReceipt): SteerRequestResult {
@@ -242,6 +288,13 @@ function receiptResponse(conversationId: string, receipt: SteerReceipt): SteerRe
       settled: receipt.state !== 'queued' && receipt.state !== 'claimed',
       leftover: receipt.state === 'leftover',
       replayed: true,
+      /** From the DURABLE item, mirroring the fresh 202: a receipt written by
+       *  a pre-quotes replica replays without this marker, telling the client
+       *  its excerpts never attached to the accepted words. */
+      ...(receipt.item.quotes != null &&
+        receipt.item.quotes.length > 0 && {
+          quotesAccepted: true,
+        }),
       ...(receipt.item.preemptRevision != null && {
         preemptRevision: receipt.item.preemptRevision,
       }),
@@ -382,11 +435,18 @@ async function handleSteerRequestInternal(
   ) {
     return { status: 400, body: { code: 'INVALID_CLIENT_STEER_ID' } };
   }
+  if (deps.requireIdempotentDelivery === true && typeof clientSteerId !== 'string') {
+    return { status: 400, body: { code: 'CLIENT_STEER_ID_REQUIRED' } };
+  }
 
   const { files, error: filesError } = sanitizeSteerFiles(body.files);
   if (filesError) {
     return { status: 400, body: { code: filesError } };
   }
+
+  /** Same normalization as the chat route (trim, drop empties, cap count and
+   *  excerpt length) so a steer's quotes obey the caps a normal send does. */
+  const quotes = getReferencedQuotes(body.quotes);
 
   /** streamId === conversationId for resumable agent jobs */
   const streamId = conversationId;
@@ -417,7 +477,10 @@ async function handleSteerRequestInternal(
       ) {
         return { status: 409, body: { code: 'RUN_REPLACED' } };
       }
-      if (receipt.fingerprint !== fingerprint) {
+      if (
+        receipt.fingerprint !== fingerprint ||
+        !receiptQuotesCompatible(receipt.requestedQuotesFingerprint, quotes)
+      ) {
         return { status: 409, body: { code: 'STEER_IDEMPOTENCY_CONFLICT' } };
       }
       if (
@@ -483,6 +546,9 @@ async function handleSteerRequestInternal(
   if (!isSteeringSupported()) {
     return { status: 501, body: { code: 'STEER_UNSUPPORTED' } };
   }
+  if (deps.requireIdempotentDelivery === true && protocol.value !== 2) {
+    return { status: 409, body: { code: 'STEER_IDEMPOTENCY_UNAVAILABLE' } };
+  }
 
   let queuedFiles = files;
   if (files && deps.getFiles) {
@@ -531,6 +597,9 @@ async function handleSteerRequestInternal(
       ? { status: 409, body: { code: 'RUN_REPLACED' } }
       : { status: 404, body: { code: 'NO_ACTIVE_RUN' } };
   }
+  if (isAborted(deps.signal)) {
+    return { status: 499, body: { code: 'STEER_ABORTED' } };
+  }
   /** Normal sends make resolved uploads durable before model execution. Do
    * the same before enqueue: once a 202 is visible, neither an upload-window
    * sweep nor a process crash may turn the accepted steer into text-only
@@ -538,6 +607,22 @@ async function handleSteerRequestInternal(
   if (!(await markSteerFilesUsed(streamId, { files: queuedFiles }, user, deps))) {
     return { status: 503, body: { code: 'STEER_FILE_RETENTION_FAILED' } };
   }
+  if (isAborted(deps.signal)) {
+    return { status: 499, body: { code: 'STEER_ABORTED' } };
+  }
+  /** The OWNER's execution-bound capability: an upgraded admission replica
+   * must not store quotes (and claim them accepted) for a generation whose
+   * owning drain would silently drop them at injection. This read is only
+   * the FAST PATH — the enqueue transaction re-evaluates the same
+   * marker-equals-execution predicate atomically against the live job and
+   * strips `item.quotes` itself, so a HITL handover landing after this read
+   * (same `createdAt`, invisible to the enqueue fence) cannot smuggle
+   * quotes past a legacy owner. The returned persisted item reflects any
+   * strip, keeping the `quotesAccepted` echo honest; on a missing echo the
+   * client re-stages the excerpts. */
+  const ownerAcceptsQuotes =
+    owner.metadata?.steerQuotesExecutionId != null &&
+    owner.metadata.steerQuotesExecutionId === owner.metadata.providerExecutionId;
   const item: SteerQueueItem = {
     steerId: randomUUID(),
     ...(protocol.value === 2 && typeof clientSteerId === 'string' && { clientSteerId }),
@@ -545,6 +630,7 @@ async function handleSteerRequestInternal(
     userId: user.id ?? '',
     createdAt: Date.now(),
     ...(queuedFiles && { files: queuedFiles }),
+    ...(quotes != null && ownerAcceptsQuotes && { quotes }),
   };
   /**
    * Fenced to the generation the capability decision was made against. The
@@ -566,6 +652,7 @@ async function handleSteerRequestInternal(
       {
         clientSteerId,
         fingerprint,
+        ...(quotes != null && { requestedQuotesFingerprint: quotesFingerprint(quotes) }),
         userId: user.id ?? '',
         ...(user.tenantId && { tenantId: user.tenantId }),
         ...(job.metadata?.agent_id && { agentId: job.metadata.agent_id }),
@@ -578,7 +665,11 @@ async function handleSteerRequestInternal(
     if (typeof result === 'number') {
       depth = result;
     } else {
-      if (!('fingerprint' in result) || result.fingerprint !== fingerprint) {
+      if (
+        !('fingerprint' in result) ||
+        result.fingerprint !== fingerprint ||
+        !receiptQuotesCompatible(result.requestedQuotesFingerprint, quotes)
+      ) {
         return { status: 409, body: { code: 'STEER_IDEMPOTENCY_CONFLICT' } };
       }
       if (result.userId !== (user.id ?? '') || hasTenantMismatch(result, user)) {
@@ -702,6 +793,14 @@ async function handleSteerRequestInternal(
       position: depth,
       conversationId,
       preempt: preemptArmed,
+      /** Echoed from the DURABLE item so the client can tell whether its
+       *  quoted excerpts will actually inject. A pre-quotes replica never
+       *  sets this, and the client re-stages the excerpts on that absence —
+       *  a 202 must not silently drop model-bound context. */
+      ...(persistedItem.quotes != null &&
+        persistedItem.quotes.length > 0 && {
+          quotesAccepted: true,
+        }),
       ...(protocol.value === 2 && preemptRevision != null && { preemptRevision }),
     },
   };

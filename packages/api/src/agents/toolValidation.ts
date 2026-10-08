@@ -1,6 +1,6 @@
 const TOOL_INPUT_SCHEMA_ERROR = 'Received tool input did not match expected schema';
 const SCHEMA_ERROR_PATH_PATTERN = /(?:→|->)\s+at\s+([A-Za-z0-9_.[\]-]{1,120})/;
-const ASK_OPTION_LABEL_PATH_PATTERN = /^options\[\d+\]\.label$/;
+const ASK_OPTION_LABEL_PATH_PATTERN = /^(?:questions\[\d+\]\.)?options\[\d+\]\.label$/;
 const OPTION_LABEL_LIMIT_PATTERN = /(?:at most \d+|\d+ characters or fewer)/i;
 
 interface CompletedToolCall {

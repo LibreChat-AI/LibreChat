@@ -8,6 +8,7 @@ import type { ServerRequest } from '~/types/http';
 // after CREDS_KEY is set above (encryptV3 reads the key at module load).
 let encryptV3: typeof import('@librechat/data-schemas').encryptV3;
 let createAdminLangfuseHandlers: typeof import('./langfuse').createAdminLangfuseHandlers;
+let getLangfuseDestinationId: typeof import('../langfuse/destinations').getLangfuseDestinationId;
 const realFetch = global.fetch;
 
 function projectResponse(projectId = 'project-1') {
@@ -21,6 +22,7 @@ function projectResponse(projectId = 'project-1') {
 beforeAll(async () => {
   ({ encryptV3 } = await import('@librechat/data-schemas'));
   ({ createAdminLangfuseHandlers } = await import('./langfuse'));
+  ({ getLangfuseDestinationId } = await import('../langfuse/destinations'));
 });
 
 beforeEach(() => {
@@ -33,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.LANGFUSE_FANOUT_ENABLED;
   delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
+  delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
   delete process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED;
   delete process.env.LANGFUSE_PUBLIC_KEY;
   delete process.env.LANGFUSE_SECRET_KEY;
@@ -101,7 +104,9 @@ function createHandlers(overrides = {}) {
         isActive,
       }),
     ),
+    getMessages: jest.fn().mockResolvedValue([]),
     invalidateConfigCaches: jest.fn().mockResolvedValue(undefined),
+    recordConnectionUpdate: jest.fn(),
     ...overrides,
   };
   const handlers = createAdminLangfuseHandlers(deps);
@@ -297,6 +302,163 @@ describe('createAdminLangfuseHandlers', () => {
     });
   });
 
+  describe('getSessionLink', () => {
+    const storedConnection = {
+      enabled: true,
+      destination: 'eu',
+      projectId: 'project-1',
+      publicKey: 'pk-lf-1',
+      secretKey: 'encrypted-secret',
+    };
+
+    it('returns the session URL when this user has a sampled message for the project', async () => {
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(storedConnection)),
+        getMessages: jest.fn().mockResolvedValue([{ _id: 'message-1' }]),
+      });
+      const res = mockRes();
+
+      await handlers.getSessionLink(mockReq({ params: { conversationId: 'conversation-1' } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({
+        url: 'https://cloud.langfuse.com/project/project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://cloud.langfuse.com', 'project-1'),
+      });
+      expect(deps.getMessages).toHaveBeenCalledWith(
+        {
+          user: 'u1',
+          conversationId: 'conversation-1',
+          langfuseSampled: true,
+          langfuseDestinationIds: getLangfuseDestinationId(
+            'https://cloud.langfuse.com',
+            'project-1',
+          ),
+        },
+        '_id',
+        { sort: false, limit: 1 },
+      );
+    });
+
+    it("links to the tenant project resolved from that tenant's API keys in fanout mode", async () => {
+      let persistedConfig: ReturnType<typeof baseConfigDoc> | null = null;
+      const findConfigByPrincipal = jest
+        .fn()
+        .mockImplementation(() => Promise.resolve(persistedConfig));
+      const patchConfigFields = jest.fn().mockImplementation((_pt, _pid, _pm, fields) => {
+        persistedConfig = baseConfigDoc(rehydrate(fields));
+        return Promise.resolve(persistedConfig);
+      });
+      const getMessages = jest.fn().mockResolvedValue([{ _id: 'message-1' }]);
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(projectResponse('tenant-project-1')) as unknown as typeof fetch;
+      const { handlers } = createHandlers({
+        findConfigByPrincipal,
+        patchConfigFields,
+        getMessages,
+      });
+
+      const updateRes = mockRes();
+      await handlers.updateConnection(
+        mockReq({
+          body: {
+            enabled: true,
+            destination: 'eu',
+            publicKey: 'pk-lf-tenant',
+            secretKey: 'sk-lf-tenant',
+          },
+        }),
+        updateRes,
+      );
+
+      expect(updateRes.statusCode).toBe(200);
+      const [projectsUrl, projectsInit] = (global.fetch as unknown as jest.Mock).mock.calls[0];
+      expect(projectsUrl).toBe('https://cloud.langfuse.com/api/public/projects');
+      expect(
+        Buffer.from(projectsInit.headers.Authorization.replace('Basic ', ''), 'base64').toString(),
+      ).toBe('pk-lf-tenant:sk-lf-tenant');
+      expect(patchConfigFields.mock.calls[0][3]['langfuse.projectId']).toBe('tenant-project-1');
+
+      const linkRes = mockRes();
+      await handlers.getSessionLink(
+        mockReq({ params: { conversationId: 'conversation-1' } }),
+        linkRes,
+      );
+
+      expect(linkRes.body).toEqual({
+        url: 'https://cloud.langfuse.com/project/tenant-project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://cloud.langfuse.com', 'tenant-project-1'),
+      });
+      expect(getMessages).toHaveBeenCalledWith(
+        expect.objectContaining({
+          langfuseDestinationIds: getLangfuseDestinationId(
+            'https://cloud.langfuse.com',
+            'tenant-project-1',
+          ),
+        }),
+        '_id',
+        { sort: false, limit: 1 },
+      );
+    });
+
+    it('preserves a destination base path in the session URL', async () => {
+      process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://langfuse.example/base/path';
+      const { handlers } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(storedConnection)),
+        getMessages: jest.fn().mockResolvedValue([{ _id: 'message-1' }]),
+      });
+      const res = mockRes();
+
+      await handlers.getSessionLink(mockReq({ params: { conversationId: 'conversation-1' } }), res);
+
+      expect(res.body).toEqual({
+        url: 'https://langfuse.example/base/path/project/project-1/sessions/conversation-1',
+        destinationId: getLangfuseDestinationId('https://langfuse.example/base/path', 'project-1'),
+      });
+    });
+
+    it('returns 401 when the authenticated user is missing', async () => {
+      const { handlers } = createHandlers();
+      const res = mockRes();
+
+      await handlers.getSessionLink(
+        mockReq({ user: undefined, params: { conversationId: 'conversation-1' } }),
+        res,
+      );
+
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toEqual({ error: 'Authentication required' });
+    });
+
+    it('does not link a conversation without a sampled message for the current project', async () => {
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest.fn().mockResolvedValue(baseConfigDoc(storedConnection)),
+      });
+      const res = mockRes();
+
+      await handlers.getSessionLink(mockReq({ params: { conversationId: 'conversation-1' } }), res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ url: null });
+      expect(deps.getMessages).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not query messages when the saved connection is disabled', async () => {
+      const { handlers, deps } = createHandlers({
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue(baseConfigDoc({ ...storedConnection, enabled: false })),
+      });
+      const res = mockRes();
+
+      await handlers.getSessionLink(mockReq({ params: { conversationId: 'conversation-1' } }), res);
+
+      expect(res.body).toEqual({ url: null });
+      expect(deps.getMessages).not.toHaveBeenCalled();
+    });
+  });
+
   describe('updateConnection', () => {
     it('requires destination', async () => {
       const { handlers } = createHandlers();
@@ -371,6 +533,18 @@ describe('createAdminLangfuseHandlers', () => {
       expect(fields['langfuse.projectId']).toBe('project-1');
       expect(res.body?.secretKey).toBeUndefined();
       expect(deps.invalidateConfigCaches).toHaveBeenCalledWith('t1');
+      expect(deps.recordConnectionUpdate).toHaveBeenCalledWith({
+        event_name: 'librechat.langfuse.connection.changed',
+        tenant_id: 't1',
+        configured: true,
+        enabled: true,
+        destination: 'eu',
+        change: 'created',
+        changes: ['created'],
+        verification_result: 'success',
+      });
+      expect(JSON.stringify(deps.recordConnectionUpdate.mock.calls)).not.toContain('sk-lf-secret');
+      expect(JSON.stringify(deps.recordConnectionUpdate.mock.calls)).not.toContain('pk-lf-1');
     });
 
     it('requires a new secret when connection fields change', async () => {
@@ -457,6 +631,7 @@ describe('createAdminLangfuseHandlers', () => {
         error: 'Langfuse rejected these keys. Check the destination and keys',
       });
       expect(deps.patchConfigFields).not.toHaveBeenCalled();
+      expect(deps.recordConnectionUpdate).not.toHaveBeenCalled();
     });
 
     it('rejects credentials when Langfuse does not return a stable project identity', async () => {
@@ -509,6 +684,14 @@ describe('createAdminLangfuseHandlers', () => {
       expect(deps.patchConfigFields).toHaveBeenCalledTimes(1);
       expect(deps.patchConfigFields.mock.calls[0][3]['langfuse.enabled']).toBe(true);
       expect(deps.patchConfigFields.mock.calls[0][3]['langfuse.projectId']).toBe('project-1');
+      expect(deps.recordConnectionUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenant_id: 't1',
+          change: 'enabled',
+          changes: ['enabled'],
+          verification_result: 'skipped',
+        }),
+      );
     });
 
     it('allows an existing connection to be disabled after its destination is removed', async () => {
@@ -799,5 +982,119 @@ describe('createAdminLangfuseHandlers', () => {
       expect(res.body).toEqual({ success: false, errorCode: 'missing_secret' });
       expect(global.fetch).not.toHaveBeenCalled();
     });
+
+    it('sends the deployment headers on both verification requests', async () => {
+      /** Single-tenant topology with one configured Langfuse origin — the
+       *  self-hosted-behind-a-proxy case — so the header map is unambiguous. */
+      delete process.env.TENANT_ISOLATION_STRICT;
+      delete process.env.LANGFUSE_FANOUT_ENABLED;
+      delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
+      process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://eu.langfuse.internal';
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(projectResponse())
+        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      const { handlers } = createHandlers();
+      const res = mockRes();
+
+      await handlers.testConnection(
+        mockReq({
+          body: { destination: 'eu', publicKey: 'pk', secretKey: 'sk' },
+          config: { langfuse: { headers: { 'CF-Access-Client-Id': 'proxy-client' } } },
+        }),
+        res,
+      );
+
+      expect(res.body).toEqual({ success: true });
+      const [, projectsInit] = (global.fetch as unknown as jest.Mock).mock.calls[0];
+      expect(projectsInit.headers['CF-Access-Client-Id']).toBe('proxy-client');
+      expect(projectsInit.headers.Authorization).toMatch(/^Basic /);
+      const [, ingestionInit] = (global.fetch as unknown as jest.Mock).mock.calls[1];
+      expect(ingestionInit.headers['CF-Access-Client-Id']).toBe('proxy-client');
+      expect(ingestionInit.headers.Authorization).toBe('Bearer pk');
+      delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
+    });
+
+    it('withholds deployment headers when several Langfuse origins are configured', async () => {
+      /** The collector from `beforeEach` plus an explicit tenant URL: the map
+       *  does not say which of them it authenticates to, so neither gets it. */
+      process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://eu.langfuse.internal';
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(projectResponse())
+        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      const { handlers } = createHandlers();
+      const res = mockRes();
+
+      await handlers.testConnection(
+        mockReq({
+          body: { destination: 'eu', publicKey: 'pk', secretKey: 'sk' },
+          config: { langfuse: { headers: { 'CF-Access-Client-Id': 'ambiguous-token' } } },
+        }),
+        res,
+      );
+
+      expect(JSON.stringify((global.fetch as unknown as jest.Mock).mock.calls)).not.toContain(
+        'ambiguous-token',
+      );
+      delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
+    });
+
+    it('withholds deployment headers when verifying an unconfigured destination', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(projectResponse())
+        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      const { handlers } = createHandlers();
+      const res = mockRes();
+
+      await handlers.testConnection(
+        mockReq({
+          body: { destination: 'eu', publicKey: 'pk', secretKey: 'sk' },
+          config: { langfuse: { headers: { 'CF-Access-Client-Id': 'internal-gateway' } } },
+        }),
+        res,
+      );
+
+      /** `eu` here is the built-in Langfuse Cloud default; an admin selecting it
+       *  must not ship the internal gateway credential to that origin. */
+      const calls = (global.fetch as unknown as jest.Mock).mock.calls;
+      expect(JSON.stringify(calls)).not.toContain('internal-gateway');
+    });
+
+    it.each(['Authorization', 'authorization'])(
+      'keeps the Langfuse authorization when a deployment %s header collides',
+      async (headerName) => {
+        global.fetch = jest
+          .fn()
+          .mockResolvedValueOnce(projectResponse())
+          .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+        const { handlers } = createHandlers();
+        const res = mockRes();
+
+        delete process.env.TENANT_ISOLATION_STRICT;
+        delete process.env.LANGFUSE_FANOUT_ENABLED;
+        delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
+        process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://eu.langfuse.internal';
+        await handlers.testConnection(
+          mockReq({
+            body: { destination: 'eu', publicKey: 'pk', secretKey: 'sk' },
+            config: { langfuse: { headers: { [headerName]: 'Bearer proxy-token' } } },
+          }),
+          res,
+        );
+        delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
+
+        const [, projectsInit] = (global.fetch as unknown as jest.Mock).mock.calls[0];
+        const headers = projectsInit.headers as Record<string, string>;
+        /** A surviving case variant would be appended by fetch rather than
+         *  replaced, sending both credentials in one combined value. */
+        expect(
+          Object.keys(headers).filter((key) => key.toLowerCase() === 'authorization'),
+        ).toHaveLength(1);
+        expect(Object.values(headers)).not.toContain('Bearer proxy-token');
+        expect(Object.values(headers).some((value) => value.startsWith('Basic '))).toBe(true);
+      },
+    );
   });
 });

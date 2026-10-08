@@ -1,6 +1,7 @@
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { Provider as JotaiProvider, createStore } from 'jotai';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, type TConversation, type TMessage } from 'librechat-data-provider';
@@ -11,6 +12,7 @@ import {
   useGetLatestMessage,
 } from '~/hooks/Messages/useLatestMessage';
 import { getBranchSiblingIndexesForTarget, getMessageBranchSiblingParentIds } from '~/utils';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import store from '~/store';
 
 function createQueryClient() {
@@ -69,17 +71,20 @@ function createWrapper(
   queryClient = createQueryClient(),
   initializeState?: (snapshot: MutableSnapshot) => void,
   initialEntry = '/c/conversation-1',
+  jotaiStore = createStore(),
 ) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <RecoilRoot initializeState={initializeState}>
-          <MemoryRouter initialEntries={[initialEntry]}>
-            <Routes>
-              <Route path="/c/:conversationId?" element={children} />
-            </Routes>
-          </MemoryRouter>
-        </RecoilRoot>
+        <JotaiProvider store={jotaiStore}>
+          <RecoilRoot initializeState={initializeState}>
+            <MemoryRouter initialEntries={[initialEntry]}>
+              <Routes>
+                <Route path="/c/:conversationId?" element={children} />
+              </Routes>
+            </MemoryRouter>
+          </RecoilRoot>
+        </JotaiProvider>
       </QueryClientProvider>
     );
   };
@@ -166,11 +171,17 @@ describe('useLatestMessage', () => {
       ],
     );
 
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 1);
     const { result } = renderHook(() => useLatestMessage(0), {
-      wrapper: createWrapper(queryClient, ({ set }) => {
-        set(store.conversationByIndex(0), conversation);
-        set(store.messagesSiblingIdxFamily(userMessage.messageId), 1);
-      }),
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
     });
 
     expect(result.current).toEqual(
@@ -194,11 +205,17 @@ describe('useLatestMessage', () => {
       ],
     );
 
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 99);
     const { result } = renderHook(() => useLatestMessage(0), {
-      wrapper: createWrapper(queryClient, ({ set }) => {
-        set(store.conversationByIndex(0), conversation);
-        set(store.messagesSiblingIdxFamily(userMessage.messageId), 99);
-      }),
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
     });
 
     expect(result.current).toEqual(
@@ -382,11 +399,17 @@ describe('useGetLatestMessage', () => {
       ],
     );
 
+    const jotaiStore = createStore();
+    jotaiStore.set(siblingIdxFamily(siblingKey(userMessage.messageId)), 1);
     const { result } = renderHook(() => useGetLatestMessage(0), {
-      wrapper: createWrapper(queryClient, ({ set }) => {
-        set(store.conversationByIndex(0), conversation);
-        set(store.messagesSiblingIdxFamily(userMessage.messageId), 1);
-      }),
+      wrapper: createWrapper(
+        queryClient,
+        ({ set }) => {
+          set(store.conversationByIndex(0), conversation);
+        },
+        undefined,
+        jotaiStore,
+      ),
     });
 
     expect(result.current()).toEqual(

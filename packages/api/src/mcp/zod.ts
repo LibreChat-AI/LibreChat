@@ -337,6 +337,7 @@ export function resolveJsonSchemaRefs<T extends Record<string, unknown>>(
  * - Strips vendor extension fields (`x-*` prefixed keys, e.g. `x-google-enum-descriptions`)
  * - Strips `definitions` and `$`-prefixed schema keywords (`$defs`, `$schema`,
  *   `$id`, `$comment`, ...) that may survive ref resolution
+ * - Drops malformed `required` values and filters arrays to property names
  *
  * Beyond LLM compatibility, dropping every `$`-prefixed keyword also makes the
  * output safe to persist: MongoDB rejects field names beginning with `$`, so a
@@ -374,6 +375,23 @@ const SCHEMA_MAP_KEYWORDS = new Set([
 
 /** Keywords whose value is an array of subschemas. */
 const SCHEMA_LIST_KEYWORDS = new Set(['oneOf', 'anyOf', 'allOf', 'prefixItems']);
+
+function normalizeRequired(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const required: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string' || seen.has(entry)) {
+      continue;
+    }
+    seen.add(entry);
+    required.push(entry);
+  }
+  return required;
+}
 
 export function normalizeJsonSchema<T extends Record<string, unknown>>(schema: T): T {
   if (!schema || typeof schema !== 'object') {
@@ -413,6 +431,14 @@ export function normalizeJsonSchema<T extends Record<string, unknown>>(schema: T
 
     if (key === 'const' && 'enum' in schema) {
       // Skip `const` when `enum` already exists
+      continue;
+    }
+
+    if (key === 'required') {
+      const required = normalizeRequired(value);
+      if (required) {
+        result[key] = required;
+      }
       continue;
     }
 

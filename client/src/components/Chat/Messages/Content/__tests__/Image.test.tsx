@@ -8,6 +8,9 @@ jest.mock('~/utils', () => ({
       .flat(Infinity)
       .filter((c): c is string => typeof c === 'string' && c.length > 0)
       .join(' '),
+  /** Real implementation: URL resolution is what the cases below assert. */
+  toAbsoluteFilePath:
+    jest.requireActual<typeof import('~/utils/media')>('~/utils/media').toAbsoluteFilePath,
 }));
 
 jest.mock('librechat-data-provider', () => ({
@@ -111,6 +114,15 @@ describe('Image', () => {
   });
 
   describe('common behavior', () => {
+    it('aligns only explicitly marked images to the right', () => {
+      const { rerender } = render(<Image {...defaultProps} />);
+      const wrapper = screen.getByRole('button').parentElement;
+      expect(wrapper).not.toHaveClass('ml-auto');
+
+      rerender(<Image {...defaultProps} alignRight />);
+      expect(wrapper).toHaveClass('ml-auto');
+    });
+
     it('applies custom className to the button wrapper', () => {
       render(<Image {...defaultProps} className="mb-4" />);
       const button = screen.getByRole('button');

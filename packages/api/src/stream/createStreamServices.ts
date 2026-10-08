@@ -5,6 +5,7 @@ import { InMemoryEventTransport } from './implementations/InMemoryEventTransport
 import { RedisEventTransport } from './implementations/RedisEventTransport';
 import { InMemoryJobStore } from './implementations/InMemoryJobStore';
 import { RedisJobStore } from './implementations/RedisJobStore';
+import { createIoRedisSubscriber } from '~/cache/redisUtils';
 import { ioredisClient } from '~/cache/redisClients';
 import { cacheConfig } from '~/cache/cacheConfig';
 
@@ -82,7 +83,7 @@ export function createStreamServices(config: StreamServicesConfig = {}): StreamS
       let subscriber = redisSubscriber;
 
       if (!subscriber && 'duplicate' in redisClient) {
-        subscriber = (redisClient as Redis).duplicate();
+        subscriber = createIoRedisSubscriber(redisClient, '[StreamServices] subscriber');
         logger.info('[StreamServices] Duplicated Redis client for subscriber');
       }
 

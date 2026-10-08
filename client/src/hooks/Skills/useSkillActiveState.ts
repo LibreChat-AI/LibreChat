@@ -212,13 +212,28 @@ export default function useSkillActiveState() {
     [queryClient, userId, defaultActiveOnShare, canToggle, flush],
   );
 
+  /** Both dependencies feed `isActive`: the override map and the interface
+   *  config behind `defaultActiveOnShare`. Until each resolves the map reads
+   *  empty and the default reads `false`, so they are reported as one signal.
+   *  A consumer gating on `isLoading`/`isError` then cannot silently miss a
+   *  dependency, and `isActive` is trustworthy exactly when both are clear. */
+  const isLoading = getQuery.isLoading || configQuery.isLoading;
+  const isError = getQuery.isError || configQuery.isError;
+  const refetchStates = getQuery.refetch;
+  const refetchConfig = configQuery.refetch;
+  const refetch = useCallback(async () => {
+    await Promise.all([refetchStates(), refetchConfig()]);
+  }, [refetchStates, refetchConfig]);
+
   return {
     skillStates,
     defaultActiveOnShare,
     isActive,
     toggle,
-    isLoading: getQuery.isLoading,
-    isError: getQuery.isError,
+    isLoading,
+    isError,
+    /** Lets a consumer that gates its own UI on resolved states retry both. */
+    refetch,
     isUpdating: updateMutation.isLoading,
   };
 }

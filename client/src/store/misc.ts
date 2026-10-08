@@ -82,6 +82,9 @@ const customShortcuts = atomWithLocalStorage<Record<string, ShortcutOverride>>(
   {},
 );
 
+/** When false, no keyboard shortcut fires and the UI stops advertising them. */
+const shortcutsEnabled = atomWithLocalStorage<boolean>('keyboardShortcutsEnabled', true);
+
 const chatBadges = atomWithLocalStorage<Pick<BadgeItem, 'id'>[]>('chatBadges', [
   // When adding new badges, make sure to add them to useChatBadges.ts as well and add them as last item
   // DO NOT CHANGE THE ORDER OF THE BADGES ALREADY IN THE ARRAY
@@ -98,5 +101,6 @@ export default {
   showShortcutsDialog,
   keyboardDeleteTarget,
   customShortcuts,
+  shortcutsEnabled,
   chatBadges,
 };

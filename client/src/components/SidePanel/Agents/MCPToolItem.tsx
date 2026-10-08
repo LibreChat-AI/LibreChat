@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Button } from '@librechat/client';
 import { Check, Clock, Code2, Captions, Info, Zap } from 'lucide-react';
-import type { AgentToolType } from 'librechat-data-provider';
+import type { AgentToolType, AgentToolApprovalMode } from 'librechat-data-provider';
+import ApprovalOption from './ApprovalOption';
 import OptionToggle from './OptionToggle';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -18,6 +19,7 @@ interface MCPToolItemProps {
   intentDisabled: boolean;
   deferredToolsEnabled: boolean;
   programmaticToolsEnabled: boolean;
+  programmaticToolsAvailable: boolean;
   backgroundToolsEnabled: boolean;
   toolIntentsEnabled: boolean;
   onToggleSelect: () => void;
@@ -25,6 +27,11 @@ interface MCPToolItemProps {
   onToggleProgrammatic: () => void;
   onToggleBackground: () => void;
   onToggleIntent: () => void;
+  approvalConstraint?: 'ask' | 'deny';
+  approvalAgentId?: string;
+  approvalMode?: AgentToolApprovalMode;
+  approvalsEnabled?: boolean;
+  onApprovalModeChange?: (mode?: AgentToolApprovalMode) => void;
 }
 
 const iconButton = 'size-6 rounded-md';
@@ -44,8 +51,14 @@ export default function MCPToolItem({
   onToggleIntent,
   deferredToolsEnabled,
   programmaticToolsEnabled,
+  programmaticToolsAvailable,
   backgroundToolsEnabled,
   toolIntentsEnabled,
+  approvalMode,
+  approvalConstraint,
+  approvalAgentId,
+  approvalsEnabled,
+  onApprovalModeChange,
 }: MCPToolItemProps) {
   const localize = useLocalize();
   const [expanded, setExpanded] = useState(false);
@@ -55,7 +68,7 @@ export default function MCPToolItem({
 
   return (
     <div className="overflow-hidden rounded-lg">
-      <div className="flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-surface-secondary">
+      <div className="hover:bg-surface-secondary flex items-center gap-1 rounded-lg pr-1 transition-colors">
         <button
           type="button"
           onClick={onToggleSelect}
@@ -63,19 +76,19 @@ export default function MCPToolItem({
           aria-label={tool.metadata.name}
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-2 text-left',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary',
+            'focus-visible:ring-ring-primary focus:outline-hidden focus-visible:ring-2',
           )}
         >
           <span
             aria-hidden="true"
             className={cn(
-              'flex size-4 shrink-0 items-center justify-center rounded border border-border-medium transition-colors',
+              'border-border-medium flex size-4 shrink-0 items-center justify-center rounded border transition-colors',
               isSelected && 'bg-surface-inverted text-text-inverted',
             )}
           >
             {isSelected && <Check className="size-4" />}
           </span>
-          <span className="min-w-0 flex-1 truncate text-sm text-text-primary">
+          <span className="text-text-primary min-w-0 flex-1 truncate text-sm">
             {tool.metadata.name}
           </span>
         </button>
@@ -86,7 +99,7 @@ export default function MCPToolItem({
               pressed={isDeferred}
               label={localize('com_ui_mcp_defer_loading')}
               tooltip={localize('com_ui_mcp_click_to_defer')}
-              activeClass="text-text-warning"
+              activeClass="border-series-4 text-series-4 hover:text-series-4"
               onToggle={onToggleDefer}
             />
           )}
@@ -95,8 +108,13 @@ export default function MCPToolItem({
               icon={Code2}
               pressed={isProgrammatic}
               label={localize('com_ui_mcp_programmatic')}
-              tooltip={localize('com_ui_mcp_click_to_programmatic')}
-              activeClass="text-violet-500"
+              tooltip={localize(
+                programmaticToolsAvailable
+                  ? 'com_ui_mcp_click_to_programmatic'
+                  : 'com_ui_mcp_programmatic_requires_code',
+              )}
+              activeClass="border-series-6 text-series-6 hover:text-series-6"
+              disabled={!programmaticToolsAvailable && !isProgrammatic}
               onToggle={onToggleProgrammatic}
             />
           )}
@@ -106,7 +124,7 @@ export default function MCPToolItem({
               pressed={isBackground}
               label={localize('com_ui_mcp_background')}
               tooltip={localize('com_ui_mcp_click_to_background')}
-              activeClass="text-sky-500"
+              activeClass="border-series-1 text-series-1 hover:text-series-1"
               onToggle={onToggleBackground}
             />
           )}
@@ -119,8 +137,18 @@ export default function MCPToolItem({
               tooltip={localize(
                 intentDisabled ? 'com_ui_mcp_intent_programmatic' : 'com_ui_mcp_click_to_intent',
               )}
-              activeClass="text-teal-500"
+              activeClass="border-series-3 text-series-3 hover:text-series-3"
               onToggle={onToggleIntent}
+            />
+          )}
+          {onApprovalModeChange && (
+            <ApprovalOption
+              constraint={approvalConstraint}
+              agentId={approvalAgentId}
+              toolName={tool.tool_id}
+              mode={approvalMode}
+              onChange={onApprovalModeChange}
+              disabled={!approvalsEnabled}
             />
           )}
           <Button
@@ -144,18 +172,18 @@ export default function MCPToolItem({
       <div
         id={detailsId}
         className={cn(
-          'grid transition-[grid-template-rows] [transition-duration:var(--resize-dur)] [transition-timing-function:var(--resize-ease)] motion-reduce:transition-none',
+          'resize-rows grid motion-reduce:transition-none',
           expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
         )}
       >
         <div className="min-h-0 overflow-hidden">
           <div
             className={cn(
-              'border-t border-border-light px-3 py-3 transition-opacity duration-200 ease-out motion-reduce:transition-none',
+              'border-border-light border-t px-3 py-3 transition-opacity duration-200 ease-out motion-reduce:transition-none',
               expanded ? 'opacity-100' : 'opacity-0',
             )}
           >
-            <p className="max-h-44 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-secondary">
+            <p className="text-text-secondary max-h-44 overflow-y-auto text-xs leading-relaxed whitespace-pre-wrap">
               {description || localize('com_ui_mcp_no_description')}
             </p>
           </div>

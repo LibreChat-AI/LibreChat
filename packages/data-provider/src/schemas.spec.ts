@@ -6,11 +6,41 @@ import {
   googleSettings,
   anthropicSettings,
   compactGoogleSchema,
+  tMessageSchema,
   eAnthropicEffortSchema,
   eReasoningEffortSchema,
   eReasoningModeSchema,
   eReasoningContextSchema,
+  reasoningOverrideSchema,
+  subagentThreadLineageSchema,
+  getGoogleThinkingBudgetBounds,
+  tPresetSchema,
 } from './schemas';
+
+describe('reasoningOverrideSchema', () => {
+  it.each([
+    { key: 'reasoning_effort', value: ReasoningEffort.high },
+    { key: 'effort', value: AnthropicEffort.medium },
+    { key: 'thinkingLevel', value: 'low' },
+    { key: 'thinkingBudget', value: -1 },
+    { key: 'thinkingBudget', value: 32768 },
+    { key: 'thinkingBudget', value: 500000 },
+  ])('accepts a supported request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.parse(override)).toEqual(override);
+  });
+
+  it.each([
+    { key: 'temperature', value: 1 },
+    { key: 'reasoning_effort', value: 'turbo' },
+    { key: 'effort', value: 'none' },
+    { key: 'thinkingLevel', value: 'max' },
+    { key: 'thinkingBudget', value: 1.5 },
+    { key: 'thinkingBudget', value: -2 },
+    { key: 'thinkingBudget', value: 1000, extra: true },
+  ])('rejects an invalid request-scoped override: %o', (override) => {
+    expect(reasoningOverrideSchema.safeParse(override).success).toBe(false);
+  });
+});
 
 describe('anthropicSettings', () => {
   describe('maxOutputTokens.reset()', () => {
@@ -517,6 +547,37 @@ describe('googleSettings', () => {
     });
   });
 
+  describe('getGoogleThinkingBudgetBounds()', () => {
+    it('returns the documented Pro floor and ceiling', () => {
+      expect(getGoogleThinkingBudgetBounds('gemini-2.5-pro')).toEqual({ min: 128, max: 32768 });
+      expect(getGoogleThinkingBudgetBounds('gemini-2.5-pro-preview-05-06')).toEqual({
+        min: 128,
+        max: 32768,
+      });
+    });
+
+    it('returns the documented Flash floor and ceiling', () => {
+      expect(getGoogleThinkingBudgetBounds('gemini-2.5-flash')).toEqual({ min: 0, max: 24576 });
+    });
+
+    it('returns the documented Flash Lite floor and ceiling', () => {
+      expect(getGoogleThinkingBudgetBounds('gemini-2.5-flash-lite')).toEqual({
+        min: 512,
+        max: 24576,
+      });
+      expect(getGoogleThinkingBudgetBounds('gemini-2.5-flash-lite-preview-09-2025')).toEqual({
+        min: 512,
+        max: 24576,
+      });
+    });
+
+    it('does not apply 2.5 bounds to other Gemini families', () => {
+      expect(getGoogleThinkingBudgetBounds('gemini-2.0-flash')).toBeUndefined();
+      expect(getGoogleThinkingBudgetBounds('gemini-3-pro')).toBeUndefined();
+      expect(getGoogleThinkingBudgetBounds('gemini-1.5-pro')).toBeUndefined();
+    });
+  });
+
   describe('compactGoogleSchema (model-aware maxOutputTokens)', () => {
     it('strips the model default for current Gemini models', () => {
       const result = compactGoogleSchema.parse({
@@ -619,5 +680,144 @@ describe('ReasoningContext', () => {
     expect(eReasoningContextSchema.parse('current_turn')).toBe('current_turn');
     expect(eReasoningContextSchema.parse('all_turns')).toBe('all_turns');
     expect(() => eReasoningContextSchema.parse('next_turn')).toThrow();
+  });
+});
+
+describe('subagentThreadLineageSchema', () => {
+  const lineage = {
+    rootConversationId: 'root-conversation',
+    parentConversationId: 'parent-conversation',
+    parentMessageId: 'parent-message',
+    parentToolCallId: 'tool-call',
+    parentAgentId: 'parent-agent',
+    subagentType: 'researcher',
+    subagentKind: 'agent',
+    depth: 1,
+  };
+
+  it('accepts durable child-thread lineage', () => {
+    expect(subagentThreadLineageSchema.parse(lineage)).toEqual(lineage);
+  });
+
+  it('rejects non-positive depth and unknown execution shapes', () => {
+    expect(() => subagentThreadLineageSchema.parse({ ...lineage, depth: 0 })).toThrow();
+    expect(() =>
+      subagentThreadLineageSchema.parse({ ...lineage, subagentKind: 'workflow' }),
+    ).toThrow();
+    expect(() =>
+      subagentThreadLineageSchema.parse({ ...lineage, parentConversationId: '' }),
+    ).toThrow();
+  });
+});
+
+describe('tMessageSchema context fading', () => {
+  const message = {
+    messageId: 'message-1',
+    conversationId: 'conversation-1',
+    parentMessageId: null,
+    text: 'Assistant-role text',
+    isCreatedByUser: false,
+  };
+
+  it.each([1, 2])('round-trips stored version %i tiers', (v) => {
+    const fading = { v, budgetTokens: 10_000, masked: true };
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading,
+      fadingTiers: [{ agentId: 'agent-a', ...fading }],
+    };
+    expect(tMessageSchema.parse({ ...message, contextMeta }).contextMeta).toEqual(contextMeta);
+  });
+
+  it('rejects unknown tier versions', () => {
+    const contextMeta = {
+      calibrationRatio: 1,
+      fading: { v: 3, budgetTokens: 10_000, masked: true },
+    };
+    expect(() => tMessageSchema.parse({ ...message, contextMeta })).toThrow();
+  });
+});
+
+describe('tMessageSchema user-submitted provenance', () => {
+  const message = {
+    messageId: 'message-1',
+    conversationId: 'conversation-1',
+    parentMessageId: null,
+    text: 'Assistant-role text',
+    isCreatedByUser: false,
+  };
+
+  it('preserves an explicit user-submitted marker', () => {
+    expect(
+      tMessageSchema.parse({
+        ...message,
+        isUserSubmitted: true,
+        userSubmittedPaths: ['/text', '/content/0/steer'],
+        userSubmittedMessageFieldPaths: [
+          { path: '/content/1/tool_call/output', field: 'decision_response' },
+        ],
+      }),
+    ).toMatchObject({
+      isCreatedByUser: false,
+      isUserSubmitted: true,
+      userSubmittedPaths: ['/text', '/content/0/steer'],
+      userSubmittedMessageFieldPaths: [
+        { path: '/content/1/tool_call/output', field: 'decision_response' },
+      ],
+    });
+  });
+
+  it('keeps the marker optional for legacy messages', () => {
+    expect(tMessageSchema.parse(message)).not.toHaveProperty('isUserSubmitted');
+    expect(tMessageSchema.parse(message)).not.toHaveProperty('userSubmittedPaths');
+    expect(tMessageSchema.parse(message)).not.toHaveProperty('userSubmittedMessageFieldPaths');
+  });
+
+  it('rejects provenance paths that are not JSON pointers', () => {
+    expect(() =>
+      tMessageSchema.parse({ ...message, userSubmittedPaths: ['content/0/text'] }),
+    ).toThrow();
+  });
+
+  it.each([
+    [{ path: 'content/0/tool_call/output', field: 'answer' }],
+    [{ path: '/content/0/tool_call/output', field: 'content_part' }],
+    [{ path: '/content/0/tool_call/output', field: 'answer', extra: true }],
+  ])('rejects invalid exact message-field provenance %#', (userSubmittedMessageFieldPaths) => {
+    expect(() => tMessageSchema.parse({ ...message, userSubmittedMessageFieldPaths })).toThrow();
+  });
+});
+
+describe('tPresetSchema', () => {
+  it('strips all unseen-reply state from preset payloads', () => {
+    /* Saving a preset off a live conversation captures read-state fields; none may stamp stale
+       state back onto every conversation it is applied to. */
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      lastResponseAt: '2026-08-16T10:00:00.000Z',
+      lastResponseMessageId: 'reply-1',
+      lastResponseIsManual: true,
+      isMarkedUnread: true,
+      lastSeenAt: '2026-08-16T09:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('lastResponseAt');
+    expect(parsed).not.toHaveProperty('lastResponseMessageId');
+    expect(parsed).not.toHaveProperty('lastResponseIsManual');
+    expect(parsed).not.toHaveProperty('isMarkedUnread');
+    expect(parsed).not.toHaveProperty('lastSeenAt');
+  });
+
+  it('keeps stripping the runtime timestamps presets never carry', () => {
+    const parsed = tPresetSchema.parse({
+      conversationId: null,
+      endpoint: 'openAI',
+      createdAt: '2026-08-16T10:00:00.000Z',
+      updatedAt: '2026-08-16T10:00:00.000Z',
+    });
+
+    expect(parsed).not.toHaveProperty('createdAt');
+    expect(parsed).not.toHaveProperty('updatedAt');
   });
 });

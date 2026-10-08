@@ -38,6 +38,9 @@ const TOOL_NAME_EVENTS = new Set<HookEvent>([
   'PermissionDenied',
 ]);
 
+/** Events whose payloads carry tool names/inputs, including the matcherless batch event. */
+const TOOL_PAYLOAD_EVENTS = new Set<HookEvent>([...TOOL_NAME_EVENTS, 'PostToolBatch']);
+
 const GENERAL_EXACT_MATCHER = /^[-A-Za-z0-9_,| ]+$/;
 const NARROW_EXACT_MATCHER = /^[A-Za-z0-9_|]+$/;
 const NARROW_EXACT_MATCHER_EVENTS = new Set(['FileChanged', 'StopFailure']);
@@ -84,12 +87,32 @@ export interface PluginHookMatcherTranslationResult {
   /** Runtime pattern; translations of Claude exact matchers are whole-string anchored. */
   matcher: string;
   requiresToolNameTranslation?: boolean;
+  /**
+   * Runtime tool names the translation produced. Reverse payload translation
+   * applies per invocation to exactly these names, so a mixed matcher like
+   * `Bash|create_file` keeps native payloads for its natively-authored
+   * alternative. Omitted, translation applies to the whole declaration.
+   */
+  translatedToolNames?: string[];
 }
 
 export interface PluginHookToolNameTranslation {
   sourceEvent: string;
   targetEvent: HookEvent;
   toolName: string;
+}
+
+export interface PluginHookToolInputTranslation {
+  sourceEvent: string;
+  targetEvent: HookEvent;
+  /** LibreChat runtime name of the invoked tool. */
+  toolName: string;
+  toolInput: Record<string, unknown>;
+}
+
+export interface PluginHookHandlerSupport {
+  sourceEvent: string;
+  handler: PluginHookHandler;
 }
 
 export interface PluginHookConditionMatch {
@@ -107,6 +130,10 @@ export interface PluginHookCapabilities {
   ) => string | PluginHookMatcherTranslationResult | undefined;
   /** Maps a LibreChat runtime tool name back into the plugin's source namespace. */
   toPluginToolName?: (input: PluginHookToolNameTranslation) => string;
+  /** Presents a runtime tool input under the plugin's source field names. */
+  toPluginToolInput?: (input: PluginHookToolInputTranslation) => Record<string, unknown>;
+  /** Returns an error message when the executor cannot run this handler on the current host. */
+  supportsHandler?: (input: PluginHookHandlerSupport) => string | undefined;
   /** Evaluates Claude permission-rule syntax before a conditional handler executes. */
   matchCondition?: (input: PluginHookConditionMatch) => boolean;
   async?: boolean;
@@ -121,6 +148,15 @@ export interface PluginHookPlanEntry {
   handlerIndex: number;
   sourceMatcher?: string;
   matcher?: string;
+  /**
+   * Set when the matcher was authored against the plugin's alias namespace
+   * and translated to runtime tool names; payload name/input reverse
+   * translation applies only to such declarations — a native-authored
+   * matcher keeps native payloads.
+   */
+  requiresToolNameTranslation?: boolean;
+  /** Runtime tool names the translation produced; see the translation result type. */
+  translatedToolNames?: string[];
   condition?: string;
   timeoutMs?: number;
   handler: PluginHookHandler;
@@ -139,6 +175,19 @@ export interface PluginHookPlan {
   entries: PluginHookPlanEntry[];
   summary: PluginHookPlanSummary;
 }
+
+/**
+ * SessionStart lifecycle sources no LibreChat run-construction path emits.
+ * A matcher naming one is rejected at plan time — registering it would plan
+ * ready and never fire, the silent-no-op failure mode planning exists to
+ * surface.
+ */
+const UNAVAILABLE_SESSION_SOURCES: Readonly<Record<string, string>> = Object.freeze({
+  compact:
+    'SessionStart source "compact" is unavailable because LibreChat PostCompact hook output cannot inject session context',
+  clear:
+    'SessionStart source "clear" is unavailable because LibreChat has no clear-conversation lifecycle path',
+});
 
 function normalizeMatcher(matcher: string | undefined): string | undefined {
   const trimmed = matcher?.trim();
@@ -291,6 +340,10 @@ function getHandlerIssues(
       message: `The configured executor does not support ${handler.type} hook handlers`,
     });
   }
+  const supportMessage = capabilities.supportsHandler?.({ sourceEvent, handler });
+  if (supportMessage !== undefined) {
+    issues.push({ code: 'unsupported_handler', severity: 'error', message: supportMessage });
+  }
   if (handler.type === 'prompt' && PROMPT_UNSUPPORTED_EVENTS.has(sourceEvent)) {
     issues.push({
       code: 'unsupported_handler_event',
@@ -332,6 +385,8 @@ function getHandlerIssues(
 interface MatcherPlan {
   sourceMatcher?: string;
   matcher?: string;
+  requiresToolNameTranslation?: boolean;
+  translatedToolNames?: string[];
   issues: PluginHookCompatibilityIssue[];
 }
 
@@ -350,10 +405,24 @@ function planMatcher(
             code: 'unsupported_session_source',
             severity: 'warning',
             message:
-              'Wildcard SessionStart compatibility covers startup, resume, and clear; compact is runtime-filtered',
+              'Wildcard SessionStart compatibility covers startup and resume; compact and clear never occur in LibreChat',
           },
         ],
       };
+    }
+    /**
+     * A matcherless (or wildcard) declaration carries no namespace evidence
+     * of its own, so it inherits the document's: hook documents are Claude
+     * artifacts, and a wildcard guard inspecting standard Claude names or
+     * fields must receive them. Declaration-wide translation (no produced
+     * names) presents every aliased runtime tool in the plugin namespace.
+     */
+    if (
+      targetEvent !== undefined &&
+      TOOL_PAYLOAD_EVENTS.has(targetEvent) &&
+      capabilities.toPluginToolName !== undefined
+    ) {
+      return { requiresToolNameTranslation: true, issues: [] };
     }
     return { issues: [] };
   }
@@ -373,11 +442,12 @@ function planMatcher(
         : sourceMatcher;
     const runtimeValidationIssue =
       validationIssue ?? getMatcherValidationIssue(sourceEvent, matcher, targetEvent);
-    const includesCompact =
+    const unavailableSource = Object.keys(UNAVAILABLE_SESSION_SOURCES).find((source) =>
       matcherSemantics.kind === 'exact'
-        ? matcherSemantics.values.includes('compact')
-        : matcherIncludesValue(matcher, 'compact');
-    if (!runtimeValidationIssue && includesCompact) {
+        ? matcherSemantics.values.includes(source)
+        : matcherIncludesValue(matcher, source),
+    );
+    if (!runtimeValidationIssue && unavailableSource !== undefined) {
       return {
         sourceMatcher,
         matcher,
@@ -385,8 +455,7 @@ function planMatcher(
           {
             code: 'unsupported_session_source',
             severity: 'error',
-            message:
-              'SessionStart source "compact" is unavailable because LibreChat PostCompact hook output cannot inject session context',
+            message: UNAVAILABLE_SESSION_SOURCES[unavailableSource],
           },
         ],
       };
@@ -423,6 +492,8 @@ function planMatcher(
   const translatedMatcher = typeof translation === 'string' ? translation : translation?.matcher;
   const requiresToolNameTranslation =
     typeof translation === 'object' && translation.requiresToolNameTranslation === true;
+  const translatedToolNames =
+    typeof translation === 'object' ? translation.translatedToolNames : undefined;
   if (!translatedMatcher?.trim()) {
     return {
       sourceMatcher,
@@ -464,7 +535,14 @@ function planMatcher(
       message: 'Translated tool matchers require a reverse tool-name mapping for plugin payloads',
     });
   }
-  return { sourceMatcher, matcher, issues };
+  return {
+    sourceMatcher,
+    matcher,
+    ...(requiresToolNameTranslation && { requiresToolNameTranslation }),
+    ...(requiresToolNameTranslation &&
+      translatedToolNames !== undefined && { translatedToolNames }),
+    issues,
+  };
 }
 
 function hasError(issues: readonly PluginHookCompatibilityIssue[]): boolean {
@@ -524,6 +602,12 @@ export function planPluginHooks(
             sourceMatcher: matcherPlan.sourceMatcher,
           }),
           ...(matcherPlan.matcher !== undefined && { matcher: matcherPlan.matcher }),
+          ...(matcherPlan.requiresToolNameTranslation === true && {
+            requiresToolNameTranslation: true,
+          }),
+          ...(matcherPlan.translatedToolNames !== undefined && {
+            translatedToolNames: matcherPlan.translatedToolNames,
+          }),
           ...(condition !== undefined && { condition }),
           handler,
           status,

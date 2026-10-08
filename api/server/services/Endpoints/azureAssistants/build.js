@@ -16,7 +16,7 @@ const buildOptions = async (endpoint, parsedBody) => {
   });
 
   if (assistant_id) {
-    const assistantDoc = await getAssistant({ assistant_id });
+    const assistantDoc = await getAssistant({ assistantId: assistant_id });
     if (assistantDoc) {
       endpointOption.assistant = {
         append_current_datetime: assistantDoc.append_current_datetime,

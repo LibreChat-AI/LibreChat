@@ -1,25 +1,61 @@
+const LOCAL_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+const ZONED_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function hasValidWallClock(timestamp) {
+  const wallClock = timestamp.slice(0, 19);
+  const parsed = new Date(`${wallClock}Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === wallClock;
+}
+
+/**
+ * Validates a bounded timestamp while preserving the client's local wall-clock
+ * format or canonicalizing an explicitly zoned value to UTC.
+ *
+ * @param {unknown} clientTimestamp
+ * @returns {string | undefined}
+ */
+function normalizeClientTimestamp(clientTimestamp) {
+  if (typeof clientTimestamp !== 'string' || clientTimestamp.length > 64) {
+    return undefined;
+  }
+
+  if (LOCAL_TIMESTAMP.test(clientTimestamp)) {
+    return hasValidWallClock(clientTimestamp) ? clientTimestamp : undefined;
+  }
+
+  if (!ZONED_TIMESTAMP.test(clientTimestamp) || !hasValidWallClock(clientTimestamp)) {
+    return undefined;
+  }
+
+  const parsed = new Date(clientTimestamp);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+  return parsed.toISOString();
+}
+
+function getTimestampOrNow(clientTimestamp) {
+  return normalizeClientTimestamp(clientTimestamp) ?? new Date().toISOString();
+}
+
 /**
  * Obtains the date string in 'YYYY-MM-DD' format.
  *
- * @param {string} [clientTimestamp] - Optional ISO timestamp string. If provided, uses this timestamp;
- * otherwise, uses the current date.
+ * @param {string} [clientTimestamp] - Optional ISO timestamp string.
  * @returns {string} - The date string in 'YYYY-MM-DD' format.
  */
 function getDateStr(clientTimestamp) {
-  return clientTimestamp ? clientTimestamp.split('T')[0] : new Date().toISOString().split('T')[0];
+  return getTimestampOrNow(clientTimestamp).slice(0, 10);
 }
 
 /**
  * Obtains the time string in 'HH:MM:SS' format.
  *
- * @param {string} [clientTimestamp] - Optional ISO timestamp string. If provided, uses this timestamp;
- * otherwise, uses the current time.
+ * @param {string} [clientTimestamp] - Optional ISO timestamp string.
  * @returns {string} - The time string in 'HH:MM:SS' format.
  */
 function getTimeStr(clientTimestamp) {
-  return clientTimestamp
-    ? clientTimestamp.split('T')[1].split('.')[0]
-    : new Date().toTimeString().split(' ')[0];
+  return getTimestampOrNow(clientTimestamp).slice(11, 19);
 }
 
 /**
@@ -75,4 +111,4 @@ const createRunBody = ({
   return body;
 };
 
-module.exports = { createRunBody, getDateStr, getTimeStr };
+module.exports = { createRunBody, getDateStr, getTimeStr, normalizeClientTimestamp };

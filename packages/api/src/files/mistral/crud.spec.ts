@@ -13,6 +13,14 @@ jest.mock('form-data', () => {
 jest.mock('https-proxy-agent', () => ({
   HttpsProxyAgent: jest.fn().mockImplementation((url) => ({ proxyUrl: url })),
 }));
+jest.mock('crypto', () => ({
+  ...jest.requireActual('crypto'),
+  createSign: jest.fn(() => ({
+    update: jest.fn(),
+    end: jest.fn(),
+    sign: jest.fn(() => 'mock-signature'),
+  })),
+}));
 jest.mock('axios', () => {
   const mockAxiosInstance = {
     get: jest.fn().mockResolvedValue({ data: {} }),
@@ -36,6 +44,7 @@ jest.mock('axios', () => {
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
+    debug: jest.fn(),
     error: jest.fn(),
   },
 }));
@@ -54,6 +63,10 @@ jest.mock('~/utils/files', () => ({
   readFileAsBuffer: jest.fn(),
 }));
 
+jest.mock('~/utils/key', () => ({
+  loadServiceKey: jest.fn(),
+}));
+
 import * as fs from 'fs';
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -66,10 +79,13 @@ import type {
 } from '~/types';
 import { logger as mockLogger } from '@librechat/data-schemas';
 import { decryptConfigSecret, isEncryptedSecretPayload } from '~/admin/secrets';
+import { logAxiosError } from '~/utils/axios';
 import { readFileAsBuffer } from '~/utils/files';
+import { loadServiceKey } from '~/utils/key';
 import {
   uploadDocumentToMistral,
   uploadAzureMistralOCR,
+  uploadGoogleVertexMistralOCR,
   deleteMistralFile,
   uploadMistralOCR,
   getSignedUrl,
@@ -95,8 +111,29 @@ interface MockReadStream extends Partial<Readable> {
 }
 
 const mockAxios = jest.mocked(axios);
+const mockedLogAxiosError = jest.mocked(logAxiosError);
 
 const mockLoadAuthValues = jest.fn();
+const protectedFilters = {
+  files: {
+    pii: {
+      fields: ['extracted_text'],
+      starterPatterns: [],
+      uninspectable: 'block',
+    },
+  },
+};
+
+const privateProviderError = () =>
+  Object.assign(new Error('PRIVATE provider message'), {
+    response: {
+      status: 502,
+      data: {
+        detail: 'PRIVATE document detail',
+        message: 'PRIVATE extracted content',
+      },
+    },
+  });
 
 describe('MistralOCR Service', () => {
   afterEach(() => {
@@ -252,6 +289,24 @@ describe('MistralOCR Service', () => {
 
       expect(mockLogger.error).toHaveBeenCalledWith('Error fetching signed URL:', errorMessage);
     });
+
+    it('omits provider error content when protected logging is active', async () => {
+      mockAxios.get!.mockRejectedValueOnce(privateProviderError());
+
+      await expect(
+        getSignedUrl({
+          fileId: 'file-123',
+          apiKey: 'test-api-key',
+          contentProtected: true,
+        }),
+      ).rejects.toThrow('Error fetching signed URL.');
+
+      expect(mockLogger.error).toHaveBeenCalledWith('Error fetching signed URL.', {
+        type: 'Error',
+        status: 502,
+      });
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
+    });
   });
 
   describe('deleteMistralFile', () => {
@@ -310,6 +365,24 @@ describe('MistralOCR Service', () => {
         'Error deleting Mistral file file-789:',
         expect.any(Error),
       );
+    });
+
+    it('omits provider response data when protected cleanup logging is active', async () => {
+      mockAxios.delete!.mockRejectedValueOnce(privateProviderError());
+
+      await expect(
+        deleteMistralFile({
+          fileId: 'file-789',
+          apiKey: 'test-api-key',
+          contentProtected: true,
+        }),
+      ).resolves.not.toThrow();
+
+      expect(mockLogger.error).toHaveBeenCalledWith('Error deleting Mistral file file-789.', {
+        type: 'Error',
+        status: 502,
+      });
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
     });
   });
 
@@ -433,6 +506,24 @@ describe('MistralOCR Service', () => {
       ).rejects.toThrow();
 
       expect(mockLogger.error).toHaveBeenCalledWith('Error performing OCR:', errorMessage);
+    });
+
+    it('omits provider response data when protected OCR logging is active', async () => {
+      mockAxios.post!.mockRejectedValueOnce(privateProviderError());
+
+      await expect(
+        performOCR({
+          apiKey: 'test-api-key',
+          url: 'https://document-url.com',
+          contentProtected: true,
+        }),
+      ).rejects.toThrow('Error performing OCR.');
+
+      expect(mockLogger.error).toHaveBeenCalledWith('Error performing OCR.', {
+        type: 'Error',
+        status: 502,
+      });
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
     });
   });
 
@@ -910,6 +1001,37 @@ describe('MistralOCR Service', () => {
       expect((fs as jest.Mocked<typeof fs>).createReadStream).toHaveBeenCalledWith(
         '/tmp/upload/file.pdf',
       );
+    });
+
+    it('derives protected logging from file policy before handling provider failures', async () => {
+      mockAxios.post!.mockRejectedValueOnce(privateProviderError());
+      const req = {
+        user: { id: 'user123' },
+        config: {
+          filters: protectedFilters,
+          ocr: {
+            apiKey: 'test-api-key',
+            baseURL: 'https://api.mistral.ai/v1',
+          },
+        },
+      } as unknown as ServerRequest;
+      const file = {
+        path: '/tmp/upload/private.pdf',
+        originalname: 'PRIVATE-document.pdf',
+        mimetype: 'application/pdf',
+      } as Express.Multer.File;
+
+      let thrownError: unknown;
+      try {
+        await uploadMistralOCR({ req, file, loadAuthValues: mockLoadAuthValues });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      expect(thrownError).toBeInstanceOf(Error);
+      expect((thrownError as Error).message).toBe('Error uploading document to Mistral OCR API:');
+      expect(mockedLogAxiosError).not.toHaveBeenCalled();
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
     });
 
     it('should handle single page documents without page numbering', async () => {
@@ -2253,6 +2375,53 @@ describe('MistralOCR Service', () => {
     });
   });
 
+  describe('uploadGoogleVertexMistralOCR protected logging', () => {
+    it('does not log Vertex response content when file protection is active', async () => {
+      jest.mocked(loadServiceKey).mockResolvedValueOnce({
+        client_email: 'service-account@example.com',
+        private_key: 'mock-private-key',
+        project_id: 'project-123',
+      });
+      (readFileAsBuffer as jest.Mock).mockResolvedValueOnce({
+        content: Buffer.from('PRIVATE uploaded bytes'),
+        bytes: 22,
+      });
+      mockAxios
+        .post!.mockResolvedValueOnce({ data: { access_token: 'vertex-access-token' } })
+        .mockRejectedValueOnce(privateProviderError());
+      const req = {
+        user: { id: 'user123' },
+        config: {
+          filters: protectedFilters,
+          ocr: { mistralModel: 'mistral-ocr-2505' },
+        },
+      } as unknown as ServerRequest;
+      const file = {
+        path: '/tmp/upload/private.pdf',
+        originalname: 'PRIVATE-document.pdf',
+        mimetype: 'application/pdf',
+      } as Express.Multer.File;
+
+      let thrownError: unknown;
+      try {
+        await uploadGoogleVertexMistralOCR({
+          req,
+          file,
+          loadAuthValues: mockLoadAuthValues,
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      expect(thrownError).toBeInstanceOf(Error);
+      expect((thrownError as Error).message).toBe(
+        'Error uploading document to Google Vertex AI Mistral OCR:',
+      );
+      expect(mockedLogAxiosError).not.toHaveBeenCalled();
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
+    });
+  });
+
   describe('uploadAzureMistralOCR', () => {
     beforeEach(() => {
       (readFileAsBuffer as jest.Mock).mockResolvedValue({
@@ -2355,6 +2524,39 @@ describe('MistralOCR Service', () => {
         text: 'Azure OCR content\n\n',
         images: ['azure-base64'],
       });
+    });
+
+    it('does not log Azure response content when file protection is active', async () => {
+      mockAxios.post!.mockRejectedValueOnce(privateProviderError());
+      const req = {
+        user: { id: 'user123' },
+        config: {
+          filters: protectedFilters,
+          ocr: {
+            apiKey: 'azure-api-key',
+            baseURL: 'https://azure.mistral.ai/v1',
+          },
+        },
+      } as unknown as ServerRequest;
+      const file = {
+        path: '/tmp/upload/private.pdf',
+        originalname: 'PRIVATE-document.pdf',
+        mimetype: 'application/pdf',
+      } as Express.Multer.File;
+
+      let thrownError: unknown;
+      try {
+        await uploadAzureMistralOCR({ req, file, loadAuthValues: mockLoadAuthValues });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      expect(thrownError).toBeInstanceOf(Error);
+      expect((thrownError as Error).message).toBe(
+        'Error uploading document to Azure Mistral OCR API:',
+      );
+      expect(mockedLogAxiosError).not.toHaveBeenCalled();
+      expect(JSON.stringify(jest.mocked(mockLogger.error).mock.calls)).not.toContain('PRIVATE');
     });
 
     describe('Mixed env var and hardcoded configuration', () => {

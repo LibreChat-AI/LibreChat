@@ -1,6 +1,15 @@
 import '@testing-library/jest-dom';
+import { useLayoutEffect } from 'react';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { ThemeProvider, useTheme } from './ThemeProvider';
+import {
+  ThemeProvider,
+  isDark,
+  isHighContrast,
+  resolvesToHighContrast,
+  useTheme,
+} from './ThemeProvider';
+import { highContrastDarkTheme, highContrastLightTheme } from '../themes/highContrast';
+import { darkTheme } from '../themes/dark';
 
 const matchMedia = (matches: boolean): MediaQueryList =>
   ({
@@ -15,12 +24,25 @@ const matchMedia = (matches: boolean): MediaQueryList =>
   }) as MediaQueryList;
 
 function Controls() {
-  const { resetTheme, setTheme, setThemeDefinition, setThemeName, setThemeRGB, themeName } =
-    useTheme();
+  const {
+    resetTheme,
+    setTheme,
+    setThemeDefinition,
+    setThemeName,
+    setThemeRGB,
+    themeName,
+    highContrast,
+    resolvedMode,
+  } = useTheme();
   return (
     <>
       <output>{themeName}</output>
+      <output data-testid="high-contrast">{String(highContrast)}</output>
+      <output data-testid="resolved-mode">{resolvedMode}</output>
       <button onClick={() => setTheme('dark')}>Dark</button>
+      <button onClick={() => setTheme('light')}>Light</button>
+      <button onClick={() => setTheme('high-contrast-light')}>HC light</button>
+      <button onClick={() => setTheme('high-contrast-dark')}>HC dark</button>
       <button onClick={() => setThemeName('renamed')}>Rename</button>
       <button onClick={() => setThemeName(undefined)}>Clear name</button>
       <button onClick={() => setThemeRGB({ 'rgb-accent-primary': '4 5 6' })}>Set legacy</button>
@@ -104,6 +126,196 @@ describe('ThemeProvider', () => {
     expect(screen.getByText('definition-name')).toBeInTheDocument();
     expect(localStorage.getItem('theme-name')).toBe('definition-name');
     expect(localStorage.getItem('theme-source')).toBe('definition');
+  });
+
+  it('applies a controlled definition without replacing stored theme preferences', async () => {
+    const storedDefinition = {
+      version: 1 as const,
+      name: 'stored',
+      modes: { light: { colors: { 'rgb-accent-primary': '1 2 3' } } },
+    };
+    const storedColors = { 'rgb-accent-primary': '1 2 3' };
+    localStorage.setItem('theme-definition', JSON.stringify(storedDefinition));
+    localStorage.setItem('theme-colors', JSON.stringify(storedColors));
+    localStorage.setItem('theme-name', 'stored');
+    localStorage.setItem('theme-source', 'legacy');
+
+    const { rerender, unmount } = render(
+      <ThemeProvider
+        initialTheme="light"
+        persistThemeDefinition={false}
+        themeDefinition={{
+          version: 1,
+          name: 'deployment',
+          modes: { light: { colors: { 'rgb-accent-primary': '4 5 6' } } },
+        }}
+      >
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('deployment');
+    });
+    expect(document.documentElement.style.getPropertyValue('--accent-primary')).toBe('4 5 6');
+    expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(storedDefinition);
+    expect(JSON.parse(localStorage.getItem('theme-colors') ?? '{}')).toEqual(storedColors);
+    expect(localStorage.getItem('theme-name')).toBe('stored');
+    expect(localStorage.getItem('theme-source')).toBe('legacy');
+
+    rerender(
+      <ThemeProvider
+        initialTheme="light"
+        persistThemeDefinition={false}
+        themeDefinition={{
+          version: 1,
+          name: 'deployment-next',
+          modes: { light: { colors: { 'rgb-accent-primary': '7 8 9' } } },
+        }}
+      >
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('deployment-next');
+    });
+    expect(document.documentElement.style.getPropertyValue('--accent-primary')).toBe('7 8 9');
+    expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(storedDefinition);
+
+    unmount();
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('stored');
+    });
+    expect(document.documentElement.style.getPropertyValue('--accent-primary')).toBe('1 2 3');
+  });
+
+  /** The probe wraps the provider, so its layout effect runs after the provider's in the same
+   *  commit and before the browser paints it: what it reads is what the first frame shows. */
+  describe('a controlled theme change reaches the root before the commit paints', () => {
+    type Painted = { accent: string; name?: string; dark: boolean };
+    const deployment = (name: string, accent: string) => ({
+      version: 1 as const,
+      name,
+      modes: {
+        light: { colors: { 'rgb-accent-primary': accent } },
+        dark: { colors: { 'rgb-accent-primary': accent } },
+      },
+    });
+
+    function PaintProbe({ children, frames }: { children: React.ReactNode; frames: Painted[] }) {
+      useLayoutEffect(() => {
+        const root = document.documentElement;
+        frames.push({
+          accent: root.style.getPropertyValue('--accent-primary'),
+          name: root.dataset.theme,
+          dark: root.classList.contains('dark'),
+        });
+      });
+      return <>{children}</>;
+    }
+
+    const lastFrame = (frames: Painted[]) => frames[frames.length - 1];
+
+    it('on first load, on a replaced definition and when the definition is withdrawn', () => {
+      const frames: Painted[] = [];
+      const { rerender } = render(
+        <PaintProbe frames={frames}>
+          <ThemeProvider
+            initialTheme="light"
+            persistThemeDefinition={false}
+            themeDefinition={deployment('viewer', '1 2 3')}
+          >
+            <Controls />
+          </ThemeProvider>
+        </PaintProbe>,
+      );
+      expect(frames[0]).toEqual({ accent: '1 2 3', name: 'viewer', dark: false });
+
+      rerender(
+        <PaintProbe frames={frames}>
+          <ThemeProvider
+            initialTheme="light"
+            persistThemeDefinition={false}
+            themeDefinition={deployment('shared-link', '4 5 6')}
+          >
+            <Controls />
+          </ThemeProvider>
+        </PaintProbe>,
+      );
+      expect(frames[1]).toEqual({ accent: '4 5 6', name: 'shared-link', dark: false });
+
+      rerender(
+        <PaintProbe frames={frames}>
+          <ThemeProvider initialTheme="light" persistThemeDefinition={false}>
+            <Controls />
+          </ThemeProvider>
+        </PaintProbe>,
+      );
+      expect(frames[2]).toEqual({ accent: '', name: undefined, dark: false });
+    });
+
+    it('on legacy colors and on a controlled switch to dark', () => {
+      const frames: Painted[] = [];
+      const { rerender } = render(
+        <PaintProbe frames={frames}>
+          <ThemeProvider initialTheme="light" persistThemeDefinition={false}>
+            <Controls />
+          </ThemeProvider>
+        </PaintProbe>,
+      );
+      expect(lastFrame(frames)).toEqual({ accent: '', name: undefined, dark: false });
+
+      rerender(
+        <PaintProbe frames={frames}>
+          <ThemeProvider
+            initialTheme="dark"
+            persistThemeDefinition={false}
+            themeRGB={{ 'rgb-accent-primary': '7 8 9' }}
+            themeName="environment"
+          >
+            <Controls />
+          </ThemeProvider>
+        </PaintProbe>,
+      );
+      expect(lastFrame(frames)).toEqual({ accent: '7 8 9', name: 'environment', dark: true });
+    });
+
+    it('persists a controlled change once, after its commit', () => {
+      const setItem = jest.spyOn(Storage.prototype, 'setItem');
+      const { rerender } = render(
+        <ThemeProvider initialTheme="light" themeDefinition={deployment('first', '1 2 3')}>
+          <Controls />
+        </ThemeProvider>,
+      );
+      setItem.mockClear();
+
+      rerender(
+        <ThemeProvider initialTheme="light" themeDefinition={deployment('second', '4 5 6')}>
+          <Controls />
+        </ThemeProvider>,
+      );
+      rerender(
+        <ThemeProvider
+          initialTheme="light"
+          persistThemeDefinition={false}
+          themeDefinition={deployment('second', '4 5 6')}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      const definitionWrites = setItem.mock.calls.filter(([key]) => key === 'theme-definition');
+      expect(definitionWrites).toHaveLength(1);
+      expect(JSON.parse(definitionWrites[0][1]).name).toBe('second');
+      setItem.mockRestore();
+    });
   });
 
   it('keeps valid legacy overrides when another token is malformed', async () => {
@@ -613,6 +825,193 @@ describe('ThemeProvider', () => {
     expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(storedDefinition);
   });
 
+  describe('a definition carrying an appearance token this reader does not know', () => {
+    const newerDefinition = {
+      version: 1 as const,
+      name: 'newer',
+      modes: {
+        light: {
+          colors: { 'rgb-accent-primary': '4 5 6' },
+          appearance: { controlRadius: '2px', futureSpacing: '3.3125rem' },
+        },
+      },
+    };
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    const expectApplied = () => {
+      const root = document.documentElement;
+      expect(root.dataset.theme).toBe('newer');
+      expect(root.style.getPropertyValue('--accent-primary')).toBe('4 5 6');
+      expect(root.style.getPropertyValue('--theme-control-radius')).toBe('2px');
+      expect(root.getAttribute('style')).not.toContain('3.3125rem');
+      expect(warn).toHaveBeenCalledWith(
+        '[ThemeProvider] Unknown light appearance token ignored: futureSpacing',
+      );
+    };
+
+    it('restores the stored definition with the rest applied and keeps the key stored', async () => {
+      localStorage.setItem('theme-definition', JSON.stringify(newerDefinition));
+      localStorage.setItem('theme-source', 'definition');
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(screen.getAllByRole('status')[0]).toHaveTextContent('newer');
+      expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(newerDefinition);
+    });
+
+    it('applies the same definition from a controlled deployment prop', async () => {
+      render(
+        <ThemeProvider
+          initialTheme="light"
+          persistThemeDefinition={false}
+          themeDefinition={newerDefinition}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(localStorage.getItem('theme-definition')).toBeNull();
+    });
+
+    it('still discards a stored definition whose known key has an invalid value', async () => {
+      const invalid = {
+        ...newerDefinition,
+        modes: { light: { appearance: { controlRadius: 'huge', futureSpacing: '3.3125rem' } } },
+      };
+      localStorage.setItem('theme-definition', JSON.stringify(invalid));
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('light')).toBe(true);
+      });
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expect(document.documentElement.style.getPropertyValue('--theme-control-radius')).toBe('');
+    });
+
+    it('still ignores a controlled definition that carries an injection attempt', async () => {
+      render(
+        <ThemeProvider
+          initialTheme="light"
+          persistThemeDefinition={false}
+          themeDefinition={{
+            ...newerDefinition,
+            modes: {
+              light: { appearance: { futureSpacing: '1rem; } body { display: none' } },
+            },
+          }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('light')).toBe(true);
+      });
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expect(document.documentElement.getAttribute('style') ?? '').not.toContain('display');
+    });
+  });
+
+  describe('a definition carrying a color token this reader does not know', () => {
+    const newerDefinition = {
+      version: 1 as const,
+      name: 'newer',
+      modes: {
+        light: { colors: { 'rgb-accent-primary': '4 5 6', 'surface-future': '7 8 9' } },
+        dark: { colors: { 'rgb-accent-primary': '6 5 4', 'rgb-future-role': '9 8 7' } },
+      },
+    };
+    let warn: jest.SpyInstance;
+
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    const expectApplied = () => {
+      const root = document.documentElement;
+      expect(root.dataset.theme).toBe('newer');
+      expect(root.style.getPropertyValue('--accent-primary')).toBe('4 5 6');
+      expect(root.getAttribute('style')).not.toContain('future');
+      expect(root.getAttribute('style')).not.toContain('7 8 9');
+      expect(warn).toHaveBeenCalledWith(
+        '[ThemeProvider] Unknown light color token ignored: surface-future; ' +
+          'Unknown dark color token ignored: rgb-future-role',
+      );
+    };
+
+    it('restores the stored definition with the rest applied and keeps the key stored', async () => {
+      localStorage.setItem('theme-definition', JSON.stringify(newerDefinition));
+      localStorage.setItem('theme-source', 'definition');
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(JSON.parse(localStorage.getItem('theme-definition') ?? '{}')).toEqual(newerDefinition);
+    });
+
+    it('applies the same definition from a controlled deployment prop', async () => {
+      render(
+        <ThemeProvider
+          initialTheme="light"
+          persistThemeDefinition={false}
+          themeDefinition={newerDefinition}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(expectApplied);
+      expect(localStorage.getItem('theme-definition')).toBeNull();
+    });
+
+    it('still discards a stored definition whose unknown token has an invalid value', async () => {
+      const invalid = {
+        ...newerDefinition,
+        modes: { light: { colors: { 'rgb-accent-primary': '4 5 6', 'surface-future': 'red' } } },
+      };
+      localStorage.setItem('theme-definition', JSON.stringify(invalid));
+
+      render(
+        <ThemeProvider initialTheme="light">
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(document.documentElement.classList.contains('light')).toBe(true);
+      });
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+      expect(document.documentElement.style.getPropertyValue('--accent-primary')).toBe('');
+    });
+  });
+
   it('uses a stable identity when a legacy consumer clears an active theme name', async () => {
     render(
       <ThemeProvider
@@ -654,5 +1053,361 @@ describe('ThemeProvider', () => {
     expect(localStorage.getItem('theme-definition')).toBeNull();
     expect(localStorage.getItem('theme-colors')).toBeNull();
     expect(localStorage.getItem('theme-source')).toBeNull();
+  });
+
+  it('applies the high contrast light palette and marks the root element', async () => {
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('high-contrast', 'light');
+    expect(root).not.toHaveClass('dark');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+    expect(root.style.getPropertyValue('--text-primary')).toBe(
+      highContrastLightTheme['rgb-text-primary'],
+    );
+    expect(root.style.getPropertyValue('color-scheme')).toBe('light');
+    expect(localStorage.getItem('color-theme')).toBe('high-contrast-light');
+  });
+
+  it('treats high contrast dark as a dark colour scheme', async () => {
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC dark' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('dark');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('high-contrast');
+    expect(root).not.toHaveClass('light');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastDarkTheme['rgb-surface-primary'],
+    );
+    expect(root.style.getPropertyValue('color-scheme')).toBe('dark');
+    expect(isDark('high-contrast-dark')).toBe(true);
+    expect(isDark('high-contrast-light')).toBe(false);
+    expect(isHighContrast('high-contrast-dark')).toBe(true);
+    expect(isHighContrast('dark')).toBe(false);
+  });
+
+  it('restores the standard palette when leaving high contrast', async () => {
+    const root = document.documentElement;
+    root.style.setProperty('color-scheme', 'only light', 'important');
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    act(() => screen.getByRole('button', { name: 'HC dark' }).click());
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(root.style.getPropertyValue('color-scheme')).toBe('dark');
+    expect(root.style.getPropertyPriority('color-scheme')).toBe('');
+
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement).not.toHaveClass('high-contrast');
+    });
+    expect(root.style.getPropertyValue('--surface-primary')).toBe('');
+    expect(root.style.getPropertyValue('--text-primary')).toBe('');
+    expect(root.style.getPropertyValue('color-scheme')).toBe('only light');
+    expect(root.style.getPropertyPriority('color-scheme')).toBe('important');
+    expect(root.hasAttribute('data-theme')).toBe(false);
+  });
+
+  it('outranks a deployment custom theme, because contrast is an accessibility need', async () => {
+    render(
+      <ThemeProvider
+        initialTheme="light"
+        themeName="brand"
+        themeRGB={{ 'rgb-surface-primary': '1 2 3' }}
+      >
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe('1 2 3');
+    });
+
+    act(() => screen.getByRole('button', { name: 'HC light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    });
+    expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+
+    await waitFor(() => {
+      expect(document.documentElement.dataset.theme).toBe('brand');
+    });
+    expect(document.documentElement.style.getPropertyValue('--surface-primary')).toBe('1 2 3');
+  });
+
+  it('follows the OS contrast preference under the system mode', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query.includes('contrast')));
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    const root = document.documentElement;
+    expect(root).toHaveClass('light');
+    expect(root.style.getPropertyValue('--surface-primary')).toBe(
+      highContrastLightTheme['rgb-surface-primary'],
+    );
+    expect(resolvesToHighContrast('system')).toBe(true);
+    /** The stored mode stays `system`; contrast is resolved, not chosen. */
+    expect(isHighContrast('system')).toBe(false);
+    expect(localStorage.getItem('color-theme')).toBe('system');
+  });
+
+  it('leaves an explicit colour scheme alone when the OS asks for more contrast', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query.includes('contrast')));
+    render(
+      <ThemeProvider initialTheme="light">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('light');
+    });
+    expect(document.documentElement).not.toHaveClass('high-contrast');
+    expect(resolvesToHighContrast('light')).toBe(false);
+  });
+
+  it('reacts when the OS contrast preference changes under the system mode', async () => {
+    const listeners: Array<() => void> = [];
+    let prefersContrast = false;
+    window.matchMedia = jest.fn((query: string) => {
+      const isContrastQuery = query.includes('contrast');
+      return {
+        ...matchMedia(isContrastQuery && prefersContrast),
+        addEventListener: (_event: string, listener: () => void) => {
+          if (isContrastQuery) {
+            listeners.push(listener);
+          }
+        },
+        removeEventListener: jest.fn(),
+      } as unknown as MediaQueryList;
+    });
+
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(document.documentElement).not.toHaveClass('high-contrast');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('false');
+
+    prefersContrast = true;
+    act(() => listeners.forEach((listener) => listener()));
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(document.documentElement.dataset.theme).toBe('high-contrast');
+    /** The DOM alone is not enough: a consumer keying off the resolved contrast,
+     *  such as the Mermaid cache, only recomputes if the context value moves. */
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+  });
+
+  /** Windows Contrast Themes reach the browser as `forced-colors: active` with
+   *  `prefers-contrast: custom`; `more` never matches, so resolving contrast
+   *  from `more` alone left the palette off on the platform the README names. */
+  it('treats a forced-colors palette as an OS contrast request', async () => {
+    window.matchMedia = jest.fn((query: string) => matchMedia(query === '(forced-colors: active)'));
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('high-contrast');
+    });
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+    expect(resolvesToHighContrast('system')).toBe(true);
+  });
+
+  /** The same staleness for the scheme: with contrast already on, flipping the
+   *  OS colour scheme leaves `theme` at `system` and `setHighContrast` a no-op,
+   *  so nothing rerendered until the resolved mode was published too. */
+  it('reacts when the OS colour scheme changes under the system mode', async () => {
+    const listeners: Array<() => void> = [];
+    let prefersDark = false;
+    window.matchMedia = jest.fn((query: string) => {
+      const isSchemeQuery = query.includes('color-scheme');
+      return {
+        ...matchMedia(isSchemeQuery ? prefersDark : true),
+        addEventListener: (_event: string, listener: () => void) => {
+          if (isSchemeQuery) {
+            listeners.push(listener);
+          }
+        },
+        removeEventListener: jest.fn(),
+      } as unknown as MediaQueryList;
+    });
+
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('light');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+
+    prefersDark = true;
+    act(() => listeners.forEach((listener) => listener()));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    });
+    expect(document.documentElement).toHaveClass('dark', 'high-contrast');
+  });
+
+  /** The provider reads both media queries during render now, so it has to
+   *  tolerate the absence of a window the way the storage helpers already do. */
+  it('renders without a window, as under server rendering', () => {
+    const restore = window.matchMedia;
+    /** jsdom's property is non-configurable, so assign rather than redefine. */
+    window.matchMedia = undefined as unknown as typeof window.matchMedia;
+
+    try {
+      expect(() =>
+        render(
+          <ThemeProvider initialTheme="system">
+            <Controls />
+          </ThemeProvider>,
+        ),
+      ).not.toThrow();
+      expect(screen.getByTestId('resolved-mode')).toHaveTextContent('light');
+      expect(screen.getByTestId('high-contrast')).toHaveTextContent('false');
+    } finally {
+      window.matchMedia = restore;
+    }
+  });
+
+  /** A media query read during render would make the server's markup and the
+   *  first client render disagree, so the seed comes from the mode string only
+   *  and the OS-resolved values arrive from the effect. */
+  it('seeds the published values from the mode alone, not from a media query', () => {
+    const matchMediaSpy = jest.fn(() => matchMedia(true));
+    window.matchMedia = matchMediaSpy;
+
+    /** An explicit mode needs no query to resolve, so it is published at once. */
+    const explicit = render(
+      <ThemeProvider initialTheme="high-contrast-dark">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    expect(screen.getByTestId('high-contrast')).toHaveTextContent('true');
+    explicit.unmount();
+
+    /** `system` cannot resolve without a query, so it seeds light with no
+     *  contrast and the effect corrects it, which is what keeps hydration
+     *  deterministic even though this environment reports dark and more. */
+    render(
+      <ThemeProvider initialTheme="system">
+        <Controls />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('resolved-mode')).toHaveTextContent('dark');
+    expect(matchMediaSpy).toHaveBeenCalled();
+  });
+  describe('the focus outline a theme paints', () => {
+    const focusOutline = () => document.documentElement.style.getPropertyValue('--focus-outline');
+
+    it('follows the ring of the mode that names one, and clears on unmount', async () => {
+      const { unmount } = render(
+        <ThemeProvider
+          initialTheme="light"
+          themeDefinition={{
+            version: 1,
+            name: 'ringed',
+            modes: {
+              light: { colors: { 'rgb-ring-primary': '10 20 30' } },
+              dark: { colors: { 'rgb-accent-primary': '1 2 3' } },
+            },
+          }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(focusOutline()).toBe('10 20 30');
+      });
+
+      act(() => screen.getByRole('button', { name: 'Dark' }).click());
+
+      await waitFor(() => {
+        expect(document.documentElement).toHaveClass('dark');
+      });
+      expect(document.documentElement.dataset.theme).toBe('ringed');
+      expect(focusOutline()).toBe(darkTheme['rgb-focus-outline']);
+
+      unmount();
+
+      expect(focusOutline()).toBe('');
+    });
+
+    it('follows a legacy RGB ring only when the props carry one', async () => {
+      const { rerender } = render(
+        <ThemeProvider
+          initialTheme="dark"
+          themeName="legacy"
+          themeRGB={{ 'rgb-ring-primary': '1 2 3' }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(focusOutline()).toBe('1 2 3');
+      });
+
+      rerender(
+        <ThemeProvider
+          initialTheme="dark"
+          themeName="legacy"
+          themeRGB={{ 'rgb-accent-primary': '1 2 3' }}
+        >
+          <Controls />
+        </ThemeProvider>,
+      );
+
+      await waitFor(() => {
+        expect(focusOutline()).toBe('');
+      });
+      expect(document.documentElement.dataset.theme).toBe('legacy');
+    });
   });
 });

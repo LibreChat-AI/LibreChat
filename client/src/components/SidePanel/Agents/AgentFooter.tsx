@@ -60,6 +60,7 @@ export default function AgentFooter({
   const canEditThisAgent = hasPermission(PermissionBits.EDIT);
   const canDeleteThisAgent = hasPermission(PermissionBits.DELETE);
   const canShareRemoteAgent = hasRemoteAgentPermission(PermissionBits.SHARE);
+  const isAdmin = user?.role === SystemRoles.ADMIN;
   const isSaving = createMutation.isLoading || updateMutation.isLoading || isAvatarUploading;
   const saveLabel = agent_id ? localize('com_ui_save') : localize('com_ui_create');
   const renderSaveButton = () => (
@@ -94,8 +95,8 @@ export default function AgentFooter({
               createMutation={createMutation}
             />
           )}
-        {(agent?.author === user?.id || user?.role === SystemRoles.ADMIN || canShareThisAgent) &&
-          hasAccessToShareAgents &&
+        {(agent?.author === user?.id || isAdmin || canShareThisAgent) &&
+          (hasAccessToShareAgents || isAdmin) &&
           !permissionsLoading && (
             <GenericGrantAccessDialog
               resourceDbId={agent?._id}

@@ -159,15 +159,76 @@ describe('loadDeploymentSkillsFromDirectory', () => {
     });
   });
 
-  it('validates SKILL.md frontmatter at startup', async () => {
+  it('loads a skill with an unrecognized frontmatter key and warns about it', async () => {
     const root = await makeTempRoot();
     await writeDeploymentSkill(root, {
-      name: 'bad-frontmatter',
+      name: 'unknown-key-frontmatter',
       frontmatter: [
         '---',
-        'name: bad-frontmatter',
+        'name: unknown-key-frontmatter',
         `description: ${DESCRIPTION}`,
         'unknown-key: nope',
+        'references:',
+        '  - references/guide.txt',
+        '---',
+        '',
+        'Body',
+      ].join('\n'),
+    });
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+    const registry = await loadDeploymentSkillsFromDirectory(path.join(root, 'skill'), {
+      projectRoot: root,
+    });
+
+    expect(registry.list().map((skill) => skill.name)).toEqual(['unknown-key-frontmatter']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('frontmatter.unknown-key'));
+    warn.mockRestore();
+  });
+
+  it('canonicalizes recognized frontmatter key variants before deriving runtime fields', async () => {
+    const root = await makeTempRoot();
+    await writeDeploymentSkill(root, {
+      name: 'case-variant-frontmatter',
+      frontmatter: [
+        '---',
+        'name: case-variant-frontmatter',
+        `description: ${DESCRIPTION}`,
+        'Allowed-Tools:',
+        '  - execute_code',
+        'User-Invocable: false',
+        '---',
+        '',
+        'Body',
+      ].join('\n'),
+    });
+
+    const registry = await loadDeploymentSkillsFromDirectory(path.join(root, 'skill'), {
+      projectRoot: root,
+    });
+
+    expect(registry.list()[0]).toMatchObject({
+      allowedTools: ['execute_code'],
+      userInvocable: false,
+      frontmatter: {
+        'allowed-tools': ['execute_code'],
+        'user-invocable': false,
+      },
+    });
+  });
+
+  it('rejects case-colliding recognized frontmatter keys at startup', async () => {
+    const root = await makeTempRoot();
+    await writeDeploymentSkill(root, {
+      name: 'case-collision-frontmatter',
+      frontmatter: [
+        '---',
+        'name: case-collision-frontmatter',
+        `description: ${DESCRIPTION}`,
+        'allowed-tools:',
+        '  - read_file',
+        'Allowed-Tools:',
+        '  - execute_code',
         '---',
         '',
         'Body',
@@ -176,7 +237,27 @@ describe('loadDeploymentSkillsFromDirectory', () => {
 
     await expect(
       loadDeploymentSkillsFromDirectory(path.join(root, 'skill'), { projectRoot: root }),
-    ).rejects.toThrow(/frontmatter\.unknown-key/);
+    ).rejects.toThrow(/both resolve to "allowed-tools"/);
+  });
+
+  it('rejects malformed SKILL.md frontmatter at startup', async () => {
+    const root = await makeTempRoot();
+    await writeDeploymentSkill(root, {
+      name: 'bad-frontmatter',
+      frontmatter: [
+        '---',
+        'name: bad-frontmatter',
+        `description: ${DESCRIPTION}`,
+        'user-invocable: maybe',
+        '---',
+        '',
+        'Body',
+      ].join('\n'),
+    });
+
+    await expect(
+      loadDeploymentSkillsFromDirectory(path.join(root, 'skill'), { projectRoot: root }),
+    ).rejects.toThrow(/frontmatter\.user-invocable/);
   });
 
   it('validates bundled file paths at startup', async () => {
@@ -313,6 +394,18 @@ describe('createDeploymentSkillMethods', () => {
     const updatedFile = await methods.getSkillFileByPath?.(deploymentId, 'references/guide.txt');
     expect(updatedFile?.content).toBe('updated content');
     expect(base.updateSkillFileContent).not.toHaveBeenCalled();
+    await methods.updateSkillFileContent?.(
+      dbId,
+      'references/db.txt',
+      { content: 'db text' },
+      'db-revision',
+    );
+    expect(base.updateSkillFileContent).toHaveBeenCalledWith(
+      dbId,
+      'references/db.txt',
+      { content: 'db text' },
+      'db-revision',
+    );
 
     const codeEnvRef: CodeEnvRef = {
       kind: 'skill',

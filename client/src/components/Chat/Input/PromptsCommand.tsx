@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
 import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
@@ -9,6 +9,7 @@ import { removeCharIfLast, detectVariables } from '~/utils';
 import { useRecordPromptUsage } from '~/data-provider';
 import { VariableDialog } from '~/components/Prompts';
 import { usePromptGroupsContext } from '~/Providers';
+import { activateCatalog } from '~/hooks';
 import MentionItem from './MentionItem';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
@@ -62,10 +63,12 @@ function PromptsCommand({
   submitPrompt: (textPrompt: string) => void;
 }) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const { mutate: recordUsage } = useRecordPromptUsage();
   const promptGroupsContext = usePromptGroupsContext();
-  const { allPromptGroups, hasAccess } = promptGroupsContext ?? {};
+  const { allPromptGroups, hasAccess, requestAllPromptGroups } = promptGroupsContext ?? {};
   const { data, isLoading } = allPromptGroups ?? {};
+  const showPromptsPopover = useRecoilValue(store.showPromptsPopoverFamily(index));
 
   const [activeIndex, setActiveIndex] = useState(0);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -140,9 +143,18 @@ function PromptsCommand({
       setActiveIndex(0);
       setSearchValue('');
     } else {
+      /** Opening the picker before background warmup starts the fetch now */
+      activateCatalog('prompts');
       setVariableGroup(null);
     }
   }, [open, setSearchValue]);
+
+  /** The full prompt list is fetched on first popover open, not at app startup */
+  useEffect(() => {
+    if (showPromptsPopover) {
+      requestAllPromptGroups?.();
+    }
+  }, [showPromptsPopover, requestAllPromptGroups]);
 
   useEffect(() => {
     setActiveIndex((prev) => Math.min(prev, Math.max(matches.length - 1, 0)));
@@ -205,11 +217,11 @@ function PromptsCommand({
       textAreaRef={textAreaRef}
     >
       <div className="absolute bottom-28 z-10 w-full space-y-2">
-        <div className="popover border-token-border-light rounded-2xl border bg-surface-tertiary-alt p-2 shadow-lg">
+        <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
           <Input
             ref={initInputRef}
             placeholder={localize('com_ui_command_usage_placeholder')}
-            className="mb-1 h-auto w-full rounded-none border-0 bg-surface-tertiary-alt p-2 text-sm text-text-primary focus:outline-none"
+            className="bg-surface-tertiary-alt text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
             autoComplete="off"
             value={searchValue}
             onKeyDown={(e) => {
@@ -256,7 +268,7 @@ function PromptsCommand({
             }}
           />
           {open && isLoading && matches.length === 0 && (
-            <div className="flex h-32 items-center justify-center text-text-primary">
+            <div className="text-text-primary flex h-32 items-center justify-center">
               <Spinner />
             </div>
           )}
@@ -267,11 +279,11 @@ function PromptsCommand({
                   <List
                     width={width}
                     overscanRowCount={5}
-                    rowHeight={ROW_HEIGHT}
+                    rowHeight={ROW_HEIGHT * remScale}
                     rowCount={matches.length}
                     rowRenderer={rowRenderer}
                     scrollToIndex={activeIndex}
-                    height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                    height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                   />
                 )}
               </AutoSizer>

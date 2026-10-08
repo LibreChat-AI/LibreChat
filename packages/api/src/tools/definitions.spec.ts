@@ -1,4 +1,4 @@
-import { Providers, WebSearchToolDefinition } from '@librechat/agents';
+import { Providers, WebSearchToolDefinition, GitHubCompareToolDefinition } from '@librechat/agents';
 import type {
   LoadToolDefinitionsParams,
   LoadToolDefinitionsDeps,
@@ -6,7 +6,10 @@ import type {
 } from './definitions';
 import { toolkitExpansion, toolkitParent } from './toolkits/mapping';
 import { getToolDefinition } from './registry/definitions';
+import { getToolApprovalIdentity } from './approval';
 import { loadToolDefinitions } from './definitions';
+import { formatMCPServerTools } from '~/mcp/tools';
+import { getToolApprovalName } from './approval';
 
 const MAX_PROVIDER_TOOL_DESCRIPTION_LENGTH = 1024;
 
@@ -31,6 +34,43 @@ describe('definitions.ts', () => {
   });
 
   describe('loadToolDefinitions', () => {
+    it.each([undefined, false, true])(
+      'gates selected comparison definitions on explicit opt-in (%p)',
+      async (githubCompareEnabled) => {
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user',
+            agentId: 'reviewer',
+            tools: ['github_compare'],
+            githubCompareEnabled,
+          },
+          { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+        );
+        expect(result.toolRegistry.has('github_compare')).toBe(githubCompareEnabled === true);
+        expect(result.toolDefinitions.map(({ name }) => name)).toEqual(
+          githubCompareEnabled === true ? ['github_compare'] : [],
+        );
+        if (githubCompareEnabled) {
+          expect(result.toolRegistry.get('github_compare')?.description).toBe(
+            GitHubCompareToolDefinition.description,
+          );
+        }
+        expect(mockGetOrFetchMCPServerTools).not.toHaveBeenCalled();
+      },
+    );
+    it('does not auto-register comparison for code execution agents', async () => {
+      const result = await loadToolDefinitions(
+        {
+          userId: 'user',
+          agentId: 'coder',
+          tools: ['calculator'],
+          githubCompareEnabled: true,
+        },
+        { getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools, isBuiltInTool: () => true },
+      );
+      expect(result.toolRegistry.has('github_compare')).toBe(false);
+    });
+
     it('should return empty result for empty tools array', async () => {
       const params: LoadToolDefinitionsParams = {
         userId: 'user-123',
@@ -48,6 +88,7 @@ describe('definitions.ts', () => {
       expect(result.toolDefinitions).toHaveLength(0);
       expect(result.toolRegistry.size).toBe(0);
       expect(result.hasDeferredTools).toBe(false);
+      expect(result.oauthActionToolNames).toEqual([]);
     });
 
     describe('action tool definitions', () => {
@@ -128,6 +169,53 @@ describe('definitions.ts', () => {
         );
         expect(actionDef).toBeDefined();
         expect(actionDef?.parameters).toBeUndefined();
+      });
+
+      it('collects OAuth action tool names and strips the marker from emitted defs', async () => {
+        const mockActionDefs: ActionToolDefinition[] = [
+          {
+            name: 'getWeather_action_weather_com',
+            description: 'Get weather for a location',
+            oauth: false,
+          },
+          {
+            name: 'sendMail_action_mail_example_com',
+            description: 'Send an email',
+            oauth: true,
+          },
+          {
+            name: 'listItems_action_api_example_com',
+            description: 'List all items',
+          },
+        ];
+
+        const mockGetActionToolDefinitions = jest.fn().mockResolvedValue(mockActionDefs);
+
+        const params: LoadToolDefinitionsParams = {
+          userId: 'user-123',
+          agentId: 'agent-123',
+          tools: [
+            'getWeather_action_weather---com',
+            'sendMail_action_mail---example---com',
+            'listItems_action_api---example---com',
+          ],
+        };
+
+        const deps: LoadToolDefinitionsDeps = {
+          getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+          isBuiltInTool: mockIsBuiltInTool,
+          getActionToolDefinitions: mockGetActionToolDefinitions,
+        };
+
+        const result = await loadToolDefinitions(params, deps);
+
+        expect(result.oauthActionToolNames).toEqual(['sendMail_action_mail_example_com']);
+        for (const def of result.toolDefinitions) {
+          expect(def).not.toHaveProperty('oauth');
+        }
+        const registryEntry = result.toolRegistry.get('sendMail_action_mail_example_com');
+        expect(registryEntry).toBeDefined();
+        expect(registryEntry).not.toHaveProperty('oauth');
       });
 
       it('should not classify MCP tools with _action in name as action tools', async () => {
@@ -359,6 +447,37 @@ describe('definitions.ts', () => {
         expect(result.toolRegistry.has('run_tools_with_bash')).toBe(false);
       });
 
+      it('passes the selected attached environment into definitions-only classification', async () => {
+        mockGetOrFetchMCPServerTools.mockResolvedValueOnce(serverTools);
+        const result = await loadToolDefinitions(
+          {
+            userId: 'user-123',
+            agentId: 'agent-123',
+            tools: [mcpToolName],
+            toolOptions: { [mcpToolName]: { allowed_callers: ['code_execution'] } },
+            programmaticToolsEnabled: true,
+            codeExecutionEnabled: true,
+            codeExecutionContext: {
+              baseUrl: 'https://code.example',
+              codeSessionKey: 'session',
+              executionProfile: 'stateful',
+              statefulSessions: true,
+              environmentType: 'attached',
+              environmentId: 'attached',
+              bridgeWorkerId: 'worker',
+            },
+          },
+          {
+            getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+            isBuiltInTool: mockIsBuiltInTool,
+          },
+        );
+        expect(
+          result.toolDefinitions.some((definition) => definition.name === 'run_tools_with_bash'),
+        ).toBe(false);
+        expect(result.toolRegistry.has('run_tools_with_bash')).toBe(false);
+      });
+
       it('adds Bash PTC definitions when code and programmatic capabilities are enabled', async () => {
         mockGetOrFetchMCPServerTools.mockResolvedValueOnce(serverTools);
 
@@ -573,6 +692,72 @@ describe('definitions.ts', () => {
         const getItemDef = result.toolDefinitions.find((d) => d.name === 'get_item_mcp_server_one');
         expect(getItemDef).toBeDefined();
         expect(getItemDef?.description).toBe('Get a specific item');
+      });
+
+      it('resolves a pre-strip persisted key against the stripped catalog, keeping the persisted name', async () => {
+        /** Catalog keys drop a redundant leading server-name prefix; an agent
+         *  saved before that must still resolve, and the definition keeps the
+         *  persisted spelling so it matches the runtime instance name. */
+        const mockServerTools = {
+          search_mcp_acme: {
+            serverToolName: 'acme_search',
+            function: {
+              name: 'search_mcp_acme',
+              description: 'Search things',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        };
+
+        mockGetOrFetchMCPServerTools.mockResolvedValue(mockServerTools);
+
+        const params: LoadToolDefinitionsParams = {
+          userId: 'user-123',
+          agentId: 'agent-123',
+          tools: ['acme_search_mcp_acme'],
+        };
+
+        const deps: LoadToolDefinitionsDeps = {
+          getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+          isBuiltInTool: mockIsBuiltInTool,
+        };
+
+        const result = await loadToolDefinitions(params, deps);
+
+        expect(result.toolDefinitions).toHaveLength(1);
+        expect(result.toolDefinitions[0]?.name).toBe('acme_search_mcp_acme');
+        expect(result.toolDefinitions[0]?.description).toBe('Search things');
+      });
+
+      it('rejects a stripped-spelling match without matching upstream identity', async () => {
+        /** A stale key for a removed tool must not resolve onto a DIFFERENT
+         *  sibling whose key merely coincides with the stripped spelling. */
+        const mockServerTools = {
+          acme_foo_mcp_acme: {
+            function: {
+              name: 'acme_foo_mcp_acme',
+              description: 'Different tool',
+              parameters: { type: 'object', properties: {} },
+            },
+          },
+        };
+
+        mockGetOrFetchMCPServerTools.mockResolvedValue(mockServerTools);
+
+        const params: LoadToolDefinitionsParams = {
+          userId: 'user-123',
+          agentId: 'agent-123',
+          tools: ['acme_acme_foo_mcp_acme'],
+        };
+
+        const deps: LoadToolDefinitionsDeps = {
+          getOrFetchMCPServerTools: mockGetOrFetchMCPServerTools,
+          isBuiltInTool: mockIsBuiltInTool,
+        };
+
+        const result = await loadToolDefinitions(params, deps);
+
+        expect(result.toolDefinitions).toHaveLength(0);
       });
 
       it('union-flattens MCP tool schemas for Google, but preserves unions otherwise', async () => {
@@ -1080,4 +1265,83 @@ describe('definitions.ts', () => {
       });
     });
   });
+});
+
+test('definitions-only loading retains the verified reset key without collapsing a collision sibling', async () => {
+  const current = 'query_mcp_db';
+  const legacy = 'db_query_mcp_db';
+  const catalog = {
+    [current]: {
+      function: { name: current, parameters: { type: 'object' as const } },
+      serverToolName: 'db_query',
+    },
+  };
+  const options = {
+    [current]: {
+      approval_mode: 'chat' as const,
+      approval_revision: 'c09e8bb4-00fa-41be-90ca-f53f1a0c1f05',
+    },
+  };
+  const result = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      toolOptions: options,
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => catalog,
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(result.toolDefinitions[0].name).toBe(legacy);
+  expect(getToolApprovalName(result.toolDefinitions[0])).toBe(current);
+  const collision = await loadToolDefinitions(
+    {
+      userId: 'user-a',
+      agentId: 'agent-a',
+      tools: [legacy],
+      mcpServerNames: ['db'],
+      rawServerNames: ['db'],
+    },
+    {
+      getOrFetchMCPServerTools: async () => ({
+        ...catalog,
+        [legacy]: { function: { name: legacy, parameters: { type: 'object' as const } } },
+      }),
+      isBuiltInTool: () => false,
+    },
+  );
+  expect(getToolApprovalName(collision.toolDefinitions[0])).toBeUndefined();
+});
+
+test('live catalog reassignment changes consent while retaining the same displayed key and schema', async () => {
+  const upstream = (name: string) => ({
+    name,
+    description: 'Same description',
+    inputSchema: { type: 'object' as const, properties: {} },
+  });
+  const before = formatMCPServerTools('db', [upstream('query'), upstream('db_query')]);
+  const after = formatMCPServerTools('db', [upstream('db_query')]);
+  const params = {
+    userId: 'user-a',
+    agentId: 'agent-a',
+    tools: ['query_mcp_db'],
+    mcpServerNames: ['db'],
+    rawServerNames: ['db'],
+  };
+  const first = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => before,
+  });
+  const second = await loadToolDefinitions(params, {
+    isBuiltInTool: () => false,
+    getOrFetchMCPServerTools: async () => after,
+  });
+  expect(second.toolDefinitions[0].name).toBe(first.toolDefinitions[0].name);
+  expect(getToolApprovalIdentity(second.toolDefinitions[0])).not.toBe(
+    getToolApprovalIdentity(first.toolDefinitions[0]),
+  );
 });

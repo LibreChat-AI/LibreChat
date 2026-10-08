@@ -364,7 +364,36 @@ describe('access middleware', () => {
         }),
       ).resolves.toBe(true);
 
-      expect(defaultParams.getRoleByName).toHaveBeenCalledTimes(2);
+      expect(defaultParams.getRoleByName).toHaveBeenCalledTimes(1);
+    });
+
+    it('should reuse a synchronous role lookup across different permission types', async () => {
+      const role = {
+        name: 'user',
+        permissions: {
+          [PermissionTypes.MEMORIES]: { [Permissions.USE]: true },
+          [PermissionTypes.AGENTS]: { [Permissions.USE]: true },
+        },
+      } as unknown as IRole;
+      defaultParams.getRoleByName.mockReturnValue(role);
+      const req = mockReq as Request;
+
+      await expect(
+        checkAccess({
+          ...defaultParams,
+          req,
+          permissionType: PermissionTypes.MEMORIES,
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        checkAccess({
+          ...defaultParams,
+          req,
+          permissionType: PermissionTypes.AGENTS,
+        }),
+      ).resolves.toBe(true);
+
+      expect(defaultParams.getRoleByName).toHaveBeenCalledTimes(1);
     });
   });
 

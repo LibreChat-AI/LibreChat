@@ -30,6 +30,24 @@ describe('getToolInputValidationDetails', () => {
     expect(JSON.stringify(details)).not.toContain('Shorten the label');
   });
 
+  test('classifies an overlong option label nested in a question batch', () => {
+    const validationError = parseToolInputValidationError(
+      new Error(
+        'Received tool input did not match expected schema\n' +
+          '✖ String must contain at most 120 character(s)\n' +
+          '  → at questions[0].options[0].label',
+      ),
+    );
+
+    expect(
+      getToolInputValidationDetails({ tool_call: { name: 'ask_user_question' } }, validationError),
+    ).toEqual({
+      toolName: 'ask_user_question',
+      reason: 'option_label_too_long',
+      fieldPath: 'questions[0].options[0].label',
+    });
+  });
+
   test('classifies other schema failures without requiring a field path', () => {
     expect(
       getToolInputValidationDetails(

@@ -1,12 +1,17 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { QueryKeys } from 'librechat-data-provider';
+import { Provider, createStore, useAtomValue } from 'jotai';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
+import { STEER_ICON } from '~/components/Chat/Steering/identity';
+import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
+let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -14,11 +19,12 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/Providers', () => ({
   useShareContext: () => mockShareContext,
+  useFileMapContext: () => mockFileMap,
 }));
 
 jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
   __esModule: true,
-  default: () => null,
+  default: () => <time data-testid="steer-timestamp" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
@@ -37,8 +43,20 @@ jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
 
 jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileName }: { open: boolean; fileName: string }) =>
-    open ? <div data-testid="steer-file-preview">{fileName}</div> : null,
+  default: ({
+    open,
+    fileName,
+    deliveryPath,
+  }: {
+    open: boolean;
+    fileName: string;
+    deliveryPath?: string;
+  }) =>
+    open ? (
+      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+        {fileName}
+      </div>
+    ) : null,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({
@@ -46,9 +64,8 @@ jest.mock('~/components/Chat/Messages/Content/Image', () => ({
   default: ({ altText }: { altText: string }) => <img alt={altText} data-testid="steer-image" />,
 }));
 
-/** Seeds the user atom rather than mocking `useAuthContext`, and renders the real
- *  MessageIcon tree — mocking either one hid a crash on the share route, where
- *  neither an auth context nor a user exists. */
+/** Seeds the user atom rather than mocking `useAuthContext`, matching the share
+ * route where neither an auth context nor a user exists. */
 const SEEDED_USER = { name: 'Danny', username: 'danny' };
 
 function renderPart(
@@ -57,8 +74,11 @@ function renderPart(
    *  silently test the signed-in state instead of the anonymous share route. */
   user: { name: string; username: string } | null = SEEDED_USER,
 ) {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+
   return render(
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={({ set }) => user && set(store.user, user as never)}>
         <SteerPart steer="steered words" steerId="s1" createdAt={1} files={files} />
       </RecoilRoot>
@@ -69,6 +89,7 @@ function renderPart(
 describe('SteerPart author label', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
   it('labels with the logged-in user name in the owner view (username display on)', () => {
@@ -89,10 +110,10 @@ describe('SteerPart author label', () => {
     expect(screen.getByText('com_user_message')).toBeInTheDocument();
   });
 
-  it('never renders the viewer identity on a shared steer avatar', () => {
+  it('never renders the viewer identity on a shared steer bubble', () => {
     /** The user atom is app-wide and survives navigation, so a signed-in viewer
      *  opening a share link still has an identity in state. The shared steer must
-     *  show the generic avatar regardless. */
+     *  keep generic attribution regardless. */
     mockShareContext = { isSharedConvo: true, shareId: 'share-1' };
     renderPart(undefined, SEEDED_USER);
 
@@ -107,58 +128,210 @@ describe('SteerPart author label', () => {
     expect(screen.getByText('com_user_message')).toBeInTheDocument();
   });
 
-  it('shows a subtle info affordance explaining the mid-run message', () => {
+  it('shows the applied receipt with its explanation as the accessible label', () => {
     renderPart();
-    // The "?" InfoHoverCard clarifies why a user message appears inside the
-    // assistant response (its text is the trigger's accessible label).
-    expect(screen.getByLabelText('com_ui_steered_info')).toBeInTheDocument();
+    // The ✓✓ receipt replaces the old hover-only "?" affordance; the info text
+    // is the trigger's accessible label so the marks never read as bare glyphs.
+    const receipt = screen.getByTestId('steer-receipt');
+    expect(receipt).toHaveAttribute('data-receipt-state', 'applied');
+    expect(screen.getByLabelText('com_ui_steer_applied_info')).toBeInTheDocument();
   });
 
-  it('reveals on hover/focus on hover-capable pointers but stays visible on touch', () => {
+  it('keeps the receipt visible at rest instead of gating it behind hover', () => {
     renderPart();
-    // Like the hover buttons: hidden-at-rest ONLY on hover-capable pointers
-    // ([@media(hover:hover)]:opacity-0), so touch devices keep it visible.
-    const wrapper = screen.getByTestId('steer-info-affordance');
-    expect(wrapper.className).toContain('[@media(hover:hover)]:opacity-0');
-    expect(wrapper.className).toContain('group-hover:opacity-100');
-    expect(wrapper.className).toContain('focus-within:opacity-100');
+    // The whole point of the receipt is that "it landed" is visible without
+    // hunting: no hover-capable-pointer opacity gate like the old "?" had.
+    const receipt = screen.getByTestId('steer-receipt');
+    expect(receipt.className).not.toContain('opacity-0');
+  });
+
+  it('anchors the receipt after the timestamp, at the trailing edge of the row', () => {
+    renderPart();
+    // The timestamp is the hover-revealed half of the row and its width changes
+    // as the relative string ticks; leading the checks with it would park the
+    // one always-visible mark at a moving offset from the bubble's corner.
+    const row = screen.getByTestId('steer-receipt').parentElement;
+    const children = Array.from(row?.children ?? []);
+    expect(children.map((child) => child.getAttribute('data-testid'))).toEqual([
+      'steer-timestamp',
+      'steer-receipt',
+    ]);
   });
 });
 
 describe('SteerPart presentation', () => {
   beforeEach(() => {
     mockShareContext = {};
+    mockFileMap = {};
   });
 
-  it('presents the steer as a user message with an icon', () => {
+  it('presents the steer as a compact user bubble with accessible attribution', () => {
     renderPart();
-    /** Asserts the real avatar rather than a stubbed one — the previous mock was
-     *  what hid the auth-context crash inside this icon tree. */
-    expect(screen.getByTitle('Danny')).toBeInTheDocument();
-    expect(screen.getByText('steered words')).toBeInTheDocument();
+    const message = screen.getByText('steered words');
+
+    expect(message.closest('.bg-surface-user-message')).toHaveClass('rounded-theme-surface');
+    expect(screen.getByRole('heading', { name: 'Danny' })).toHaveClass('sr-only');
+    expect(screen.queryByTitle('Danny')).not.toBeInTheDocument();
   });
 
   it('anchors the steer for the message-nav rail', () => {
     renderPart();
     const part = screen.getByTestId('steer-part');
     expect(part).toHaveAttribute('id', 'steer-s1');
-    expect(part).toHaveClass('steer-render');
+    expect(part).toHaveAttribute('data-steer-render');
   });
 
-  it('renders steer attachments', () => {
+  it('stays on the message content edge instead of outdenting', () => {
+    renderPart();
+    const part = screen.getByTestId('steer-part');
+    expect(part).toHaveClass('w-full');
+    expect(part).not.toHaveClass('md:-ml-9', '-ml-9');
+  });
+
+  it('keeps multiple steer images together at the right while file chips stay at the start', () => {
     renderPart([
       { file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' },
       { file_id: 'f2', filename: 'shot.png', type: 'image/png', filepath: '/images/shot.png' },
+      { file_id: 'f3', filename: 'second.png', type: 'image/png', filepath: '/images/second.png' },
     ]);
+    const images = screen.getAllByTestId('steer-image');
+    const imageGroup = images[0].parentElement;
+
+    expect(images).toHaveLength(2);
+    expect(imageGroup).toContainElement(images[1]);
+    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup?.parentElement).toHaveClass('w-full');
+    expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
-    expect(screen.getByTestId('steer-image')).toBeInTheDocument();
   });
 
-  it('opens the file preview dialog when a non-image steer attachment is clicked', () => {
-    renderPart([{ file_id: 'f1', filename: 'notes.pdf', type: 'application/pdf' }]);
-    expect(screen.queryByTestId('steer-file-preview')).toBeNull();
+  it.each(['application/pdf', 'image/png'])(
+    'opens extracted previews for %s attachments',
+    (type) => {
+      mockFileMap = { f1: { llmDeliveryPath: 'text' } };
+      renderPart([{ file_id: 'f1', filename: 'notes.pdf', type }]);
+      expect(screen.queryByTestId('steer-file-preview')).toBeNull();
 
-    fireEvent.click(screen.getByTestId('steer-file'));
-    expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
+      fireEvent.click(screen.getByTestId('steer-file'));
+      expect(screen.getByTestId('steer-file-preview')).toHaveTextContent('notes.pdf');
+      expect(screen.getByTestId('steer-file-preview')).toHaveAttribute(
+        'data-delivery-path',
+        'text',
+      );
+    },
+  );
+
+  it('renders quoted excerpts as reference blocks inside the bubble', () => {
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+        <SteerPart
+          steer="steered words"
+          steerId="s1"
+          createdAt={1}
+          quotes={['the selected excerpt']}
+        />
+      </RecoilRoot>,
+    );
+    const quotes = screen.getByTestId('message-quotes');
+    expect(quotes).toHaveTextContent('the selected excerpt');
+    expect(quotes.closest('.bg-surface-user-message')).not.toBeNull();
+  });
+
+  it('renders no quote block when the steer carried none', () => {
+    renderPart();
+    expect(screen.queryByTestId('message-quotes')).toBeNull();
+  });
+});
+
+describe('SteerPart live receipt draw-in', () => {
+  function LiveIdsProbe() {
+    const ids = useAtomValue(liveAppliedSteerIdsAtom);
+    return <div data-testid="live-ids">{ids.join(',')}</div>;
+  }
+
+  function seededStore(liveIds: string[]) {
+    const jotaiStore = createStore();
+    jotaiStore.set(liveAppliedSteerIdsAtom, liveIds);
+    return jotaiStore;
+  }
+
+  function renderLive(liveIds: string[]) {
+    return render(
+      <Provider store={seededStore(liveIds)}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          <SteerPart steer="steered words" steerId="s1" createdAt={1} />
+          <LiveIdsProbe />
+        </RecoilRoot>
+      </Provider>,
+    );
+  }
+
+  const appliedChecks = () =>
+    screen.getByLabelText('com_ui_steer_applied_info').querySelector('svg');
+
+  it('animates the checks once when its applied event landed this session, then consumes the id', () => {
+    renderLive(['s1', 'other']);
+    expect(appliedChecks()).toHaveClass('animate-in');
+    // Consumed on mount so a remount (revisit, reload) renders without motion;
+    // unrelated ids survive for their own parts.
+    expect(screen.getByTestId('live-ids')).toHaveTextContent('other');
+  });
+
+  it('renders the settled checks without the draw-in when not applied live', () => {
+    renderLive([]);
+    expect(appliedChecks()).not.toHaveClass('animate-in');
+  });
+
+  it('re-derives and consumes per identity when a slot is overwritten with another steer', () => {
+    // ContentParts keys by content index, and applySteerPart permits a
+    // different steer to overwrite that index — React reuses this component.
+    const partFor = (steerId: string) => (
+      <>
+        <SteerPart steer="steered words" steerId={steerId} createdAt={1} />
+        <LiveIdsProbe />
+      </>
+    );
+    const jotaiStore = seededStore(['s2']);
+    const { rerender } = render(
+      <Provider store={jotaiStore}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          {partFor('s1')}
+        </RecoilRoot>
+      </Provider>,
+    );
+    expect(appliedChecks()).not.toHaveClass('animate-in');
+    expect(screen.getByTestId('live-ids')).toHaveTextContent('s2');
+
+    rerender(
+      <Provider store={jotaiStore}>
+        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+          {partFor('s2')}
+        </RecoilRoot>
+      </Provider>,
+    );
+    expect(appliedChecks()).toHaveClass('animate-in');
+    expect(screen.getByTestId('live-ids').textContent).toBe('');
+  });
+});
+
+describe('SteerPart receipt settling', () => {
+  const checks = () => screen.getByLabelText('com_ui_steer_applied_info').querySelector('svg');
+
+  it('keeps the steer identity while the owning response is still generating', () => {
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+        <SteerPart steer="steered words" steerId="s1" createdAt={1} isSubmitting />
+      </RecoilRoot>,
+    );
+    expect(checks()).toHaveClass(STEER_ICON);
+    expect(checks()).not.toHaveClass('text-text-secondary');
+  });
+
+  it('settles to timestamp gray once the response is done, and on reload/share', () => {
+    // The default (no isSubmitting) is the settled, reload, share, and search
+    // rendering: still a double check, no longer lit.
+    renderPart();
+    expect(checks()).toHaveClass('text-text-secondary');
+    expect(checks()).not.toHaveClass(STEER_ICON);
   });
 });

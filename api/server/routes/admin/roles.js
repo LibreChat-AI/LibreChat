@@ -30,6 +30,7 @@ const handlers = createAdminRolesHandlers({
   deleteAclEntries: db.deleteAclEntries,
   deleteGrantsForPrincipal: db.deleteGrantsForPrincipal,
   recordAuditEntry: db.recordAuditEntry,
+  invalidatePromptGroupAccessContext: db.invalidatePromptGroupAccessContext,
 });
 
 router.use(requireJwtAuth, requireAdminAccess);

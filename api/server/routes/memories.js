@@ -1,12 +1,22 @@
 const express = require('express');
-const { Tokenizer, generateCheckAccess } = require('@librechat/api');
+const { isValidMemoryKey } = require('@librechat/data-schemas');
+const {
+  Tokenizer,
+  generateCheckAccess,
+  getMemoryAgentIdParam,
+  createAgentMemoryPartitionMiddleware,
+  blockFilteredMemoryContent,
+  projectStoredMemories,
+  createMemoryManagementHandlers,
+} = require('@librechat/api');
 const {
   PermissionTypes,
   PermissionBits,
   ResourceType,
   Permissions,
 } = require('librechat-data-provider');
-const { findAccessibleResources } = require('~/server/services/PermissionService');
+const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const {
   getAllUserMemories,
   getUserMemories,
@@ -15,6 +25,9 @@ const {
   createMemory,
   deleteMemory,
   setMemory,
+  setMemoryById,
+  deleteMemoryById,
+  getAgent,
   getAgents,
 } = require('~/models');
 const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
@@ -48,12 +61,46 @@ const checkMemoryOptOut = generateCheckAccess({
   permissions: [Permissions.USE, Permissions.OPT_OUT],
   getRoleByName,
 });
+const opaqueMemoryHandlers = createMemoryManagementHandlers({
+  setMemoryById,
+  deleteMemoryById,
+  projectStoredMemories,
+  countTokens: (value) => Tokenizer.getTokenCount(value, 'o200k_base'),
+});
 
 router.use(requireJwtAuth);
 
-/** Normalizes the optional agent partition param; undefined = shared personal pool */
-const getAgentIdParam = (value) =>
-  typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+const agentPartitionDependencies = {
+  getAgent,
+  getRoleByName,
+  hasCapability,
+  checkPermission,
+};
+const validateBodyAgentPartition = createAgentMemoryPartitionMiddleware({
+  source: 'body',
+  ...agentPartitionDependencies,
+});
+const validateQueryAgentPartition = createAgentMemoryPartitionMiddleware({
+  source: 'query',
+  ...agentPartitionDependencies,
+});
+const validateDeletedAgentPartition = createAgentMemoryPartitionMiddleware({
+  source: 'query',
+  allowMissingAgent: true,
+  ...agentPartitionDependencies,
+});
+const createMemoryMiddleware = [
+  memoryPayloadLimit,
+  checkMemoryCreate,
+  validateBodyAgentPartition,
+  configMiddleware,
+];
+const updateMemoryMiddleware = [
+  memoryPayloadLimit,
+  checkMemoryUpdate,
+  validateQueryAgentPartition,
+  configMiddleware,
+];
 
 /** Resolves agent display names for agent-partitioned memories, restricted
  *  to agents the requester can VIEW — `agentId` is caller-supplied on write,
@@ -90,8 +137,9 @@ const withAgentNames = async (memories, user) => {
 router.get('/', checkMemoryRead, configMiddleware, async (req, res) => {
   try {
     const memories = await getAllUserMemories(req.user.id);
+    const projectedMemories = projectStoredMemories(memories, req.config?.filters);
 
-    const sortedMemories = (await withAgentNames(memories, req.user)).sort(
+    const sortedMemories = (await withAgentNames(projectedMemories, req.user)).sort(
       (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
     );
 
@@ -118,8 +166,8 @@ router.get('/', checkMemoryRead, configMiddleware, async (req, res) => {
       charLimit,
       usagePercentage,
     });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  } catch (_error) {
+    res.status(500).json({ error: 'Failed to retrieve memories.' });
   }
 });
 
@@ -129,9 +177,9 @@ router.get('/', checkMemoryRead, configMiddleware, async (req, res) => {
  * Body: { key: string, value: string }
  * Returns 201 and { created: true, memory: <createdDoc> } when successful.
  */
-router.post('/', memoryPayloadLimit, checkMemoryCreate, configMiddleware, async (req, res) => {
+router.post('/', createMemoryMiddleware, async (req, res) => {
   const { key, value } = req.body;
-  const agentId = getAgentIdParam(req.body.agentId);
+  const agentId = getMemoryAgentIdParam(req.body.agentId);
 
   if (typeof key !== 'string' || key.trim() === '') {
     return res.status(400).json({ error: 'Key is required and must be a non-empty string.' });
@@ -139,6 +187,12 @@ router.post('/', memoryPayloadLimit, checkMemoryCreate, configMiddleware, async 
 
   if (typeof value !== 'string' || value.trim() === '') {
     return res.status(400).json({ error: 'Value is required and must be a non-empty string.' });
+  }
+
+  if (!isValidMemoryKey(key.trim())) {
+    return res.status(400).json({
+      error: 'Key must only contain lowercase letters and underscores.',
+    });
   }
 
   const appConfig = req.config;
@@ -155,6 +209,11 @@ router.post('/', memoryPayloadLimit, checkMemoryCreate, configMiddleware, async 
     return res.status(400).json({
       error: `Value exceeds maximum length of ${charLimit} characters. Current length: ${value.length} characters.`,
     });
+  }
+
+  const normalizedMemory = { key: key.trim(), value: value.trim() };
+  if (blockFilteredMemoryContent(req, res, normalizedMemory)) {
+    return;
   }
 
   try {
@@ -233,22 +292,48 @@ router.patch('/preferences', checkMemoryOptOut, async (req, res) => {
   }
 });
 
+router.patch(
+  '/id/:id',
+  memoryPayloadLimit,
+  checkMemoryUpdate,
+  validateQueryAgentPartition,
+  configMiddleware,
+  opaqueMemoryHandlers.updateById,
+);
+router.delete(
+  '/id/:id',
+  checkMemoryDelete,
+  validateDeletedAgentPartition,
+  opaqueMemoryHandlers.deleteById,
+);
+
 /**
  * PATCH /memories/:key
  * Updates the value of an existing memory entry for the authenticated user.
  * Body: { key?: string, value: string }
  * Returns 200 and { updated: true, memory: <updatedDoc> } when successful.
  */
-router.patch('/:key', memoryPayloadLimit, checkMemoryUpdate, configMiddleware, async (req, res) => {
+router.patch('/:key', updateMemoryMiddleware, async (req, res) => {
   const { key: urlKey } = req.params;
   const { key: bodyKey, value } = req.body || {};
-  const agentId = getAgentIdParam(req.query.agentId);
+  const agentId = getMemoryAgentIdParam(req.query.agentId);
 
   if (typeof value !== 'string' || value.trim() === '') {
     return res.status(400).json({ error: 'Value is required and must be a non-empty string.' });
   }
 
-  const newKey = bodyKey || urlKey;
+  if (bodyKey !== undefined && typeof bodyKey !== 'string') {
+    return res.status(400).json({ error: 'Key must be a string.' });
+  }
+
+  const newKey = bodyKey === undefined ? urlKey : bodyKey.trim();
+
+  if (newKey !== urlKey && !isValidMemoryKey(newKey)) {
+    return res.status(400).json({
+      error: 'Key must only contain lowercase letters and underscores.',
+    });
+  }
+
   const appConfig = req.config;
   const memoryConfig = appConfig?.memory;
   const charLimit = memoryConfig?.charLimit || 10000;
@@ -263,6 +348,10 @@ router.patch('/:key', memoryPayloadLimit, checkMemoryUpdate, configMiddleware, a
     return res.status(400).json({
       error: `Value exceeds maximum length of ${charLimit} characters. Current length: ${value.length} characters.`,
     });
+  }
+
+  if (blockFilteredMemoryContent(req, res, { key: newKey, value })) {
+    return;
   }
 
   try {
@@ -325,9 +414,9 @@ router.patch('/:key', memoryPayloadLimit, checkMemoryUpdate, configMiddleware, a
  * Deletes a memory entry for the authenticated user.
  * Returns 200 and { deleted: true } when successful.
  */
-router.delete('/:key', checkMemoryDelete, async (req, res) => {
+router.delete('/:key', checkMemoryDelete, validateDeletedAgentPartition, async (req, res) => {
   const { key } = req.params;
-  const agentId = getAgentIdParam(req.query.agentId);
+  const agentId = getMemoryAgentIdParam(req.query.agentId);
 
   try {
     const result = await deleteMemory({ userId: req.user.id, key, agentId });

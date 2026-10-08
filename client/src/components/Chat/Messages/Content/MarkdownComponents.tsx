@@ -2,12 +2,17 @@ import React, { memo, useMemo, useRef, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
+import {
+  handleDoubleClick,
+  triggerDownload,
+  resolveInlineMedia,
+  toAbsoluteFilePath,
+} from '~/utils';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
+import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
-import { handleDoubleClick, triggerDownload } from '~/utils';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { useFileDownload } from '~/data-provider';
-import { useCodeBlockContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -219,19 +224,17 @@ export const img: React.ElementType = memo(function MarkdownImage({
 }: TImageProps) {
   // Get the base URL from the API endpoints
   const baseURL = apiBaseUrl();
+  /** A model writing `![DTI](5_dti.png)` is naming a file its run produced,
+   *  not a path the browser can fetch. Resolving the reference against the
+   *  turn's attachments is what turns those into the chart instead of a
+   *  broken-image glyph; an unmatched source keeps its original behavior. */
+  const { attachmentsByName } = useMediaContext();
 
-  // If src starts with /images/, prepend the base URL
   const fixedSrc = useMemo(() => {
     if (!src) return src;
-
-    // If it's already an absolute URL or doesn't start with /images/, return as is
-    if (src.startsWith('http') || src.startsWith('data:') || !src.startsWith('/images/')) {
-      return src;
-    }
-
-    // Prepend base URL to the image path
-    return `${baseURL}${src}`;
-  }, [src, baseURL]);
+    const resolved = resolveInlineMedia(src, attachmentsByName)?.filepath ?? src;
+    return toAbsoluteFilePath(resolved, baseURL);
+  }, [src, baseURL, attachmentsByName]);
 
   return <img src={fixedSrc} alt={alt} title={title} className={className} style={style} />;
 });

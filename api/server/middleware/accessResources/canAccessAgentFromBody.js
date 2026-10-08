@@ -8,11 +8,27 @@ const {
   isAgentsEndpoint,
   isEphemeralAgentId,
 } = require('librechat-data-provider');
+const { resolveModelSpecForEndpoint } = require('@librechat/api');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { canAccessResource } = require('./canAccessResource');
 const db = require('~/models');
 
-const { getRoleByName, getAgent } = db;
+const { getRoleByName, getAgentWithVersionCount } = db;
+
+const resolveEnforcedAgentId = (req, endpoint) => {
+  const modelSpecs = req.config?.modelSpecs;
+  const spec = req.body?.spec;
+  if (!modelSpecs?.enforce || typeof spec !== 'string') {
+    return undefined;
+  }
+
+  const resolution = resolveModelSpecForEndpoint({ modelSpecs, spec, endpoint });
+  if (!('modelSpec' in resolution)) {
+    return undefined;
+  }
+
+  return resolution.modelSpec.preset.agent_id;
+};
 
 /**
  * Resolves custom agent ID (e.g., "agent_abc123") to a MongoDB document.
@@ -23,7 +39,7 @@ const resolveAgentIdFromBody = async (agentCustomId) => {
   if (isEphemeralAgentId(agentCustomId)) {
     return null;
   }
-  return getAgent({ id: agentCustomId });
+  return getAgentWithVersionCount({ id: agentCustomId });
 };
 
 /**
@@ -158,7 +174,7 @@ const canAccessAgentFromBody = (options) => {
   return async (req, res, next) => {
     try {
       const { endpoint, agent_id } = req.body;
-      let agentId = agent_id;
+      let agentId = resolveEnforcedAgentId(req, endpoint) ?? agent_id;
 
       if (!isAgentsEndpoint(endpoint)) {
         agentId = Constants.EPHEMERAL_AGENT_ID;

@@ -40,7 +40,7 @@ const validateAuthor = async ({ req, openai, overrideEndpoint, overrideAssistant
     return;
   }
 
-  const assistantDoc = await getAssistant({ assistant_id, user: req.user.id });
+  const assistantDoc = await getAssistant({ assistantId: assistant_id, user: req.user.id });
   if (assistantDoc) {
     return;
   }

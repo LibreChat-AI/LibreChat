@@ -1,9 +1,14 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_CACHE_TTL_MS,
+} from 'librechat-data-provider';
 import type * as t from '~/types';
+import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
+import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
 import balanceSchema from '~/schema/balance';
-import { createUserMethods } from './user';
 import userSchema from '~/schema/user';
 
 /** Mocking crypto for generateToken */
@@ -45,6 +50,7 @@ beforeAll(async () => {
 
   /** Initialize methods */
   methods = createUserMethods(mongoose);
+  createToolApprovalGrantModel(mongoose);
 });
 
 afterAll(async () => {
@@ -59,6 +65,64 @@ beforeEach(async () => {
 
 afterEach(() => {
   restoreAuthUserCacheEnv();
+});
+
+describe('consumeBackupCode', () => {
+  async function createRecoveryUser() {
+    return User.create({
+      email: 'recovery@example.com',
+      backupCodes: [
+        { codeHash: 'hash-a', used: false },
+        { codeHash: 'hash-b', used: false },
+      ],
+    });
+  }
+
+  it('permits exactly one simultaneous redemption of the same code', async () => {
+    const user = await createRecoveryUser();
+    const results = await Promise.all([
+      methods.consumeBackupCode(String(user._id), 'hash-a'),
+      methods.consumeBackupCode(String(user._id), 'hash-a'),
+    ]);
+    expect(results.sort()).toEqual([false, true]);
+    const stored = await User.findById(user._id).select('+backupCodes').lean();
+    expect(stored?.backupCodes?.[0]).toMatchObject({ used: true, usedAt: expect.any(Date) });
+    expect(stored?.backupCodes?.[1].used).toBe(false);
+  });
+
+  it('does not restore a consumed code when different codes redeem simultaneously', async () => {
+    const user = await createRecoveryUser();
+    expect(
+      await Promise.all([
+        methods.consumeBackupCode(String(user._id), 'hash-a'),
+        methods.consumeBackupCode(String(user._id), 'hash-b'),
+      ]),
+    ).toEqual([true, true]);
+    const stored = await User.findById(user._id).select('+backupCodes').lean();
+    expect(stored?.backupCodes?.every((code) => code.used)).toBe(true);
+  });
+
+  it('rejects a stale hash after regeneration', async () => {
+    const user = await createRecoveryUser();
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { backupCodes: [{ codeHash: 'replacement', used: false }] } },
+    );
+    expect(await methods.consumeBackupCode(String(user._id), 'hash-a')).toBe(false);
+  });
+
+  it('evicts the auth cache after successful consumption', async () => {
+    enableAuthUserDocCache();
+    const user = await createRecoveryUser();
+    const cache = {
+      get: jest.fn().mockResolvedValue(['cached-user']),
+      set: jest.fn().mockResolvedValue(true),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const cachedMethods = createUserMethods(mongoose, { getCache: () => cache });
+    expect(await cachedMethods.consumeBackupCode(String(user._id), 'hash-a')).toBe(true);
+    expect(cache.delete).toHaveBeenCalledWith('cached-user');
+  });
 });
 
 describe('User schema indexes', () => {
@@ -106,7 +170,52 @@ describe('User schema indexes', () => {
   });
 });
 
+describe('User personalization', () => {
+  test('defaults new users to the shared user workspace', async () => {
+    const user = await User.create({
+      email: 'stateful-default@example.com',
+      provider: 'local',
+    });
+
+    expect(user.personalization?.statefulCodeEnvironment).toBe('user');
+  });
+
+  test('rejects unsupported stateful workspace defaults', async () => {
+    await expect(
+      User.create({
+        email: 'invalid-stateful-default@example.com',
+        provider: 'local',
+        personalization: { statefulCodeEnvironment: 'agent' },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe('User Methods - Database Tests', () => {
+  describe('findOwnerContactUsers', () => {
+    test('returns only projected owner contact rows for matching ids', async () => {
+      const owner = await User.create({
+        name: 'Ada Owner',
+        username: 'ada',
+        email: 'ada@example.com',
+        provider: 'local',
+      });
+      await User.create({
+        name: 'Other User',
+        username: 'other',
+        email: 'other@example.com',
+        provider: 'local',
+      });
+
+      const rows = await methods.findOwnerContactUsers([
+        owner._id.toString(),
+        new mongoose.Types.ObjectId().toString(),
+      ]);
+
+      expect(rows).toEqual([{ _id: owner._id, name: 'Ada Owner', username: 'ada' }]);
+      expect(rows[0]).not.toHaveProperty('email');
+    });
+  });
   describe('findUser', () => {
     test('should find user by exact email', async () => {
       await User.create({
@@ -311,6 +420,128 @@ describe('User Methods - Database Tests', () => {
       const balance = await Balance.findOne({ user: userId });
       expect(balance).toBeDefined();
       expect(balance?.tokenCredits).toBe(1000);
+      expect(balance?._id.toString()).toBe(userId.toString());
+    });
+  });
+
+  describe('createUserIfAbsent', () => {
+    const newUser = {
+      name: 'First Login',
+      email: 'first@example.com',
+      provider: 'openid',
+      openidId: 'first-sub',
+      openidIssuer: 'https://issuer.example.com',
+    };
+
+    beforeEach(async () => {
+      await User.syncIndexes();
+    });
+
+    test('creates the user, credits the start balance, and returns it', async () => {
+      const result = await methods.createUserIfAbsent(newUser, {
+        enabled: true,
+        startBalance: 500,
+      });
+
+      expect(result.ok).toBe(true);
+      const created = result.ok ? result.value : null;
+      expect(created).toEqual(expect.objectContaining({ email: 'first@example.com' }));
+      const balance = await Balance.findOne({ user: created?._id });
+      expect(balance?.tokenCredits).toBe(500);
+    });
+
+    test('reports user_exists for one of two concurrent inserts and credits the balance once', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+
+      const results = await Promise.all([
+        methods.createUserIfAbsent(newUser, balanceConfig),
+        methods.createUserIfAbsent(newUser, balanceConfig),
+      ]);
+
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.find((result) => !result.ok)).toEqual({
+        ok: false,
+        error: { code: 'user_exists' },
+      });
+      expect(await User.countDocuments()).toBe(1);
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.tokenCredits)).toEqual([500]);
+    });
+
+    test('reports user_exists when another account holds the provider identity', async () => {
+      await methods.createUserIfAbsent(newUser);
+
+      const result = await methods.createUserIfAbsent({ ...newUser, email: 'renamed@example.com' });
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+    });
+
+    test('initializes the start balance before the user exists', async () => {
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate');
+      const userSave = jest.spyOn(User.prototype, 'save');
+
+      await methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 });
+
+      expect(balanceWrite.mock.invocationCallOrder[0]).toBeLessThan(
+        userSave.mock.invocationCallOrder[0],
+      );
+      balanceWrite.mockRestore();
+      userSave.mockRestore();
+    });
+
+    test('removes the start balance it initialized when the account already exists', async () => {
+      const balanceConfig = { enabled: true, startBalance: 500 };
+      const created = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      const result = await methods.createUserIfAbsent(newUser, balanceConfig);
+
+      expect(result).toEqual({ ok: false, error: { code: 'user_exists' } });
+      const balances = await Balance.find({}).lean();
+      expect(balances.map((balance) => balance.user.toString())).toEqual([
+        created.ok ? created.value._id.toString() : '',
+      ]);
+    });
+
+    test('removes the start balance when its write commits but reports a failure', async () => {
+      const realWrite = Balance.findOneAndUpdate.bind(Balance);
+      const balanceWrite = jest.spyOn(Balance, 'findOneAndUpdate').mockImplementationOnce(
+        (...args: Parameters<typeof Balance.findOneAndUpdate>) =>
+          ({
+            lean: async () => {
+              await realWrite(...args).lean();
+              throw new Error('connection closed before acknowledgement');
+            },
+          }) as never,
+      );
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(0);
+      expect(await User.countDocuments()).toBe(0);
+      balanceWrite.mockRestore();
+    });
+
+    test('keeps the start balance when the insert fails without a unique-index rejection', async () => {
+      const userSave = jest
+        .spyOn(User.prototype, 'save')
+        .mockRejectedValueOnce(new Error('connection closed before acknowledgement'));
+
+      await expect(
+        methods.createUserIfAbsent(newUser, { enabled: true, startBalance: 500 }),
+      ).rejects.toThrow('connection closed before acknowledgement');
+      expect(await Balance.countDocuments()).toBe(1);
+      userSave.mockRestore();
+    });
+
+    test('throws failures other than an existing account without writing a balance', async () => {
+      await expect(
+        methods.createUserIfAbsent(
+          { ...newUser, email: 'not-an-email' },
+          { enabled: true, startBalance: 500 },
+        ),
+      ).rejects.toMatchObject({ name: 'ValidationError' });
+      expect(await Balance.countDocuments()).toBe(0);
     });
   });
 
@@ -347,6 +578,67 @@ describe('User Methods - Database Tests', () => {
       expect(updated?.expiresAt).toBeUndefined();
     });
 
+    test.each([new Date(Date.now() + 604800 * 1000), undefined])(
+      'should preserve expiresAt %s and invalidate auth cache when requested',
+      async (expiresAt) => {
+        enableAuthUserDocCache();
+        const user = await User.create({
+          name: 'Pending User',
+          email: 'pending@example.com',
+          provider: 'local',
+          emailVerified: false,
+          expiresAt,
+        });
+        const userId = user._id?.toString() ?? '';
+        const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+        const cache = {
+          get: jest.fn().mockResolvedValue(['auth-cache-key']),
+          set: jest.fn().mockResolvedValue(true),
+          delete: jest.fn().mockResolvedValue(true),
+        };
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache });
+
+        const updated = await methodsWithCache.updateUser(
+          userId,
+          { password: 'new-password-hash', credentialsChangedAt: new Date() },
+          {},
+          { preserveExpiresAt: true },
+        );
+
+        const stored = await User.findById(userId).select('+password').lean();
+        expect(stored?.password).toBe('new-password-hash');
+        expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
+        expect(updated?.emailVerified).toBe(false);
+        expect(updated?.expiresAt).toEqual(expiresAt);
+        expect(cache.get).toHaveBeenCalledWith(indexKey);
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key');
+        expect(cache.delete).toHaveBeenCalledWith(indexKey);
+      },
+    );
+
+    test('should update only when the expected account state still matches', async () => {
+      const user = await User.create({
+        name: 'Conditional User',
+        email: 'original@example.com',
+        password: 'original-password-hash',
+        provider: 'local',
+      });
+
+      const staleUpdate = await methods.updateUser(
+        user._id?.toString() ?? '',
+        { email: 'stale@example.com' },
+        { email: 'different@example.com', password: 'original-password-hash' },
+      );
+      const currentUpdate = await methods.updateUser(
+        user._id?.toString() ?? '',
+        { email: 'current@example.com' },
+        { email: 'original@example.com', password: 'original-password-hash' },
+      );
+
+      expect(staleUpdate).toBeNull();
+      expect(currentUpdate?.email).toBe('current@example.com');
+    });
+
     test('should invalidate cached auth user documents on update', async () => {
       enableAuthUserDocCache();
       const user = await User.create({
@@ -371,6 +663,119 @@ describe('User Methods - Database Tests', () => {
       expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
       expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
       expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+
+    describe('when auth cache eviction fails', () => {
+      const cachedKeys = ['auth-cache-key-a', 'auth-cache-key-b'];
+
+      /** Rejects the named operations the way the throwing Redis-backed auth cache does. */
+      function makeFailingCache(failing: { indexRead?: boolean; deleteKey?: string }) {
+        return {
+          get: jest.fn(async () => {
+            if (failing.indexRead) {
+              throw new Error('WRONGTYPE');
+            }
+            return cachedKeys;
+          }),
+          set: jest.fn().mockResolvedValue(true),
+          delete: jest.fn(async (key: string) => {
+            if (key === failing.deleteKey) {
+              throw new Error('redis unavailable');
+            }
+            return true;
+          }),
+        };
+      }
+
+      async function createCachedUser() {
+        enableAuthUserDocCache();
+        const user = await User.create({
+          name: 'Credential User',
+          email: 'credential@example.com',
+          provider: 'openid',
+        });
+        return user._id?.toString() ?? '';
+      }
+
+      test.each<[string, { indexRead?: boolean; deleteKey?: string }]>([
+        ['the reverse index read fails', { indexRead: true }],
+        ['an indexed document delete fails', { deleteKey: 'auth-cache-key-a' }],
+      ])('waits out the cache TTL at the credential barrier when %s', async (_label, failing) => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache(failing);
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        const updated = await methodsWithCache.updateUser(userId, {
+          password: 'new-password-hash',
+          credentialsChangedAt: new Date(),
+        });
+        expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
+        expect(delay).not.toHaveBeenCalled();
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(delay).toHaveBeenCalledTimes(1);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
+        if (!failing.indexRead) {
+          expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
+        }
+      });
+
+      test('passes the barrier at once when only the index delete fails', async () => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache({ deleteKey: `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}` });
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
+        expect(delay).not.toHaveBeenCalled();
+      });
+
+      test('passes the barrier at once when a retried eviction succeeds', async () => {
+        const userId = await createCachedUser();
+        const cache = makeFailingCache({ indexRead: true });
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+        await methodsWithCache.updateUser(userId, { credentialsChangedAt: new Date() });
+        cache.get.mockResolvedValue(cachedKeys);
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+        expect(delay).not.toHaveBeenCalled();
+      });
+
+      test('waits at the barrier when the cache can read but not delete', async () => {
+        const userId = await createCachedUser();
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, {
+          getCache: () => ({ get: jest.fn(), set: jest.fn() }),
+          delay,
+        });
+
+        await methodsWithCache.awaitAuthUserDocEviction(userId);
+
+        expect(delay).toHaveBeenCalledTimes(1);
+      });
+
+      test('keeps updates themselves best effort', async () => {
+        const userId = await createCachedUser();
+        const delay = jest.fn().mockResolvedValue(undefined);
+        const methodsWithCache = createUserMethods(mongoose, {
+          getCache: () => makeFailingCache({ indexRead: true }),
+          delay,
+        });
+
+        const updated = await methodsWithCache.updateUser(userId, { name: 'Renamed' });
+
+        expect(updated?.name).toBe('Renamed');
+        expect(delay).not.toHaveBeenCalled();
+      });
     });
 
     test('should invalidate cached auth user documents on delete', async () => {
@@ -401,6 +806,448 @@ describe('User Methods - Database Tests', () => {
       const result = await methods.updateUser(fakeId.toString(), { name: 'Test' });
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('claimSamlIdentity', () => {
+    test('should atomically bind an unbound SAML user', async () => {
+      const user = await User.create({
+        name: 'Legacy SAML User',
+        email: 'legacy-saml@example.com',
+        provider: 'saml',
+      });
+
+      const updated = await methods.claimSamlIdentity(user._id?.toString() ?? '', 'saml-123', {
+        name: 'Current SAML User',
+      });
+
+      expect(updated).toMatchObject({
+        name: 'Current SAML User',
+        samlId: 'saml-123',
+      });
+    });
+
+    test('should preserve an existing different SAML binding', async () => {
+      const user = await User.create({
+        email: 'bound-saml@example.com',
+        provider: 'saml',
+        samlId: 'original-saml-id',
+      });
+
+      const updated = await methods.claimSamlIdentity(user._id?.toString() ?? '', 'new-saml-id', {
+        name: 'Untrusted Name',
+      });
+      const stored = await User.findById(user._id).lean<t.IUser>();
+
+      expect(updated).toBeNull();
+      expect(stored).toMatchObject({ samlId: 'original-saml-id' });
+      expect(stored?.name).not.toBe('Untrusted Name');
+    });
+
+    test('should update a user when the SAML binding already matches', async () => {
+      const user = await User.create({
+        email: 'matching-saml@example.com',
+        provider: 'saml',
+        samlId: 'saml-123',
+      });
+
+      const updated = await methods.claimSamlIdentity(user._id?.toString() ?? '', 'saml-123', {
+        name: 'Updated Name',
+      });
+
+      expect(updated).toMatchObject({
+        name: 'Updated Name',
+        samlId: 'saml-123',
+      });
+    });
+
+    test('should not convert a user registered with a different provider', async () => {
+      const user = await User.create({
+        email: 'local-user@example.com',
+        provider: 'local',
+      });
+
+      const updated = await methods.claimSamlIdentity(user._id?.toString() ?? '', 'saml-123', {});
+      const stored = await User.findById(user._id).lean<t.IUser>();
+
+      expect(updated).toBeNull();
+      expect(stored).toMatchObject({ provider: 'local' });
+      expect(stored?.samlId).toBeUndefined();
+    });
+
+    test('should allow only one concurrent first-time SAML binding', async () => {
+      const user = await User.create({
+        email: 'concurrent-saml@example.com',
+        provider: 'saml',
+      });
+      const userId = user._id?.toString() ?? '';
+
+      const results = await Promise.all([
+        methods.claimSamlIdentity(userId, 'saml-a', { name: 'Identity A' }),
+        methods.claimSamlIdentity(userId, 'saml-b', { name: 'Identity B' }),
+      ]);
+      const stored = await User.findById(user._id).lean<t.IUser>();
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(['saml-a', 'saml-b']).toContain(stored?.samlId);
+      expect(results.find(Boolean)?.samlId).toBe(stored?.samlId);
+    });
+
+    test('should invalidate cached auth documents after a successful claim', async () => {
+      enableAuthUserDocCache();
+      const user = await User.create({
+        email: 'cached-saml@example.com',
+        provider: 'saml',
+      });
+      const userId = user._id?.toString() ?? '';
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+      const cache = {
+        get: jest.fn().mockResolvedValue(['auth-cache-key']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await methodsWithCache.claimSamlIdentity(userId, 'saml-123', {});
+
+      expect(cache.get).toHaveBeenCalledWith(indexKey);
+      expect(cache.delete).toHaveBeenCalledWith('auth-cache-key');
+      expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+
+    test('should not invalidate cached auth documents after a rejected claim', async () => {
+      enableAuthUserDocCache();
+      const user = await User.create({
+        email: 'cached-bound-saml@example.com',
+        provider: 'saml',
+        samlId: 'original-saml-id',
+      });
+      const cache = {
+        get: jest.fn(),
+        delete: jest.fn(),
+      };
+      const getCache = jest.fn().mockReturnValue(cache);
+      const methodsWithCache = createUserMethods(mongoose, { getCache });
+
+      const updated = await methodsWithCache.claimSamlIdentity(
+        user._id?.toString() ?? '',
+        'different-saml-id',
+        {},
+      );
+
+      expect(updated).toBeNull();
+      expect(getCache).not.toHaveBeenCalled();
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(cache.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateTwoFactorEnrollment', () => {
+    const ACK_HASH = 'acknowledgement-nonce-hash';
+    const FINAL_HASH = 'finalization-nonce-hash';
+
+    async function createEnrollingUser(
+      email: string,
+      overrides: Partial<t.IUser> = {},
+    ): Promise<{ id: string; pendingBackupCodes: NonNullable<t.IUser['pendingBackupCodes']> }> {
+      const user = await User.create({
+        name: 'Enrolling User',
+        email,
+        provider: 'local',
+        twoFactorEnabled: false,
+        pendingTotpSecret: 'pending-secret',
+        pendingBackupCodes: [{ codeHash: 'staged-hash', used: false }],
+        ...overrides,
+      });
+      const id = user._id.toString();
+      const stored = await User.findById(user._id).select('+pendingBackupCodes').lean<t.IUser>();
+      return { id, pendingBackupCodes: stored?.pendingBackupCodes ?? [] };
+    }
+
+    function readEnrollment(userId: string) {
+      return User.findById(userId)
+        .select(
+          '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash',
+        )
+        .lean<t.IUser>();
+    }
+
+    test('stages rotated backup codes and an acknowledgement nonce without enabling 2FA', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('stage-2fa@example.com');
+
+      const updated = await methods.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        {
+          pendingBackupCodes: [{ codeHash: 'deliverable-hash', used: false, usedAt: null }],
+          twoFactorAcknowledgementNonceHash: ACK_HASH,
+          twoFactorFinalizationNonceHash: null,
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(updated).not.toBeNull();
+      expect(stored?.twoFactorEnabled).toBe(false);
+      expect(stored?.totpSecret).toBeFalsy();
+      expect(stored?.pendingTotpSecret).toBe('pending-secret');
+      expect(stored?.pendingBackupCodes).toMatchObject([{ codeHash: 'deliverable-hash' }]);
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe(ACK_HASH);
+      expect(stored?.twoFactorFinalizationNonceHash).toBeNull();
+    });
+
+    test('updates legacy enrolling users whose two-factor flag is missing', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('legacy-2fa@example.com');
+      const objectId = new mongoose.Types.ObjectId(id);
+      await User.collection.updateOne({ _id: objectId }, { $unset: { twoFactorEnabled: '' } });
+
+      const legacyUser = await User.collection.findOne({ _id: objectId });
+      expect(legacyUser).not.toHaveProperty('twoFactorEnabled');
+
+      const updated = await methods.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(updated).not.toBeNull();
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe(ACK_HASH);
+    });
+
+    test('a second confirmation on the stale snapshot loses the race and writes nothing', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('confirm-race@example.com');
+      const guard = { pendingTotpSecret: 'pending-secret', pendingBackupCodes };
+
+      const first = await methods.updateTwoFactorEnrollment(id, guard, {
+        pendingBackupCodes: [{ codeHash: 'first-hash', used: false, usedAt: null }],
+        twoFactorAcknowledgementNonceHash: 'first-ack',
+      });
+      const second = await methods.updateTwoFactorEnrollment(id, guard, {
+        pendingBackupCodes: [{ codeHash: 'second-hash', used: false, usedAt: null }],
+        twoFactorAcknowledgementNonceHash: 'second-ack',
+      });
+      const stored = await readEnrollment(id);
+
+      expect(first).not.toBeNull();
+      expect(second).toBeNull();
+      expect(stored?.pendingBackupCodes).toMatchObject([{ codeHash: 'first-hash' }]);
+      expect(stored?.twoFactorAcknowledgementNonceHash).toBe('first-ack');
+    });
+
+    test('consumes the acknowledgement nonce exactly once and keeps 2FA disabled', async () => {
+      const { id } = await createEnrollingUser('ack-2fa@example.com', {
+        twoFactorAcknowledgementNonceHash: ACK_HASH,
+      });
+
+      const first = await methods.updateTwoFactorEnrollment(
+        id,
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+        {
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: FINAL_HASH,
+        },
+      );
+      const replay = await methods.updateTwoFactorEnrollment(
+        id,
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+        {
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: 'replayed-finalization-hash',
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(first).not.toBeNull();
+      expect(replay).toBeNull();
+      expect(stored?.twoFactorEnabled).toBe(false);
+      expect(stored?.twoFactorFinalizationNonceHash).toBe(FINAL_HASH);
+    });
+
+    test('promotes the pending enrollment once and clears every enrollment field', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('finalize-2fa@example.com', {
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+        expiresAt: new Date(Date.now() + 604800 * 1000),
+      });
+      const guard = {
+        pendingTotpSecret: 'pending-secret',
+        pendingBackupCodes,
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      };
+      const promotion = {
+        totpSecret: 'pending-secret',
+        backupCodes: pendingBackupCodes,
+        twoFactorEnabled: true,
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+        twoFactorAcknowledgementNonceHash: null,
+        twoFactorFinalizationNonceHash: null,
+      };
+
+      const promoted = await methods.updateTwoFactorEnrollment(id, guard, promotion);
+      const replay = await methods.updateTwoFactorEnrollment(id, guard, promotion);
+      const stored = await readEnrollment(id);
+
+      expect(promoted).not.toBeNull();
+      expect(promoted).toMatchObject({
+        name: 'Enrolling User',
+        email: 'finalize-2fa@example.com',
+        provider: 'local',
+        twoFactorEnabled: true,
+      });
+      expect(promoted?.createdAt).toBeInstanceOf(Date);
+      expect(replay).toBeNull();
+      expect(stored).toMatchObject({
+        twoFactorEnabled: true,
+        totpSecret: 'pending-secret',
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+        twoFactorAcknowledgementNonceHash: null,
+        twoFactorFinalizationNonceHash: null,
+      });
+      expect(stored?.backupCodes).toMatchObject([{ codeHash: 'staged-hash' }]);
+      expect(stored?.expiresAt).toBeUndefined();
+    });
+
+    test('persists the enrollment cutoff that retires pre-enrollment access tokens', async () => {
+      const { id, pendingBackupCodes } = await createEnrollingUser('cutoff-2fa@example.com', {
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      });
+      const twoFactorEnrolledAt = new Date();
+
+      const promoted = await methods.updateTwoFactorEnrollment(
+        id,
+        {
+          pendingTotpSecret: 'pending-secret',
+          pendingBackupCodes,
+          twoFactorFinalizationNonceHash: FINAL_HASH,
+        },
+        {
+          totpSecret: 'pending-secret',
+          backupCodes: pendingBackupCodes,
+          twoFactorEnabled: true,
+          twoFactorEnrolledAt,
+          pendingTotpSecret: null,
+          pendingBackupCodes: [],
+          twoFactorAcknowledgementNonceHash: null,
+          twoFactorFinalizationNonceHash: null,
+        },
+      );
+      const stored = await readEnrollment(id);
+
+      expect(promoted).not.toBeNull();
+      /** A path the schema does not declare is dropped in silence, so assert the round trip. */
+      expect(stored?.twoFactorEnrolledAt).toBeInstanceOf(Date);
+      expect(stored?.twoFactorEnrolledAt?.getTime()).toBe(twoFactorEnrolledAt.getTime());
+    });
+
+    test('leaves the enrollment cutoff null until a promotion writes it', async () => {
+      const { id } = await createEnrollingUser('no-cutoff-2fa@example.com');
+
+      const stored = await readEnrollment(id);
+
+      expect(stored?.twoFactorEnrolledAt).toBeNull();
+    });
+
+    const concurrentTransitions: Array<[string, Partial<t.IUser>]> = [
+      ['regenerated secret', { pendingTotpSecret: 'different-secret' }],
+      [
+        'regenerated backup codes',
+        { pendingBackupCodes: [{ codeHash: 'different-hash', used: false }] },
+      ],
+      ['federated provider transition', { provider: 'openid' }],
+      ['already-enabled transition', { twoFactorEnabled: true }],
+      ['cleared finalization nonce', { twoFactorFinalizationNonceHash: null }],
+    ];
+
+    test.each(concurrentTransitions)(
+      'does not promote after a concurrent %s',
+      async (name, concurrentUpdate) => {
+        const { id, pendingBackupCodes } = await createEnrollingUser(
+          `raced-2fa-${name.replace(/ /g, '-')}@example.com`,
+          { twoFactorFinalizationNonceHash: FINAL_HASH },
+        );
+        await User.findByIdAndUpdate(id, { $set: concurrentUpdate });
+
+        const promoted = await methods.updateTwoFactorEnrollment(
+          id,
+          {
+            pendingTotpSecret: 'pending-secret',
+            pendingBackupCodes,
+            twoFactorFinalizationNonceHash: FINAL_HASH,
+          },
+          {
+            totpSecret: 'pending-secret',
+            backupCodes: pendingBackupCodes,
+            twoFactorEnabled: true,
+            pendingTotpSecret: null,
+            pendingBackupCodes: [],
+            twoFactorAcknowledgementNonceHash: null,
+            twoFactorFinalizationNonceHash: null,
+          },
+        );
+        const stored = await readEnrollment(id);
+
+        expect(promoted).toBeNull();
+        expect(stored?.totpSecret).toBeFalsy();
+        expect(stored?.twoFactorEnabled).toBe(concurrentUpdate.twoFactorEnabled === true);
+      },
+    );
+
+    test('never exposes nonce state on an unprojected read', async () => {
+      const { id } = await createEnrollingUser('nonce-projection@example.com', {
+        twoFactorAcknowledgementNonceHash: ACK_HASH,
+        twoFactorFinalizationNonceHash: FINAL_HASH,
+      });
+
+      const user = await methods.getUserById(id);
+
+      expect(user).not.toBeNull();
+      expect(user).not.toHaveProperty('twoFactorAcknowledgementNonceHash');
+      expect(user).not.toHaveProperty('twoFactorFinalizationNonceHash');
+      expect(user).not.toHaveProperty('pendingTotpSecret');
+    });
+
+    test('invalidates cached auth user documents after a successful enrollment write', async () => {
+      enableAuthUserDocCache();
+      const { id, pendingBackupCodes } = await createEnrollingUser('cached-2fa@example.com');
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-auth-document']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await methodsWithCache.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'pending-secret', pendingBackupCodes },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+
+      expect(cache.delete).toHaveBeenCalledWith('cached-auth-document');
+      expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${id}`);
+    });
+
+    test('leaves the auth user document cache untouched when the guard loses', async () => {
+      enableAuthUserDocCache();
+      const { id } = await createEnrollingUser('cached-2fa-miss@example.com');
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-auth-document']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      const result = await methodsWithCache.updateTwoFactorEnrollment(
+        id,
+        { pendingTotpSecret: 'stale-secret' },
+        { twoFactorAcknowledgementNonceHash: ACK_HASH },
+      );
+
+      expect(result).toBeNull();
+      expect(cache.delete).not.toHaveBeenCalled();
     });
   });
 
@@ -604,6 +1451,238 @@ describe('User Methods - Database Tests', () => {
 
       expect(result.deletedCount).toBe(0);
       expect(result.message).toBe('No user found with that ID.');
+    });
+  });
+
+  describe('agent trigger account-deletion fence', () => {
+    test('blocks trigger admission until the owning deletion attempt releases it', async () => {
+      const user = await User.create({
+        name: 'Trigger Fence',
+        email: 'trigger-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const startedAt = new Date('2026-08-17T12:00:00.000Z');
+
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+      await expect(methods.beginAgentTriggerUserDeletion(userId, startedAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(
+        methods.beginAgentTriggerUserDeletion(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe('in_progress');
+      await expect(
+        methods.cancelAgentTriggerUserDeletion(userId, new Date(startedAt.getTime() + 1)),
+      ).resolves.toBe(false);
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, startedAt)).resolves.toBe(true);
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+    });
+
+    test('reports a missing principal without creating a deletion fence', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(methods.beginAgentTriggerUserDeletion(userId, new Date())).resolves.toBe(
+        'missing',
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+    });
+
+    test('requires explicit stale-fence recovery and preserves successor ownership', async () => {
+      const user = await User.create({
+        name: 'Stale Trigger Fence',
+        email: 'stale-trigger-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const abandonedAt = new Date('2026-08-17T12:00:00.000Z');
+      const takeoverAt = new Date(abandonedAt.getTime() + USER_DELETION_FENCE_STALE_MS + 1);
+
+      await expect(methods.beginAgentTriggerUserDeletion(userId, abandonedAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.beginAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(
+        'in_progress',
+      );
+      await expect(
+        methods.recoverStaleAgentTriggerUserDeletion(
+          userId,
+          new Date(abandonedAt.getTime() + USER_DELETION_FENCE_STALE_MS - 1),
+        ),
+      ).resolves.toBe('in_progress');
+      await expect(methods.recoverStaleAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(
+        'acquired',
+      );
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, abandonedAt)).resolves.toBe(
+        false,
+      );
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(false);
+      await expect(methods.cancelAgentTriggerUserDeletion(userId, takeoverAt)).resolves.toBe(true);
+      await expect(methods.isAgentTriggerPrincipalActive(userId)).resolves.toBe(true);
+    });
+
+    test('rejects invalid deletion-fence timestamps', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(
+        methods.beginAgentTriggerUserDeletion(userId, new Date(Number.NaN)),
+      ).rejects.toThrow('startedAt must be a valid Date');
+      await expect(
+        methods.recoverStaleAgentTriggerUserDeletion(userId, new Date(Number.NaN)),
+      ).rejects.toThrow('recoveredAt must be a valid Date');
+    });
+  });
+
+  describe('subagent admission fence', () => {
+    test('closes admission until the deletion that took the fence releases it', async () => {
+      const user = await User.create({
+        name: 'Subagent Fence',
+        email: 'subagent-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const fencedUntil = new Date(Date.now() + 60_000);
+
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(true);
+      await methods.fenceSubagentAdmission(userId, 'deletion-a', fencedUntil);
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(false);
+
+      /** Each overlapping deletion holds its own fence, so admission reopens only
+       * once the last one finishes — in either completion order. */
+      await methods.fenceSubagentAdmission(userId, 'deletion-b', fencedUntil);
+      await methods.releaseSubagentAdmission(userId, 'deletion-a');
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(false);
+
+      await methods.releaseSubagentAdmission(userId, 'deletion-b');
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(true);
+    });
+
+    test('keeps admission closed when the later deletion finishes first', async () => {
+      const user = await User.create({
+        name: 'Reverse Fence',
+        email: 'reverse-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const fencedUntil = new Date(Date.now() + 60_000);
+
+      await methods.fenceSubagentAdmission(userId, 'deletion-a', fencedUntil);
+      await methods.fenceSubagentAdmission(userId, 'deletion-b', fencedUntil);
+
+      /** The deletion that started second finishes first; the first is still running. */
+      await methods.releaseSubagentAdmission(userId, 'deletion-b');
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(false);
+
+      await methods.releaseSubagentAdmission(userId, 'deletion-a');
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(true);
+    });
+
+    test('prunes an expired fence when the next deletion takes one', async () => {
+      const user = await User.create({
+        name: 'Pruned Fence',
+        email: 'pruned-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+
+      await methods.fenceSubagentAdmission(userId, 'abandoned', new Date(Date.now() - 1));
+      await methods.fenceSubagentAdmission(userId, 'deletion-a', new Date(Date.now() + 60_000));
+
+      const stored = await User.findById(userId).select('+subagentAdmissionFences').lean();
+      expect(stored?.subagentAdmissionFences).toHaveLength(1);
+      expect(stored?.subagentAdmissionFences?.[0]?.token).toBe('deletion-a');
+    });
+
+    test('reopens admission once an abandoned fence expires', async () => {
+      const user = await User.create({
+        name: 'Expired Fence',
+        email: 'expired-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+
+      await methods.fenceSubagentAdmission(userId, 'deletion-a', new Date(Date.now() - 1));
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(true);
+    });
+
+    test('refuses an excess deletion instead of discarding an active fence', async () => {
+      const user = await User.create({
+        name: 'Saturated Fence',
+        email: 'saturated-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id.toString();
+      const fencedUntil = new Date(Date.now() + 60_000);
+
+      for (let index = 0; index < 32; index += 1) {
+        await methods.fenceSubagentAdmission(userId, `deletion-${index}`, fencedUntil);
+      }
+      await expect(
+        methods.fenceSubagentAdmission(userId, 'deletion-overflow', fencedUntil),
+      ).rejects.toThrow('Too many concurrent bulk deletions');
+
+      /** The first deletion still owns its fence, so admission stays closed for it. */
+      const stored = await User.findById(userId).select('+subagentAdmissionFences').lean();
+      expect(stored?.subagentAdmissionFences).toHaveLength(32);
+      expect(stored?.subagentAdmissionFences?.[0]?.token).toBe('deletion-0');
+      await expect(methods.isSubagentOwnerAdmissible(userId)).resolves.toBe(false);
+    });
+
+    test('invalidates the cached auth document when a refused fence still pruned', async () => {
+      enableAuthUserDocCache();
+      const user = await User.create({
+        name: 'Refused Fence',
+        email: 'refused-fence@example.com',
+        provider: 'local',
+      });
+      const userId = user._id?.toString() ?? '';
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+      const fencedUntil = new Date(Date.now() + 60_000);
+      /** A saturated owner that has since abandoned one fence: the next attempt prunes
+       * the expired entry and is then refused by the cap, so the two writes disagree. */
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            subagentAdmissionFences: [
+              ...Array.from({ length: 32 }, (_unused, index) => ({
+                token: `deletion-${index}`,
+                expiresAt: fencedUntil,
+              })),
+              { token: 'abandoned', expiresAt: new Date(Date.now() - 1) },
+            ],
+          },
+        },
+      );
+
+      const cache = {
+        get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await expect(
+        methodsWithCache.fenceSubagentAdmission(userId, 'deletion-overflow', fencedUntil),
+      ).rejects.toThrow('Too many concurrent bulk deletions');
+      const stored = await User.findById(userId).select('+subagentAdmissionFences').lean();
+      expect(stored?.subagentAdmissionFences).toHaveLength(32);
+      /** The prune committed, so leaving the cached document in place would serve the
+       * pruned fence until its own TTL expired. */
+      expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+      expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+
+    test('refuses an unbounded or invalid fence', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(
+        methods.fenceSubagentAdmission(userId, 'deletion-a', new Date(Number.NaN)),
+      ).rejects.toThrow('fencedUntil must be a valid Date');
+      await expect(
+        methods.fenceSubagentAdmission(userId, '', new Date(Date.now() + 60_000)),
+      ).rejects.toThrow('bounded owner token');
     });
   });
 
@@ -829,6 +1908,57 @@ describe('User Methods - Database Tests', () => {
     });
   });
 
+  describe('updateUserStatefulCodeEnvironment', () => {
+    test('updates the workspace default without changing memory preferences', async () => {
+      const user = await User.create({
+        email: 'stateful-preference@example.com',
+        provider: 'local',
+        personalization: { memories: false, statefulCodeEnvironment: 'user' },
+      });
+
+      const updated = await methods.updateUserStatefulCodeEnvironment(
+        user._id?.toString() ?? '',
+        'agent-user',
+      );
+
+      expect(updated?.personalization).toMatchObject({
+        memories: false,
+        statefulCodeEnvironment: 'agent-user',
+      });
+    });
+
+    test('returns null for a missing user', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+
+      await expect(
+        methods.updateUserStatefulCodeEnvironment(userId, 'conversation'),
+      ).resolves.toBeNull();
+    });
+
+    test('invalidates cached auth user documents', async () => {
+      enableAuthUserDocCache();
+      const user = await User.create({
+        email: 'cached-stateful-preference@example.com',
+        provider: 'openid',
+      });
+      const userId = user._id?.toString() ?? '';
+      const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+      const cache = {
+        get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+        delete: jest.fn().mockResolvedValue(true),
+      };
+      const methodsWithCache = createUserMethods(mongoose, {
+        getCache: jest.fn().mockReturnValue(cache),
+      });
+
+      await methodsWithCache.updateUserStatefulCodeEnvironment(userId, 'conversation');
+
+      expect(cache.get).toHaveBeenCalledWith(indexKey);
+      expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-a');
+      expect(cache.delete).toHaveBeenCalledWith(indexKey);
+    });
+  });
+
   describe('Email Normalization Edge Cases', () => {
     test('should handle email with multiple spaces', async () => {
       await User.create({
@@ -987,5 +2117,65 @@ describe('User Methods - Database Tests', () => {
       const users = await methods.findUsers({});
       expect(users).toHaveLength(5);
     });
+  });
+});
+
+describe('personal grant cleanup before account deletion', () => {
+  async function owner() {
+    const user = await User.create({ email: 'delete-grants@example.com', provider: 'local' });
+    const id = user._id.toString();
+    await mongoose.models.ToolApprovalGrant.create({
+      user: id,
+      agentId: 'agent',
+      toolName: 'query_mcp_db',
+      conversationId: 'chat',
+      binding: 'personal-consent',
+    });
+    return { user, id };
+  }
+
+  it('cleanup failure preserves the account and grants so deletion can be retried', async () => {
+    const { user, id } = await owner();
+    const cleanup = jest
+      .spyOn(mongoose.models.ToolApprovalGrant.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic grant-store failure'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await expect(methods.deleteUserById(id)).rejects.toThrow('synthetic grant-store failure');
+      expect(deletion).not.toHaveBeenCalled();
+      expect(await User.exists({ _id: user._id })).not.toBeNull();
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: id })).toBe(1);
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await User.exists({ _id: user._id })).toBeNull();
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: id })).toBe(0);
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
+  });
+
+  it('successful cleanup precedes account commit and affects only that owner', async () => {
+    const { id } = await owner();
+    await mongoose.models.ToolApprovalGrant.create({
+      user: 'another-user',
+      agentId: 'agent',
+      toolName: 'query_mcp_db',
+      conversationId: 'chat',
+      binding: 'other-consent',
+    });
+    const cleanup = jest.spyOn(mongoose.models.ToolApprovalGrant, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    try {
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(
+        deletion.mock.invocationCallOrder[0],
+      );
+      expect(await mongoose.models.ToolApprovalGrant.countDocuments({ user: 'another-user' })).toBe(
+        1,
+      );
+    } finally {
+      cleanup.mockRestore();
+      deletion.mockRestore();
+    }
   });
 });

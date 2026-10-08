@@ -18,7 +18,9 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/components/Chat/Menus/Endpoints/components/SpecIcon', () => ({
   __esModule: true,
-  default: () => <span data-testid="spec-icon" />,
+  default: ({ agentAvatarURL }: { agentAvatarURL?: string }) => (
+    <span data-testid="spec-icon" data-agent-avatar-url={agentAvatarURL ?? ''} />
+  ),
 }));
 
 jest.mock('~/components/Endpoints/MinimalIcon', () => ({
@@ -106,6 +108,17 @@ describe('FavoriteItem', () => {
       render(<FavoriteItem type="spec" item={baseSpec} />);
       expect(screen.getByText('My Model Spec')).toBeInTheDocument();
       expect(screen.getByTestId('spec-icon')).toBeInTheDocument();
+    });
+
+    /** The pinned row must show the same agent avatar as the selector row. */
+    it('threads the agent avatar through to SpecIcon', () => {
+      render(
+        <FavoriteItem type="spec" item={baseSpec} agentAvatarURL="/images/agent-avatar.png" />,
+      );
+      expect(screen.getByTestId('spec-icon')).toHaveAttribute(
+        'data-agent-avatar-url',
+        '/images/agent-avatar.png',
+      );
     });
 
     it('has aria-label formatted as "<label> (com_ui_model_spec)"', () => {

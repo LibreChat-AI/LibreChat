@@ -1,79 +1,60 @@
 import React from 'react';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
-import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react';
-import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import { RecoilRoot } from 'recoil';
+import { useAtomValue, useStore } from 'jotai';
+import { MemoryRouter } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
+  PartMetadata,
+  SubagentIdentity,
+  SubagentUpdateEvent,
+  ParentSubagentSummary,
+} from 'librechat-data-provider';
+import type {
+  SubagentAggregatorState,
   SubagentContentPart,
   SubagentTickerState,
-  SubagentAggregatorState,
 } from '~/utils/subagentContent';
-import type { SubagentProgress } from '~/store/subagents';
+import type { ActiveSubagentPanel, SubagentProgress } from '~/components/Chat/Subagents/state';
 import {
   foldSubagentEvent,
   foldSubagentEventIntoTicker,
   initSubagentAggregatorState,
   initSubagentTickerState,
 } from '~/utils/subagentContent';
+import {
+  activeSubagentPanel,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '~/components/Chat/Subagents/state';
 import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
-import { subagentProgressByToolCallId } from '~/store/subagents';
+import { MessageContext } from '~/Providers/MessageContext';
+import { FailedRevealContext } from '../../reveal';
+import { ChatSurfaceHarness } from 'test/harness';
+import { FOLD_GLYPH_SELECTOR } from '../../rows';
+import { litFoldPath } from '../../rail';
+
+const mockMCPServerNames: string[] = [];
+let mockIndexedChildren = new Map<string, ParentSubagentSummary>();
 
 jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
-    (key: string, values?: Record<string, unknown>): string => {
-      const arg0 = (values?.[0] as string | undefined) ?? '';
-      const arg1 = (values?.[1] as string | undefined) ?? '';
+    (key: string): string => {
       const translations: Record<string, string> = {
         com_ui_subagent_running: 'Running agent',
+        com_ui_subagent_activity: 'Agent activity',
         com_ui_subagent_complete: 'Ran agent',
         com_ui_subagent_cancelled: 'Cancelled agent',
         com_ui_subagent_errored: 'Agent errored',
         com_ui_subagent_waiting: 'Waiting for first update…',
-        com_ui_subagent_dialog_title: `"${arg0}" agent`,
-        com_ui_subagent_dialog_title_self: 'Agent',
-        com_ui_subagent_dialog_description: 'Isolated child run.',
-        com_ui_subagent_no_result_yet: 'No result yet.',
-        com_ui_subagent_empty_result: 'No text.',
-        com_ui_collapse: 'Collapse',
-        com_ui_expand: 'Expand',
         com_ui_subagent_ticker_writing: 'Writing',
         com_ui_subagent_ticker_reasoning: 'Reasoning',
         com_ui_subagent_ticker_error: 'Error',
         com_ui_subagent_ticker_using: 'Using',
         com_ui_subagent_ticker_tool_done: 'done',
-        com_ui_subagent_ticker_tool_output: `${arg0} → ${arg1}`,
-        com_ui_prompt: 'Prompt',
       };
       return translations[key] ?? key;
     },
-}));
-
-/** Stub the leaf content-part renderers — the tests only need to confirm
- *  that the right TMessageContentParts flow through to them. */
-jest.mock('../Text', () => ({
-  __esModule: true,
-  default: ({ text }: { text: string }) => <div data-testid="text-part">{text}</div>,
-}));
-
-jest.mock('../Reasoning', () => ({
-  __esModule: true,
-  default: ({ reasoning }: { reasoning: string }) => (
-    <div data-testid="reasoning-part">{reasoning}</div>
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ToolCall', () => ({
-  __esModule: true,
-  default: ({ name, output }: { name: string; output: string }) => (
-    <div data-testid="tool-call-part" data-name={name}>
-      {output}
-    </div>
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <div data-testid="prompt-markdown">{content}</div>,
 }));
 
 jest.mock('../Attachment', () => ({
@@ -82,103 +63,45 @@ jest.mock('../Attachment', () => ({
   ),
 }));
 
-jest.mock('@librechat/client', () => ({
-  __esModule: true,
-  Button: ({
-    children,
-    variant: _variant,
-    size: _size,
-    ...props
-  }: React.ComponentProps<'button'> & { variant?: string; size?: string }) => (
-    <button {...props}>{children}</button>
-  ),
-  OGDialog: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  OGDialogContent: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="dialog-content">{children}</div>
-  ),
-  OGDialogTitle: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="dialog-title">{children}</div>
-  ),
-  OGDialogDescription: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="dialog-description">{children}</div>
-  ),
-}));
-
 jest.mock('lucide-react', () => ({
   // eslint-disable-next-line i18next/no-literal-string
-  ArrowDown: () => <span>arrow-down</span>,
+  ChevronRight: () => <span aria-hidden="true">chevron</span>,
   // eslint-disable-next-line i18next/no-literal-string
-  ChevronRight: () => <span>chevron</span>,
-  // eslint-disable-next-line i18next/no-literal-string
-  Maximize2: () => <span>maximize</span>,
-  // eslint-disable-next-line i18next/no-literal-string
-  Minimize2: () => <span>minimize</span>,
-  // eslint-disable-next-line i18next/no-literal-string
-  Users: () => <span>users</span>,
+  Users: () => <span aria-hidden="true">users</span>,
 }));
 
-/** Stub out the agents-map provider so the header doesn't look up real
- *  agent data. Tests don't exercise the avatar lookup path; the default
- *  (no agent) renders the `Users` SVG fallback. */
 jest.mock('~/Providers', () => ({
-  useAgentsMapContext: () => ({}),
+  useAgentsMapContext: () => ({
+    'agent-1': { id: 'agent-1', name: 'Analyst One', avatar: { filepath: '/analyst.png' } },
+    agent_reviewer: {
+      id: 'agent_reviewer',
+      name: 'Code Reviewer',
+      avatar: { filepath: '/reviewer.png' },
+    },
+  }),
 }));
-
-/** Stub `MessageIcon` — only relevant when `useAgentsMapContext` returns
- *  a matching agent; with the stub above it never renders. */
+jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+  useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
+}));
 jest.mock('~/components/Share/MessageIcon', () => ({
   __esModule: true,
-  default: ({ agent }: { agent?: { name?: string } }) => (
-    <span data-testid="agent-icon">{agent?.name ?? ''}</span>
+  default: ({ agent }: { agent: { name: string; avatar: { filepath: string } } }) => (
+    <img alt={agent.name} src={agent.avatar.filepath} />
   ),
 }));
-
-jest.mock('~/hooks/MCP', () => {
-  const mcpServerNames: string[] = [];
-  return { useMCPServerNames: () => mcpServerNames };
-});
-
+jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => mockMCPServerNames }));
 jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils/groupToolCalls'),
   ...jest.requireActual('~/utils/toolLabels'),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
+  logger: { log: jest.fn() },
 }));
 
 afterEach(() => {
   jest.useRealTimers();
+  mockMCPServerNames.length = 0;
+  mockIndexedChildren = new Map();
 });
 
-/** The dialog wraps single parts in `Container` and grouped tool_calls in
- *  `ToolCallGroup`. Stub both as transparent wrappers so the tests still
- *  assert on the leaf renderers (Text/Reasoning/ToolCall) without pulling
- *  Recoil-backed tool-call batching state into the component tree. */
-jest.mock('~/components/Chat/Messages/Content/Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="dialog-container">{children}</div>
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ToolCallGroup', () => ({
-  __esModule: true,
-  default: ({
-    parts,
-    renderPart,
-    lastContentIdx,
-  }: {
-    parts: Array<{ part: unknown; idx: number }>;
-    renderPart: (part: unknown, idx: number, isLast: boolean) => React.ReactNode;
-    lastContentIdx: number;
-  }) => (
-    <div data-testid="tool-call-group">
-      {parts.map(({ part, idx }) => renderPart(part, idx, idx === lastContentIdx))}
-    </div>
-  ),
-}));
-
-/** Helper: fold an event sequence through the real incremental
- *  aggregators so each test seeds the atom with the same shape
- *  `useStepHandler` produces in live state. */
 function foldEvents(events: SubagentUpdateEvent[]): {
   contentParts: SubagentContentPart[];
   aggregatorState: SubagentAggregatorState;
@@ -187,20 +110,17 @@ function foldEvents(events: SubagentUpdateEvent[]): {
   let contentParts: SubagentContentPart[] = [];
   let aggregatorState = initSubagentAggregatorState();
   let tickerState = initSubagentTickerState();
-  for (const event of events) {
+  for (const update of events) {
     ({ parts: contentParts, state: aggregatorState } = foldSubagentEvent(
       contentParts,
       aggregatorState,
-      event,
+      update,
     ));
-    tickerState = foldSubagentEventIntoTicker(tickerState, event);
+    tickerState = foldSubagentEventIntoTicker(tickerState, update);
   }
   return { contentParts, aggregatorState, tickerState };
 }
 
-/** Thin wrapper: tests pass `{status, subagentRunId, subagentType, events}`
- *  and get back a full-shape `SubagentProgress` with all three aggregator
- *  outputs filled. */
 function progressFromEvents(
   base: { events: SubagentUpdateEvent[] } & Omit<
     SubagentProgress,
@@ -208,538 +128,594 @@ function progressFromEvents(
   >,
 ): SubagentProgress {
   const { events, ...rest } = base;
-  const aggregates = foldEvents(events);
-  return { ...rest, ...aggregates };
+  return { ...rest, ...foldEvents(events) };
 }
 
-/**
- * Mount the component inside a RecoilRoot and expose a setter so each test
- * can seed the `subagentProgressByToolCallId` atom with the state under test.
- * Real Recoil, no mocks of the store — matches the hook-integration test
- * style in useStepHandler.spec.ts.
- */
 function renderWithState(args: {
   toolCallId: string;
   initialProgress: number;
   isSubmitting?: boolean;
   progress?: SubagentProgress | null;
+  output?: string;
+  toolArgs?: Record<string, unknown>;
+  subagentIdentity?: SubagentIdentity;
+  runStepStatus?: PartMetadata['runStepStatus'];
 }) {
   const setter = { current: null as null | ((next: SubagentProgress | null) => void) };
+  let selection: ActiveSubagentPanel | null = null;
   const SeedHelper = () => {
-    setter.current = useRecoilCallback(
-      ({ set }) =>
-        (next: SubagentProgress | null) => {
-          set(subagentProgressByToolCallId(args.toolCallId), next);
-        },
-      [],
-    );
+    const store = useStore();
+    setter.current = (next: SubagentProgress | null) =>
+      store.set(
+        subagentProgressByToolCallId(subagentProgressKey('parent-message', args.toolCallId, 0)),
+        next,
+      );
     return null;
   };
-  const rendered = render(
-    <RecoilRoot>
-      <SeedHelper />
-      <SubagentCall
-        toolCallId={args.toolCallId}
-        initialProgress={args.initialProgress}
-        isSubmitting={args.isSubmitting ?? false}
-        args={{ subagent_type: 'self', description: 'compute' }}
-      />
-    </RecoilRoot>,
-  );
-  const setProgress = (next: SubagentProgress | null) => {
-    act(() => {
-      setter.current?.(next);
-    });
+  const SelectionObserver = () => {
+    selection = useAtomValue(activeSubagentPanel);
+    return null;
   };
-  setProgress(args.progress ?? null);
-  return { ...rendered, setProgress };
+  const tree = (tick: number) => (
+    <MemoryRouter>
+      <ChatSurfaceHarness>
+        <RecoilRoot>
+          <SeedHelper />
+          <SelectionObserver />
+          <MessageContext.Provider
+            value={{
+              messageId: 'parent-message',
+              conversationId: 'parent-conversation',
+              isExpanded: false,
+            }}
+          >
+            <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+              <SubagentCall
+                toolCallId={args.toolCallId}
+                initialProgress={args.initialProgress}
+                isSubmitting={args.isSubmitting ?? false}
+                args={args.toolArgs ?? { subagent_type: 'self', description: 'compute' }}
+                output={args.output}
+                runStepStatus={args.runStepStatus}
+                subagentIdentity={args.subagentIdentity}
+              />
+            </FailedRevealContext.Provider>
+          </MessageContext.Provider>
+        </RecoilRoot>
+      </ChatSurfaceHarness>
+    </MemoryRouter>
+  );
+  const rendered = render(tree(0));
+  act(() => setter.current?.(args.progress ?? null));
+  return {
+    ...rendered,
+    getSelection: () => selection,
+    setProgress: (next: SubagentProgress | null) => act(() => setter.current?.(next)),
+    reveal: () => rendered.rerender(tree(1)),
+  };
 }
 
-/** Open the subagent dialog. Required when another test file in the same Jest
- *  worker has already loaded the real `@librechat/client` module; Radix only
- *  mounts dialog content while `open` is true. */
-function openSubagentDialog(headerLabel = 'Ran agent') {
-  fireEvent.click(screen.getByRole('button', { name: headerLabel }));
-}
-
-describe('SubagentCall — status resolution', () => {
-  it('renders "Running agent" while streaming and no terminal envelope has arrived', () => {
-    renderWithState({
-      toolCallId: 'call_running',
-      initialProgress: 0.3,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        events: [],
-        status: 'run_step',
-      }),
-    });
-    expect(screen.getByText('Running agent')).toBeInTheDocument();
-  });
-
-  it('renders "Ran agent" when the subagent emits a `stop` phase', () => {
-    renderWithState({
-      toolCallId: 'call_stopped',
-      initialProgress: 1,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        events: [],
-        status: 'stop',
-      }),
-    });
-    expect(screen.getByText('Ran agent')).toBeInTheDocument();
-  });
-
-  it('renders "Ran agent" when the tool call progress reaches 1', () => {
-    renderWithState({
-      toolCallId: 'call_done',
-      initialProgress: 1,
-      isSubmitting: false,
-      progress: null,
-    });
-    expect(screen.getByText('Ran agent')).toBeInTheDocument();
-  });
-
-  it('renders "Cancelled agent" when the stream stops before a terminal envelope (Codex P2 regression)', () => {
-    /**
-     * Codex P2 on #12725: the old `running` computation ignored whether the
-     * parent run was still streaming, so a user stop or dropped connection
-     * would leave the ticker permanently "working…". Mirror the behavior
-     * of `ToolCall.tsx` — `!isSubmitting && !finished` → cancelled.
-     */
-    renderWithState({
-      toolCallId: 'call_cancelled',
-      initialProgress: 0.4,
-      isSubmitting: false,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        events: [],
-        status: 'run_step',
-      }),
-    });
-    expect(screen.getByText('Cancelled agent')).toBeInTheDocument();
-  });
-
-  it('renders "Agent errored" when the subagent emits an `error` phase', () => {
-    renderWithState({
-      toolCallId: 'call_error',
-      initialProgress: 0.4,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        events: [],
-        status: 'error',
-      }),
-    });
-    expect(screen.getByText('Agent errored')).toBeInTheDocument();
-  });
-
-  it('uses the base "Running agent" label for non-self subagent types (name shown as sub-label elsewhere)', () => {
-    renderWithState({
-      toolCallId: 'call_named',
-      initialProgress: 0.3,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_b',
-        subagentType: 'researcher',
-        events: [],
-        status: 'run_step',
-      }),
-    });
-    /** Header base label is constant ("Running agent"). The agent
-     *  display name is rendered as a muted sub-label, which this test
-     *  doesn't exercise (no agents-map context is seeded). */
-    expect(screen.getByText('Running agent')).toBeInTheDocument();
-  });
+const event = (
+  phase: SubagentUpdateEvent['phase'],
+  data: SubagentUpdateEvent['data'],
+): SubagentUpdateEvent => ({
+  runId: 'parent-run',
+  subagentRunId: 'child-run',
+  subagentType: 'self',
+  subagentAgentId: 'child',
+  phase,
+  data,
+  timestamp: '',
 });
 
-describe('SubagentCall — ticker', () => {
-  it('renders semantic text lines instead of raw event names', async () => {
-    renderWithState({
-      toolCallId: 'call_ticker',
-      initialProgress: 0.3,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        status: 'run_step',
-        events: [
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'message_delta',
-            data: { delta: { content: [{ type: 'text', text: 'Computing result…' }] } },
-            timestamp: '',
-          },
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'run_step',
-            data: {
-              stepDetails: {
-                type: 'tool_calls',
-                tool_calls: [{ id: 'c1', name: 'calculator', args: '{"expression":"42*58"}' }],
-              },
-            },
-            timestamp: '',
-          },
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'run_step_completed',
-            data: {
-              result: {
-                type: 'tool_call',
-                tool_call: {
-                  id: 'c1',
-                  name: 'calculator',
-                  output: '42*58 = 2436',
-                  progress: 1,
-                },
-              },
-            },
-            timestamp: '',
-          },
-        ],
-      }),
-    });
-
-    /** Ticker now renders a structured `using_tool` line — prefix span
-     *  ("Using"), a code-style badge for the tool name, and a muted
-     *  args snippet. Check the pieces individually rather than a
-     *  combined text match. */
-    await waitFor(
-      () => {
-        expect(screen.getByText('Using')).toBeInTheDocument();
-      },
-      { timeout: 2500 },
-    );
-    /** Raw event names never appear in the ticker. */
-    expect(screen.queryByText(/on_run_step/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/on_message_delta/)).not.toBeInTheDocument();
-    /** Tool name renders as a `<code>` badge, args snippet in parens. */
-    const calcBadges = screen.getAllByText('calculator');
-    expect(calcBadges.some((el) => el.tagName === 'CODE')).toBe(true);
-    expect(screen.getByText('(expression=42*58)')).toBeInTheDocument();
-    /** Completion line renders the output snippet in the body span. */
-    expect(screen.getAllByText('42*58 = 2436').length).toBeGreaterThan(0);
+describe('SubagentCall', () => {
+  it('registers its existing header glyph for both containing fold rails', () => {
+    renderWithState({ toolCallId: 'fold-glyph', initialProgress: 1 });
+    const row = screen.getByRole('button', { name: 'Ran agent' }).cloneNode(true) as HTMLElement;
+    const glyph = row.querySelector<HTMLElement>(FOLD_GLYPH_SELECTOR);
+    expect(glyph).not.toBeNull();
+    expect(glyph).toHaveClass('h-5', 'w-5');
+    expect(glyph).not.toHaveClass('min-w-6');
+    glyph!.getBoundingClientRect = () => ({ top: 150, height: 20 }) as DOMRect;
+    const root = document.createElement('div');
+    let parent = root;
+    const rails: HTMLElement[] = [];
+    for (const top of [40, 104]) {
+      const panel = document.createElement('div');
+      panel.setAttribute('data-fold-panel', '');
+      const rail = document.createElement('button');
+      rail.setAttribute('data-fold-rail', '');
+      rail.getBoundingClientRect = () => ({ top }) as DOMRect;
+      panel.append(rail);
+      parent.append(panel);
+      parent = panel;
+      rails.push(rail);
+    }
+    parent.append(row);
+    expect(litFoldPath(root, row, 155)).toEqual([
+      { rail: rails[1], length: 54, end: true },
+      { rail: rails[0], length: 118, end: false },
+    ]);
   });
 
-  it('collapses a streak of message_delta events into one live Writing line', async () => {
-    renderWithState({
-      toolCallId: 'call_writing',
-      initialProgress: 0.3,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        status: 'message_delta',
-        events: ['Hello ', 'world', '!'].map((text) => ({
-          runId: 'p',
-          subagentRunId: 'run_a',
-          subagentType: 'self',
-          subagentAgentId: 'child',
-          phase: 'message_delta' as const,
-          data: { delta: { content: [{ type: 'text', text }] } },
-          timestamp: '',
-        })),
-      }),
-    });
-    /** Ticker renders the "Writing:" label and the body in separate spans
-     *  (prefix is `shrink-0`, body is a tail-truncatable sibling) so the
-     *  label never gets clipped when the body overflows. "Hello world!"
-     *  also appears in the dialog body (mocked OGDialog renders
-     *  children), so `getAllByText` is needed for the body. */
-    await waitFor(
-      () => {
-        expect(screen.getAllByText('Hello world!').length).toBeGreaterThan(0);
-      },
-      { timeout: 2500 },
-    );
-    /** Only one "Writing:" label, not three — deltas collapse into one live line. */
-    expect(screen.getAllByText('Writing:')).toHaveLength(1);
-  });
-
-  it('refreshes long live previews after the subagent ticker throttle window', () => {
-    jest.useFakeTimers();
-    const firstPreview = 'First live preview '.repeat(8).trim();
-    const secondPreview = 'Second live preview '.repeat(8).trim();
-    const eventForText = (text: string): SubagentUpdateEvent => ({
-      runId: 'p',
-      subagentRunId: 'run_a',
-      subagentType: 'self',
-      subagentAgentId: 'child',
-      phase: 'message_delta',
-      data: { delta: { content: [{ type: 'text', text }] } },
-      timestamp: '',
-    });
-    const progressForText = (text: string): SubagentProgress =>
-      progressFromEvents({
-        subagentRunId: 'run_a',
-        subagentType: 'self',
-        status: 'message_delta',
-        events: [eventForText(text)],
-      });
-
+  it('keeps the configured name and avatar after live progress is cleared', () => {
     const { setProgress } = renderWithState({
-      toolCallId: 'call_throttled_writing',
+      toolCallId: 'identity',
+      initialProgress: 1,
+      toolArgs: { subagent_type: 'agent-1' },
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent-1' },
+      progress: progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'agent-1',
+        subagentAgentId: 'agent-1',
+        status: 'stop',
+        events: [],
+      }),
+    });
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/analyst.png');
+    setProgress(null);
+    expect(screen.getByText('Analyst One')).toBeInTheDocument();
+    expect(screen.getByRole('img', { hidden: true })).toHaveAttribute('src', '/analyst.png');
+  });
+
+  it.each([undefined, { subagentKind: 'graph' as const, subagentAgentId: 'graph:agent-1' }])(
+    'does not infer a saved agent from an ambiguous graph or legacy type',
+    (subagentIdentity) => {
+      const { getSelection } = renderWithState({
+        toolCallId: 'graph-identity',
+        initialProgress: 1,
+        toolArgs: { subagent_type: 'agent-1' },
+        output: 'Graph result',
+        subagentIdentity,
+      });
+      expect(screen.queryByText('Analyst One')).not.toBeInTheDocument();
+      expect(screen.getByText('users')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
+      expect(getSelection()?.subagentIdentity).toEqual(subagentIdentity);
+    },
+  );
+
+  it.each(['agent-1', 'missing-agent', 'self'])(
+    'renders saved identity %s without streaming state',
+    (agentId) => {
+      renderWithState({
+        toolCallId: 'saved-identity',
+        initialProgress: 1,
+        toolArgs: { subagent_type: agentId },
+        subagentIdentity: { subagentKind: 'agent', subagentAgentId: agentId },
+      });
+      expect(screen.queryByText('Analyst One') != null).toBe(agentId === 'agent-1');
+      expect(screen.queryByText('users') != null).toBe(agentId !== 'agent-1');
+    },
+  );
+
+  it.each([
+    ['Running agent', 0.3, true, 'run_step'],
+    ['Ran agent', 1, false, undefined],
+    ['Cancelled agent', 0.3, false, 'run_step'],
+    ['Agent errored', 0.3, true, 'error'],
+  ] as const)('renders the %s lifecycle label', (label, initialProgress, isSubmitting, phase) => {
+    renderWithState({
+      toolCallId: `call-${label}`,
+      initialProgress,
+      isSubmitting,
+      progress:
+        phase == null
+          ? null
+          : progressFromEvents({
+              subagentRunId: 'child-run',
+              subagentType: 'self',
+              status: phase,
+              events: [],
+            }),
+    });
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it.each([
+    { output: 'Error: tool call failed: child crashed', runStepStatus: 'completed' as const },
+    { output: 'Partial output', runStepStatus: 'failed' as const },
+  ])('opens a failed subagent panel from its parent reveal (%p)', (failure) => {
+    const rendered = renderWithState({
+      toolCallId: 'failed-child',
+      initialProgress: 1,
+      ...failure,
+    });
+    expect(screen.getByRole('button', { name: 'Agent errored' })).toBeInTheDocument();
+    expect(rendered.getSelection()).toBeNull();
+
+    rendered.reveal();
+
+    expect(rendered.getSelection()).toEqual(
+      expect.objectContaining({ toolCallId: 'failed-child' }),
+    );
+  });
+
+  it('does not reveal a cancelled subagent with error-shaped output', () => {
+    const rendered = renderWithState({
+      toolCallId: 'cancelled-child',
+      initialProgress: 1,
+      output: 'Error: tool call failed: abort',
+      runStepStatus: 'cancelled',
+    });
+    expect(screen.getByRole('button', { name: 'Cancelled agent' })).toBeInTheDocument();
+    rendered.reveal();
+    expect(rendered.getSelection()).toBeNull();
+  });
+
+  it('keeps the compact semantic ticker while selecting the shared panel', async () => {
+    const progress = progressFromEvents({
+      subagentRunId: 'child-run',
+      subagentType: 'self',
+      status: 'run_step',
+      events: [
+        event('message_delta', { delta: { content: [{ type: 'text', text: 'Working…' }] } }),
+        event('run_step', {
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'inner-1', name: 'calculator', args: '{"value":4}' }],
+          },
+        }),
+      ],
+    });
+    const rendered = renderWithState({
+      toolCallId: 'call-live',
       initialProgress: 0.3,
       isSubmitting: true,
-      progress: progressForText(firstPreview),
+      progress,
     });
-    const ticker = within(screen.getByRole('button', { name: 'Running agent' }));
 
-    expect(ticker.getByText(firstPreview)).toBeInTheDocument();
-    setProgress(progressForText(secondPreview));
-    expect(ticker.getByText(firstPreview)).toBeInTheDocument();
-    expect(ticker.queryByText(secondPreview)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Using')).toBeInTheDocument());
+    expect(screen.getByText('Working…')).toBeInTheDocument();
+    expect(screen.queryByText('Writing')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Running agent' }));
 
-    act(() => {
-      jest.advanceTimersByTime(SUBAGENT_TICKER_THROTTLE_MS - 1);
-    });
-    expect(ticker.getByText(firstPreview)).toBeInTheDocument();
-    expect(ticker.queryByText(secondPreview)).not.toBeInTheDocument();
-
-    act(() => {
-      jest.advanceTimersByTime(1);
-    });
-    expect(ticker.getByText(secondPreview)).toBeInTheDocument();
-  });
-});
-
-describe('SubagentCall — dialog content', () => {
-  it('renders the prompt through MarkdownLite and expands it inline with the activity area', () => {
-    render(
-      <RecoilRoot>
-        <SubagentCall
-          toolCallId="call_prompt"
-          initialProgress={1}
-          isSubmitting={false}
-          output="final answer"
-          args={{
-            subagent_type: 'self',
-            description: '# Review prompt\n\n**Focus:** edge cases',
-          }}
-        />
-      </RecoilRoot>,
+    expect(rendered.getSelection()).toEqual(
+      expect.objectContaining({
+        parentConversationId: 'parent-conversation',
+        toolCallId: 'call-live',
+        subagentType: 'self',
+        initialProgress: 0.3,
+        isSubmitting: true,
+      }),
     );
-
-    openSubagentDialog();
-    expect(screen.getByTestId('prompt-markdown')).toHaveTextContent('# Review prompt');
-    expect(screen.getByText('final answer')).toBeInTheDocument();
-
-    const expandButton = screen.getByRole('button', { name: 'Expand' });
-    expect(expandButton).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(expandButton);
-
-    expect(screen.getByRole('button', { name: 'Collapse' })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    );
-    expect(screen.getByText('final answer')).toBeInTheDocument();
+    expect(rendered.getSelection()?.durable).toBeUndefined();
   });
 
-  it('renders aggregated text, reasoning, and tool_call parts through leaf renderers', () => {
+  it('preserves a configured MCP server boundary in the live ticker', () => {
+    mockMCPServerNames.push('Google_mcp_Workspace');
     renderWithState({
-      toolCallId: 'call_dialog',
-      initialProgress: 0.4,
+      toolCallId: 'call_mcp_ticker',
+      initialProgress: 0.3,
       isSubmitting: true,
       progress: progressFromEvents({
         subagentRunId: 'run_a',
         subagentType: 'self',
-        status: 'stop',
+        status: 'run_step',
         events: [
           {
             runId: 'p',
             subagentRunId: 'run_a',
             subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'reasoning_delta',
-            data: { delta: { content: [{ type: 'think', think: 'Let me compute.' }] } },
-            timestamp: '',
-          },
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
             phase: 'run_step',
             data: {
               stepDetails: {
                 type: 'tool_calls',
-                tool_calls: [{ id: 'c1', name: 'calculator', args: '{}' }],
+                tool_calls: [
+                  {
+                    id: 'c1',
+                    name: 'search_documents_mcp_Google_mcp_Workspace',
+                  },
+                ],
               },
             },
             timestamp: '',
-          },
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'run_step_completed',
-            data: {
-              result: {
-                type: 'tool_call',
-                tool_call: { id: 'c1', name: 'calculator', output: '4', progress: 1 },
-              },
-            },
-            timestamp: '',
-          },
-          {
-            runId: 'p',
-            subagentRunId: 'run_a',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'message_delta',
-            data: { delta: { content: [{ type: 'text', text: 'The answer is 4.' }] } },
-            timestamp: '',
-          },
+          } as SubagentUpdateEvent,
         ],
       }),
     });
 
-    openSubagentDialog();
-    expect(screen.getByTestId('reasoning-part')).toHaveTextContent('Let me compute.');
-    expect(screen.getByTestId('tool-call-part')).toHaveAttribute('data-name', 'calculator');
-    expect(screen.getByTestId('tool-call-part')).toHaveTextContent('4');
-    expect(screen.getByTestId('text-part')).toHaveTextContent('The answer is 4.');
+    expect(screen.getByText('Google_mcp_Workspace')).toBeInTheDocument();
   });
 
-  it('falls back to the raw tool output when no content parts were recorded', () => {
-    /** No events → no aggregated parts. The SubagentCall should still
-     *  render the raw final `output` that came back in the parent's
-     *  tool_call. */
-    const { rerender } = render(
-      <RecoilRoot>
-        <SubagentCall
-          toolCallId="call_fallback_2"
-          initialProgress={1}
-          output="raw final text"
-          isSubmitting={false}
-        />
-      </RecoilRoot>,
-    );
-    openSubagentDialog();
-    expect(screen.getByText('raw final text')).toBeInTheDocument();
-    rerender(<RecoilRoot>{null}</RecoilRoot>);
+  it('refreshes a long ticker preview only after the throttle window', () => {
+    jest.useFakeTimers();
+    const progressFor = (text: string) =>
+      progressFromEvents({
+        subagentRunId: 'child-run',
+        subagentType: 'self',
+        status: 'message_delta',
+        events: [event('message_delta', { delta: { content: [{ type: 'text', text }] } })],
+      });
+    const first = 'First live preview '.repeat(8).trim();
+    const second = 'Second live preview '.repeat(8).trim();
+    const rendered = renderWithState({
+      toolCallId: 'call-throttle',
+      initialProgress: 0.3,
+      isSubmitting: true,
+      progress: progressFor(first),
+    });
+    const card = within(screen.getByRole('button', { name: 'Running agent' }));
+    rendered.setProgress(progressFor(second));
+    expect(card.getByText(first)).toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(SUBAGENT_TICKER_THROTTLE_MS));
+    expect(card.getByText(second)).toBeInTheDocument();
   });
 
-  it('renders persistedContent parts when no live events are available (page-refresh flow)', () => {
-    /**
-     * After a refresh the Recoil atom is empty — the child's history has
-     * to come from the `subagent_content` array the backend attached to
-     * the tool_call at message-save time. Verifies that a
-     * `persistedContent` prop routes through the same leaf renderers
-     * (Text / Reasoning / ToolCall) as live aggregation so a reopened
-     * dialog looks identical to how the run streamed.
-     */
+  it('opens a foreground legacy invocation in the shared panel with persisted activity', () => {
+    let selection: ActiveSubagentPanel | null = null;
+    const Observer = () => {
+      selection = useAtomValue(activeSubagentPanel);
+      return null;
+    };
     const persistedContent = [
-      { type: 'think', think: 'Prior thinking.' },
+      { type: 'think', think: 'Visible reasoning.' },
       {
         type: 'tool_call',
-        tool_call: {
-          id: 'inner-1',
-          name: 'calculator',
-          args: '{"expression":"42*58"}',
-          output: '2436',
-          progress: 1,
-        },
+        tool_call: { id: 'inner-1', name: 'calculator', args: '{}', output: '4', progress: 1 },
       },
-      { type: 'text', text: 'Final persisted answer.' },
-    ] as unknown as Parameters<typeof SubagentCall>[0]['persistedContent'];
-
+      { type: 'text', text: 'The answer is 4.' },
+    ] as Parameters<typeof SubagentCall>[0]['persistedContent'];
     render(
-      <RecoilRoot>
-        <SubagentCall
-          toolCallId="call_refresh"
-          initialProgress={1}
-          isSubmitting={false}
-          persistedContent={persistedContent}
-        />
-      </RecoilRoot>,
+      <MemoryRouter>
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <Observer />
+            <MessageContext.Provider
+              value={{
+                conversationId: 'parent-conversation',
+                messageId: 'parent',
+                isExpanded: false,
+              }}
+            >
+              <SubagentCall
+                toolCallId="foreground-call"
+                initialProgress={1}
+                args={{ subagent_type: 'self', description: 'Compute the answer.' }}
+                output="legacy fallback"
+                persistedContent={persistedContent}
+              />
+            </MessageContext.Provider>
+          </RecoilRoot>
+        </ChatSurfaceHarness>
+      </MemoryRouter>,
     );
 
-    openSubagentDialog();
-    expect(screen.getByTestId('reasoning-part')).toHaveTextContent('Prior thinking.');
-    expect(screen.getByTestId('tool-call-part')).toHaveAttribute('data-name', 'calculator');
-    expect(screen.getByTestId('tool-call-part')).toHaveTextContent('2436');
-    expect(screen.getByTestId('text-part')).toHaveTextContent('Final persisted answer.');
-  });
-
-  it('prefers persistedContent when both are populated (sync/reconnect canonical)', () => {
-    /**
-     * Codex P2 regression: after a disconnect/reconnect the live
-     * Recoil bucket can be stale or partial — it missed events
-     * while the socket was down. The server-written
-     * `persistedContent` on the `tool_call` is the canonical trace
-     * of the completed run, so when it's present the dialog should
-     * show it, not the (possibly lossy) live aggregation.
-     *
-     * This also covers the post-stream case where persistence has
-     * landed and both snapshots carry the same content — preferring
-     * persisted is still correct because it's the authoritative copy.
-     */
-    render(
-      <RecoilRoot>
-        <SubagentCall
-          toolCallId="call_both_seeded"
-          initialProgress={1}
-          isSubmitting={false}
-          persistedContent={
-            [{ type: 'text', text: 'Persisted answer.' }] as unknown as Parameters<
-              typeof SubagentCall
-            >[0]['persistedContent']
-          }
-        />
-      </RecoilRoot>,
-    );
-    openSubagentDialog();
-    expect(screen.getByText('Persisted answer.')).toBeInTheDocument();
-  });
-
-  it('falls back to live aggregated events when persistedContent is empty (mid-stream)', () => {
-    /**
-     * Before the parent message saves, `persistedContent` is
-     * undefined/empty — the live atom is the only source of truth.
-     * Verify we render the live aggregation in that case.
-     */
-    renderWithState({
-      toolCallId: 'call_live_fallback',
-      initialProgress: 0.4,
-      isSubmitting: true,
-      progress: progressFromEvents({
-        subagentRunId: 'run_live',
-        subagentType: 'self',
-        status: 'message_delta',
-        events: [
-          {
-            runId: 'p',
-            subagentRunId: 'run_live',
-            subagentType: 'self',
-            subagentAgentId: 'child',
-            phase: 'message_delta',
-            data: { delta: { content: [{ type: 'text', text: 'Live answer.' }] } },
-            timestamp: '',
-          },
-        ],
+    fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
+    expect(selection).toEqual(
+      expect.objectContaining({
+        prompt: 'Compute the answer.',
+        legacyOutput: 'legacy fallback',
+        persistedContent,
       }),
+    );
+    expect((selection as ActiveSubagentPanel | null)?.durable).toBeUndefined();
+  });
+
+  it('opens an exact host-issued detached invocation in the same panel', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'self',
+      status: 'running',
+      message:
+        'Started subagent "self" background task. Poll the host background-task tool with background_task_id "task-1".',
     });
-    /** Live content renders — both in the ticker preview (collapsed
-     *  card) and inside the dialog body (mocked OGDialog renders
-     *  children). */
-    expect(screen.getAllByText('Live answer.').length).toBeGreaterThan(0);
+    const rendered = renderWithState({
+      toolCallId: 'detached-call',
+      initialProgress: 1,
+      output,
+      toolArgs: { subagent_type: 'self', run_in_background: true },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent activity' }));
+    expect(rendered.getSelection()).toEqual(
+      expect.objectContaining({
+        toolCallId: 'detached-call',
+        durable: { threadId: 'child-thread-1', taskId: 'task-1' },
+      }),
+    );
+    expect(rendered.getSelection()?.legacyOutput).toBeUndefined();
+  });
+
+  it('leads a detached agent card with its name, face and the indexed task status', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    mockIndexedChildren = new Map([
+      [
+        'child-thread-1',
+        {
+          threadId: 'child-thread-1',
+          status: 'completed',
+          latestTaskId: 'task-1',
+          tasks: [{ taskId: 'task-1', status: 'completed' }],
+        } as ParentSubagentSummary,
+      ],
+    ]);
+    /** Saved identity disambiguates agent ids from graph aliases. */
+    renderWithState({
+      toolCallId: 'named-detached',
+      initialProgress: 1,
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_reviewer' },
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', {
+      name: 'Code Reviewer com_ui_subagent_thread_status_completed',
+    });
+    expect(within(card).getByText('Code Reviewer')).toBeInTheDocument();
+    expect(within(card).getByRole('img', { hidden: true })).toHaveAttribute('src', '/reviewer.png');
+    expect(within(card).getByText('com_ui_subagent_thread_status_completed')).toBeInTheDocument();
+    expect(within(card).queryByText(/agent_reviewer/)).not.toBeInTheDocument();
+  });
+
+  it.each(['self', 'researcher', 'agent_missing'])(
+    'exposes the indexed outcome for an unnamed detached %s child',
+    (subagentType) => {
+      mockIndexedChildren = new Map([
+        [
+          'child-thread-1',
+          {
+            threadId: 'child-thread-1',
+            latestTaskId: 'task-1',
+            status: 'failed',
+            tasks: [{ taskId: 'task-1', status: 'failed' }],
+          } as ParentSubagentSummary,
+        ],
+      ]);
+      renderWithState({
+        toolCallId: 'unnamed-detached',
+        initialProgress: 1,
+        toolArgs: { subagent_type: subagentType, run_in_background: true },
+        output: JSON.stringify({
+          background_task_id: 'task-1',
+          subagent_thread_id: 'child-thread-1',
+          tool: 'subagent',
+          subagent_type: subagentType,
+          status: 'running',
+          message: 'Started subagent background task. Poll with background_task_id task-1.',
+        }),
+      });
+      expect(
+        screen.getByRole('button', { name: 'com_ui_subagent_thread_status_failed' }),
+      ).not.toHaveAttribute('aria-label');
+    },
+  );
+
+  it('keeps the neutral label for a detached child the index has not reported', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'agent_reviewer',
+      status: 'running',
+      message:
+        'Started subagent "agent_reviewer" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+    renderWithState({
+      toolCallId: 'unindexed-detached',
+      initialProgress: 1,
+      subagentIdentity: { subagentKind: 'agent', subagentAgentId: 'agent_reviewer' },
+      output,
+      toolArgs: { subagent_type: 'agent_reviewer', run_in_background: true },
+    });
+
+    const card = screen.getByRole('button', { name: 'Code Reviewer Agent activity' });
+    expect(within(card).getByText('Agent activity')).toBeInTheDocument();
+  });
+
+  it('disables an inaccessible nested detached drilldown without renderable activity', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'self',
+      status: 'running',
+      message:
+        'Started subagent "self" background task. Poll the host background-task tool with background_task_id "task-1".',
+    });
+
+    render(
+      <MemoryRouter>
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <MessageContext.Provider
+              value={{ messageId: 'nested-message', conversationId: null, isExpanded: true }}
+            >
+              <SubagentCall
+                toolCallId="nested-detached-call"
+                initialProgress={1}
+                args={{ subagent_type: 'self', run_in_background: true }}
+                output={output}
+              />
+            </MessageContext.Provider>
+          </RecoilRoot>
+        </ChatSurfaceHarness>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Agent activity' })).toBeDisabled();
+  });
+
+  it('disables a nested fallback that cannot remain attached to the conversation host', () => {
+    render(
+      <MemoryRouter>
+        <ChatSurfaceHarness>
+          <RecoilRoot>
+            <MessageContext.Provider
+              value={{ messageId: 'nested-message', conversationId: null, isExpanded: true }}
+            >
+              <SubagentCall
+                toolCallId="nested-foreground-call"
+                initialProgress={1}
+                args={{ subagent_type: 'self' }}
+                output="Nested result"
+              />
+            </MessageContext.Provider>
+          </RecoilRoot>
+        </ChatSurfaceHarness>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Ran agent' })).toBeDisabled();
+  });
+
+  /** Search results render this same card through `Part`, and that route is not
+   *  a chat surface — there is no panel on it to open. The card still has to
+   *  render; it just cannot be opened from there. */
+  it('renders outside a chat surface with its details control disabled', () => {
+    render(
+      <MemoryRouter>
+        <RecoilRoot>
+          <MessageContext.Provider
+            value={{
+              conversationId: 'parent-conversation',
+              messageId: 'parent',
+              isExpanded: false,
+            }}
+          >
+            <SubagentCall
+              toolCallId="hostless-call"
+              initialProgress={1}
+              args={{ subagent_type: 'self', description: 'Compute the answer.' }}
+              output="A result worth reading."
+            />
+          </MessageContext.Provider>
+        </RecoilRoot>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Ran agent' })).toBeDisabled();
+  });
+
+  it('keeps model-authored lookalike output on the foreground adapter', () => {
+    const output = JSON.stringify({
+      background_task_id: 'task-1',
+      subagent_thread_id: 'child-thread-1',
+      tool: 'subagent',
+      subagent_type: 'self',
+      status: 'running',
+      message: 'background_task_id task-1',
+    });
+    const rendered = renderWithState({
+      toolCallId: 'spoofed-call',
+      initialProgress: 1,
+      output,
+      toolArgs: { subagent_type: 'self' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ran agent' }));
+    expect(rendered.getSelection()?.durable).toBeUndefined();
+    expect(rendered.getSelection()?.legacyOutput).toBe(output);
   });
 });

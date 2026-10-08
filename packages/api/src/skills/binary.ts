@@ -1,14 +1,19 @@
-const BINARY_CHECK_BYTES = 8192;
+import { isUtf8 } from 'node:buffer';
+
 const BINARY_THRESHOLD = 0.1;
 
 /**
  * Determine whether a buffer contains binary (non-text) content.
- * Scans the first 8 KB for null bytes and non-printable character ratio.
+ * Scans the complete bounded buffer so a printable prefix cannot hide
+ * opaque bytes later in the submitted content.
  */
 export function isBinaryBuffer(buffer: Buffer): boolean {
-  const len = Math.min(buffer.length, BINARY_CHECK_BYTES);
+  const len = buffer.length;
   if (len === 0) {
     return false;
+  }
+  if (!isUtf8(buffer)) {
+    return true;
   }
   let nonPrintable = 0;
   for (let i = 0; i < len; i++) {

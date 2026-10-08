@@ -57,7 +57,10 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
       ref={ref}
       data-state={selected ? 'selected' : undefined}
       data-index={virtualIndex}
-      className="border-none hover:bg-surface-secondary"
+      /* The highlight is painted by the cells, not the row: `border-radius` has no
+         effect on a table row, so rounding the outer cells is what gives the hover
+         its pill shape. */
+      className="group border-0 hover:bg-transparent [&>*:first-child]:rounded-l-lg [&>*:last-child]:rounded-r-lg"
       style={style}
     >
       {row.getVisibleCells().map((cell) => {
@@ -69,7 +72,7 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
         const percent = meta?.width;
         let widthStyle: React.CSSProperties | undefined;
         if (cell.column.id === 'select') {
-          widthStyle = { width: '32px', maxWidth: '32px', minWidth: '32px' };
+          widthStyle = { width: '2rem', maxWidth: '2rem', minWidth: '2rem' };
         } else if (percent) {
           widthStyle = {
             width: `${percent}%`,
@@ -83,11 +86,13 @@ const TableRowComponent = <TData extends Record<string, unknown>>(
         return (
           <CellComponent
             key={cell.id}
+            size="dense"
             className={cn(
-              'max-w-0 truncate px-2 py-2 md:px-3 md:py-3',
+              'max-w-0 truncate px-3 text-sm transition-colors',
+              'group-hover:bg-surface-secondary-alt group-data-[state=selected]:bg-surface-active',
               cell.column.id === 'select' && 'w-8 p-1',
               meta?.className,
-              isDesktopOnly && 'hidden md:table-cell',
+              isDesktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
             )}
             style={widthStyle}
           >
@@ -123,28 +128,38 @@ export const MemoizedTableRow: React.MemoExoticComponent<(props: GenericRowProps
     (prev: GenericRowProps, next: GenericRowProps) =>
       prev.row.original === next.row.original &&
       prev.selected === next.selected &&
-      prev.cellsVersion === next.cellsVersion,
+      prev.cellsVersion === next.cellsVersion &&
+      /** The row height follows the theme, so a theme switch has to reach mounted rows. */
+      prev.style?.height === next.style?.height,
   );
 
 export const SkeletonRows: React.MemoExoticComponent<
   <TData extends Record<string, unknown>, TValue>({
     count,
     columns,
+    rowHeight,
   }: {
     count?: number;
     columns: TableColumn<TData, TValue>[];
+    rowHeight?: number;
   }) => JSX.Element
 > = memo(
   <TData extends Record<string, unknown>, TValue>({
     count = 10,
     columns,
+    rowHeight = 40,
   }: {
     count?: number;
     columns: TableColumn<TData, TValue>[];
+    rowHeight?: number;
   }): JSX.Element => (
     <>
       {Array.from({ length: count }, (_, index) => (
-        <TableRow key={`skeleton-${index}`} className="h-[56px] border-b border-border-light">
+        <TableRow
+          key={`skeleton-${index}`}
+          className="border-0 hover:bg-transparent"
+          style={{ height: rowHeight }}
+        >
           {columns.map((column) => {
             const columnKey = String(
               column.id ?? ('accessorKey' in column && column.accessorKey) ?? '',
@@ -153,10 +168,11 @@ export const SkeletonRows: React.MemoExoticComponent<
             return (
               <TableCell
                 key={columnKey}
+                size="dense"
                 className={cn(
-                  'px-2 py-2 md:px-3',
+                  'px-3',
                   meta?.className,
-                  meta?.desktopOnly && 'hidden md:table-cell',
+                  meta?.desktopOnly && '[display:var(--data-table-desktop-display,table-cell)]',
                 )}
               >
                 <Skeleton className="h-6 w-full" />

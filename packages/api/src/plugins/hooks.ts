@@ -12,8 +12,8 @@ export interface PluginHooksResult {
 
 /**
  * Reports a package that declares hooks when the host has registered no hook
- * capabilities. Nothing executes plugin hooks yet, and silently ignoring the
- * document would leave an operator believing it runs.
+ * capabilities (execution not opted into via `DEPLOYMENT_PLUGIN_HOOKS`).
+ * Silently ignoring the document would leave an operator believing it runs.
  */
 export async function reportUnexecutedHooks(realRoot: string): Promise<PluginDiagnostic[]> {
   const location = `${LIBRECHAT_EXTENSION_NAMESPACE}/${EXTENSION_HOOKS_FILE}`;
@@ -31,7 +31,7 @@ export async function reportUnexecutedHooks(realRoot: string): Promise<PluginDia
       code: 'hooks_unsupported',
       severity: 'warning',
       message:
-        'This plugin declares hooks, but LibreChat does not execute plugin hooks yet; the document was ignored',
+        'This plugin declares hooks, but plugin hook execution is disabled; set DEPLOYMENT_PLUGIN_HOOKS=true to run them. The document was ignored',
       location,
     },
   ];
@@ -127,5 +127,5 @@ export async function loadPluginHooks(
     });
   }
 
-  return { hooks: { plan, location }, diagnostics };
+  return { hooks: { plan, document: parsed.document, location }, diagnostics };
 }

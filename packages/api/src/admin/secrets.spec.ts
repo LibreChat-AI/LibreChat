@@ -208,6 +208,38 @@ describe('Langfuse config secrets', () => {
     });
   });
 
+  it('masks Langfuse header values while keeping their names', () => {
+    const redacted = redactConfigSecrets({
+      langfuse: {
+        enabled: true,
+        publicKey: 'pk-lf-1',
+        headers: {
+          'CF-Access-Client-Id': 'client-id',
+          'CF-Access-Client-Secret': 'gateway-credential',
+        },
+      },
+    });
+
+    /** These reach `GET /api/admin/config/base` from librechat.yaml, where no
+     *  scalar secret registration covers them — unmasked, any delegated admin
+     *  with Langfuse read access receives the raw gateway credential. */
+    expect(redacted.langfuse).toEqual({
+      enabled: true,
+      publicKey: 'pk-lf-1',
+      headers: { 'CF-Access-Client-Id': '***', 'CF-Access-Client-Secret': '***' },
+    });
+    expect(JSON.stringify(redacted)).not.toContain('gateway-credential');
+  });
+
+  it('drops a malformed Langfuse headers value rather than serializing it', () => {
+    const redacted = redactConfigSecrets({
+      langfuse: { publicKey: 'pk-lf-1', headers: 'Bearer raw-credential' },
+    });
+
+    expect(redacted.langfuse).toEqual({ publicKey: 'pk-lf-1' });
+    expect(JSON.stringify(redacted)).not.toContain('raw-credential');
+  });
+
   it('strips legacy displaySecretKey companions and migrates them on preserve', () => {
     const redacted = redactConfigSecrets({
       langfuse: { publicKey: 'pk-lf-1', secretKey: 'v3:abc:def', displaySecretKey: 'sk-lf-...old' },

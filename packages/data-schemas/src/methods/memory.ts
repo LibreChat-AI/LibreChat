@@ -30,6 +30,8 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
     agentId,
   }: t.SetMemoryParams) => Promise<t.MemoryResult>;
   deleteMemory: ({ userId, key, agentId }: t.DeleteMemoryParams) => Promise<t.MemoryResult>;
+  setMemoryById: (params: t.SetMemoryByIdParams) => Promise<t.SetMemoryByIdResult>;
+  deleteMemoryById: (params: t.MemoryByIdParams) => Promise<t.MemoryResult>;
   getAllUserMemories: (userId: string | Types.ObjectId) => Promise<t.IMemoryEntryLean[]>;
   getUserMemories: ({ userId, agentId }: t.GetUserMemoriesParams) => Promise<t.IMemoryEntryLean[]>;
   getFormattedMemories: ({
@@ -142,6 +144,85 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
     }
   }
 
+  /** Updates an existing memory without requiring its authored key. */
+  async function setMemoryById({
+    userId,
+    id,
+    key,
+    value,
+    tokenCount = 0,
+    agentId,
+  }: t.SetMemoryByIdParams): Promise<t.SetMemoryByIdResult> {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id) || key?.toLowerCase() === 'nothing') {
+        return { ok: false };
+      }
+
+      const MemoryEntry = mongoose.models.MemoryEntry;
+      const recordFilter = { _id: id, userId, ...partitionFilter(agentId) };
+      const existingMemory = (await MemoryEntry.findOne(
+        recordFilter,
+      ).lean()) as t.IMemoryEntryLean | null;
+      if (!existingMemory) {
+        return { ok: false };
+      }
+
+      if (key != null && key !== existingMemory.key) {
+        const duplicate = await MemoryEntry.exists({
+          userId,
+          key,
+          ...partitionFilter(agentId),
+          _id: { $ne: existingMemory._id },
+        });
+        if (duplicate) {
+          return { ok: false, conflict: true };
+        }
+      }
+
+      const updatedMemory = (await MemoryEntry.findOneAndUpdate(
+        recordFilter,
+        {
+          ...(key != null ? { key } : {}),
+          value,
+          tokenCount,
+          updated_at: new Date(),
+        },
+        { new: true, runValidators: true },
+      ).lean()) as t.IMemoryEntryLean | null;
+
+      return updatedMemory ? { ok: true, memory: updatedMemory } : { ok: false };
+    } catch (error) {
+      throw new Error(
+        `Failed to update memory: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
+  /** Deletes an existing memory without requiring its authored key. */
+  async function deleteMemoryById({
+    userId,
+    id,
+    agentId,
+  }: t.MemoryByIdParams): Promise<t.MemoryResult> {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return { ok: false };
+      }
+
+      const MemoryEntry = mongoose.models.MemoryEntry;
+      const result = await MemoryEntry.findOneAndDelete({
+        _id: id,
+        userId,
+        ...partitionFilter(agentId),
+      });
+      return { ok: !!result };
+    } catch (error) {
+      throw new Error(
+        `Failed to delete memory: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      );
+    }
+  }
+
   /**
    * Gets all memory entries for a user across every partition
    */
@@ -190,16 +271,27 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
       const memories = await getUserMemories({ userId, agentId });
 
       if (!memories || memories.length === 0) {
-        return { withKeys: '', withoutKeys: '', totalTokens: 0 };
+        return {
+          withKeys: '',
+          withoutKeys: '',
+          totalTokens: 0,
+          tokenCountsByKey: new Map<string, number>(),
+        };
       }
 
       const sortedMemories = memories.sort(
         (a, b) => new Date(a.updated_at!).getTime() - new Date(b.updated_at!).getTime(),
       );
 
-      const totalTokens = sortedMemories.reduce((sum, memory) => {
-        return sum + (memory.tokenCount || 0);
-      }, 0);
+      const { totalTokens, tokenCountsByKey } = sortedMemories.reduce(
+        (counts, memory) => {
+          const tokenCount = memory.tokenCount || 0;
+          counts.totalTokens += tokenCount;
+          counts.tokenCountsByKey.set(memory.key, tokenCount);
+          return counts;
+        },
+        { totalTokens: 0, tokenCountsByKey: new Map<string, number>() },
+      );
 
       const withKeys = sortedMemories
         .map((memory, index) => {
@@ -216,10 +308,18 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
         })
         .join('\n\n');
 
-      return { withKeys, withoutKeys, totalTokens };
+      return { withKeys, withoutKeys, totalTokens, tokenCountsByKey };
     } catch (error) {
       logger.error('Failed to get formatted memories:', error);
-      return { withKeys: '', withoutKeys: '', totalTokens: 0 };
+      /** Keep the current error handling without presenting a read failure
+       *  as an eligible, empty memory partition to prompt consumers. */
+      return {
+        withKeys: undefined,
+        withoutKeys: undefined,
+        totalTokens: 0,
+        tokenCountsByKey: new Map<string, number>(),
+        readFailed: true,
+      };
     }
   }
 
@@ -242,6 +342,8 @@ export function createMemoryMethods(mongoose: typeof import('mongoose')): {
     setMemory,
     createMemory,
     deleteMemory,
+    setMemoryById,
+    deleteMemoryById,
     getAllUserMemories,
     getUserMemories,
     getFormattedMemories,

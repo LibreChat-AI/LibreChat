@@ -13,6 +13,7 @@ import {
   fileSearchPermissionsSchema,
   multiConvoPermissionsSchema,
   mcpServersPermissionsSchema,
+  schedulesPermissionsSchema,
   sharedLinksPermissionsSchema,
   peoplePickerPermissionsSchema,
   remoteAgentsPermissionsSchema,
@@ -117,6 +118,10 @@ const defaultRolesSchema = z.object({
         [Permissions.SHARE]: z.boolean().default(true),
         [Permissions.SHARE_PUBLIC]: z.boolean().default(true),
       }),
+      [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema.extend({
+        [Permissions.USE]: z.boolean().default(true),
+        [Permissions.CREATE]: z.boolean().default(true),
+      }),
     }),
   }),
   [SystemRoles.USER]: roleSchema.extend({
@@ -211,6 +216,10 @@ export const roleDefaults = defaultRolesSchema.parse({
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
+      },
     },
   },
   [SystemRoles.USER]: {
@@ -267,6 +276,10 @@ export const roleDefaults = defaultRolesSchema.parse({
         [Permissions.CREATE]: true,
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: true,
+        [Permissions.CREATE]: true,
       },
     },
   },

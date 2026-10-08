@@ -13,6 +13,7 @@ export function createMessageModel(mongoose: typeof import('mongoose')): Model<t
       apiKey: process.env.MEILI_MASTER_KEY,
       indexName: 'messages',
       primaryKey: 'messageId',
+      excludeFromIndexPath: 'subagentTask',
     });
   }
 

@@ -132,6 +132,77 @@ describe('createSkillSyncMethods', () => {
     expect(success.errorMessage).toBeUndefined();
   });
 
+  it('persists the skipped skills of a partial run and treats it as a success timestamp', async () => {
+    const partial = await methods.upsertSkillSyncStatus({
+      provider: 'github',
+      sourceId: 'librechat-skills',
+      status: 'partial',
+      finishedAt: new Date('2026-01-01T00:00:00.000Z'),
+      syncedSkillCount: 11,
+      skippedSkillCount: 2,
+      skippedSkills: [
+        {
+          path: 'skills/broken',
+          name: 'broken',
+          errorCode: 'SKILL_PARSE_FAILED',
+          errorMessage: 'skills/broken/SKILL.md: malformed frontmatter',
+        },
+      ],
+    });
+
+    expect(partial).toMatchObject({
+      status: 'partial',
+      syncedSkillCount: 11,
+      skippedSkillCount: 2,
+      lastSuccessAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    expect(partial.skippedSkills).toEqual([
+      {
+        path: 'skills/broken',
+        name: 'broken',
+        errorCode: 'SKILL_PARSE_FAILED',
+        errorMessage: 'skills/broken/SKILL.md: malformed frontmatter',
+      },
+    ]);
+
+    const clean = await methods.upsertSkillSyncStatus({
+      provider: 'github',
+      sourceId: 'librechat-skills',
+      status: 'succeeded',
+      syncedSkillCount: 13,
+    });
+
+    expect(clean.status).toBe('succeeded');
+    expect(clean.skippedSkillCount).toBe(0);
+    expect(clean.skippedSkills).toEqual([]);
+  });
+
+  it('persists a skipped skill that lives at the repository root', async () => {
+    /* A root-level SKILL.md is discovered with an empty path, so a required
+       non-empty string here would reject the whole status document and lose
+       the partial result along with every skip reason in it. */
+    const partial = await methods.upsertSkillSyncStatus({
+      provider: 'github',
+      sourceId: 'librechat-skills',
+      status: 'partial',
+      syncedSkillCount: 1,
+      skippedSkillCount: 1,
+      skippedSkills: [
+        {
+          path: '',
+          name: 'root-skill',
+          errorCode: 'DUPLICATE_SKILL_NAME',
+          errorMessage: 'GitHub source "librechat-skills" contains multiple skills named "root"',
+        },
+      ],
+    });
+
+    expect(partial.status).toBe('partial');
+    expect(partial.skippedSkills).toEqual([
+      expect.objectContaining({ path: '', errorCode: 'DUPLICATE_SKILL_NAME' }),
+    ]);
+  });
+
   it('keeps status rows separate for the same source id in different tenants', async () => {
     await methods.upsertSkillSyncStatus({
       provider: 'github',

@@ -1,5 +1,5 @@
 import type { MCPOptions } from 'librechat-data-provider';
-import type { PluginHookPlan } from '~/agents/hooks';
+import type { PluginHookPlan, PluginHooksDocument } from '~/agents/hooks';
 import type { MCP_PLUGIN_SOURCE } from '~/utils/env';
 import type { JsonValue } from '~/agents/envelope';
 import type { DeploymentSkill } from '~/skills';
@@ -74,6 +74,8 @@ export interface PluginMcpServer {
 /** Hooks contributed through the `ai.librechat` extension directory. */
 export interface PluginHookContribution {
   plan: PluginHookPlan;
+  /** Parsed source document, re-planned at registration so plan and runtime never drift. */
+  document: PluginHooksDocument;
   location: string;
 }
 

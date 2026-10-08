@@ -2,6 +2,10 @@ import { useEffect, useRef, useCallback } from 'react';
 import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 
+/** Last fillStyle written during the current frame. Reset at the start of each frame so a
+ *  pixel only touches canvas state when its color differs from the previous draw. */
+let lastFillStyle = '';
+
 class Pixel {
   width: number;
   height: number;
@@ -60,7 +64,10 @@ class Pixel {
 
   private draw() {
     const offset = this.maxSizeInteger * 0.5 - this.size * 0.5;
-    this.ctx.fillStyle = this.color;
+    if (lastFillStyle !== this.color) {
+      this.ctx.fillStyle = this.color;
+      lastFillStyle = this.color;
+    }
     this.ctx.fillRect(this.x + offset, this.y + offset, this.size, this.size);
   }
 
@@ -139,12 +146,35 @@ const getEffectiveSpeed = (value: number, reducedMotion: boolean) => {
 
 const clamp = (n: number, min = 0, max = 1) => Math.min(Math.max(n, min), max);
 
+/** The default palette names theme channel variables, read off the card when the pixels are
+ *  laid out, so the canvas draws the active theme instead of a fixed light palette. */
 const VARIANTS = {
-  default: { gap: 5, speed: 35, colors: '#f8fafc,#f1f5f9,#cbd5e1', noFocus: false },
+  default: {
+    gap: 5,
+    speed: 35,
+    colors: '--surface-primary-alt,--surface-tertiary,--border-medium',
+    noFocus: false,
+  },
+  /** Decorative presets no theme role reproduces; kept as given, like a `colors` prop. */
   blue: { gap: 10, speed: 25, colors: '#e0f2fe,#7dd3fc,#0ea5e9', noFocus: false },
   yellow: { gap: 3, speed: 20, colors: '#fef08a,#fde047,#eab308', noFocus: false },
   pink: { gap: 6, speed: 80, colors: '#fecdd3,#fda4af,#e11d48', noFocus: true },
 } as const;
+
+/** Resolves `--token` entries to the element's channel triplet; any other entry is a CSS color
+ *  the caller supplied and passes through. A token the page does not define falls back to the
+ *  canvas ink rather than drawing nothing. */
+const resolvePalette = (palette: string, element: Element): string[] => {
+  const style = getComputedStyle(element);
+  return palette.split(',').map((entry) => {
+    const color = entry.trim();
+    if (!color.startsWith('--')) {
+      return color;
+    }
+    const channels = style.getPropertyValue(color).trim();
+    return channels ? `rgb(${channels})` : 'currentColor';
+  });
+};
 
 interface PixelCardProps {
   variant?: keyof typeof VARIANTS;
@@ -219,20 +249,28 @@ export default function PixelCard({
 
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
+      lastFillStyle = '';
       let idle = true;
-      for (const p of pixelsRef.current) {
-        if (method === 'appearWithProgress') {
-          if (progressRef.current !== undefined) {
-            p.appearWithProgress(progressRef.current);
+      const pixels = pixelsRef.current;
+      if (method === 'appearWithProgress') {
+        const currentProgress = progressRef.current;
+        for (const p of pixels) {
+          if (currentProgress !== undefined) {
+            p.appearWithProgress(currentProgress);
           } else {
             p.isIdle = true;
           }
-        } else {
+          if (!p.isIdle) {
+            idle = false;
+          }
+        }
+      } else {
+        for (const p of pixels) {
           // @ts-ignore dynamic dispatch
           p[method]();
-        }
-        if (!p.isIdle) {
-          idle = false;
+          if (!p.isIdle) {
+            idle = false;
+          }
         }
       }
 
@@ -262,12 +300,13 @@ export default function PixelCard({
     canvasRef.current.width = Math.floor(cw);
     canvasRef.current.height = Math.floor(ch);
 
-    const cols = palette.split(',');
+    const cols = resolvePalette(palette, containerRef.current);
     const px: Pixel[] = [];
 
     const cx = cw / 2;
     const cy = ch / 2;
     const maxDist = Math.hypot(cx, cy);
+    const effectiveSpeed = getEffectiveSpeed(s, reducedMotion);
 
     for (let x = 0; x < cw; x += g) {
       for (let y = 0; y < ch; y += g) {
@@ -278,18 +317,7 @@ export default function PixelCard({
         if (!ctx) {
           continue;
         }
-        px.push(
-          new Pixel(
-            canvasRef.current,
-            ctx,
-            x,
-            y,
-            color,
-            getEffectiveSpeed(s, reducedMotion),
-            delay,
-            threshold,
-          ),
-        );
+        px.push(new Pixel(canvasRef.current, ctx, x, y, color, effectiveSpeed, delay, threshold));
       }
     }
     pixelsRef.current = px;
@@ -318,11 +346,34 @@ export default function PixelCard({
     if (containerRef.current) {
       obs.observe(containerRef.current);
     }
+    /** A mode switch or an applied theme rewrites the root's class or inline variables, which
+     *  the resolved palette has already been read from. The root's inline style also carries
+     *  unrelated variables (scrollbar gutter, font size), so the pixels are laid out again only
+     *  when the palette itself resolves differently. */
+    let resolved = containerRef.current
+      ? resolvePalette(palette, containerRef.current).join(',')
+      : '';
+    const themeObs = new MutationObserver(() => {
+      if (!containerRef.current) {
+        return;
+      }
+      const next = resolvePalette(palette, containerRef.current).join(',');
+      if (next === resolved) {
+        return;
+      }
+      resolved = next;
+      initPixels();
+    });
+    themeObs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
     return () => {
       obs.disconnect();
+      themeObs.disconnect();
       cancelAnimationFrame(animationRef.current!);
     };
-  }, [initPixels]);
+  }, [initPixels, palette]);
 
   const hoverIn = () => progressRef.current === undefined && startAnim('appear');
   const hoverOut = () => progressRef.current === undefined && startAnim('disappear');
@@ -355,7 +406,7 @@ export default function PixelCard({
     >
       <div
         className={cn(
-          'relative isolate grid select-none place-items-center overflow-hidden rounded-lg border border-border-light shadow-md transition-colors duration-200 ease-in-out',
+          'border-border-light relative isolate grid place-items-center overflow-hidden rounded-lg border shadow-md transition-colors duration-200 ease-in-out select-none',
           className,
         )}
         style={{

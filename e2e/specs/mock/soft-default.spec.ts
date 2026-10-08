@@ -262,7 +262,11 @@ test.describe('soft default model spec', () => {
     const main = page.getByRole('main');
     const composer = page.getByRole('textbox', { name: 'Message input' });
     const user = getPrimaryE2EUser();
-    await expect(composer).toHaveAttribute('placeholder', /Mock Provider A/, { timeout: 15000 });
+    // The placeholder mirrors the sender chain, so a spec-launched chat shows the
+    // spec label (matching the model selector), not the endpoint's display label.
+    await expect(composer).toHaveAttribute('placeholder', new RegExp(SOFT_DEFAULT_LABEL), {
+      timeout: 15000,
+    });
     await expect(main).toContainText(user.name, { timeout: 15000 });
     await expect(main).not.toContainText(agentName);
     await expect(main).not.toContainText(agentDescription);

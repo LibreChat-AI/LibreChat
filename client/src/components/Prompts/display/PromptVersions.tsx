@@ -3,7 +3,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { TooltipAnchor } from '@librechat/client';
 import { Zap, Circle, CheckCircle2 } from 'lucide-react';
 import type { TPrompt, TPromptGroup } from 'librechat-data-provider';
-import { useLocalize } from '~/hooks';
+import { useLocalize, useClockFormat } from '~/hooks';
 import { cn } from '~/utils';
 
 const VersionBadge = ({
@@ -49,7 +49,7 @@ const VersionBadge = ({
 
 const getTimelineConnectorClasses = (isSelected: boolean, isProduction: boolean) => {
   if (isSelected) {
-    return 'border-status-success bg-status-success text-text-inverted';
+    return 'border-status-success-strong bg-status-success-strong text-text-on-status';
   }
   if (isProduction) {
     return 'border-status-success-border bg-transparent text-status-success';
@@ -75,6 +75,7 @@ const VersionCard = ({
   isProduction: boolean;
 }) => {
   const localize = useLocalize();
+  const hour12 = useClockFormat();
   const versionNumber = totalVersions - index;
 
   return (
@@ -142,7 +143,7 @@ const VersionCard = ({
         <time
           className="mt-1 text-xs text-text-secondary"
           dateTime={prompt.createdAt}
-          title={new Date(prompt.createdAt).toLocaleString()}
+          title={new Date(prompt.createdAt).toLocaleString(undefined, { hour12 })}
         >
           {formatDistanceToNow(new Date(prompt.createdAt), { addSuffix: true })}
         </time>

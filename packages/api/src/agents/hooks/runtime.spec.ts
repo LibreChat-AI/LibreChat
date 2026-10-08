@@ -5,6 +5,7 @@ import type { PluginHookCapabilities } from './compatibility';
 import type { PluginHookExecutor } from './runtime';
 import type { PluginHooksDocument } from './schema';
 import { createPluginHookPayload, registerPluginHooks } from './runtime';
+import { planPluginHooks } from './compatibility';
 
 const commandCapabilities: PluginHookCapabilities = {
   handlerTypes: new Set(['command']),
@@ -944,6 +945,27 @@ describe('registerPluginHooks', () => {
     expect(registration.registered).toBe(0);
     expect(registration.plan.summary.unsupported).toBe(2);
     expect(registry.getMatchers('Stop')).toHaveLength(0);
+  });
+
+  test('registers from a supplied load-time plan without re-planning', () => {
+    const registry = new HookRegistry();
+    const hookExecutor = executor();
+    const planned = document({
+      Stop: [{ hooks: [{ type: 'command', command: 'stop-hook.sh' }] }],
+    });
+    const plan = planPluginHooks(planned, hookExecutor.capabilities);
+    const registration = registerPluginHooks({
+      pluginId: 'planned-plugin',
+      registry,
+      executor: hookExecutor,
+      /** An empty document proves the supplied plan, not the document, drives registration. */
+      document: document({}),
+      plan,
+    });
+
+    expect(registration.plan).toBe(plan);
+    expect(registration.registered).toBe(1);
+    expect(registry.getMatchers('Stop')).toHaveLength(1);
   });
 
   test('unregisters only this plugin registration and is idempotent', () => {

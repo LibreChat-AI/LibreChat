@@ -73,6 +73,7 @@ jest.mock('../ToolOutput', () => ({
 
 jest.mock('~/utils', () => ({
   cn: (...classes: (string | boolean | undefined)[]) => classes.filter(Boolean).join(' '),
+  sortPagesByRelevance: (pages: number[]) => pages,
   logger: { error: jest.fn(), debug: jest.fn() },
 }));
 
@@ -82,9 +83,19 @@ jest.mock('~/data-provider', () => ({
 
 jest.mock('../FilePreviewDialog', () => ({
   __esModule: true,
-  default: ({ open, fileId, fileName }: { open: boolean; fileId?: string; fileName: string }) =>
+  default: ({
+    open,
+    fileId,
+    fileName,
+    fileSource,
+  }: {
+    open: boolean;
+    fileId?: string;
+    fileName: string;
+    fileSource?: string;
+  }) =>
     open ? (
-      <div data-testid="file-preview-dialog" data-file-id={fileId}>
+      <div data-testid="file-preview-dialog" data-file-id={fileId} data-file-source={fileSource}>
         {fileName}
       </div>
     ) : null,
@@ -158,6 +169,51 @@ describe('RetrievalCall - LGCY-02: Collapsible output panel', () => {
     expect(screen.queryByText('file results here')).not.toBeInTheDocument();
   });
 
+  it('does not offer expansion when output has no renderable results', () => {
+    renderRetrievalCall({
+      output: 'Search completed without matches',
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+
+    const progressText = screen.getByTestId('progress-text');
+    expect(progressText).toHaveAttribute('data-has-input', 'false');
+
+    fireEvent.click(progressText);
+    expect(progressText).toHaveAttribute('data-expanded', 'false');
+  });
+
+  it('offers attachment results even when the tool has no text output', () => {
+    renderRetrievalCall({
+      initialProgress: 1,
+      isSubmitting: false,
+      attachments: [
+        {
+          type: 'file_search',
+          toolCallId: 'call-1',
+          file_search: {
+            sources: [
+              {
+                fileId: 'file-123',
+                fileName: 'notes.txt',
+                relevance: 0.8,
+                content: 'Attachment result content',
+                pages: [],
+                pageRelevance: {},
+              },
+            ],
+          },
+        },
+      ] as unknown as TAttachment[],
+    });
+
+    const progressText = screen.getByTestId('progress-text');
+    expect(progressText).toHaveAttribute('data-has-input', 'true');
+
+    fireEvent.click(progressText);
+    expect(screen.getByText('Attachment result content')).toBeInTheDocument();
+  });
+
   it('does not show panel when output contains error', () => {
     renderRetrievalCall({
       output: 'error processing tool',
@@ -220,6 +276,7 @@ describe('RetrievalCall - file preview resolution', () => {
           filename: 'Tutorial Imazing.pdf',
           bytes: 2048,
           type: 'application/pdf',
+          source: 'text',
         },
       ],
     });
@@ -235,6 +292,7 @@ describe('RetrievalCall - file preview resolution', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Preview: Tutorial Imazing.pdf' }));
 
     expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-id', 'file-123');
+    expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-source', 'text');
   });
 
   it('keeps multiple parsed results clickable when only one attachment source is available', () => {

@@ -29,8 +29,95 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Stage 2 of codegraph gating (stage 1 = backend jest in backend-review.yml). Two of the three
+  # smokes are graph-decidable: the client package build only matters when the change reaches the
+  # client build context, and the production-image boot only when it reaches the api image's build
+  # context (Dockerfile.multi's api-build stage never builds client). Monotone and fail-open: a
+  # smoke is dropped ONLY on an explicit `false`; unavailable/unconfigured/non-synchronize events
+  # run everything. Lock attribution rides along so a dependency bump keeps the image smoke.
+  # Kill switch: repo variable CODEGRAPH_GATING=off.
+  codegraph_select:
+    name: Codegraph select
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'synchronize' &&
+      vars.CODEGRAPH_GATING != 'off'
+    outputs:
+      decided: ${{ steps.sel.outputs.decided }}
+      client_run: ${{ steps.sel.outputs.client_run }}
+      api_run: ${{ steps.sel.outputs.api_run }}
+    steps:
+      - name: Select smokes, fail open on any doubt
+        id: sel
+        env:
+          URL: ${{ secrets.CODEGRAPH_URL }}
+          TOKEN: ${{ secrets.CODEGRAPH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set +e
+          note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          note "### Codegraph select — GATING (docker smokes)"
+          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then note "_no codegraph config; running FULL_"; exit 0; fi
+          # A failed or truncated page must not become a shorter file list: the pipeline would hide
+          # gh's exit status behind jq, and a partial list can turn a required lane off. Check the
+          # fetch status AND the count against the PR's own changed_files (Codex P1, #15136).
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+              --jq '.[] | {path: .filename, status, patch}' > files.ndjson; then
+            note "_could not fetch changed files; running FULL_"; exit 0
+          fi
+          jq -s . files.ndjson > files.json
+          N=$(jq 'length' files.json)
+          if [ "$N" -eq 0 ] || { [ -n "$CHANGED" ] && [ "$N" -ne "$CHANGED" ]; }; then
+            note "_changed-file list incomplete ($N of ${CHANGED:-?}); running FULL_"; exit 0
+          fi
+          jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" \
+            '{files: ., mode: "safe", lockBaseSha: $b, lockHeadSha: $h}' files.json > body.json
+          # curl's status is checked explicitly: a transfer that times out or truncates after a
+          # parseable body must fail open, not be honoured (Codex P1, #15136). --fail-with-body
+          # also turns HTTP errors into a failure while keeping the error text for the summary.
+          RESP=$(curl -sS --fail-with-body -m 45 -H "Authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' --data-binary @body.json "$URL/v1/select"); RC=$?
+          if [ "$RC" -ne 0 ] || [ -z "$RESP" ] || ! echo "$RESP" | jq -e '.matrix["docker-smoke"]' >/dev/null 2>&1; then
+            note "_codegraph unavailable (curl exit $RC: ${RESP:0:120}); running FULL_"
+            exit 0
+          fi
+          # A smoke is skipped only on the JSON boolean false — tested inside jq, because `jq -r`
+          # prints the string "false" and the boolean identically (Codex P1, #15136). Anything
+          # else (true, null, a string, missing) runs.
+          if echo "$RESP" | jq -e '.e2e.fail_open == true' >/dev/null 2>&1; then
+            note "_fail-open decision (root/workflow/lockfile change or stale graph): everything runs_"
+          fi
+          note "| smoke | decision |"
+          note "|---|---|"
+          emit() {
+            key="$1"; hint="$2"; label="$3"
+            if echo "$RESP" | jq -e --arg h "$hint" '.matrix["docker-smoke"][$h] == false' >/dev/null 2>&1; then
+              echo "${key}_run=false" >> "$GITHUB_OUTPUT"
+              note "| $label | skip (no reach into its build context) |"
+            else
+              echo "${key}_run=true" >> "$GITHUB_OUTPUT"
+              note "| $label | run |"
+            fi
+          }
+          emit client client_package_target "client package build"
+          emit api api_runtime_smoke "api runtime smoke"
+          echo "codegraph-select: $(echo "$RESP" | jq -c '.matrix["docker-smoke"]')"
+          echo "decided=true" >> "$GITHUB_OUTPUT"
+          note ""
+          note "node image smoke keeps its own path filter · kill switch: repo variable \`CODEGRAPH_GATING=off\` · everything runs on PR open"
+          exit 0
+
   client-package-target:
     name: Build Docker client package target
+    needs: [codegraph_select]
+    if: ${{ !cancelled() && needs.codegraph_select.outputs.client_run != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -88,6 +175,8 @@ jobs:
 
   api-runtime-smoke:
     name: API runtime smoke (production image boots)
+    needs: [codegraph_select]
+    if: ${{ !cancelled() && needs.codegraph_select.outputs.api_run != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

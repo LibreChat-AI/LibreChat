@@ -4,6 +4,7 @@ import type {
   TFileConfig,
   TAzureConfig,
   TCustomConfig,
+  TChatProjectsConfig,
   TMemoryConfig,
   EModelEndpoint,
   TVertexAIConfig,
@@ -13,7 +14,10 @@ import type {
   TAssistantEndpoint,
   TAnthropicEndpoint,
   SummarizationConfig,
+  TConversationListConfig,
+  TToolCallPreviewsConfig,
   SkillSyncConfig,
+  FiltersConfig,
 } from 'librechat-data-provider';
 
 export type JsonSchemaType = {
@@ -63,6 +67,9 @@ export interface AppConfig {
   summarization?: SummarizationConfig;
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
+  githubCompare?: TCustomConfig['githubCompare'];
+  /** Source-scoped content filter configuration */
+  filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
   messageFilter?: TCustomConfig['messageFilter'];
   /** Langfuse tracing configuration */
@@ -75,8 +82,14 @@ export interface AppConfig {
   fileStrategies?: TCustomConfig['fileStrategies'];
   /** CloudFront CDN configuration */
   cloudfront?: CloudFrontConfig;
+  /** Chat Projects limits resolved from the deployment configuration */
+  projects?: TChatProjectsConfig;
   /** Registration configurations */
   registration?: TCustomConfig['registration'];
+  /** Changing the registered email address */
+  emailChange?: TCustomConfig['emailChange'];
+  /** Passkey enrollment configuration */
+  passkeys?: TCustomConfig['passkeys'];
   /** Actions configurations */
   actions?: TCustomConfig['actions'];
   /** Admin-filtered tools */
@@ -99,10 +112,16 @@ export interface AppConfig {
   mcpConfig?: TCustomConfig['mcpServers'] | null;
   /** MCP settings (domain allowlist, etc.) */
   mcpSettings?: TCustomConfig['mcpSettings'] | null;
+  /** Deployment-owned MCP App sandbox transport limits. */
+  mcpAppSandbox?: TCustomConfig['mcpAppSandbox'];
   /** File configuration */
   fileConfig?: TFileConfig;
-  /** Secure image links configuration */
+  /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
+  /** Validation limits for the conversation list's filter facets */
+  conversationList?: TConversationListConfig;
+  /** Bounds for the tool-call previews sent on conversation loads */
+  toolCallPreviews?: TToolCallPreviewsConfig;
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];
   /** Available tools */

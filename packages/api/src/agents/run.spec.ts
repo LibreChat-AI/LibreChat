@@ -8,6 +8,7 @@ import {
   isDeepSeekReasoningProvider,
   shouldReplayReasoningContent,
   anyAgentReplaysReasoningContent,
+  collectRunMCPToolAliases,
 } from './run';
 
 describe('getRunDiscoveredTools', () => {
@@ -407,5 +408,66 @@ describe('anyAgentReplaysReasoningContent', () => {
     (x as { subagentAgentConfigs?: unknown[] }).subagentAgentConfigs = [y];
     (y as { subagentAgentConfigs?: unknown[] }).subagentAgentConfigs = [x];
     expect(anyAgentReplaysReasoningContent([x])).toBe(false);
+  });
+});
+
+describe('collectRunMCPToolAliases', () => {
+  const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
+
+  it('collects and deduplicates aliases from explicit and graph subagents', () => {
+    const root = {
+      id: 'root',
+      subagentAgentConfigs: [
+        {
+          id: 'explicit',
+          mcpToolAliases: [alias],
+        },
+      ],
+      subagentGraphConfigs: [
+        {
+          memberConfigs: [
+            {
+              id: 'graph-member',
+              mcpToolAliases: [alias, { name: 'read_mcp_acme', aliasName: 'acme_read_mcp_acme' }],
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(collectRunMCPToolAliases([root] as never)).toEqual([
+      alias,
+      { name: 'read_mcp_acme', aliasName: 'acme_read_mcp_acme' },
+    ]);
+  });
+
+  it('is cycle-safe across nested subagents', () => {
+    const root: {
+      id: string;
+      mcpToolAliases: (typeof alias)[];
+      subagentAgentConfigs?: unknown[];
+    } = {
+      id: 'root',
+      mcpToolAliases: [alias],
+    };
+    const child = { id: 'child', subagentAgentConfigs: [root] };
+    root.subagentAgentConfigs = [child];
+
+    expect(collectRunMCPToolAliases([root] as never)).toEqual([alias]);
+  });
+
+  it('collects aliases from a graph member duplicated by a lazy descriptor', () => {
+    const graphAlias = { name: 'write_mcp_acme', aliasName: 'acme_write_mcp_acme' };
+    const root = {
+      id: 'root',
+      lazySubagentConfigs: [{ id: 'shared-agent' }],
+      subagentGraphConfigs: [
+        {
+          memberConfigs: [{ id: 'shared-agent', mcpToolAliases: [graphAlias] }],
+        },
+      ],
+    };
+
+    expect(collectRunMCPToolAliases([root] as never)).toEqual([graphAlias]);
   });
 });

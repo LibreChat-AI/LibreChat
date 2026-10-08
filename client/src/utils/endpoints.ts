@@ -8,10 +8,12 @@ import {
   isAgentsEndpoint,
   isEphemeralAgentId,
   isAssistantsEndpoint,
+  resolveModelSpecEndpoint,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
-import type { LocalizeFunction, IconsRecord } from '~/common';
+import type { LocalizeFunction } from '~/common';
 import { getTimestampedValue } from './timestamps';
+import { getAgentAvatarUrl } from './agents';
 
 /**
  * Clears model for non-ephemeral agent conversations.
@@ -513,6 +515,12 @@ export function getModelSpecPreset(modelSpec?: t.TModelSpec) {
   }
   return {
     ...modelSpec.preset,
+    /**
+     * Specs are materialized at config load, but a preset flowing into
+     * `TPreset` contexts must carry an endpoint decision either way — resolve
+     * here so startup and URL flows never receive an endpoint-less preset.
+     */
+    endpoint: resolveModelSpecEndpoint(modelSpec) ?? null,
     spec: modelSpec.name,
     iconURL: getModelSpecIconURL(modelSpec),
   };
@@ -542,9 +550,102 @@ export function mergeQuerySettingsWithSpec(
   };
 }
 
-/** Gets the model spec iconURL by explicit icon, preset icon, then preset endpoint. */
-export function getModelSpecIconURL(modelSpec: t.TModelSpec) {
-  return modelSpec.iconURL ?? modelSpec.preset?.iconURL ?? modelSpec.preset?.endpoint ?? '';
+/**
+ * Config authored through a form stores an untouched icon field as an empty
+ * string rather than omitting it, so `??` would stop on it and suppress every
+ * later candidate. `applyModelSpecPreset` already treats an empty `iconURL` as
+ * unset; `showIconInMenu` is the explicit way to render no icon.
+ */
+function firstPresentIcon(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    if (candidate != null && candidate !== '') {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+/** Gets the model spec iconURL by explicit icon, preset icon, agent avatar, then preset endpoint. */
+export function getModelSpecIconURL(modelSpec: t.TModelSpec, agentAvatarURL?: string) {
+  return firstPresentIcon(
+    modelSpec.iconURL,
+    modelSpec.preset?.iconURL,
+    agentAvatarURL,
+    modelSpec.preset?.endpoint,
+  );
+}
+
+/**
+ * Resolves the avatar of the agent a spec targets. Returns a primitive so callers
+ * can hand it to memoized icon components without widening their comparison to
+ * the identity of the whole agents map.
+ */
+export function getSpecAgentAvatarURL(
+  modelSpec: t.TModelSpec,
+  agentsMap?: t.TAgentsMap,
+): string | undefined {
+  const preset = modelSpec.preset;
+  /**
+   * `tModelSpecPresetSchema` permits `agent_id` alongside any endpoint, so a
+   * leftover id on a non-agent spec would otherwise surface an unrelated
+   * agent's identity ahead of that spec's own endpoint icon.
+   */
+  if (!isAgentsEndpoint(preset?.endpoint)) {
+    return undefined;
+  }
+
+  const agentId = preset?.agent_id;
+  if (agentId == null) {
+    return undefined;
+  }
+
+  /** Agents persist `avatar` as either a URL string or an object. */
+  return getAgentAvatarUrl(agentsMap?.[agentId]) ?? undefined;
+}
+
+/**
+ * `label` is required by `tModelSpecSchema`, yet specs can still reach the
+ * client without one when an external writer persists an incomplete config.
+ * Normalizing on ingest keeps every consumer — row rendering, search
+ * filtering, and the spec/endpoint discriminator — working from a complete
+ * spec, rather than each guarding separately and one inevitably being missed.
+ *
+ * Returns the original array, and the original spec objects, when nothing
+ * needs filling in, so memoized consumers see no new identities.
+ */
+export function normalizeModelSpecs(specs: t.TModelSpec[]): t.TModelSpec[] {
+  let normalized: t.TModelSpec[] | null = null;
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i];
+    if (spec.label) {
+      normalized?.push(spec);
+      continue;
+    }
+    /** Lazy copy: allocated only when the first incomplete spec is found. */
+    normalized ??= specs.slice(0, i);
+    normalized.push({ ...spec, label: spec.name });
+  }
+  return normalized ?? specs;
+}
+
+/**
+ * Applies `normalizeModelSpecs` to a fetched startup config, so normalization
+ * happens once at the query boundary and every consumer of
+ * `startupConfig.modelSpecs.list` — the selector, mentions, favorites,
+ * provider-key reachability — reads complete specs. Identity-preserving when
+ * nothing needs filling in.
+ */
+export function normalizeStartupConfigModelSpecs(config: t.TStartupConfig): t.TStartupConfig {
+  const modelSpecs = config?.modelSpecs;
+  if (!modelSpecs?.list?.length) {
+    return config;
+  }
+  const normalized = normalizeModelSpecs(modelSpecs.list);
+  if (normalized === modelSpecs.list) {
+    return config;
+  }
+  return { ...config, modelSpecs: { ...modelSpecs, list: normalized } };
 }
 
 /** Gets the default frontend-facing endpoint, dependent on iconURL definition.
@@ -561,26 +662,6 @@ export function getIconEndpoint({
   endpoint?: string | null;
 }) {
   return (endpointsConfig?.[iconURL ?? ''] ? (iconURL ?? endpoint) : endpoint) ?? '';
-}
-
-/** Gets the key to use for the default endpoint iconURL, as defined by the custom config */
-export function getIconKey({
-  endpoint,
-  endpointType: _eType,
-  endpointsConfig,
-  endpointIconURL: iconURL,
-}: {
-  endpoint?: string | null;
-  endpointsConfig?: t.TEndpointsConfig | null;
-  endpointType?: string | null;
-  endpointIconURL?: string;
-}): keyof IconsRecord {
-  const endpointType = _eType ?? getEndpointField(endpointsConfig, endpoint, 'type') ?? '';
-  const endpointIconURL = iconURL ?? getEndpointField(endpointsConfig, endpoint, 'iconURL') ?? '';
-  if (endpointIconURL && EModelEndpoint[endpointIconURL] != null) {
-    return endpointIconURL;
-  }
-  return endpointType ? 'unknown' : (endpoint ?? 'unknown');
 }
 
 export const getEntity = ({

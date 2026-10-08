@@ -32,10 +32,51 @@ import { useHasAccess, useResourcePermissions, useLocalize } from '~/hooks';
 import { NotificationSeverity } from '~/common';
 import { buildShareLinkUrl } from '~/utils';
 
+type SharePublicationErrorCode = 'TARGET_MESSAGE_NOT_FOUND' | 'NO_MESSAGES';
+
+const getSharePublicationErrorCode = (error: unknown): SharePublicationErrorCode | undefined => {
+  if (error == null || typeof error !== 'object') {
+    return undefined;
+  }
+
+  const directCode = 'code' in error ? error.code : undefined;
+  if (directCode === 'TARGET_MESSAGE_NOT_FOUND' || directCode === 'NO_MESSAGES') {
+    return directCode;
+  }
+
+  if (!('response' in error) || error.response == null || typeof error.response !== 'object') {
+    return undefined;
+  }
+  const data = 'data' in error.response ? error.response.data : undefined;
+  if (data == null || typeof data !== 'object' || !('code' in data)) {
+    return undefined;
+  }
+  return data.code === 'TARGET_MESSAGE_NOT_FOUND' || data.code === 'NO_MESSAGES'
+    ? data.code
+    : undefined;
+};
+
+const publishWithTailRetry = async <T,>(
+  resolveTargetMessageId: () => Promise<string | undefined>,
+  publish: (targetMessageId?: string) => Promise<T>,
+): Promise<T> => {
+  try {
+    return await publish(await resolveTargetMessageId());
+  } catch (error) {
+    const code = getSharePublicationErrorCode(error);
+    if (code !== 'TARGET_MESSAGE_NOT_FOUND' && code !== 'NO_MESSAGES') {
+      throw error;
+    }
+  }
+
+  return publish(await resolveTargetMessageId());
+};
+
 export default function SharedLinkButton({
   share,
   conversationId,
   targetMessageId,
+  resolveTargetMessageId,
   showQR,
   setShowQR,
   sharedLink,
@@ -45,6 +86,7 @@ export default function SharedLinkButton({
   share: TSharedLinkGetResponse | undefined;
   conversationId: string;
   targetMessageId?: string;
+  resolveTargetMessageId?: () => Promise<string>;
   showQR: boolean;
   setShowQR: (showQR: boolean) => void;
   sharedLink: string;
@@ -58,6 +100,7 @@ export default function SharedLinkButton({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [refreshAnimationId, setRefreshAnimationId] = useState(0);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [canNativeShare, setCanNativeShare] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const shareId = share?.shareId ?? '';
@@ -67,25 +110,9 @@ export default function SharedLinkButton({
     setCanNativeShare(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
   }, []);
 
-  const { mutateAsync: mutate, isLoading: isCreateLoading } = useCreateSharedLinkMutation({
-    onError: () => {
-      showToast({
-        message: localize('com_ui_share_error'),
-        severity: NotificationSeverity.ERROR,
-        showIcon: true,
-      });
-    },
-  });
+  const { mutateAsync: mutate, isLoading: isCreateLoading } = useCreateSharedLinkMutation();
 
-  const { mutateAsync, isLoading: isUpdateLoading } = useUpdateSharedLinkMutation({
-    onError: () => {
-      showToast({
-        message: localize('com_ui_share_error'),
-        severity: NotificationSeverity.ERROR,
-        showIcon: true,
-      });
-    },
-  });
+  const { mutateAsync, isLoading: isUpdateLoading } = useUpdateSharedLinkMutation();
 
   const deleteMutation = useDeleteSharedLinkMutation({
     onSuccess: () => {
@@ -110,13 +137,34 @@ export default function SharedLinkButton({
 
   const generateShareLink = (shareId: string) => buildShareLinkUrl(shareId);
 
+  const showPublicationError = (error: unknown) => {
+    const code = getSharePublicationErrorCode(error);
+    let message = localize('com_ui_share_error');
+    if (code === 'TARGET_MESSAGE_NOT_FOUND') {
+      message = localize('com_ui_share_target_not_saved');
+    } else if (code === 'NO_MESSAGES') {
+      message = localize('com_ui_share_no_messages');
+    }
+    showToast({
+      message,
+      severity: NotificationSeverity.ERROR,
+      showIcon: true,
+    });
+  };
+
+  const resolvePublicationTarget = () =>
+    resolveTargetMessageId?.() ?? Promise.resolve(targetMessageId);
+
   const updateSharedLink = async () => {
     if (!shareId) {
       return;
     }
 
+    setIsPublishing(true);
     try {
-      const updateShare = await mutateAsync({ shareId, targetMessageId, snapshotFiles });
+      const updateShare = await publishWithTailRetry(resolvePublicationTarget, (resolvedTargetId) =>
+        mutateAsync({ shareId, targetMessageId: resolvedTargetId, snapshotFiles }),
+      );
       setRefreshAnimationId((animationId) => animationId + 1);
       setSharedLink(generateShareLink(updateShare.shareId));
       setShowUpdateDialog(false);
@@ -126,15 +174,24 @@ export default function SharedLinkButton({
       }, 1000);
     } catch (error) {
       console.error('Failed to update shared link:', error);
+      showPublicationError(error);
+    } finally {
+      setIsPublishing(false);
     }
   };
 
   const createShareLink = async () => {
+    setIsPublishing(true);
     try {
-      const share = await mutate({ conversationId, targetMessageId, snapshotFiles });
+      const share = await publishWithTailRetry(resolvePublicationTarget, (resolvedTargetId) =>
+        mutate({ conversationId, targetMessageId: resolvedTargetId, snapshotFiles }),
+      );
       setSharedLink(generateShareLink(share.shareId));
     } catch (error) {
       console.error('Failed to create shared link:', error);
+      showPublicationError(error);
+    } finally {
+      setIsPublishing(false);
     }
   };
 
@@ -207,13 +264,13 @@ export default function SharedLinkButton({
         {!shareId && (
           <Button
             type="button"
-            disabled={isCreateLoading}
+            disabled={isCreateLoading || isPublishing}
             variant="submit"
             onClick={createShareLink}
             className="ml-auto min-w-28"
           >
-            {!isCreateLoading && localize('com_ui_create_link')}
-            {isCreateLoading && <Spinner className="size-4" />}
+            {!isCreateLoading && !isPublishing && localize('com_ui_create_link')}
+            {(isCreateLoading || isPublishing) && <Spinner className="size-4" />}
           </Button>
         )}
         {shareId && (
@@ -276,14 +333,14 @@ export default function SharedLinkButton({
                     variant="outline"
                     size="icon"
                     className="size-9 sm:size-10"
-                    disabled={isUpdateLoading}
+                    disabled={isUpdateLoading || isPublishing}
                     aria-label={localize('com_ui_update_shared_link')}
                   >
                     <RotateCw
                       key={refreshAnimationId}
                       className={
                         refreshAnimationId > 0
-                          ? 'size-4 animate-refresh-link-spin motion-reduce:animate-none'
+                          ? 'animate-refresh-link-spin size-4 motion-reduce:animate-none'
                           : 'size-4'
                       }
                       aria-hidden="true"
@@ -318,7 +375,7 @@ export default function SharedLinkButton({
                     ref={deleteButtonRef}
                     type="button"
                     onClick={() => setShowDeleteDialog(true)}
-                    variant="destructive"
+                    variant="destructive-soft"
                     size="icon"
                     className="size-9 sm:size-10"
                     aria-label={localize('com_ui_delete_link')}
@@ -339,7 +396,7 @@ export default function SharedLinkButton({
           <OGDialogContent className="w-11/12 max-w-md" showCloseButton={false}>
             <OGDialogHeader>
               <OGDialogTitle>{localize('com_ui_update_shared_link_confirm_title')}</OGDialogTitle>
-              <OGDialogDescription className="text-text-secondary">
+              <OGDialogDescription>
                 {localize('com_ui_update_shared_link_confirm_description')}
               </OGDialogDescription>
             </OGDialogHeader>
@@ -351,9 +408,9 @@ export default function SharedLinkButton({
                 type="button"
                 variant="submit"
                 onClick={updateSharedLink}
-                disabled={isUpdateLoading}
+                disabled={isUpdateLoading || isPublishing}
               >
-                {isUpdateLoading && <Spinner className="size-4" />}
+                {(isUpdateLoading || isPublishing) && <Spinner className="size-4" />}
                 {localize('com_ui_update_shared_link')}
               </Button>
             </div>
@@ -367,7 +424,7 @@ export default function SharedLinkButton({
         >
           <OGDialogContent
             role="alertdialog"
-            className="w-11/12 max-w-[450px]"
+            className="w-11/12 max-w-[28.125rem]"
             showCloseButton={false}
           >
             <OGDialogHeader>

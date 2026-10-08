@@ -134,6 +134,7 @@ export const useClearConversationsMutation = (): UseMutationResult<unknown> => {
   return useMutation(() => dataService.clearAllConversations(), {
     onSuccess: () => {
       queryClient.invalidateQueries([QueryKeys.allConversations]);
+      queryClient.invalidateQueries([QueryKeys.pinnedConversations]);
       queryClient.invalidateQueries([QueryKeys.conversationTags]);
     },
   });
@@ -473,6 +474,10 @@ export const useUpdateResourcePermissionsMutation = (): UseMutationResult<
 
       queryClient.invalidateQueries({
         queryKey: [QueryKeys.effectivePermissions, variables.resourceType, variables.resourceId],
+      });
+
+      queryClient.invalidateQueries({
+        queryKey: [QueryKeys.effectivePermissions, 'all', variables.resourceType],
       });
     },
   });

@@ -90,7 +90,8 @@ describe('roleDefaults', () => {
           permType === PermissionTypes.PROMPTS ||
           permType === PermissionTypes.AGENTS ||
           permType === PermissionTypes.SKILLS ||
-          permType === PermissionTypes.SHARED_LINKS;
+          permType === PermissionTypes.SHARED_LINKS ||
+          permType === PermissionTypes.SCHEDULES;
 
         expect({
           permType,

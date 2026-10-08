@@ -1,12 +1,14 @@
+/** Installed packages need real module IDs when Jest reuses a resolver across suites. */
 jest.mock(
   '@librechat/data-schemas',
   () => ({
     logger: { info: jest.fn(), warn: jest.fn(), debug: jest.fn(), error: jest.fn() },
+    runAsSystem: (callback) => callback(),
     getTenantId: jest.fn(() => undefined),
     DEFAULT_SESSION_EXPIRY: 900000,
     DEFAULT_REFRESH_TOKEN_EXPIRY: 604800000,
   }),
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock(
   'librechat-data-provider',
@@ -15,29 +17,86 @@ jest.mock(
     SystemRoles: { USER: 'USER', ADMIN: 'ADMIN' },
     errorsToString: jest.fn(),
   }),
-  { virtual: true },
+  { virtual: false },
 );
 jest.mock(
   '@librechat/api',
-  () => ({
-    isEnabled: jest.fn((val) => val === 'true' || val === true),
-    checkEmailConfig: jest.fn(),
-    isEmailDomainAllowed: jest.fn(),
-    math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
-    shouldUseSecureCookie: jest.fn(() => false),
-    resolveAppConfigForUser: jest.fn(async (_getAppConfig, _user) => ({})),
-    setCloudFrontCookies: jest.fn(() => true),
-    getCloudFrontConfig: jest.fn(() => ({
-      domain: 'https://cdn.example.com',
-      imageSigning: 'cookies',
-      cookieDomain: '.example.com',
-      privateKey: 'test-private-key',
-      keyPairId: 'K123ABC',
-    })),
-    parseCloudFrontCookieScope: jest.fn(() => null),
-    CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
-  }),
-  { virtual: true },
+  () => {
+    const shouldUseSecureCookie = jest.fn(() => false);
+    return {
+      isEnabled: jest.fn((val) => val === 'true' || val === true),
+      checkEmailConfig: jest.fn(),
+      isEmailDomainAllowed: jest.fn(),
+      math: jest.fn((val, fallback) => (val ? Number(val) : fallback)),
+      storeOpenIdSession: jest.fn(),
+      shouldUseSecureCookie,
+      setRefreshTokenCookie: jest.fn((res, refreshToken, expires) => {
+        res.cookie('refreshToken', refreshToken, {
+          expires,
+          httpOnly: true,
+          secure: shouldUseSecureCookie(),
+          sameSite: 'strict',
+        });
+      }),
+      setOpenIDMarkerCookies: jest.fn((res, { userId, expires }) => {
+        res.cookie('token_provider', 'openid', {
+          expires,
+          httpOnly: true,
+          secure: shouldUseSecureCookie(),
+          sameSite: 'strict',
+        });
+        if (userId) {
+          res.cookie('openid_user_id', `signed:${userId}`, {
+            expires,
+            httpOnly: true,
+            secure: shouldUseSecureCookie(),
+            sameSite: 'strict',
+          });
+        }
+      }),
+      normalizeExpiresIn: (value) => {
+        const normalized = typeof value === 'string' && value.trim() ? Number(value) : value;
+        return typeof normalized === 'number' && Number.isFinite(normalized)
+          ? normalized
+          : undefined;
+      },
+      resolveAppConfigForUser: jest.fn(async (_getAppConfig, _user) => ({})),
+      commitPasswordReset: jest.fn(),
+      createOpenIDSessionIdentity: jest.fn(
+        ({ user, userId, openidSubject, tenantId, openidIssuer }) => {
+          const normalize = (value) => {
+            if (value == null) {
+              return undefined;
+            }
+            const normalized = typeof value === 'string' ? value.trim() : value.toString().trim();
+            return normalized || undefined;
+          };
+          const normalizeIssuer = (value) =>
+            normalize(value)
+              ?.replace(/\/\.well-known\/openid-configuration$/, '')
+              .replace(/\/+$/, '');
+          return {
+            appUserId: normalize(userId) ?? normalize(user?._id) ?? normalize(user?.id),
+            openidSubject: normalize(openidSubject) ?? normalize(user?.openidId),
+            tenantId: normalize(tenantId) ?? normalize(user?.tenantId),
+            openidIssuer: normalizeIssuer(openidIssuer) ?? normalizeIssuer(user?.openidIssuer),
+          };
+        },
+      ),
+      setCloudFrontCookies: jest.fn(() => true),
+      clearCloudFrontCookies: jest.fn(),
+      getCloudFrontConfig: jest.fn(() => ({
+        domain: 'https://cdn.example.com',
+        imageSigning: 'cookies',
+        cookieDomain: '.example.com',
+        privateKey: 'test-private-key',
+        keyPairId: 'K123ABC',
+      })),
+      parseCloudFrontCookieScope: jest.fn(() => null),
+      CLOUDFRONT_SCOPE_COOKIE: 'LibreChat-CloudFront-Scope',
+    };
+  },
+  { virtual: false },
 );
 jest.mock('~/models', () => ({
   findUser: jest.fn(),
@@ -51,6 +110,7 @@ jest.mock('~/models', () => ({
   deleteTokens: jest.fn(),
   deleteSession: jest.fn(),
   createSession: jest.fn(),
+  upsertSession: jest.fn(),
   generateToken: jest.fn(),
   deleteUserById: jest.fn(),
   generateRefreshToken: jest.fn(),
@@ -72,43 +132,90 @@ jest.mock('~/strategies/validators', () => ({
 jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 jest.mock('~/server/utils', () => ({ sendEmail: jest.fn() }));
 
-const {
-  checkEmailConfig,
-  shouldUseSecureCookie,
-  isEmailDomainAllowed,
-  resolveAppConfigForUser,
-  setCloudFrontCookies,
-  getCloudFrontConfig,
-  parseCloudFrontCookieScope,
-} = require('@librechat/api');
-const jwt = require('jsonwebtoken');
-const { logger, getTenantId } = require('@librechat/data-schemas');
-const {
-  findUser,
-  findToken,
-  createUser,
-  updateUser,
-  countUsers,
-  getUserById,
-  generateToken,
-  generateRefreshToken,
-  createSession,
-  createToken,
-  deleteTokens,
-} = require('~/models');
-const { getAppConfig } = require('~/server/services/Config');
-const { sendEmail } = require('~/server/utils');
-const bcrypt = require('bcryptjs');
-const {
-  setOpenIDAuthTokens,
-  requestPasswordReset,
-  registerUser,
-  resetPassword,
-  resendVerificationEmail,
-  setAuthTokens,
-  setCloudFrontAuthCookies,
-  verifyEmail,
-} = require('./AuthService');
+let checkEmailConfig;
+let isEmailDomainAllowed;
+let resolveAppConfigForUser;
+let setRefreshTokenCookie;
+let setOpenIDMarkerCookies;
+let setCloudFrontCookies;
+let getCloudFrontConfig;
+let parseCloudFrontCookieScope;
+let storeOpenIdSession;
+let jwt;
+let logger;
+let getTenantId;
+let findUser;
+let findToken;
+let createUser;
+let updateUser;
+let countUsers;
+let getUserById;
+let generateToken;
+let generateRefreshToken;
+let createSession;
+let upsertSession;
+let deleteSession;
+let createToken;
+let deleteTokens;
+let getAppConfig;
+let sendEmail;
+let bcrypt;
+let setOpenIDAuthTokens;
+let storeOpenIDSession;
+let requestPasswordReset;
+let registerUser;
+let resetPassword;
+let resendVerificationEmail;
+let setAuthTokens;
+let setCloudFrontAuthCookies;
+let verifyEmail;
+let commitPasswordReset;
+
+jest.isolateModules(() => {
+  ({
+    checkEmailConfig,
+    isEmailDomainAllowed,
+    resolveAppConfigForUser,
+    commitPasswordReset,
+    setRefreshTokenCookie,
+    setOpenIDMarkerCookies,
+    setCloudFrontCookies,
+    getCloudFrontConfig,
+    parseCloudFrontCookieScope,
+    storeOpenIdSession,
+  } = require('@librechat/api'));
+  jwt = require('jsonwebtoken');
+  ({ logger, getTenantId } = require('@librechat/data-schemas'));
+  ({
+    findUser,
+    findToken,
+    createUser,
+    updateUser,
+    countUsers,
+    getUserById,
+    generateToken,
+    generateRefreshToken,
+    createSession,
+    upsertSession,
+    deleteSession,
+    createToken,
+    deleteTokens,
+  } = require('~/models'));
+  ({ getAppConfig } = require('~/server/services/Config'));
+  ({ sendEmail } = require('~/server/utils'));
+  bcrypt = require('bcryptjs');
+  ({
+    setOpenIDAuthTokens,
+    storeOpenIDSession,
+    requestPasswordReset,
+    registerUser,
+    resetPassword,
+    resendVerificationEmail,
+    setAuthTokens,
+    setCloudFrontAuthCookies,
+    verifyEmail,
+  } = require('./AuthService'));
+});
 
 /** Helper to build a mock Express response */
 function mockResponse() {
@@ -228,7 +335,94 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens.accessToken).toBe('the-access-token');
       expect(req.session.openidTokens.idToken).toBe('the-id-token');
       expect(req.session.openidTokens.refreshToken).toBe('the-refresh-token');
+      expect(req.session.openidTokens.browserRefreshToken).toBe('the-refresh-token');
       expect(req.session.openidTokens.lastRefreshedAt).toEqual(expect.any(Number));
+    });
+
+    it('should bind session tokens to the OpenID user identity', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, {
+        userId: 'user-123',
+        openidSubject: 'oidc-sub-123',
+        tenantId: 'tenantA',
+        openidIssuer: 'https://issuer.example.com/.well-known/openid-configuration',
+      });
+
+      expect(req.session.openidTokens).toEqual(
+        expect.objectContaining({
+          appUserId: 'user-123',
+          openidSubject: 'oidc-sub-123',
+          tenantId: 'tenantA',
+          openidIssuer: 'https://issuer.example.com',
+        }),
+      );
+    });
+
+    /**
+     * Codex Finding 5: persist the access-token's expiry (unix seconds) so the
+     * first OBO call after login or SPA refresh can reuse a still-valid OPAQUE
+     * access token without burning a redundant inline refresh. The expiry comes
+     * from the IdP's `tokenset.expires_in`; downstream consumers (notably
+     * `OpenIDSessionRefresh.getAccessTokenExp`) read it as a fallback when the
+     * access token isn't a JWT and can't be decoded.
+     */
+    it('should persist accessTokenExpiresAt when tokenset.expires_in is provided', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        expires_in: 3600,
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const beforeSec = Math.floor(Date.now() / 1000);
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      const persisted = req.session.openidTokens.accessTokenExpiresAt;
+      expect(typeof persisted).toBe('number');
+      expect(persisted).toBeGreaterThanOrEqual(beforeSec + 3590);
+      expect(persisted).toBeLessThanOrEqual(beforeSec + 3610);
+    });
+
+    it('should persist accessTokenExpiresAt when tokenset.expires_in is a numeric string', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        expires_in: '3600',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+      const beforeSec = Math.floor(Date.now() / 1000);
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens.accessTokenExpiresAt).toBeGreaterThanOrEqual(
+        beforeSec + 3590,
+      );
+    });
+
+    it('should NOT persist accessTokenExpiresAt when tokenset.expires_in is missing', () => {
+      const tokenset = {
+        id_token: 'the-id-token',
+        access_token: 'the-access-token',
+        refresh_token: 'the-refresh-token',
+        // expires_in deliberately omitted
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(req.session.openidTokens).not.toHaveProperty('accessTokenExpiresAt');
     });
 
     it('should return the existing unexpired session id_token when refresh omits one', () => {
@@ -283,6 +477,43 @@ describe('setOpenIDAuthTokens', () => {
       expect(req.session.openidTokens.accessToken).toBe('new-access-token');
     });
 
+    it('falls back to access_token when the refresh carried an expired id_token forward', () => {
+      const expiredIdToken = jwt.sign(
+        { sub: 'user-123', exp: Math.floor(Date.now() / 1000) - 60 },
+        'idp-signing-secret',
+      );
+      const tokenset = {
+        id_token: expiredIdToken,
+        access_token: 'new-access-token',
+        refresh_token: 'new-refresh-token',
+      };
+      const req = mockRequest({
+        openidTokens: {
+          accessToken: 'old-access-token',
+          idToken: expiredIdToken,
+          refreshToken: 'old-refresh-token',
+        },
+      });
+      const res = mockResponse();
+
+      const result = setOpenIDAuthTokens(tokenset, req, res, 'user-123');
+
+      expect(result).toBe('new-access-token');
+      expect(req.session.openidTokens.idToken).toBe(expiredIdToken);
+    });
+
+    it('still prefers an id_token whose expiry cannot be read', () => {
+      const tokenset = {
+        id_token: 'opaque-but-not-a-jwt',
+        access_token: 'new-access-token',
+        refresh_token: 'new-refresh-token',
+      };
+      const req = mockRequest();
+      const res = mockResponse();
+
+      expect(setOpenIDAuthTokens(tokenset, req, res, 'user-123')).toBe('opaque-but-not-a-jwt');
+    });
+
     it('should fall back to access_token when the existing session id_token is near expiry', () => {
       const nearExpiryIdToken = jwt.sign(
         { sub: 'user-123', exp: Math.floor(Date.now() / 1000) + 10 },
@@ -309,8 +540,40 @@ describe('setOpenIDAuthTokens', () => {
     });
   });
 
-  describe('cookie secure flag', () => {
-    it('should call shouldUseSecureCookie for every cookie set', () => {
+  it('stores an OpenID refresh token for durable revocation checks', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+
+    await storeOpenIDSession('user-123', 'the-refresh-token', 'tenant-a');
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'the-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: undefined,
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  it('revokes the previous durable session when the IdP rotates the refresh token', async () => {
+    storeOpenIdSession.mockResolvedValue(true);
+
+    await storeOpenIDSession('user-123', 'new-refresh-token', 'tenant-a', 'old-refresh-token');
+
+    expect(storeOpenIdSession).toHaveBeenCalledWith(
+      {
+        userId: 'user-123',
+        refreshToken: 'new-refresh-token',
+        tenantId: 'tenant-a',
+        previousRefreshToken: 'old-refresh-token',
+      },
+      { upsertSession, deleteSession },
+    );
+  });
+
+  describe('OpenID cookie delegation', () => {
+    it('delegates session-path refresh and marker cookies to shared cookie helpers', () => {
       const tokenset = {
         id_token: 'the-id-token',
         access_token: 'the-access-token',
@@ -321,37 +584,30 @@ describe('setOpenIDAuthTokens', () => {
 
       setOpenIDAuthTokens(tokenset, req, res, 'user-123');
 
-      // token_provider + openid_user_id (session path, so no refreshToken/openid_access_token cookies)
-      const secureCalls = shouldUseSecureCookie.mock.calls.length;
-      expect(secureCalls).toBeGreaterThanOrEqual(2);
-
-      // Verify all cookies use the result of shouldUseSecureCookie
-      for (const [, cookie] of Object.entries(res._cookies)) {
-        expect(cookie.options.secure).toBe(false);
-      }
+      expect(setRefreshTokenCookie).toHaveBeenCalledWith(
+        res,
+        'the-refresh-token',
+        expect.any(Date),
+      );
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(res, {
+        userId: 'user-123',
+        expires: expect.any(Date),
+        refreshExpiryMs: 604800000,
+        refreshToken: 'the-refresh-token',
+      });
+      expect(res.cookie).not.toHaveBeenCalledWith(
+        'openid_access_token',
+        expect.any(String),
+        expect.any(Object),
+      );
+      expect(res.cookie).not.toHaveBeenCalledWith(
+        'openid_id_token',
+        expect.any(String),
+        expect.any(Object),
+      );
     });
 
-    it('should set secure: true when shouldUseSecureCookie returns true', () => {
-      shouldUseSecureCookie.mockReturnValue(true);
-
-      const tokenset = {
-        id_token: 'the-id-token',
-        access_token: 'the-access-token',
-        refresh_token: 'the-refresh-token',
-      };
-      const req = mockRequest();
-      const res = mockResponse();
-
-      setOpenIDAuthTokens(tokenset, req, res, 'user-123');
-
-      for (const [, cookie] of Object.entries(res._cookies)) {
-        expect(cookie.options.secure).toBe(true);
-      }
-    });
-
-    it('should use shouldUseSecureCookie for cookie fallback path (no session)', () => {
-      shouldUseSecureCookie.mockReturnValue(false);
-
+    it('uses cookie fallback for OpenID access tokens when no session is available', () => {
       const tokenset = {
         id_token: 'the-id-token',
         access_token: 'the-access-token',
@@ -362,21 +618,34 @@ describe('setOpenIDAuthTokens', () => {
 
       setOpenIDAuthTokens(tokenset, req, res, 'user-123');
 
-      // In the cookie fallback path, we get: refreshToken, openid_access_token, token_provider, openid_user_id
-      expect(res.cookie).toHaveBeenCalledWith(
-        'refreshToken',
-        expect.any(String),
-        expect.objectContaining({ secure: false }),
+      expect(setRefreshTokenCookie).toHaveBeenCalledWith(
+        res,
+        'the-refresh-token',
+        expect.any(Date),
       );
+      expect(setOpenIDMarkerCookies).toHaveBeenCalledWith(res, {
+        userId: 'user-123',
+        expires: expect.any(Date),
+        refreshExpiryMs: 604800000,
+        refreshToken: 'the-refresh-token',
+      });
       expect(res.cookie).toHaveBeenCalledWith(
         'openid_access_token',
-        expect.any(String),
-        expect.objectContaining({ secure: false }),
+        'the-access-token',
+        expect.objectContaining({
+          expires: expect.any(Date),
+          httpOnly: true,
+          sameSite: 'strict',
+        }),
       );
       expect(res.cookie).toHaveBeenCalledWith(
-        'token_provider',
-        'openid',
-        expect.objectContaining({ secure: false }),
+        'openid_id_token',
+        'the-id-token',
+        expect.objectContaining({
+          expires: expect.any(Date),
+          httpOnly: true,
+          sameSite: 'strict',
+        }),
       );
     });
   });
@@ -684,6 +953,7 @@ describe('requestPasswordReset', () => {
     expect(createToken).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: user._id,
+        email: user.email,
         type: 'password_reset',
       }),
     );
@@ -691,113 +961,121 @@ describe('requestPasswordReset', () => {
 });
 
 describe('resetPassword', () => {
+  /** The reset policy itself (address binding, the compare-and-set, the email change
+   *  sweep) lives in `@librechat/api` and is covered by passwordReset.spec.ts. What
+   *  remains here is this file's wiring: which token lookup it injects, and which token
+   *  it deletes once the policy has committed. The double runs the injected lookup so
+   *  that wiring is still exercised, and decides nothing else. */
+  const resolvedUser = { email: 'user@example.com' };
+
   beforeEach(() => {
     jest.clearAllMocks();
     checkEmailConfig.mockReturnValue(false);
+    commitPasswordReset.mockImplementation(async (deps, { userId }) => {
+      const resetToken = await deps.findResetToken(userId);
+      return resetToken ? { ok: true, user: resolvedUser, resetToken } : { ok: false };
+    });
   });
 
-  it('should only accept password reset tokens for password reset', async () => {
-    const verificationHash = bcrypt.hashSync('verification-token', 10);
-    findToken.mockImplementation(async (query) => {
-      if (query.type === 'password_reset') {
-        return null;
-      }
-      if (query.type === null && query.email === null && query.identifier === null) {
-        return null;
-      }
-      return { token: verificationHash, userId: 'user-reset', email: 'user@example.com' };
-    });
-    updateUser.mockResolvedValue({ email: 'user@example.com' });
+  it('looks for a typed reset token before the untyped legacy shape', async () => {
+    findToken.mockResolvedValue(null);
 
-    const result = await resetPassword('user-reset', 'verification-token', 'new-password');
+    const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
     expect(result).toBeInstanceOf(Error);
-    expect(findToken).toHaveBeenCalledWith(
-      {
-        userId: 'user-reset',
-        type: 'password_reset',
-      },
+    expect(findToken).toHaveBeenNthCalledWith(
+      1,
+      { userId: 'user-reset', type: 'password_reset' },
       { sort: { createdAt: -1 } },
     );
-    expect(findToken).toHaveBeenCalledWith(
-      {
-        userId: 'user-reset',
-        email: null,
-        identifier: null,
-        type: null,
-      },
+    expect(findToken).toHaveBeenNthCalledWith(
+      2,
+      { userId: 'user-reset', email: null, identifier: null, type: null },
       { sort: { createdAt: -1 } },
     );
-    expect(updateUser).not.toHaveBeenCalled();
     expect(deleteTokens).not.toHaveBeenCalled();
   });
 
-  it('should delete only the used password reset token after a successful reset', async () => {
-    const resetHash = bcrypt.hashSync('reset-token', 10);
+  it('hands the policy the database and password surfaces it needs', async () => {
     findToken.mockResolvedValue({
-      token: resetHash,
+      token: 'reset-hash',
       userId: 'user-reset',
       type: 'password_reset',
     });
-    updateUser.mockResolvedValue({ email: 'user@example.com' });
+
+    await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(commitPasswordReset).toHaveBeenCalledWith(
+      expect.objectContaining({
+        findResetToken: expect.any(Function),
+        getUserById: expect.any(Function),
+        updateUser: expect.any(Function),
+        deleteTokens: expect.any(Function),
+        compareToken: expect.any(Function),
+        hashPassword: expect.any(Function),
+      }),
+      { userId: 'user-reset', token: 'reset-token', password: 'new-password' },
+    );
+  });
+
+  it('deletes only the typed reset token the policy consumed', async () => {
+    findToken.mockResolvedValue({
+      token: 'reset-hash',
+      userId: 'user-reset',
+      email: 'user@example.com',
+      type: 'password_reset',
+    });
 
     const result = await resetPassword('user-reset', 'reset-token', 'new-password');
 
     expect(result).toEqual({ message: 'Password reset was successful' });
-    expect(findToken).toHaveBeenCalledWith(
-      {
-        userId: 'user-reset',
-        type: 'password_reset',
-      },
-      { sort: { createdAt: -1 } },
-    );
-    expect(deleteTokens).toHaveBeenCalledWith({
-      token: resetHash,
-      type: 'password_reset',
-    });
+    expect(deleteTokens).toHaveBeenCalledWith({ token: 'reset-hash', type: 'password_reset' });
   });
 
-  it('should accept legacy reset tokens without affecting verification-shaped tokens', async () => {
-    const legacyResetHash = bcrypt.hashSync('legacy-reset-token', 10);
-    findToken.mockImplementation(async (query) => {
-      if (query.type === 'password_reset') {
-        return null;
-      }
-      if (query.type === null && query.email === null && query.identifier === null) {
-        return {
-          token: legacyResetHash,
-          userId: 'user-reset',
-        };
-      }
-      return null;
-    });
-    updateUser.mockResolvedValue({ email: 'user@example.com' });
+  it('deletes an untyped legacy token by its exact stored shape', async () => {
+    findToken.mockImplementation(async (query) =>
+      query.type === 'password_reset'
+        ? null
+        : { token: 'legacy-hash', userId: 'user-reset', email: null, identifier: null, type: null },
+    );
 
     const result = await resetPassword('user-reset', 'legacy-reset-token', 'new-password');
 
     expect(result).toEqual({ message: 'Password reset was successful' });
-    expect(findToken).toHaveBeenCalledWith(
-      {
-        userId: 'user-reset',
-        type: 'password_reset',
-      },
-      { sort: { createdAt: -1 } },
-    );
-    expect(findToken).toHaveBeenCalledWith(
-      {
-        userId: 'user-reset',
-        email: null,
-        identifier: null,
-        type: null,
-      },
-      { sort: { createdAt: -1 } },
-    );
     expect(deleteTokens).toHaveBeenCalledWith({
-      token: legacyResetHash,
+      token: 'legacy-hash',
       email: null,
       identifier: null,
       type: null,
     });
+  });
+
+  it('returns the generic error and touches nothing when the policy refuses', async () => {
+    findToken.mockResolvedValue(null);
+
+    const result = await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(result).toBeInstanceOf(Error);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(deleteTokens).not.toHaveBeenCalled();
+  });
+
+  it('notifies the account once the reset has committed', async () => {
+    checkEmailConfig.mockReturnValue(true);
+    findToken.mockResolvedValue({
+      token: 'reset-hash',
+      userId: 'user-reset',
+      type: 'password_reset',
+    });
+
+    await resetPassword('user-reset', 'reset-token', 'new-password');
+
+    expect(sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'user@example.com',
+        template: 'passwordReset.handlebars',
+      }),
+    );
   });
 });
 
@@ -960,6 +1238,26 @@ describe('resendVerificationEmail', () => {
         email: user.email,
         type: 'email_verification',
       }),
+    );
+  });
+
+  it('returns the generic response when delivery fails', async () => {
+    const user = {
+      _id: 'user-delivery-failure',
+      email: 'delivery-failure@example.com',
+      name: 'Delivery Failure',
+    };
+    findUser.mockResolvedValue(user);
+    sendEmail.mockRejectedValue(new Error('mail transport unavailable'));
+
+    const result = await resendVerificationEmail({ body: { email: user.email } });
+
+    expect(result).toEqual({
+      status: 200,
+      message: 'Please check your email to verify your email address.',
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      '[resendVerificationEmail] Error resending verification email: mail transport unavailable',
     );
   });
 });
@@ -1380,6 +1678,37 @@ describe('registerUser - allowedDomains admin-panel override', () => {
     await registerUser(validUser);
 
     expect(getAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-x' });
+  });
+
+  it('does not bootstrap a tenant-scoped registrant as an administrator', async () => {
+    getTenantId.mockReturnValue('attacker-selected-tenant');
+    createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+    checkEmailConfig.mockReturnValue(false);
+
+    await registerUser(validUser);
+
+    expect(countUsers).not.toHaveBeenCalled();
+    expect(createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'USER' }),
+      undefined,
+      expect.any(Boolean),
+      true,
+    );
+  });
+
+  it('preserves first-user administrator bootstrap without a tenant context', async () => {
+    createUser.mockResolvedValue({ _id: 'new-user', emailVerified: true });
+    checkEmailConfig.mockReturnValue(false);
+
+    await registerUser(validUser);
+
+    expect(countUsers).toHaveBeenCalledTimes(1);
+    expect(createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'ADMIN' }),
+      undefined,
+      expect.any(Boolean),
+      true,
+    );
   });
 
   it('should block registration when the resolved allowedDomains rejects the email', async () => {

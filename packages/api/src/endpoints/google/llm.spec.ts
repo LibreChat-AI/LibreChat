@@ -964,6 +964,216 @@ describe('getGoogleConfig', () => {
       expect(result.llmConfig).not.toHaveProperty('thinking_budget');
     });
 
+    it('should default Gemini 3.7 Flash to medium thinkingLevel', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.7-flash',
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'MEDIUM',
+      });
+    });
+
+    it('should remove legacy sampling params for Gemini 3.7 Flash', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const modelOptions = {
+        model: 'gemini-3.7-flash',
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+        top_p: 0.9,
+        top_k: 40,
+        presencePenalty: 0.5,
+        frequencyPenalty: 0.5,
+        thinking_budget: 5000,
+      } as unknown as t.GoogleParameters;
+
+      const result = getGoogleConfig(credentials, { modelOptions });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect(result.llmConfig).not.toHaveProperty('topP');
+      expect(result.llmConfig).not.toHaveProperty('topK');
+      expect(result.llmConfig).not.toHaveProperty('top_p');
+      expect(result.llmConfig).not.toHaveProperty('top_k');
+      expect(result.llmConfig).not.toHaveProperty('presencePenalty');
+      expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
+      expect(result.llmConfig).not.toHaveProperty('thinking_budget');
+    });
+
+    it.each([
+      [ThinkingLevel.low, 'LOW'],
+      [ThinkingLevel.medium, 'MEDIUM'],
+      [ThinkingLevel.high, 'HIGH'],
+    ])('should preserve explicit Gemini 3.7 Flash thinkingLevel "%s"', (level, expected) => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.7-flash',
+          thinkingLevel: level,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: expected,
+      });
+    });
+
+    it('should substitute minimal thinkingLevel with low for Gemini 3.7 Flash', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.7-flash',
+          thinkingLevel: ThinkingLevel.minimal,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'LOW',
+      });
+    });
+
+    it('should apply Gemini 3.7 Flash handling to versioned aliases', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'models/gemini-3.7-flash-latest',
+          temperature: 0.7,
+        },
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'MEDIUM',
+      });
+    });
+
+    it('should default Gemini 3.8 Flash to medium thinkingLevel', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.8-flash',
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'MEDIUM',
+      });
+    });
+
+    it('should remove legacy sampling params for Gemini 3.8 Flash', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const modelOptions = {
+        model: 'gemini-3.8-flash',
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+        top_p: 0.9,
+        top_k: 40,
+        presencePenalty: 0.5,
+        frequencyPenalty: 0.5,
+        thinking_budget: 5000,
+      } as unknown as t.GoogleParameters;
+
+      const result = getGoogleConfig(credentials, { modelOptions });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect(result.llmConfig).not.toHaveProperty('topP');
+      expect(result.llmConfig).not.toHaveProperty('topK');
+      expect(result.llmConfig).not.toHaveProperty('top_p');
+      expect(result.llmConfig).not.toHaveProperty('top_k');
+      expect(result.llmConfig).not.toHaveProperty('presencePenalty');
+      expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
+      expect(result.llmConfig).not.toHaveProperty('thinking_budget');
+    });
+
+    it.each([
+      [ThinkingLevel.low, 'LOW'],
+      [ThinkingLevel.medium, 'MEDIUM'],
+      [ThinkingLevel.high, 'HIGH'],
+    ])('should preserve explicit Gemini 3.8 Flash thinkingLevel "%s"', (level, expected) => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.8-flash',
+          thinkingLevel: level,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: expected,
+      });
+    });
+
+    it('should substitute minimal thinkingLevel with low for Gemini 3.8 Flash', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-3.8-flash',
+          thinkingLevel: ThinkingLevel.minimal,
+        },
+      });
+
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'LOW',
+      });
+    });
+
+    it('should apply Gemini 3.8 Flash handling to versioned aliases', () => {
+      const credentials = {
+        [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',
+      };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'models/gemini-3.8-flash-latest',
+          temperature: 0.7,
+        },
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('temperature');
+      expect((result.llmConfig as Record<string, unknown>).thinkingConfig).toMatchObject({
+        includeThoughts: true,
+        thinkingLevel: 'MEDIUM',
+      });
+    });
+
     it('should remove unsupported penalty params for Gemini 3.5 Flash-Lite', () => {
       const credentials = {
         [AuthKeys.GOOGLE_API_KEY]: 'test-api-key',

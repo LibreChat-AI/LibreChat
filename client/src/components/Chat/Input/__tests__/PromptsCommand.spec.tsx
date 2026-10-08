@@ -14,6 +14,7 @@ const PLACEHOLDER = 'com_ui_command_usage_placeholder';
 
 const mockSetShowPromptsPopover = jest.fn();
 const mockShowPromptsPopover = { current: true };
+const mockRequestAllPromptGroups = jest.fn();
 
 jest.mock('recoil', () => {
   const actual = jest.requireActual('recoil');
@@ -51,6 +52,7 @@ jest.mock('~/components/Prompts', () => ({
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
+  activateCatalog: jest.fn(),
 }));
 
 /* react-virtualized renders nothing in jsdom without a measured size; replace
@@ -125,6 +127,7 @@ beforeEach(() => {
       data: { promptGroups, promptsMap },
       isLoading: false,
     },
+    requestAllPromptGroups: mockRequestAllPromptGroups,
   });
 });
 
@@ -142,7 +145,6 @@ describe('PromptsCommand keyboard navigation', () => {
     const { container } = renderCommand();
     expect(container).toBeEmptyDOMElement();
   });
-
   it('moves the active highlight with ArrowDown/ArrowUp and wraps around', () => {
     renderCommand();
     const input = getInput();
@@ -216,5 +218,19 @@ describe('PromptsCommand keyboard navigation', () => {
        no-match query has to be cleared or the popover reopens still filtered. */
     fireEvent.keyDown(input, { key: 'Enter' });
     expect((getInput() as HTMLInputElement).value).toBe('');
+  });
+});
+
+describe('PromptsCommand lazy prompt loading', () => {
+  it('requests the full prompt list when the popover is shown', () => {
+    mockShowPromptsPopover.current = true;
+    renderCommand();
+    expect(mockRequestAllPromptGroups).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not request the full prompt list while the popover is hidden', () => {
+    mockShowPromptsPopover.current = false;
+    renderCommand();
+    expect(mockRequestAllPromptGroups).not.toHaveBeenCalled();
   });
 });

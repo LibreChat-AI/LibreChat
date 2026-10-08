@@ -35,6 +35,7 @@ import type {
 import { BASE_CONFIG_PRINCIPAL_ID } from '~/admin/capabilities';
 import { MCP_AUTHORITY_PROOF_VERSION } from '~/types';
 import { getTenantId } from '~/config/tenantContext';
+import logger from '~/config/winston';
 
 interface PinnableQuery {
   session(session: ClientSession): this;
@@ -169,6 +170,10 @@ export type MCPAuthorityMethods = MCPAuthorityDatabaseMethods;
 
 export interface MCPAuthorityMethodHooks {
   afterPrincipalSnapshot?: () => void | Promise<void>;
+  /** Overrides the cooldown that throttles snapshot-namespace preflight
+   * retries after a failure. Tests use it to exercise both sides of the
+   * boundary without waiting. */
+  snapshotNamespaceRetryCooldownMs?: number;
 }
 
 export class MCPAuthorityProofError extends Error {
@@ -998,10 +1003,98 @@ function asMCPError(error: unknown): MCPAuthorityProofError {
   );
 }
 
+/** `NamespaceExists`: the collection is already there, including when a
+ * concurrent creator won the race. */
+const NAMESPACE_EXISTS_CODE = 48;
+
+/** After a failed namespace preflight, hold the failure this long before
+ * attempting the DDL again. Without it a persistent failure (an authorization
+ * error, say) turns every authority request into another serial collection
+ * preflight — a DDL retry storm precisely while the database is unhealthy. */
+const SNAPSHOT_NAMESPACE_RETRY_COOLDOWN_MS = 30_000;
+
+function isNamespaceExistsError(error: unknown): boolean {
+  const candidate = error as { code?: number; codeName?: string; message?: string };
+  return (
+    candidate?.code === NAMESPACE_EXISTS_CODE ||
+    candidate?.codeName === 'NamespaceExists' ||
+    /already exists/i.test(String(candidate?.message ?? ''))
+  );
+}
+
+/** Every collection the authoritative snapshot reads inside its transaction. */
+const AUTHORITY_SNAPSHOT_MODELS = [
+  'User',
+  'Role',
+  'Group',
+  'Config',
+  'MCPServer',
+  'Agent',
+  'AclEntry',
+  'PluginAuth',
+  'Token',
+] as const;
+
 export function createMCPAuthorityMethods(
   mongoose: typeof import('mongoose'),
   hooks: MCPAuthorityMethodHooks = {},
 ): MCPAuthorityDatabaseMethods {
+  let snapshotNamespacesReady: Promise<void> | undefined;
+  let snapshotNamespacesFailure: { error: unknown; at: number } | undefined;
+  const namespaceRetryCooldownMs =
+    hooks.snapshotNamespaceRetryCooldownMs ?? SNAPSHOT_NAMESPACE_RETRY_COOLDOWN_MS;
+
+  /** Amazon DocumentDB rejects any statement inside a transaction that touches
+   * a collection which does not exist, and `asMCPError` converts that server
+   * rejection into `proof_unavailable` — so on a deployment where, say, no
+   * `PluginAuth` or `Token` row has ever been written, every authority proof
+   * fails with an error that names nothing about the real cause. Materializing
+   * the snapshot's namespaces before the transaction opens costs one `create`
+   * per collection per process and nothing on MongoDB, which tolerates the
+   * in-transaction read either way. */
+  async function ensureSnapshotNamespaces(): Promise<void> {
+    /** Inside the cooldown, replay the recorded failure without touching the
+     * database: retries stay possible, but bounded. */
+    if (snapshotNamespacesFailure != null) {
+      if (Date.now() - snapshotNamespacesFailure.at < namespaceRetryCooldownMs) {
+        throw snapshotNamespacesFailure.error;
+      }
+      snapshotNamespacesFailure = undefined;
+    }
+    snapshotNamespacesReady ??= (async () => {
+      for (const modelName of AUTHORITY_SNAPSHOT_MODELS) {
+        const model = mongoose.models[modelName];
+        if (model == null) {
+          continue;
+        }
+        try {
+          await model.createCollection();
+        } catch (error) {
+          /** The namespace already exists, or a concurrent creator won the
+           * race — either way it is there now. EVERY other failure must
+           * propagate: swallowing one would cache this promise as settled and
+           * skip creation for the rest of the process, so a transient error
+           * would strand authority proofs permanently even after it cleared. */
+          if (!isNamespaceExistsError(error)) {
+            throw error;
+          }
+          logger.debug(`[MCPAuthority] ${modelName} collection already exists`);
+        }
+      }
+    })();
+    try {
+      await snapshotNamespacesReady;
+      snapshotNamespacesFailure = undefined;
+    } catch (error) {
+      /** Clear the memo so a later request retries rather than inheriting a
+       * failure that may have already cleared, and record it so requests
+       * arriving during the cooldown fail fast instead of re-running the DDL. */
+      snapshotNamespacesReady = undefined;
+      snapshotNamespacesFailure = { error, at: Date.now() };
+      throw error;
+    }
+  }
+
   async function loadCurrentProof(
     userId: string,
     tenantId: string | undefined,
@@ -1541,6 +1634,7 @@ export function createMCPAuthorityMethods(
     if (suppliedSession?.inTransaction()) {
       reject('proof_unavailable', 'MCP authority reads cannot use a caller transaction snapshot');
     }
+    await ensureSnapshotNamespaces();
     const session = suppliedSession ?? (await mongoose.startSession());
     const ownsSession = suppliedSession == null;
     try {

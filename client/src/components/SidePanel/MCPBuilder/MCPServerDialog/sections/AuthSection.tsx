@@ -1,8 +1,16 @@
 import { useMemo, useState } from 'react';
-import { Copy, CopyCheck } from 'lucide-react';
+import { Copy, CopyCheck } from 'lucide';
 import { useFormContext, useWatch } from 'react-hook-form';
 import { Permissions, PermissionTypes, TokenExchangeMethodEnum } from 'librechat-data-provider';
-import { Label, Input, Checkbox, SecretInput, Radio, useToastContext } from '@librechat/client';
+import {
+  Label,
+  Input,
+  Radio,
+  Checkbox,
+  MorphIcon,
+  SecretInput,
+  useToastContext,
+} from '@librechat/client';
 import type { MCPServerFormData } from '../hooks/useMCPServerForm';
 import { AuthTypeEnum, AuthorizationTypeEnum } from '../hooks/useMCPServerForm';
 import { useLocalize, useCopyToClipboard, useHasAccess } from '~/hooks';
@@ -110,7 +118,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
 
       {/* API Key Fields */}
       <Collapse open={authType === AuthTypeEnum.ServiceHttp} className="pt-3">
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
           {/* User provides own key checkbox + admin-provided key */}
           <div>
             <div className="flex items-center gap-2">
@@ -185,7 +193,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
 
       {/* OAuth Fields */}
       <Collapse open={authType === AuthTypeEnum.OAuth} className="pt-3">
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
           {/* Client ID & Secret in a grid */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
@@ -220,7 +228,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                 <p
                   id="oauth-client-id-error"
                   role="alert"
-                  className="text-xs text-text-destructive"
+                  className="text-text-destructive text-xs"
                 >
                   {localize('com_ui_field_required')}
                 </p>
@@ -317,19 +325,19 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
                   type="text"
                   readOnly
                   value={redirectUri}
-                  className="flex-1 text-xs text-text-secondary"
+                  className="text-text-secondary flex-1 text-xs"
                 />
                 <button
                   type="button"
                   onClick={() => {
                     if (isCopying) return;
+                    if (!copyLink(setIsCopying)) return;
                     showToast({ message: localize('com_ui_copied_to_clipboard') });
-                    copyLink(setIsCopying);
                   }}
-                  className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border-light text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary"
+                  className="border-border-light text-text-secondary hover:bg-surface-hover hover:text-text-primary flex size-10 shrink-0 items-center justify-center rounded-lg border transition-colors"
                   aria-label={localize('com_ui_copy_link')}
                 >
-                  {isCopying ? <CopyCheck className="size-4" /> : <Copy className="size-4" />}
+                  <MorphIcon icon={isCopying ? CopyCheck : Copy} className="size-4" />
                 </button>
               </div>
             </div>
@@ -339,7 +347,7 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
 
       {/* OBO Fields */}
       <Collapse open={authType === AuthTypeEnum.OBO} className="pt-3">
-        <div className="space-y-3 rounded-lg border border-border-light p-3">
+        <div className="bg-surface-secondary space-y-3 rounded-lg p-3">
           <div className="space-y-1.5">
             <Label htmlFor="obo_scopes" className="text-sm font-medium">
               {localize('com_ui_obo_scopes')}{' '}
@@ -362,16 +370,16 @@ export default function AuthSection({ isEditMode, serverName }: AuthSectionProps
               className={cn(errors.auth?.obo_scopes && 'border-border-destructive')}
             />
             {errors.auth?.obo_scopes && (
-              <p role="alert" className="text-xs text-text-destructive">
+              <p role="alert" className="text-text-destructive text-xs">
                 {localize('com_ui_field_required')}
               </p>
             )}
             {canConfigureObo ? (
-              <p id="obo-scopes-description" className="text-xs text-text-secondary">
+              <p id="obo-scopes-description" className="text-text-secondary text-xs">
                 {localize('com_ui_obo_scopes_description')}
               </p>
             ) : (
-              <p id="obo-scopes-readonly-description" className="text-xs text-text-secondary">
+              <p id="obo-scopes-readonly-description" className="text-text-secondary text-xs">
                 {localize('com_ui_obo_readonly_no_permission')}
               </p>
             )}

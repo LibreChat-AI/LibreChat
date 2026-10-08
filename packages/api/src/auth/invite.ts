@@ -45,6 +45,13 @@ export async function getInvite(
   deps: InviteDeps,
 ): Promise<unknown> {
   try {
+    /** `findToken` builds its query from the fields it is given, so an absent email
+     * is a lookup by token alone — which would match the invite and let the caller
+     * consume it without ever proving the address. */
+    if (!email) {
+      throw new Error('Invite not found or email does not match');
+    }
+
     const token = decodeURIComponent(encodedToken);
     const hash = await hashToken(token);
     const invite = await deps.findToken({ token: hash, email });

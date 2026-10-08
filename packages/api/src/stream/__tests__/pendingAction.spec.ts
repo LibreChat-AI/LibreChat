@@ -1,10 +1,13 @@
 import type { Agents } from 'librechat-data-provider';
+import {
+  GenerationPublicationFencedError,
+  PAUSE_PERSISTENCE_TIMEOUT_ERROR,
+} from '~/stream/interfaces/IJobStore';
+import { ApprovalLifecycle, PendingActionExpiredError } from '~/stream/ApprovalLifecycle';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
-import { PAUSE_PERSISTENCE_TIMEOUT_ERROR } from '~/stream/interfaces/IJobStore';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { ApprovalLifecycle } from '~/stream/ApprovalLifecycle';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -60,6 +63,148 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       }
     });
 
+    test('refuses an action whose deadline passed before the pause transition', async () => {
+      const streamId = 'stream-expired-before-pause';
+      await manager.createJob(streamId, 'user-1');
+
+      await expect(
+        manager.approvals.pause(streamId, buildAction(streamId, { expiresAt: Date.now() - 1 })),
+      ).rejects.toBeInstanceOf(PendingActionExpiredError);
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({ status: 'running' });
+      await expect(manager.approvals.peek(streamId)).resolves.toBeNull();
+    });
+
+    test('refuses an action that expires while the pause transition is waiting on storage', async () => {
+      const streamId = 'stream-expired-during-pause';
+      await manager.createJob(streamId, 'user-1');
+      const expiresAt = Date.now() + 1000;
+      const originalTransition = jobStore.transitionStatus.bind(jobStore);
+      const now = jest.spyOn(Date, 'now').mockReturnValue(expiresAt - 1);
+      const transition = jest
+        .spyOn(jobStore, 'transitionStatus')
+        .mockImplementationOnce(async (...args) => {
+          now.mockReturnValue(expiresAt);
+          return originalTransition(...args);
+        });
+
+      try {
+        await expect(
+          manager.approvals.pause(streamId, buildAction(streamId, { expiresAt })),
+        ).rejects.toBeInstanceOf(PendingActionExpiredError);
+      } finally {
+        transition.mockRestore();
+        now.mockRestore();
+      }
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({ status: 'running' });
+      await expect(manager.approvals.peek(streamId)).resolves.toBeNull();
+    });
+
+    test('a later ask retains a legacy answer for ordered cross-replica reconstruction', async () => {
+      const streamId = 'stream-repause-retains-legacy-answer';
+      await manager.createJob(streamId, 'user-1');
+      const firstAction = buildAction(streamId);
+      expect(await manager.approvals.pause(streamId, firstAction)).toBe(true);
+      expect(
+        await manager.approvals.resolve(streamId, firstAction.actionId, {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+            },
+          ],
+        }),
+      ).toBe(true);
+
+      expect(
+        await manager.approvals.pause(
+          streamId,
+          buildAction(streamId, {
+            payload: {
+              type: 'ask_user_question',
+              question: { question: 'Approve deployment?' },
+              tool_call_id: 'ask-2',
+            },
+          }),
+        ),
+      ).toBe(true);
+
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({
+        status: 'requires_action',
+        metadata: {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+            },
+          ],
+        },
+      });
+    });
+
+    test('a later tool approval retains a legacy answer for cross-replica reconstruction', async () => {
+      const streamId = 'stream-repause-retains-legacy-answer';
+      await manager.createJob(streamId, 'user-1');
+      const firstAction = buildAction(streamId);
+      expect(await manager.approvals.pause(streamId, firstAction)).toBe(true);
+      expect(
+        await manager.approvals.resolve(streamId, firstAction.actionId, {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+            },
+          ],
+        }),
+      ).toBe(true);
+
+      expect(await manager.approvals.pause(streamId, buildAction(streamId))).toBe(true);
+
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({
+        status: 'requires_action',
+        metadata: {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+            },
+          ],
+        },
+      });
+    });
+
+    test('a later pause retains an exact-ID answer for cross-replica reconstruction', async () => {
+      const streamId = 'stream-repause-retains-exact-answer';
+      await manager.createJob(streamId, 'user-1');
+      const firstAction = buildAction(streamId);
+      expect(await manager.approvals.pause(streamId, firstAction)).toBe(true);
+      expect(
+        await manager.approvals.resolve(streamId, firstAction.actionId, {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+              toolCallId: 'ask-1',
+            },
+          ],
+        }),
+      ).toBe(true);
+
+      expect(await manager.approvals.pause(streamId, buildAction(streamId))).toBe(true);
+
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({
+        status: 'requires_action',
+        metadata: {
+          resolvedAskUserQuestions: [
+            {
+              request: 'Which environment?',
+              output: 'staging',
+              toolCallId: 'ask-1',
+            },
+          ],
+        },
+      });
+    });
+
     test('persists discovered tools in the same transition that makes the pause visible', async () => {
       const streamId = 'stream-pause-discoveries';
       await manager.createJob(streamId, 'user-1');
@@ -105,6 +250,71 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
 
       const paused = await manager.getJob(streamId);
       expect(paused?.metadata.activityPhaseSnapshot).toEqual(activityPhaseSnapshot);
+    });
+
+    test('persists compaction guidance in the same transition as the pause', async () => {
+      const streamId = 'stream-pause-compaction-index';
+      await manager.createJob(streamId, 'user-1');
+      const compactionSemanticIndex = {
+        version: 1 as const,
+        entries: [
+          {
+            type: 'activity_phase' as const,
+            sourceMessageId: 'assistant-history',
+            sourceContentIndex: 1,
+            revision: 1,
+            status: 'committed' as const,
+            text: 'Verified the release state',
+          },
+        ],
+      };
+
+      expect(
+        await manager.approvals.pause(streamId, buildAction(streamId), {
+          compactionSemanticIndex,
+        }),
+      ).toBe(true);
+
+      const paused = await manager.getJob(streamId);
+      expect(paused?.metadata.compactionSemanticIndex).toEqual(compactionSemanticIndex);
+    });
+
+    test('persists context meta in the same transition as the pause', async () => {
+      const streamId = 'stream-pause-context-meta';
+      await manager.createJob(streamId, 'user-1');
+      const contextMeta = {
+        calibrationRatio: 1.25,
+        encoding: 'claude',
+        fading: { v: 1 as const, budgetTokens: 50_000, masked: true },
+        fadingTiers: [{ agentId: 'agent-123', v: 1 as const, budgetTokens: 50_000, masked: true }],
+      };
+
+      expect(await manager.approvals.pause(streamId, buildAction(streamId), { contextMeta })).toBe(
+        true,
+      );
+
+      const paused = await manager.getJob(streamId);
+      expect(paused?.metadata.contextMeta).toEqual(contextMeta);
+    });
+
+    test('clears the previous pause context meta when a re-pause has none', async () => {
+      const streamId = 'stream-pause-context-meta-cleared';
+      await manager.createJob(streamId, 'user-1');
+      const firstAction = buildAction(streamId);
+      const contextMeta = {
+        calibrationRatio: 1.25,
+        encoding: 'claude',
+        fading: { v: 1 as const, budgetTokens: 50_000, masked: true },
+        fadingTiers: [{ agentId: 'agent-123', v: 1 as const, budgetTokens: 50_000, masked: true }],
+      };
+
+      expect(await manager.approvals.pause(streamId, firstAction, { contextMeta })).toBe(true);
+      expect(await manager.approvals.resolve(streamId, firstAction.actionId)).toBe(true);
+      expect(await manager.approvals.pause(streamId, buildAction(streamId))).toBe(true);
+
+      const repaused = await manager.getJob(streamId);
+      expect(repaused?.status).toBe('requires_action');
+      expect(repaused?.metadata.contextMeta).toBeUndefined();
     });
 
     test('does not write a stale pause or discoveries onto a replacement job', async () => {
@@ -449,6 +659,20 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       expect(await manager.approvals.pause('nonexistent', buildAction('nonexistent'))).toBe(false);
     });
 
+    test('replacing a paused generation removes its approval and rejects a late decision', async () => {
+      const streamId = 'stream-replace-paused-generation';
+      const predecessor = await manager.createJob(streamId, 'user-1');
+      const action = buildAction(streamId);
+      await manager.approvals.pause(streamId, action);
+      const replacement = await manager.createJob(streamId, 'user-1');
+
+      expect(replacement.createdAt).not.toBe(predecessor.createdAt);
+      expect(await manager.approvals.peek(streamId)).toBeNull();
+      expect((await manager.getResumeState(streamId))?.pendingAction).toBeUndefined();
+      expect(await manager.approvals.resolve(streamId, action.actionId)).toBe(false);
+      expect(await manager.getJobStatus(streamId)).toBe('running');
+    });
+
     test('a predecessor interrupt cannot pause a replacement generation', async () => {
       const streamId = 'stream-pause-epoch-fence';
       const predecessor = await manager.createJob(streamId, 'user-1');
@@ -504,12 +728,15 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
     test('treats a past-expiresAt record as gone (lazy expiry)', async () => {
       const streamId = 'stream-expired-peek';
       await manager.createJob(streamId, 'user-1');
-      await manager.approvals.pause(
-        streamId,
-        buildAction(streamId, { expiresAt: Date.now() - 1000 }),
-      );
+      const expiresAt = Date.now() + 1000;
+      await manager.approvals.pause(streamId, buildAction(streamId, { expiresAt }));
 
-      expect(await manager.approvals.peek(streamId)).toBeNull();
+      const now = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+      try {
+        expect(await manager.approvals.peek(streamId)).toBeNull();
+      } finally {
+        now.mockRestore();
+      }
     });
   });
 
@@ -522,6 +749,43 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       expect(await manager.approvals.resolve(streamId)).toBe(true);
       expect(await manager.getJobStatus(streamId)).toBe('running');
       expect(await manager.approvals.peek(streamId)).toBeNull();
+    });
+
+    test('clears the predecessor Event Actor suspension projection on resume', async () => {
+      const streamId = 'stream-resolve-event-actor-suspension';
+      const job = await manager.createJob(streamId, 'user-1', streamId, {
+        initialMetadata: { providerExecutionId: 'provider-paused' },
+      });
+      const pausedProviderExecutionId = job.metadata.providerExecutionId!;
+      const action = buildAction(streamId);
+      expect(
+        await manager.beginProviderExecution(streamId, job.createdAt, pausedProviderExecutionId),
+      ).toBe(true);
+      await manager.approvals.pause(streamId, action, {
+        expectedCreatedAt: job.createdAt,
+        agentEventSuspension: { version: 1, suspensionId: 'suspension-1', attempt: 0 },
+      });
+
+      expect(
+        await manager.approvals.resolve(
+          streamId,
+          action.actionId,
+          { providerExecutionId: 'provider-resume', providerDrained: true },
+          job.createdAt,
+        ),
+      ).toBe(true);
+      await expect(manager.getJob(streamId)).resolves.toMatchObject({
+        status: 'running',
+        metadata: { providerExecutionId: 'provider-resume' },
+      });
+      expect((await manager.getJob(streamId))?.metadata.agentEventSuspension).toBeUndefined();
+      expect((await manager.getJob(streamId))?.metadata.providerExecutionStartedId).toBeUndefined();
+      expect(await manager.beginProviderExecution(streamId, job.createdAt, 'provider-resume')).toBe(
+        true,
+      );
+      expect((await manager.getJob(streamId))?.metadata.providerExecutionStartedId).toBe(
+        'provider-resume',
+      );
     });
 
     test('a concurrent double-resolve wins exactly once (race-safe)', async () => {
@@ -563,6 +827,38 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       await expect(manager.steering.arm(streamId, 'waiting-steer', job.createdAt)).resolves.toBe(
         'incapable',
       );
+    });
+
+    test('persists user-submitted provenance in the same CAS that resumes the job', async () => {
+      const streamId = 'stream-resolve-provenance';
+      const job = await manager.createJob(streamId, 'user-1');
+      const action = buildAction(streamId);
+      await manager.approvals.pause(streamId, action);
+      const userSubmittedMessageFieldPaths = [
+        { path: '/content/0/tool_call/output', field: 'decision_response' as const },
+      ];
+
+      expect(
+        await manager.approvals.resolve(
+          streamId,
+          action.actionId,
+          {
+            userSubmittedPaths: ['/content/0/tool_call/args'],
+            userSubmittedMessageFieldPaths,
+          },
+          job.createdAt,
+        ),
+      ).toBe(true);
+
+      const resumed = await manager.getJob(streamId);
+      expect(resumed?.status).toBe('running');
+      expect(resumed?.metadata.userSubmittedPaths).toEqual(['/content/0/tool_call/args']);
+      expect(resumed?.metadata.userSubmittedMessageFieldPaths).toEqual(
+        userSubmittedMessageFieldPaths,
+      );
+      await expect(jobStore.getJob(streamId)).resolves.toMatchObject({
+        preResumeProvenance: { userSubmittedPaths: [], userSubmittedMessageFieldPaths: [] },
+      });
     });
 
     test('returns false when the job is not paused', async () => {
@@ -618,13 +914,16 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
     test('an expired pending action expires instead of resuming', async () => {
       const streamId = 'stream-resolve-expired';
       await manager.createJob(streamId, 'user-1');
-      await manager.approvals.pause(
-        streamId,
-        buildAction(streamId, { expiresAt: Date.now() - 1000 }),
-      );
+      const expiresAt = Date.now() + 1000;
+      await manager.approvals.pause(streamId, buildAction(streamId, { expiresAt }));
 
-      expect(await manager.approvals.resolve(streamId)).toBe(false);
-      expect(await manager.getJobStatus(streamId)).toBe('aborted');
+      const now = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+      try {
+        expect(await manager.approvals.resolve(streamId)).toBe(false);
+        expect(await manager.getJobStatus(streamId)).toBe('aborted');
+      } finally {
+        now.mockRestore();
+      }
     });
   });
 
@@ -676,6 +975,62 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
   });
 
   describe('expireApproval notification', () => {
+    test('delivers the exact expired generation to the host lifecycle hook', async () => {
+      const streamId = 'stream-expire-host-hook';
+      const job = await manager.createJob(streamId, 'user-1');
+      await manager.updateMetadata(streamId, {
+        scheduleId: 'schedule-1',
+        scheduledFor: '2026-08-17T12:00:00.000Z',
+      });
+      await manager.approvals.pause(streamId, buildAction(streamId));
+      const onApprovalExpired = jest.fn(async () => undefined);
+      manager.setApprovalExpiredHandler(onApprovalExpired);
+
+      expect(await manager.expireApproval(streamId)).toBe(true);
+
+      expect(onApprovalExpired).toHaveBeenCalledWith(
+        streamId,
+        expect.objectContaining({
+          createdAt: job.createdAt,
+          status: 'aborted',
+          scheduleId: 'schedule-1',
+          scheduledFor: '2026-08-17T12:00:00.000Z',
+        }),
+      );
+    });
+
+    test('expires a durable paused job even when no process-local runtime survived', async () => {
+      const streamId = 'stream-expire-ownerless-host-hook';
+      const job = await jobStore.createJob(streamId, 'user-1', streamId, undefined, {
+        scheduleId: 'schedule-ownerless',
+        scheduledFor: '2026-08-17T12:00:00.000Z',
+      });
+      const lifecycle = new ApprovalLifecycle(jobStore);
+      const expiresAt = Date.now() + 1_000;
+      await lifecycle.pause(streamId, buildAction(streamId, { expiresAt }));
+      const onApprovalExpired = jest.fn(async () => undefined);
+      manager.setApprovalExpiredHandler(onApprovalExpired);
+
+      const now = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+      try {
+        await (
+          manager as unknown as { expireStaleApprovals: () => Promise<void> }
+        ).expireStaleApprovals();
+      } finally {
+        now.mockRestore();
+      }
+
+      expect(onApprovalExpired).toHaveBeenCalledWith(
+        streamId,
+        expect.objectContaining({
+          createdAt: job.createdAt,
+          scheduleId: 'schedule-ownerless',
+          status: 'aborted',
+        }),
+      );
+      await expect(jobStore.getJob(streamId)).resolves.toMatchObject({ status: 'aborted' });
+    });
+
     test('does not expire a replacement paused on the same action id', async () => {
       const streamId = 'stream-expire-epoch-fence';
       const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
@@ -715,6 +1070,22 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
         'Approval expired before a decision was made',
         job.createdAt,
       );
+
+      subscription?.unsubscribe();
+    });
+
+    test('does not invoke local expiry fallback when publication is fenced', async () => {
+      const streamId = 'stream-expire-publication-fenced';
+      const job = await manager.createJob(streamId, 'user-1');
+      const onError = jest.fn();
+      const subscription = await manager.subscribe(streamId, () => undefined, undefined, onError);
+      await manager.approvals.pause(streamId, buildAction(streamId));
+      jest.spyOn(eventTransport, 'emitError').mockImplementation(() => {
+        throw new GenerationPublicationFencedError('error', streamId, job.createdAt);
+      });
+
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      expect(onError).not.toHaveBeenCalled();
 
       subscription?.unsubscribe();
     });
@@ -822,6 +1193,176 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
     });
   });
 
+  describe('durable approval-expiry host action', () => {
+    const sweep = (m: GenerationJobManagerClass) =>
+      (m as unknown as { expireStaleApprovals: () => Promise<void> }).expireStaleApprovals();
+
+    async function pauseScheduled(streamId: string) {
+      const job = await manager.createJob(streamId, 'user-1');
+      await manager.updateMetadata(streamId, {
+        scheduleId: 's1',
+        scheduledFor: '2026-08-17T12:00:00.000Z',
+      });
+      await manager.approvals.pause(streamId, buildAction(streamId));
+      return job;
+    }
+
+    test('retains the marker on hook failure and retries it on a later cleanup pass', async () => {
+      const streamId = 'stream-host-retry';
+      await pauseScheduled(streamId);
+      const handler = jest
+        .fn<Promise<void>, [string, { scheduleId?: string }]>()
+        .mockRejectedValueOnce(new Error('mongo down'))
+        .mockResolvedValue(undefined);
+      manager.setApprovalExpiredHandler(handler);
+
+      // First expiry wins its CAS, but the host hook FAILS: the durable marker is retained.
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBe(true);
+      expect(await jobStore.getTerminalHostActionJobs()).toHaveLength(1);
+
+      // A later cleanup pass re-enumerates the aborted job and retries; it now succeeds
+      // and clears the marker.
+      await sweep(manager);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBeUndefined();
+      expect(await jobStore.getTerminalHostActionJobs()).toHaveLength(0);
+    });
+
+    test('a fresh manager (restart / other replica) retries the pending host action', async () => {
+      const streamId = 'stream-host-restart';
+      const job = await pauseScheduled(streamId);
+      manager.setApprovalExpiredHandler(jest.fn().mockRejectedValue(new Error('down')));
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBe(true);
+
+      // Another replica / a restarted process: a fresh manager over the SAME durable store,
+      // with NO local runtime for this stream.
+      const other = new GenerationJobManagerClass();
+      other.configure({
+        jobStore,
+        eventTransport: new InMemoryEventTransport(),
+        isRedis: false,
+        cleanupOnComplete: false,
+      });
+      other.initialize();
+      const succeeding = jest.fn().mockResolvedValue(undefined);
+      other.setApprovalExpiredHandler(succeeding);
+
+      await sweep(other);
+
+      expect(succeeding).toHaveBeenCalledWith(
+        streamId,
+        expect.objectContaining({ createdAt: job.createdAt, scheduleId: 's1' }),
+      );
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBeUndefined();
+      await other.destroy();
+    });
+
+    test('a successful acknowledgement prevents duplicate work on later sweeps', async () => {
+      const streamId = 'stream-host-ack';
+      await pauseScheduled(streamId);
+      const handler = jest.fn().mockResolvedValue(undefined);
+      manager.setApprovalExpiredHandler(handler);
+
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(await jobStore.getTerminalHostActionJobs()).toHaveLength(0);
+
+      await sweep(manager);
+      expect(handler).toHaveBeenCalledTimes(1); // no duplicate invocation
+    });
+
+    test('passes the committed aborted state to an event outcome handler', async () => {
+      const streamId = 'stream-host-event-expiry-state';
+      await manager.createJob(streamId, 'user-1');
+      await manager.updateMetadata(streamId, { agentEventDeliveryKey: 'delivery-expired' });
+      await manager.approvals.pause(streamId, buildAction(streamId));
+      const handler = jest.fn().mockResolvedValue(undefined);
+      manager.setTerminalHostActionHandler(handler);
+
+      expect(await manager.expireApproval(streamId)).toBe(true);
+
+      expect(handler).toHaveBeenCalledWith(
+        streamId,
+        expect.objectContaining({
+          status: 'aborted',
+          error: 'Approval expired before a decision was made',
+          terminalHostActionPending: true,
+        }),
+        expect.any(Array),
+        expect.any(Array),
+      );
+    });
+
+    test('clearTerminalHostAction is identity-fenced against a replacement generation', async () => {
+      const streamId = 'stream-host-fence';
+      const job = await pauseScheduled(streamId);
+      manager.setApprovalExpiredHandler(jest.fn().mockRejectedValue(new Error('down')));
+      await manager.expireApproval(streamId);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBe(true);
+
+      // A clear fenced to a DIFFERENT generation must not clear this one's action.
+      await jobStore.clearTerminalHostAction(streamId, job.createdAt + 1);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBe(true);
+
+      // The exact generation clears it.
+      await jobStore.clearTerminalHostAction(streamId, job.createdAt);
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBeUndefined();
+    });
+
+    test('terminalizes and delivers the terminal state even when the first hook fails', async () => {
+      const streamId = 'stream-host-notify';
+      await pauseScheduled(streamId);
+      manager.setApprovalExpiredHandler(jest.fn().mockRejectedValue(new Error('down')));
+
+      // The CAS + terminal notification proceed regardless of the host hook outcome.
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      expect(await manager.getJobStatus(streamId)).toBe('aborted');
+    });
+
+    test('retention is refreshed on each retry so a long host outage keeps the evidence', async () => {
+      const streamId = 'stream-host-refresh';
+      await pauseScheduled(streamId);
+      manager.setApprovalExpiredHandler(jest.fn().mockRejectedValue(new Error('mongo down')));
+      expect(await manager.expireApproval(streamId)).toBe(true);
+
+      const before = (await jobStore.getJob(streamId))?.terminalHostActionRefreshedAt;
+
+      // A later cleanup pass re-enumerates it for retry; the hook still fails.
+      await sweep(manager);
+
+      const after = await jobStore.getJob(streamId);
+      // Still pending, and its retention basis moved forward — so the bounded retention
+      // window measures from the LAST retry, not from when the approval expired.
+      expect(after?.terminalHostActionPending).toBe(true);
+      expect(after?.terminalHostActionRefreshedAt).toEqual(expect.any(Number));
+      if (before != null) {
+        expect(after!.terminalHostActionRefreshedAt!).toBeGreaterThanOrEqual(before);
+      }
+    });
+
+    test('a non-scheduled job with a no-op host hook accumulates no marker', async () => {
+      const streamId = 'stream-host-nonsched';
+      await manager.createJob(streamId, 'user-1'); // no schedule metadata
+      await manager.approvals.pause(streamId, buildAction(streamId));
+      // The schedule adapter is installed but owns no action for a non-scheduled job.
+      manager.setApprovalExpiredHandler(
+        jest.fn(async (_streamId: string, job: { scheduleId?: string }) => {
+          if (!job.scheduleId) {
+            return;
+          }
+        }),
+      );
+
+      expect(await manager.expireApproval(streamId)).toBe(true);
+      // Marked atomically then cleared on the no-op success — nothing lingers.
+      expect((await jobStore.getJob(streamId))?.terminalHostActionPending).toBeUndefined();
+      expect(await jobStore.getTerminalHostActionJobs()).toHaveLength(0);
+    });
+  });
+
   describe('facade integration', () => {
     test('requires_action drops the running count but keeps the user-active set', async () => {
       const streamId = 'stream-counts';
@@ -856,13 +1397,16 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
     test('excludes a pending-approval job whose prompt has expired', async () => {
       const streamId = 'stream-expired-active';
       await manager.createJob(streamId, 'user-exp');
-      await manager.approvals.pause(
-        streamId,
-        buildAction(streamId, { expiresAt: Date.now() - 1000 }),
-      );
+      const expiresAt = Date.now() + 1000;
+      await manager.approvals.pause(streamId, buildAction(streamId, { expiresAt }));
 
-      // Still requires_action, but the prompt is past expiry → no longer active.
-      expect(await manager.getActiveJobIdsForUser('user-exp')).not.toContain(streamId);
+      const now = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
+      try {
+        // Still requires_action, but the prompt is past expiry → no longer active.
+        expect(await manager.getActiveJobIdsForUser('user-exp')).not.toContain(streamId);
+      } finally {
+        now.mockRestore();
+      }
     });
   });
 });
@@ -891,9 +1435,9 @@ describe('InMemoryJobStore — approval expiry cleanup', () => {
     expect((await store.getJob('epoch-guard'))?.status).toBe('error');
   });
 
-  test('cleanup() finalizes and reclaims a past-expiry pending-approval job', async () => {
+  test('cleanup() finalizes a past-expiry approval, retaining it for host-hook retry', async () => {
     const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
-    await store.createJob('s1', 'u1');
+    const job = await store.createJob('s1', 'u1');
 
     const action = buildPendingAction(
       buildToolApprovalPayload([{ name: 'shell', arguments: {}, tool_call_id: 'c1' }]),
@@ -905,7 +1449,17 @@ describe('InMemoryJobStore — approval expiry cleanup', () => {
       patch: { pendingAction: action, pendingActionId: action.actionId },
     });
 
-    // A past-expiry approval must be finalized + reclaimed, not left resident.
+    // A past-expiry approval is finalized (aborted) but RETAINED with a pending host-action
+    // marker so the manager relay can still run its lifecycle hook (the store cannot know
+    // whether one is owed); it is enumerable for that retry.
+    await store.cleanup();
+    const aborted = await store.getJob('s1');
+    expect(aborted?.status).toBe('aborted');
+    expect(aborted?.terminalHostActionPending).toBe(true);
+    expect(await store.getTerminalHostActionJobs()).toHaveLength(1);
+
+    // Once the host action acknowledges, the marker clears and the next cleanup reclaims it.
+    await store.clearTerminalHostAction('s1', job.createdAt);
     await store.cleanup();
     expect(await store.getJob('s1')).toBeNull();
   });
@@ -951,6 +1505,11 @@ describe('InMemoryJobStore — approval expiry cleanup', () => {
     const store = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
     try {
       const job = await store.createJob('stale-pause-barrier', 'u1');
+      await store.updateJob(
+        'stale-pause-barrier',
+        { agentEventDeliveryKey: 'trigger-stale-pause' },
+        job.createdAt,
+      );
       await store.enqueueSteer(
         'stale-pause-barrier',
         {
@@ -982,6 +1541,7 @@ describe('InMemoryJobStore — approval expiry cleanup', () => {
       await expect(store.getJob('stale-pause-barrier')).resolves.toMatchObject({
         status: 'error',
         error: PAUSE_PERSISTENCE_TIMEOUT_ERROR,
+        terminalHostActionPending: true,
       });
       const failedJob = await store.getJob('stale-pause-barrier');
       expect(failedJob?.pendingAction).toBeUndefined();
@@ -1140,6 +1700,18 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
     await manager.updateMetadata(streamId, { discoveredTools: ['deep_tool', 'other_tool'] });
     const job = await manager.getJob(streamId);
     expect(job?.metadata.discoveredTools).toEqual(['deep_tool', 'other_tool']);
+  });
+
+  test('updateMetadata exposes a paused legacy-event fence through the job facade', async () => {
+    const streamId = 'stream-legacy-event';
+    await manager.createJob(streamId, 'user-1');
+    await manager.updateMetadata(streamId, {
+      agentEventLegacyTurnToken: 'legacy-hitl-token',
+    });
+
+    const job = await manager.getJob(streamId);
+
+    expect(job?.metadata.agentEventLegacyTurnToken).toBe('legacy-hitl-token');
   });
 
   // H4: a pause that lands AFTER the resume snapshot but before the subscription must

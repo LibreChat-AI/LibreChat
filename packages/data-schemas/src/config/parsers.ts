@@ -44,10 +44,16 @@ const sensitiveKeys: RegExp[] = [
   /\b(api-key:? )[^\s"']+/gi, // Header: API key pattern
   /\b(api_key=)[^\s"'&]+/gi, // URL query param: API key pattern
   /\b(key=)[^\s"'&]+/g, // URL query param: sensitive key pattern
+  /(\b(?:access_token|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)\b"?\s*:\s*")(?:\\.|[^"\\])*/gi,
+  /\b((?:access_token|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^\s"'&]+/gi,
+  /(\b)eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]+/g,
+  /\b((?:Proxy-)?Authorization:\s*)[^\r\n]+/gi,
+  /\b((?:Cookie|Set-Cookie):\s*)[^\r\n]+/gi,
+  /([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]*:[^/\s@]+(?=@)/gi,
 ];
 
 const sensitiveMetadataKey =
-  /^(authorization|proxy-authorization|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password)$/i;
+  /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password|assertion|client[-_]?assertion|client[-_]?secret|code[-_]?verifier|credential|signature|connection[-_]?string)$/i;
 const errorStringProperties = new Set(['name', 'message', 'stack']);
 
 /**

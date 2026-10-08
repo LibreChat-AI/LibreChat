@@ -101,7 +101,7 @@ spec:
           {{- if .Values.global.librechat.existingSecretName }}
           - secretRef:
               name: {{ .Values.global.librechat.existingSecretName }}
-              optional: true
+              optional: false
           {{- end }}
           {{- with .Values.global.librechat.env }}
           env:

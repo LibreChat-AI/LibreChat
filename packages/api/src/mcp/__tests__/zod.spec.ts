@@ -2121,6 +2121,50 @@ describe('normalizeJsonSchema', () => {
     expect(result.additionalProperties).toEqual({ type: 'string', enum: ['val'] });
   });
 
+  it('should drop malformed required keywords recursively', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+          required: { host: true },
+        },
+      },
+      oneOf: [{ type: 'object', required: 'name' }],
+      items: { type: 'object', required: null },
+      required: {},
+    };
+
+    expect(normalizeJsonSchema(schema)).toEqual({
+      type: 'object',
+      properties: {
+        required: { type: 'boolean' },
+        config: {
+          type: 'object',
+          properties: { host: { type: 'string' } },
+        },
+      },
+      oneOf: [{ type: 'object' }],
+      items: { type: 'object' },
+    });
+  });
+
+  it('should normalize required arrays to unique property names', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        age: { type: 'number' },
+      },
+      required: ['name', 42, null, 'age', 'name', { key: 'value' }],
+    };
+
+    expect(normalizeJsonSchema(schema).required).toEqual(['name', 'age']);
+    expect(normalizeJsonSchema({ type: 'object', required: [] }).required).toEqual([]);
+  });
+
   it('should handle null, undefined, and primitive inputs safely', () => {
     expect(normalizeJsonSchema(null as any)).toBeNull();
     expect(normalizeJsonSchema(undefined as any)).toBeUndefined();

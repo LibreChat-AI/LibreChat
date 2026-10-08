@@ -1,18 +1,30 @@
 const crypto = require('crypto');
 const express = require('express');
 const { logger } = require('@librechat/data-schemas');
+const {
+  reportLocatorTraversalFailure,
+  createContentFilter,
+  extractPresetContent,
+  projectStoredPresets,
+} = require('@librechat/api');
 const { getPresets, savePreset, deletePresets } = require('~/models');
-const requireJwtAuth = require('~/server/middleware/requireJwtAuth');
+const { requireJwtAuth, configMiddleware } = require('~/server/middleware');
 
 const router = express.Router();
+const filterPresetContent = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
+  getFilters: (req) => req.config?.filters,
+  extract: (req) => extractPresetContent(req.body),
+});
+
 router.use(requireJwtAuth);
 
-router.get('/', async (req, res) => {
-  const presets = (await getPresets(req.user.id)).map((preset) => preset);
+router.get('/', configMiddleware, async (req, res) => {
+  const presets = projectStoredPresets(await getPresets(req.user.id), req.config?.filters);
   res.status(200).json(presets);
 });
 
-router.post('/', async (req, res) => {
+router.post('/', configMiddleware, filterPresetContent, async (req, res) => {
   const update = req.body || {};
 
   update.presetId = update?.presetId || crypto.randomUUID();

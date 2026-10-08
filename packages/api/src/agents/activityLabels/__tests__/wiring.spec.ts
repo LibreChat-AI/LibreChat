@@ -187,11 +187,12 @@ describe('synthesizeActivityLabelGapEvents', () => {
         activity_label: 'Inspected and fixed the session',
         activity_label_type: 'phase',
         activity_start_index: 0,
+        activity_end_index: 1,
         activity_count: 2,
         pending: false,
       },
     ];
-    const fresh: LooseContentPart[] = [{ ...snapshot[0], activity_start_index: 1 }];
+    const fresh: LooseContentPart[] = [{ ...snapshot[0], activity_end_index: 2 }];
 
     expect(synthesizeActivityLabelGapEvents(snapshot, fresh, meta)).toHaveLength(1);
   });

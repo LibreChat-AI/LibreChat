@@ -26,6 +26,25 @@ function createConditionalJob(
   );
 }
 
+/** An automatic continuation must never replace a parent turn that is still live. */
+function createWakeupJob(store: RedisJobStore, streamId: string, attempt: string) {
+  return store.createJob(
+    streamId,
+    'owner-1',
+    streamId,
+    undefined,
+    { generationProtocolVersion: 2 },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    attempt,
+    undefined,
+    true,
+  );
+}
+
 describe('Redis generation predecessor create fence', () => {
   const keyPrefix = `Predecessor-Fence-${process.pid}-${Date.now()}:`;
   let redis: RedisTestClient;
@@ -48,6 +67,97 @@ describe('Redis generation predecessor create fence', () => {
   afterAll(async () => {
     await store.destroy();
     await redis.quit();
+  });
+
+  test('admission refuses an active predecessor without mutating it, and admits a settled one', async () => {
+    const streamId = 'redis-active-predecessor-fence';
+    const parent = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+      generationProtocolVersion: 2,
+    });
+    await expect(
+      store.appendChunk(
+        streamId,
+        { event: 'on_message_delta', data: { delta: 'parent still writing' } },
+        parent.createdAt,
+      ),
+    ).resolves.toBe(true);
+    const chunksKey = `stream:{${streamId}}:chunks`;
+    const chunksBefore = await redis.xrange(chunksKey, '-', '+');
+
+    await expect(createWakeupJob(store, streamId, 'redis-wakeup-running')).rejects.toMatchObject({
+      code: 'GENERATION_PREDECESSOR_MISMATCH',
+      currentJob: { createdAt: parent.createdAt, active: true, verified: true, status: 'running' },
+    });
+    /** The refused continuation must leave the live parent turn exactly as it was. */
+    await expect(store.getJob(streamId)).resolves.toMatchObject({
+      createdAt: parent.createdAt,
+      status: 'running',
+    });
+    await expect(redis.xrange(chunksKey, '-', '+')).resolves.toEqual(chunksBefore);
+
+    await expect(
+      store.transitionStatus(streamId, {
+        from: 'running',
+        to: 'requires_action',
+        expectCreatedAt: parent.createdAt,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      createWakeupJob(store, streamId, 'redis-wakeup-requires-action'),
+    ).rejects.toMatchObject({
+      code: 'GENERATION_PREDECESSOR_MISMATCH',
+      currentJob: { active: true, status: 'requires_action' },
+    });
+
+    await expect(
+      store.transitionStatus(streamId, {
+        from: 'requires_action',
+        to: 'aborted',
+        expectCreatedAt: parent.createdAt,
+      }),
+    ).resolves.toBe(true);
+    await store.updateJob(streamId, { terminalPersistencePending: true }, parent.createdAt);
+    await expect(
+      createWakeupJob(store, streamId, 'redis-wakeup-terminal-persistence'),
+    ).rejects.toMatchObject({
+      currentJob: { active: true, status: 'aborted' },
+    });
+    await store.updateJob(streamId, { terminalPersistencePending: false }, parent.createdAt);
+    await store.updateJob(streamId, { terminalHostActionPending: true }, parent.createdAt);
+    await expect(
+      createWakeupJob(store, streamId, 'redis-wakeup-terminal-host-action'),
+    ).rejects.toMatchObject({
+      currentJob: { active: true, status: 'aborted' },
+    });
+    await expect(
+      store.createJob(streamId, 'owner-1', streamId, undefined, {
+        generationProtocolVersion: 2,
+      }),
+    ).rejects.toMatchObject({
+      currentJob: { active: true, status: 'aborted' },
+    });
+    await store.updateJob(streamId, { terminalHostActionPending: false }, parent.createdAt);
+    const wakeup = await createWakeupJob(store, streamId, 'redis-wakeup-settled');
+    expect(wakeup.createdAt).toBeGreaterThanOrEqual(parent.createdAt);
+  });
+
+  test('admission accepts an absent predecessor', async () => {
+    const streamId = 'redis-absent-predecessor-fence';
+    const wakeup = await createWakeupJob(store, streamId, 'redis-wakeup-absent');
+    expect(wakeup.createdAt).toEqual(expect.any(Number));
+  });
+
+  test('ordinary turns still replace an active predecessor', async () => {
+    const streamId = 'redis-ordinary-replacement-unchanged';
+    const first = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+      generationProtocolVersion: 2,
+    });
+    /** Without the policy a user turn keeps replacing a running generation. */
+    const second = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+      generationProtocolVersion: 2,
+    });
+    expect(second.createdAt).toBeGreaterThanOrEqual(first.createdAt);
+    await expect(store.getJob(streamId)).resolves.toMatchObject({ createdAt: second.createdAt });
   });
 
   test('mismatch returns the exact current generation without mutating durable state', async () => {

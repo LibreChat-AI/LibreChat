@@ -1,7 +1,13 @@
 import { randomUUID, createHash } from 'crypto';
-import { openAIBaseSchema, googleBaseSchema, anthropicBaseSchema } from 'librechat-data-provider';
-import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
+import {
+  openAIBaseSchema,
+  googleBaseSchema,
+  anthropicBaseSchema,
+  reasoningOverrideSchema,
+} from 'librechat-data-provider';
+import type { Agents, TReasoningOverride, TToolApprovalPolicy } from 'librechat-data-provider';
 import type { ToolPolicyConfig } from '@librechat/agents';
+import type { MCPToolAlias } from '~/tools/classification';
 
 /**
  * Default decisions offered to the user for a paused tool call.
@@ -15,10 +21,9 @@ const DEFAULT_REVIEW_DECISIONS: Agents.ToolApprovalDecisionType[] = ['approve', 
 /**
  * Layered sources that combine into the effective tool-approval policy for a turn.
  *
- * Only {@link ToolApprovalPolicyLayers.endpoint} is consumed today; `agent` and
- * `skills` are reserved seams so future per-agent / per-skill plumbing lands in
- * {@link resolveToolApprovalPolicy} rather than being threaded through the run
- * call site.
+ * Endpoint policy remains the administrative baseline. Attached code environments
+ * also activate LibreChat's built-in BYOM baseline; `agent` and `skills` remain
+ * reserved seams for future persisted overrides.
  */
 export interface ToolApprovalPolicyLayers {
   /**
@@ -38,6 +43,12 @@ export interface ToolApprovalPolicyLayers {
    * skill can never silently auto-approve a tool.
    */
   skills?: TToolApprovalPolicy[];
+  /**
+   * At least one agent in this run executes in an attached, user-operated environment.
+   * Attached environments get LibreChat's safe approval baseline without requiring
+   * an administrator to opt the whole endpoint into prompts.
+   */
+  attachedCodeEnvironment?: boolean;
 }
 
 /**
@@ -50,13 +61,26 @@ export interface ToolApprovalPolicyLayers {
  *   - `agent` overrides `mode`/`allow`/`deny`/`ask`/`reason`;
  *   - `skills` may only tighten (add `ask`/`deny`), never loosen.
  *
- * Today only `endpoint` is consumed, so the result is identical to reading
- * `endpoints.agents.toolApproval` directly — `agent`/`skills` are accepted but
- * not yet merged. Behaviour-preserving until those layers ship.
+ * When no endpoint policy is active, BYOM adds `enabled: true, mode: 'bypass'` and
+ * an agent-scoped hook supplies its coding decisions. An already-enabled endpoint
+ * policy remains the run-wide administrative baseline, including its unmatched-tool
+ * mode. An explicit endpoint `enabled: false` remains the administrator emergency
+ * override. `agent`/`skills` are accepted but not yet merged.
  */
 export function resolveToolApprovalPolicy(
   layers: ToolApprovalPolicyLayers,
 ): TToolApprovalPolicy | undefined {
+  if (
+    layers.attachedCodeEnvironment === true &&
+    layers.endpoint?.enabled !== true &&
+    layers.endpoint?.enabled !== false
+  ) {
+    return {
+      ...layers.endpoint,
+      enabled: true,
+      mode: 'bypass',
+    };
+  }
   return layers.endpoint;
 }
 
@@ -75,8 +99,61 @@ export function resolveToolApprovalPolicy(
  * any multi-process deployment. Pair this predicate with the checkpointer
  * assignment at the `Run.create` call site.
  */
-export function isHITLEnabled(policy: TToolApprovalPolicy | undefined): boolean {
+export function isHITLEnabled(
+  policy: TToolApprovalPolicy | undefined,
+): policy is NonNullable<TToolApprovalPolicy> {
   return policy?.enabled === true;
+}
+
+/**
+ * Whether the configured policy can structurally return `ask` for any tool.
+ *
+ * `bypass` and `dontAsk` are non-pausing fallbacks; only an explicit ask rule
+ * or a programmatic hook can tighten them to `ask`. A catch-all deny remains
+ * non-pausing because deny wins over every hook/rule, while a catch-all allow
+ * removes the default mode's unmatched-tool ask fallback. More-specific pattern
+ * overlap is intentionally treated conservatively because the run's complete
+ * lazy tool surface is not known at admission time.
+ */
+export function isToolApprovalPauseCapable(
+  policy: TToolApprovalPolicy | undefined,
+  hasProgrammaticHooks = false,
+  toolNames?: readonly string[],
+): boolean {
+  if (!isHITLEnabled(policy)) {
+    return false;
+  }
+  const enabledPolicy = policy;
+  if (toolNames != null) {
+    const names = Array.from(new Set(toolNames.filter((name) => name.length > 0)));
+    if (names.length === 0) {
+      return false;
+    }
+    const matches = (patterns: string[] | undefined, name: string): boolean =>
+      patterns?.some((pattern) => globToRegex(pattern).test(name)) === true;
+    return names.some((name) => {
+      if (isToolBlockedByApprovalPolicy(enabledPolicy, name)) {
+        return false;
+      }
+      if (hasProgrammaticHooks || matches(enabledPolicy.ask, name)) {
+        return true;
+      }
+      if (matches(enabledPolicy.allow, name)) {
+        return false;
+      }
+      return enabledPolicy.mode !== 'bypass' && enabledPolicy.mode !== 'dontAsk';
+    });
+  }
+  if (policy?.deny?.includes('*')) {
+    return false;
+  }
+  if (hasProgrammaticHooks || (policy?.ask?.length ?? 0) > 0) {
+    return true;
+  }
+  if (policy?.mode === 'bypass' || policy?.mode === 'dontAsk') {
+    return false;
+  }
+  return policy?.allow?.includes('*') !== true;
 }
 
 /**
@@ -86,6 +163,117 @@ export function isHITLEnabled(policy: TToolApprovalPolicy | undefined): boolean 
  * defaults apply). The `enabled` field is LibreChat-only and stripped here —
  * it's consumed separately via {@link isHITLEnabled} to gate the SDK opt-out.
  */
+/** Anchored-glob matcher mirroring the SDK's `createToolPolicyHook` semantics exactly. */
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('^' + escaped.replace(/\*/g, '.*') + '$');
+}
+
+/** Whether an enabled static policy unconditionally denies one concrete tool name. */
+export function isToolDeniedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  return (
+    isHITLEnabled(policy) &&
+    policy.deny?.some((pattern) => globToRegex(pattern).test(toolName)) === true
+  );
+}
+
+/** Static deny, including the unmatched `dontAsk` fallback, cannot be tightened into review. */
+export function isToolBlockedByApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  toolName: string,
+): boolean {
+  if (!isHITLEnabled(policy)) return false;
+  if (isToolDeniedByApprovalPolicy(policy, toolName)) return true;
+  if (policy.mode !== 'dontAsk') return false;
+  const matches = (patterns?: readonly string[]) =>
+    patterns?.some((pattern) => globToRegex(pattern).test(toolName)) === true;
+  return !matches(policy.ask) && !matches(policy.allow);
+}
+
+/**
+ * Extends each `toolApproval` pattern list with the names of tools whose
+ * OTHER spelling matches, so admin YAML keeps applying when a tool's key
+ * spelling changed in either direction: patterns written against pre-strip
+ * upstream naming reach the stripped instances (a non-matching `deny` would
+ * otherwise FAIL OPEN), and patterns written against the current catalog
+ * naming reach legacy-named instances retained by unedited agents. Healing
+ * is list-level (literal names appended, patterns never rewritten), so
+ * `deny`/`ask`/`allow` precedence semantics are unchanged, and a name
+ * already matched by its own list is skipped.
+ */
+export function healToolApprovalPolicy(
+  policy: TToolApprovalPolicy | undefined,
+  aliases: readonly MCPToolAlias[],
+): TToolApprovalPolicy | undefined {
+  if (!policy || aliases.length === 0) {
+    return policy;
+  }
+  const healList = (patterns: string[] | undefined): string[] | undefined => {
+    if (!patterns || patterns.length === 0) {
+      return patterns;
+    }
+    const regexes = patterns.map(globToRegex);
+    const appended: string[] = [];
+    for (const { name, aliasName } of aliases) {
+      if (name === aliasName || regexes.some((regex) => regex.test(name))) {
+        continue;
+      }
+      if (regexes.some((regex) => regex.test(aliasName))) {
+        appended.push(name);
+      }
+    }
+    return appended.length > 0 ? [...patterns, ...appended] : patterns;
+  };
+  return {
+    ...policy,
+    allow: healList(policy.allow),
+    deny: healList(policy.deny),
+    ask: healList(policy.ask),
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Names whose OTHER spelling matches a programmatic hook's regex matcher
+ * while their own name does not — the hook must also fire for these or its
+ * argument-, user-, or tenant-specific deny/ask decisions are silently
+ * skipped for renamed tools. Mirrors the SDK's unanchored `new RegExp(pattern)`
+ * matcher semantics; an invalid pattern matches nothing there, so it aliases
+ * nothing here.
+ */
+export function collectAliasMatcherNames(
+  matcher: string | undefined,
+  aliases: readonly MCPToolAlias[],
+): string[] {
+  if (!matcher || aliases.length === 0) {
+    return [];
+  }
+  let regex: RegExp;
+  try {
+    regex = new RegExp(matcher);
+  } catch {
+    return [];
+  }
+  const names: string[] = [];
+  for (const { name, aliasName } of aliases) {
+    if (name !== aliasName && !regex.test(name) && regex.test(aliasName)) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/** Anchored exact-name pattern for the alias-matched names of one hook matcher. */
+export function buildAliasMatcherPattern(names: readonly string[]): string {
+  return `^(?:${names.map(escapeRegExp).join('|')})$`;
+}
+
 export function mapToolApprovalPolicy(
   policy: TToolApprovalPolicy | undefined,
 ): ToolPolicyConfig | undefined {
@@ -145,6 +333,42 @@ export function buildToolApprovalPayload(
   };
 }
 
+/** Require one uniquely identified review policy for every paused tool call. */
+export function isToolApprovalPayloadValid(payload: Agents.ToolApprovalInterruptPayload): boolean {
+  if (payload.action_requests.length !== payload.review_configs.length) {
+    return false;
+  }
+
+  const requestedIds = new Set<string>();
+  for (const request of payload.action_requests) {
+    if (
+      typeof request.tool_call_id !== 'string' ||
+      request.tool_call_id.length === 0 ||
+      requestedIds.has(request.tool_call_id)
+    ) {
+      return false;
+    }
+    requestedIds.add(request.tool_call_id);
+  }
+
+  const reviewedIds = new Set<string>();
+  for (const config of payload.review_configs) {
+    if (
+      typeof config.tool_call_id !== 'string' ||
+      config.tool_call_id.length === 0 ||
+      reviewedIds.has(config.tool_call_id)
+    ) {
+      return false;
+    }
+    if (!requestedIds.has(config.tool_call_id)) {
+      return false;
+    }
+    reviewedIds.add(config.tool_call_id);
+  }
+
+  return true;
+}
+
 /** Build an ask-user-question interrupt payload. */
 export function buildAskUserQuestionPayload(
   question: Agents.AskUserQuestionRequest,
@@ -164,16 +388,26 @@ export interface PendingActionContext {
   responseMessageId?: string;
   /** Optional TTL (ms). When set, `expiresAt = createdAt + ttlMs`. */
   ttlMs?: number;
+  /** Optional absolute upper bound inherited from an enclosing event binding. */
+  expiresAt?: Date | string | number;
   /** Override actionId; defaults to a fresh uuid. */
   actionId?: string;
   /** SDK interrupt id (`RunInterruptResult.interruptId`) for cross-process resume. */
   interruptId?: string;
   /** LangGraph `thread_id` (`RunInterruptResult.threadId`) for cross-process resume. */
   threadId?: string;
+  /** Server-only project context key captured at pause time. */
+  projectContextKey?: string;
   /** Fingerprint of the graph-determining request fields; see {@link computeAgentRequestFingerprint}. */
   requestFingerprint?: string;
+  /** Current fingerprint; the legacy field remains populated for rolling-deploy compatibility. */
+  requestFingerprintV2?: string;
   /** Graph-determining fields to replay on resume; see {@link RESUME_CONTEXT_KEYS}. */
   resumeContext?: Record<string, unknown>;
+  /** Opaque server-only binding to the stateful code targets selected at pause time. */
+  codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
+  /** Server-only alias pairs of the offered "Always allow" tools; see `collectAllowAlwaysAliases`. */
+  toolApprovalAliases?: Agents.PendingAction['toolApprovalAliases'];
 }
 
 /** Request fields that decide which agent/graph + tool set a turn runs. */
@@ -186,6 +420,9 @@ export interface AgentRequestFingerprintFields {
   /** Ephemeral agents derive their system instructions from this; pin it too. */
   promptPrefix?: string | null;
   ephemeralAgent?: Record<string, unknown> | null;
+  codeApprovalMode?: string | null;
+  codeEnvironmentMode?: string | null;
+  codeWorkspaces?: unknown;
 }
 
 /** Stable, order-independent serialization of the ephemeral capability config. */
@@ -223,6 +460,12 @@ export const RESUME_CONTEXT_KEYS = [
   'model',
   'promptPrefix',
   'ephemeralAgent',
+  'codeApprovalMode',
+  'codeEnvironmentMode',
+  // The selected attached workspace determines the code tools' execution root and
+  // operation ceiling. Pin it across every pause type so a reload or crafted resume
+  // cannot rebuild the graph against a different directory.
+  'codeWorkspaces',
   // The agents build reads addedConvo into endpointOption to add parallel/secondary
   // agents; the resume POST can't reconstruct it, so replay it from the paused request.
   'addedConvo',
@@ -237,6 +480,9 @@ export const RESUME_CONTEXT_KEYS = [
   // different skill's tools (manualSkills isn't covered by the fingerprint). Replay-only.
   // (alwaysAppliedSkills is NOT here — it's resolved server-side from the DB, not req.body.)
   'manualSkills',
+  // The one-shot reasoning selection is generation-determining and must
+  // survive a HITL continuation across reloads/replicas.
+  'reasoningOverride',
   // Graph-determining for ephemeral agents: `loadEphemeralAgent` encodes the agent id
   // (and thus the LangGraph node name / HITL checkpoint namespace) from
   // `sender = modelLabel ?? modelSpec.label ?? …`. `modelLabel` is stripped from the
@@ -252,6 +498,14 @@ export const RESUME_CONTEXT_KEYS = [
 export type ResumeContext = Partial<Record<(typeof RESUME_CONTEXT_KEYS)[number], unknown>> & {
   /** Resolved model params captured at pause (sanitized); replayed by the resume route. */
   model_parameters?: Record<string, unknown>;
+  /** Original conversation values hidden from the provider runtime override. */
+  reasoningOverrideBase?: {
+    key: TReasoningOverride['key'];
+    hadValue: boolean;
+    value?: unknown;
+    thinkingHadValue?: boolean;
+    thinkingValue?: unknown;
+  };
 };
 
 /** Exact (lowercased) parameter keys that carry credentials or server transport config. */
@@ -278,6 +532,7 @@ const SENSITIVE_PARAM_KEYS = new Set([
   'httpagent',
   'httpsagent',
   'callbacks',
+  'endpoint',
   'endpointhost',
   'endpoint_host',
 ]);
@@ -472,13 +727,29 @@ export function captureResumeModelParameters(
         captured[key] = sanitizeParamValue(body[key], 1);
       }
     }
+    const reasoningOverride = reasoningOverrideSchema.safeParse(body.reasoningOverride);
+    if (reasoningOverride.success) {
+      captured[reasoningOverride.data.key] = reasoningOverride.data.value;
+      if (
+        reasoningOverride.data.key === 'effort' ||
+        reasoningOverride.data.key === 'thinkingLevel' ||
+        reasoningOverride.data.key === 'thinkingBudget'
+      ) {
+        captured.thinking = true;
+      }
+    }
   }
   return Object.keys(captured).length > 0 ? captured : undefined;
 }
 
-/** Extract the graph-determining fields from a request body for durable replay. */
-export function pickResumeContext(body: Record<string, unknown> | undefined | null): ResumeContext {
-  const ctx: ResumeContext = {};
+/** Extract the graph-determining fields from a request body, and the trusted reasoning
+ *  snapshot when the request resolved one, for durable replay. */
+export function pickResumeContext(
+  body: Record<string, unknown> | undefined | null,
+  reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'] | null,
+): ResumeContext {
+  const ctx: ResumeContext =
+    reasoningOverrideBase != null ? { reasoningOverrideBase: { ...reasoningOverrideBase } } : {};
   if (body == null) {
     return ctx;
   }
@@ -515,6 +786,65 @@ export function applyResumeContext(
   }
 }
 
+/**
+ * Restore a paused turn onto its resume request: the graph-determining body fields, the
+ * trusted reasoning-override snapshot that keeps a request-scoped override out of saved
+ * conversation defaults, and the resolved generation parameters.
+ */
+export function applyResumeRequest(
+  req: {
+    body?: Record<string, unknown> | null;
+    reasoningOverrideBase?: ResumeContext['reasoningOverrideBase'];
+    resumeReplayed?: boolean;
+  },
+  ctx: ResumeContext | undefined | null,
+): void {
+  applyResumeContext(req.body, ctx);
+  if (ctx != null) {
+    /* Marks the request as carrying trusted server state rather than fresh
+     * client input: a replayed `reasoningOverride` that no longer validates
+     * (the endpoint's reasoning config changed between pause and resume) is
+     * degraded rather than rejected, because a 400 would brick the checkpoint. */
+    req.resumeReplayed = true;
+  }
+  if (ctx?.reasoningOverrideBase != null) {
+    req.reasoningOverrideBase = { ...ctx.reasoningOverrideBase };
+  }
+  applyResumeModelParameters(req.body, ctx?.model_parameters);
+}
+
+/** Request-envelope fields that resolved provider params must never replace. */
+const RESUME_REQUEST_CONTROL_KEYS = new Set<string>([
+  ...RESUME_CONTEXT_KEYS,
+  'conversationId',
+  'generationCreatedAt',
+  'generationProtocolVersion',
+  'actionId',
+  'decisions',
+  'answer',
+  'answers',
+  'isTemporary',
+]);
+
+/**
+ * Replay captured generation parameters without allowing provider configuration to
+ * replace routing, graph identity, or resume-action fields. This guard also makes
+ * pending actions captured by older versions safe to resume after an upgrade.
+ */
+export function applyResumeModelParameters(
+  body: Record<string, unknown> | undefined | null,
+  params: unknown,
+): void {
+  if (body == null || params == null || typeof params !== 'object' || Array.isArray(params)) {
+    return;
+  }
+  for (const [key, value] of Object.entries(params as Record<string, unknown>)) {
+    if (!RESUME_REQUEST_CONTROL_KEYS.has(key)) {
+      body[key] = value;
+    }
+  }
+}
+
 export function computeAgentRequestFingerprint(fields: AgentRequestFingerprintFields): string {
   const canonical = JSON.stringify({
     endpoint: fields.endpoint ?? null,
@@ -524,6 +854,41 @@ export function computeAgentRequestFingerprint(fields: AgentRequestFingerprintFi
     spec: fields.spec ?? null,
     promptPrefix: fields.promptPrefix ?? null,
     ephemeralAgent: normalizeEphemeralAgent(fields.ephemeralAgent),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeApprovalMode')
+      ? { codeApprovalMode: fields.codeApprovalMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeEnvironmentMode')
+      ? { codeEnvironmentMode: fields.codeEnvironmentMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeWorkspaces')
+      ? { codeWorkspaces: fields.codeWorkspaces ?? null }
+      : {}),
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+/**
+ * Fingerprint understood by replicas predating conversation-owned code environments.
+ * Writers retain it in `requestFingerprint` while also storing the stricter current
+ * fingerprint, allowing either replica generation to resume safely during a rollout.
+ */
+export function computeLegacyAgentRequestFingerprint(
+  fields: AgentRequestFingerprintFields,
+): string {
+  const canonical = JSON.stringify({
+    endpoint: fields.endpoint ?? null,
+    endpointType: fields.endpointType ?? null,
+    agent_id: fields.agent_id ?? null,
+    model: fields.model ?? null,
+    spec: fields.spec ?? null,
+    promptPrefix: fields.promptPrefix ?? null,
+    ephemeralAgent: normalizeEphemeralAgent(fields.ephemeralAgent),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeApprovalMode')
+      ? { codeApprovalMode: fields.codeApprovalMode ?? null }
+      : {}),
+    ...(Object.prototype.hasOwnProperty.call(fields, 'codeWorkspaces')
+      ? { codeWorkspaces: fields.codeWorkspaces ?? null }
+      : {}),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }
@@ -539,7 +904,29 @@ export function buildPendingAction(
   payload: Agents.HumanInterruptPayload,
   ctx: PendingActionContext,
 ): Agents.PendingAction {
+  if (payload.type === 'tool_approval' && !isToolApprovalPayloadValid(payload)) {
+    throw new Error('Invalid tool approval payload');
+  }
   const createdAt = Date.now();
+  const ttlExpiresAt = typeof ctx.ttlMs === 'number' ? createdAt + ctx.ttlMs : undefined;
+  let absoluteExpiresAt: number | undefined;
+  if (typeof ctx.expiresAt === 'number') {
+    absoluteExpiresAt = ctx.expiresAt;
+  } else if (ctx.expiresAt instanceof Date) {
+    absoluteExpiresAt = ctx.expiresAt.getTime();
+  } else if (typeof ctx.expiresAt === 'string') {
+    absoluteExpiresAt = new Date(ctx.expiresAt).getTime();
+  }
+  const finiteAbsoluteExpiresAt = Number.isFinite(absoluteExpiresAt)
+    ? absoluteExpiresAt
+    : undefined;
+  let expiresAt = ttlExpiresAt;
+  if (finiteAbsoluteExpiresAt != null) {
+    expiresAt =
+      ttlExpiresAt == null
+        ? finiteAbsoluteExpiresAt
+        : Math.min(ttlExpiresAt, finiteAbsoluteExpiresAt);
+  }
   return {
     actionId: ctx.actionId ?? randomUUID(),
     streamId: ctx.streamId,
@@ -548,19 +935,23 @@ export function buildPendingAction(
     responseMessageId: ctx.responseMessageId,
     payload,
     createdAt,
-    expiresAt: typeof ctx.ttlMs === 'number' ? createdAt + ctx.ttlMs : undefined,
+    expiresAt,
     interruptId: ctx.interruptId,
     threadId: ctx.threadId,
+    projectContextKey: ctx.projectContextKey,
     requestFingerprint: ctx.requestFingerprint,
+    requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
+    codeExecutionBinding: ctx.codeExecutionBinding,
+    toolApprovalAliases: ctx.toolApprovalAliases,
   };
 }
 
 /**
- * Client-facing projection of a pending action. `requestFingerprint` and `resumeContext`
- * are server-only replay state — `resumeContext` in particular carries the resolved
- * model parameters — so every copy that leaves the server (SSE, status, resume state)
- * must go through this. The full record stays in the job store for the resume route.
+ * Client-facing projection of a pending action. `projectContextKey`, `requestFingerprint`,
+ * `resumeContext`, `codeExecutionBinding`, and `toolApprovalAliases` are server-only replay state. `resumeContext`
+ * carries resolved model parameters, so every copy that leaves the server (SSE, status,
+ * resume state) must go through this. The full record stays in the job store for resume.
  */
 export function toClientPendingAction(
   pendingAction: Agents.PendingAction | undefined | null,
@@ -569,8 +960,13 @@ export function toClientPendingAction(
     return undefined;
   }
   const {
+    projectContextKey: _projectContextKey,
     requestFingerprint: _requestFingerprint,
+    requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
+    codeExecutionBinding: _codeExecutionBinding,
+    toolApprovalBindings: _toolApprovalBindings,
+    toolApprovalAliases: _toolApprovalAliases,
     ...clientSafe
   } = pendingAction;
   return clientSafe;

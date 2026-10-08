@@ -45,9 +45,29 @@ jobs:
           node-version: '24.16.0'
 
       - name: Install Redis tools
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y redis-server redis-tools
+          # Same runner apt contention that broke the MCP job in
+          # playwright-mock.yml: apt-daily/unattended-upgrades hold
+          # /var/lib/apt/lists/lock at boot. Without a step timeout this hung
+          # until the job-level one fired, taking the whole leg with it.
+          sudo systemctl stop apt-daily.service apt-daily-upgrade.service \
+            unattended-upgrades.service 2>/dev/null || true
+          sudo systemctl kill --kill-who=all apt-daily.service \
+            apt-daily-upgrade.service 2>/dev/null || true
+
+          apt_with_lock_wait() {
+            for attempt in $(seq 1 30); do
+              if sudo apt-get -o DPkg::Lock::Timeout=60 "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 could not take the lock (attempt ${attempt}/30), retrying"
+              sleep 10
+            done
+            return 1
+          }
+          apt_with_lock_wait update
+          apt_with_lock_wait install -y redis-server redis-tools
 
       - name: Start Single Redis Instance
         run: |

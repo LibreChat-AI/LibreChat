@@ -32,6 +32,12 @@ describe('areSearchMessagePropsEqual', () => {
     ).toBe(false);
   });
 
+  it('is false when the error flag changes, which switches the row to the error renderer', () => {
+    expect(areSearchMessagePropsEqual({ message: msg() }, { message: msg({ error: true }) })).toBe(
+      false,
+    );
+  });
+
   it('is false when the messageId changes', () => {
     expect(
       areSearchMessagePropsEqual({ message: msg() }, { message: msg({ messageId: 'm2' }) }),

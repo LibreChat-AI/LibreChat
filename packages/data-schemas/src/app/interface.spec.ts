@@ -12,6 +12,148 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(true);
   });
 
+  it('uses the schema default for code highlight throttling when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(300);
+  });
+
+  it('preserves a configured code highlight throttle interval', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        codeHighlightThrottleMs: 100,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
+  });
+
+  it('uses the schema default for the agent selector list cap when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(10);
+  });
+
+  it('forwards a configured agent selector list cap to the served interface', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        agentSelectorLimit: 4,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(4);
+  });
+
+  it('uses and preserves the schema default for queued-turn reconciliation', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedTurnReconciliationTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedTurnReconciliationTimeoutMs: 180_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
+  });
+
+  it('allows the mascot by default and preserves an explicit opt-out', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({ config: {}, configDefaults });
+    expect(defaultInterface?.mascot).toBe(true);
+
+    const disabledInterface = await loadDefaultInterface({
+      config: { interface: { mascot: false } },
+      configDefaults,
+    });
+    expect(disabledInterface?.mascot).toBe(false);
+  });
+
+  it('uses and preserves the schema default for the queued-send lock expiry', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedSendLockTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedSendLockTimeoutMs: 15_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedSendLockTimeoutMs).toBe(15_000);
+  });
+
+  it('uses and preserves the schema default for the composer recent-files limit', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.composerRecentFiles).toBe(5);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { composerRecentFiles: 10 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.composerRecentFiles).toBe(10);
+  });
+
+  it('uses and preserves the schema defaults for the client history cache', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.historyCacheTtlMs).toBe(60_000);
+    expect(defaultInterface?.historyCacheRecent).toBe(1);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { historyCacheTtlMs: 0, historyCacheRecent: 3 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.historyCacheTtlMs).toBe(0);
+    expect(configuredInterface?.historyCacheRecent).toBe(3);
+  });
+
+  it('uses and preserves the schema default for steer arm confirmation', async () => {
+    const configDefaults = getConfigDefaults();
+    const interfaceDefaults = {
+      ...configDefaults.interface,
+      steerArmConfirmationTimeoutMs: 10_000,
+    };
+    const defaults = { ...configDefaults, interface: interfaceDefaults };
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults: defaults,
+    });
+    expect(defaultInterface?.steerArmConfirmationTimeoutMs).toBe(10_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { steerArmConfirmationTimeoutMs: 30_000 } },
+      configDefaults: defaults,
+    });
+    expect(configuredInterface?.steerArmConfirmationTimeoutMs).toBe(30_000);
+  });
+
   it('preserves disabled URL auto-submit config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {
@@ -51,6 +193,30 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.buildInfo).toBe(true);
   });
 
+  it('carries a disabled artifact undocking flag to the clients', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        artifactUndocking: false,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(false);
+  });
+
+  it('uses the schema default for artifact undocking when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(true);
+  });
+
   it('preserves enabled build info config', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {
@@ -64,6 +230,30 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.buildInfo).toBe(true);
+  });
+
+  it('enables response feedback by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.feedback).toBe(true);
+  });
+
+  it('preserves a disabled response feedback flag', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        feedback: false,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.feedback).toBe(false);
   });
 
   it('disables context cost by default', async () => {
@@ -144,10 +334,11 @@ describe('loadDefaultInterface', () => {
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(true);
   });
 
-  it('preserves the configured temporary chat retention period', async () => {
+  it('preserves the configured chat retention periods', async () => {
     const config: Partial<TCustomConfig> = {
       interface: {
         temporaryChatRetention: 24,
+        generalChatRetention: 2160,
       },
     };
 
@@ -157,6 +348,7 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.temporaryChatRetention).toBe(24);
+    expect(interfaceConfig?.generalChatRetention).toBe(2160);
   });
 
   it('omits temporary chat retention when it is not explicitly configured', async () => {
@@ -166,6 +358,7 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig).not.toHaveProperty('temporaryChatRetention');
+    expect(interfaceConfig).not.toHaveProperty('generalChatRetention');
   });
 
   it('preserves the configured agent file retention exemption', async () => {
@@ -207,5 +400,74 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig).not.toHaveProperty('defaultPinnedTools');
+  });
+
+  it('passes the trace viewer section through unchanged', async () => {
+    const traceViewer = { enabled: true, showInputOutput: false, maxRecords: 200 };
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { traceViewer } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.traceViewer).toEqual(traceViewer);
+  });
+
+  it('leaves the trace viewer unset when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.traceViewer).toBeUndefined();
+  });
+
+  it('passes a bundled theme name through unchanged', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { theme: 'clickhouse' } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.theme).toBe('clickhouse');
+  });
+
+  it('passes an inline theme definition through unchanged', async () => {
+    const theme = {
+      version: 1 as const,
+      name: 'acme',
+      modes: {
+        light: { colors: { 'rgb-surface-primary': '255 255 255' } },
+        dark: { appearance: { controlRadius: '0.25rem' } },
+      },
+    };
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { theme } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.theme).toEqual(theme);
+  });
+
+  it('leaves the theme unset when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig).not.toHaveProperty('theme');
+  });
+});
+
+describe('running chat rename deployment fence', () => {
+  it.each([
+    [undefined, true],
+    [false, false],
+    [true, true],
+  ])('resolves runningChatRename %s to %s', async (configured, expected) => {
+    const configDefaults = getConfigDefaults();
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: configured === undefined ? {} : { runningChatRename: configured } },
+      configDefaults,
+    });
+    expect(interfaceConfig?.runningChatRename).toBe(expected);
   });
 });

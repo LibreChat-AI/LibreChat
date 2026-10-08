@@ -1,7 +1,9 @@
+import { logger } from '@librechat/data-schemas';
 import { Constants, normalizeServerName } from 'librechat-data-provider';
 import type { LCAvailableTools, ParsedServerConfig } from './types';
 import type { MCPToolCacheDeps, MCPToolInput } from './tools';
-import { getMCPAppToolsPublicationGeneration } from './toolsChanged';
+import { getMCPToolCatalogGeneration } from './toolsChanged';
+import { MCP_APPS_CAPABILITY_PROFILE } from './capabilities';
 import { createMCPToolCacheService } from './tools';
 
 const requestScopedConfig: ParsedServerConfig = {
@@ -86,6 +88,46 @@ function createSharedCacheDeps(params: {
 
 describe('createMCPToolCacheService', () => {
   describe('configuration-addressed app catalogs', () => {
+    it('keeps standard operator catalogs global and Apps catalogs user-scoped', async () => {
+      const appCache = new Map<string, LCAvailableTools>();
+      const userCache = new Map<string, LCAvailableTools>();
+      const deps = createSharedCacheDeps({ config: cacheableConfig, appCache, userCache });
+      const service = createMCPToolCacheService(deps);
+      const standardTools = {
+        [toolName('standard', 'dynamic')]: makeTool(toolName('standard', 'dynamic')),
+      };
+      const appsTools = {
+        [toolName('apps', 'dynamic')]: makeTool(toolName('apps', 'dynamic')),
+      };
+
+      await service.cacheMCPServerTools({
+        userId: 'u1',
+        serverName: 'dynamic',
+        serverTools: standardTools,
+        publicationRevision: '1',
+      });
+      await service.cacheMCPServerTools({
+        userId: 'u1',
+        serverName: 'dynamic',
+        serverTools: appsTools,
+        publicationGeneration: 'apps-lease',
+        capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+      });
+
+      await expect(service.getMCPServerTools('u1', 'dynamic')).resolves.toEqual(standardTools);
+      await expect(
+        service.getMCPServerTools('u1', 'dynamic', undefined, MCP_APPS_CAPABILITY_PROFILE),
+      ).resolves.toEqual(appsTools);
+      expect(appCache).toHaveProperty('size', 1);
+      expect(userCache).toHaveProperty('size', 1);
+      expect(deps.getCachedTools).toHaveBeenLastCalledWith({
+        userId: 'u1',
+        serverName: 'dynamic',
+        configGeneration: getMCPToolCatalogGeneration(cacheableConfig, MCP_APPS_CAPABILITY_PROFILE),
+        allowLegacyMigration: false,
+      });
+    });
+
     it('restores the static catalog without discovering app server configs', async () => {
       const staticTools = { builtin: makeTool('builtin') };
       const updateCachedGlobalTools = jest.fn(async (update) => update({}));
@@ -127,7 +169,7 @@ describe('createMCPToolCacheService', () => {
       const setCachedAppServerTools = jest.fn().mockResolvedValue(true);
       const deps = createMockDeps({ setCachedAppServerTools });
       const service = createMCPToolCacheService(deps);
-      const generation = getMCPAppToolsPublicationGeneration(cacheableConfig);
+      const generation = getMCPToolCatalogGeneration(cacheableConfig);
 
       await expect(
         service.replaceAppServerTools({
@@ -157,6 +199,8 @@ describe('createMCPToolCacheService', () => {
       ).rejects.toThrow('Redis down');
     });
 
+    /** A publisher that lost its snapshot's revision fetched at an unknown time. Allocating a
+     * fresh one here would let a slow fetch of an old catalog outrank a newer one. */
     it('does not publish a live app snapshot without pre-fetch ordering', async () => {
       const deps = createMockDeps();
 
@@ -169,6 +213,75 @@ describe('createMCPToolCacheService', () => {
       ).resolves.toBe(false);
 
       expect(deps.setCachedAppServerTools).not.toHaveBeenCalled();
+    });
+
+    /** #14857 went a release without a diagnostic because dropping an app catalog only logged
+     * at debug. A drop means agents lose this server's tools, so it has to be visible by
+     * default; a superseded write is routine and must stay quiet. */
+    describe('visibility of a discarded publication', () => {
+      const publish = (params: { publicationGeneration?: string; publicationRevision?: string }) =>
+        createMCPToolCacheService(
+          createMockDeps({ setCachedAppServerTools: jest.fn().mockResolvedValue(false) }),
+        ).replaceAppServerTools({ serverName: 'dynamic', serverTools: {}, ...params });
+
+      let warn: jest.SpyInstance;
+
+      beforeEach(() => {
+        warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      });
+
+      afterEach(() => warn.mockRestore());
+
+      it('warns when a publication cannot be ordered', async () => {
+        await publish({ publicationGeneration: 'config-generation' });
+
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipped unordered'));
+      });
+
+      it('warns when a publication cannot be addressed', async () => {
+        await publish({ publicationRevision: '1' });
+
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('Skipped unaddressed'));
+      });
+
+      it('stays quiet when a concurrent replica already published newer tools', async () => {
+        await publish({ publicationGeneration: 'config-generation', publicationRevision: '1' });
+
+        expect(warn).not.toHaveBeenCalled();
+      });
+    });
+
+    /** The catalog write needs ordering; the tools themselves were read from the server and are
+     * correct to serve. Discarding them is what surfaced as a server with no tools (#14857). */
+    it('serves tools it could not publish instead of discarding them', async () => {
+      const deps = createSharedCacheDeps({ config: cacheableConfig });
+      const search = toolName('search', 'dynamic');
+
+      await expect(
+        createMCPToolCacheService(deps).updateMCPServerTools({
+          userId: 'user-1',
+          serverName: 'dynamic',
+          serverConfig: cacheableConfig,
+          tools: [{ name: 'search' }],
+        }),
+      ).resolves.toEqual({ [search]: expect.objectContaining({ type: 'function' }) });
+
+      expect(deps.setCachedAppServerTools).not.toHaveBeenCalled();
+    });
+
+    it('discards a superseded catalog rather than serving it', async () => {
+      const deps = createSharedCacheDeps({ config: cacheableConfig });
+      deps.setCachedAppServerTools = jest.fn().mockResolvedValue(false);
+
+      await expect(
+        createMCPToolCacheService(deps).updateMCPServerTools({
+          userId: 'user-1',
+          serverName: 'dynamic',
+          serverConfig: cacheableConfig,
+          tools: [{ name: 'search' }],
+          publicationRevision: '1',
+        }),
+      ).resolves.toBeNull();
     });
 
     it('rejects a tool boundary owned by another app server', async () => {
@@ -206,13 +319,13 @@ describe('createMCPToolCacheService', () => {
       await newService.replaceAppServerTools({
         serverName: 'dynamic',
         serverTools: newTools,
-        publicationGeneration: getMCPAppToolsPublicationGeneration(newConfig),
+        publicationGeneration: getMCPToolCatalogGeneration(newConfig),
         publicationRevision: '1',
       });
       await oldService.replaceAppServerTools({
         serverName: 'dynamic',
         serverTools: oldTools,
-        publicationGeneration: getMCPAppToolsPublicationGeneration(oldConfig),
+        publicationGeneration: getMCPToolCatalogGeneration(oldConfig),
         publicationRevision: '1',
       });
 
@@ -240,7 +353,7 @@ describe('createMCPToolCacheService', () => {
       await oldService.replaceAppServerTools({
         serverName: 'dynamic',
         serverTools: stale,
-        publicationGeneration: getMCPAppToolsPublicationGeneration(oldConfig),
+        publicationGeneration: getMCPToolCatalogGeneration(oldConfig),
         publicationRevision: '1',
       });
       await expect(newService.getMCPServerTools('user', 'dynamic')).resolves.toBeNull();
@@ -248,7 +361,7 @@ describe('createMCPToolCacheService', () => {
       await newService.replaceAppServerTools({
         serverName: 'dynamic',
         serverTools: current,
-        publicationGeneration: getMCPAppToolsPublicationGeneration(newConfig),
+        publicationGeneration: getMCPToolCatalogGeneration(newConfig),
         publicationRevision: '1',
       });
       await expect(newService.getMCPServerTools('user', 'dynamic')).resolves.toEqual(current);
@@ -275,12 +388,12 @@ describe('createMCPToolCacheService', () => {
 
       expect(setCachedAppServerTools).toHaveBeenCalledWith(
         'alpha',
-        getMCPAppToolsPublicationGeneration(alphaConfig),
+        getMCPToolCatalogGeneration(alphaConfig),
         { [alpha]: makeTool(alpha) },
       );
       expect(setCachedAppServerTools).toHaveBeenCalledWith(
         'beta',
-        getMCPAppToolsPublicationGeneration(betaConfig),
+        getMCPToolCatalogGeneration(betaConfig),
         { [beta]: makeTool(beta) },
       );
       expect(deps.setCachedTools).not.toHaveBeenCalled();
@@ -322,7 +435,7 @@ describe('createMCPToolCacheService', () => {
       expect(setCachedToolsIfCurrent).toHaveBeenCalledWith(expect.any(Object), {
         userId: 'u1',
         serverName: 'tenant',
-        configGeneration: getMCPAppToolsPublicationGeneration(tenantConfig),
+        configGeneration: getMCPToolCatalogGeneration(tenantConfig),
         publicationGeneration: 'connection-generation',
       });
     });
@@ -421,6 +534,49 @@ describe('createMCPToolCacheService', () => {
         serverName: 'Connector: Company',
         configGeneration: undefined,
       });
+    });
+
+    it('strips a redundant server-name prefix from keys and records the raw name', async () => {
+      /** `acme_trace..._mcp_acme` carries the server twice and can push the
+       *  model-facing name past provider function-name limits (64). */
+      const deps = createMockDeps();
+      const tools: MCPToolInput[] = [
+        { name: 'acme_trace_top_time_consuming_operations', description: 'Trace' },
+        { name: 'list_services', description: 'List' },
+      ];
+      const result = await createMCPToolCacheService(deps).updateMCPServerTools({
+        userId: 'u1',
+        serverName: 'acme',
+        tools,
+      });
+
+      const strippedKey = toolName('trace_top_time_consuming_operations', 'acme');
+      const plainKey = toolName('list_services', 'acme');
+      expect(Object.keys(result ?? {}).sort()).toEqual([plainKey, strippedKey].sort());
+      expect(result?.[strippedKey]?.['function'].name).toBe(strippedKey);
+      expect(result?.[strippedKey]?.serverToolName).toBe(
+        'acme_trace_top_time_consuming_operations',
+      );
+      expect(result?.[plainKey]?.serverToolName).toBeUndefined();
+    });
+
+    it('keeps the prefixed key when stripping would collide with a sibling tool', async () => {
+      const deps = createMockDeps();
+      const tools: MCPToolInput[] = [
+        { name: 'search', description: 'Plain' },
+        { name: 'acme_search', description: 'Prefixed' },
+      ];
+      const result = await createMCPToolCacheService(deps).updateMCPServerTools({
+        userId: 'u1',
+        serverName: 'acme',
+        tools,
+      });
+
+      const plainKey = toolName('search', 'acme');
+      const prefixedKey = toolName('acme_search', 'acme');
+      expect(Object.keys(result ?? {}).sort()).toEqual([prefixedKey, plainKey].sort());
+      expect(result?.[plainKey]?.serverToolName).toBeUndefined();
+      expect(result?.[prefixedKey]?.serverToolName).toBeUndefined();
     });
 
     it('builds request-scoped tools without caching them', async () => {

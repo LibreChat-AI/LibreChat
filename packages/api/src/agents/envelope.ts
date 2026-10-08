@@ -1,14 +1,15 @@
 import type { TEphemeralAgent } from 'librechat-data-provider';
+import type { JsonPrimitive, JsonValue } from './json';
 import type { ChatCompletionRequest } from './openai';
 import type { ResponseRequest } from './responses';
+import { AGENT_ENVELOPE_MAX_NESTING_DEPTH, cloneJsonValue } from './json';
 
 export const AGENT_RUN_ENVELOPE_VERSION = 1 as const;
-export const AGENT_RUN_ENVELOPE_MAX_NESTING_DEPTH = 64;
+export const AGENT_RUN_ENVELOPE_MAX_NESTING_DEPTH: number = AGENT_ENVELOPE_MAX_NESTING_DEPTH;
 
 export type AgentRunProtocol = 'chat.completions' | 'responses';
 
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type { JsonPrimitive, JsonValue };
 
 export interface AgentRunPrincipal {
   userId: string;
@@ -91,105 +92,6 @@ function assertNonEmptyString(value: string | undefined, path: string): string {
   return value;
 }
 
-function cloneJsonValue<T>(value: T, path: string, ancestors: WeakSet<object>, depth: number): T;
-function cloneJsonValue(
-  value: unknown,
-  path: string,
-  ancestors: WeakSet<object>,
-  depth: number,
-): unknown {
-  if (depth > AGENT_RUN_ENVELOPE_MAX_NESTING_DEPTH) {
-    throw new AgentRunEnvelopeError(
-      `${path} exceeds the maximum nesting depth of ${AGENT_RUN_ENVELOPE_MAX_NESTING_DEPTH}`,
-    );
-  }
-
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new AgentRunEnvelopeError(`${path} must contain only finite numbers`);
-    }
-    return value;
-  }
-
-  if (typeof value !== 'object') {
-    throw new AgentRunEnvelopeError(`${path} contains a non-JSON ${typeof value} value`);
-  }
-
-  if (ancestors.has(value)) {
-    throw new AgentRunEnvelopeError(`${path} contains a circular reference`);
-  }
-
-  ancestors.add(value);
-
-  try {
-    const symbolKeys = Object.getOwnPropertySymbols(value);
-    if (symbolKeys.length > 0) {
-      throw new AgentRunEnvelopeError(`${path} contains symbol keys`);
-    }
-
-    if (Array.isArray(value)) {
-      const cloned: unknown[] = new Array(value.length);
-      let clonedItemCount = 0;
-      for (const key of Object.getOwnPropertyNames(value)) {
-        if (key === 'length') {
-          continue;
-        }
-        const index = Number(key);
-        if (
-          !Number.isSafeInteger(index) ||
-          index < 0 ||
-          index >= value.length ||
-          String(index) !== key
-        ) {
-          throw new AgentRunEnvelopeError(`${path} contains non-index array properties`);
-        }
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-          throw new AgentRunEnvelopeError(`${path}[${index}] must not be an accessor property`);
-        }
-        const itemValue: unknown = descriptor.value;
-        cloned[index] = cloneJsonValue(itemValue, `${path}[${index}]`, ancestors, depth + 1);
-        clonedItemCount++;
-      }
-      if (clonedItemCount !== value.length) {
-        throw new AgentRunEnvelopeError(`${path} contains sparse array entries`);
-      }
-      return cloned;
-    }
-
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      const typeName = value.constructor?.name ?? 'object';
-      throw new AgentRunEnvelopeError(`${path} contains a non-plain ${typeName} value`);
-    }
-
-    const cloned: { [key: string]: unknown } = {};
-    for (const key of Object.getOwnPropertyNames(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor?.enumerable !== true) {
-        throw new AgentRunEnvelopeError(`${path}.${key} must be an enumerable property`);
-      }
-      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-        throw new AgentRunEnvelopeError(`${path}.${key} must not be an accessor property`);
-      }
-      const propertyValue: unknown = descriptor.value;
-      Object.defineProperty(cloned, key, {
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        value: cloneJsonValue(propertyValue, `${path}.${key}`, ancestors, depth + 1),
-      });
-    }
-    return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
 function createPrincipal(input: AgentRunPrincipalInput | null | undefined): AgentRunPrincipal {
   const userId = assertNonEmptyString(input?.id, 'principal.id');
   const principal: AgentRunPrincipal = { userId };
@@ -233,7 +135,11 @@ export function createAgentRunEnvelope(input: CreateAgentRunEnvelopeInput): Agen
     return {
       ...base,
       protocol: input.protocol,
-      payload: cloneJsonValue(input.payload, 'payload', new WeakSet(), 0),
+      payload: cloneJsonValue(
+        input.payload,
+        'payload',
+        (message) => new AgentRunEnvelopeError(message),
+      ),
     };
   }
 
@@ -241,7 +147,11 @@ export function createAgentRunEnvelope(input: CreateAgentRunEnvelopeInput): Agen
     return {
       ...base,
       protocol: input.protocol,
-      payload: cloneJsonValue(input.payload, 'payload', new WeakSet(), 0),
+      payload: cloneJsonValue(
+        input.payload,
+        'payload',
+        (message) => new AgentRunEnvelopeError(message),
+      ),
     };
   }
 

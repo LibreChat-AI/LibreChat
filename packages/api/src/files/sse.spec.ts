@@ -1,6 +1,12 @@
 import { EventEmitter } from 'events';
 import type { Request, Response } from 'express';
-import { sendUploadSuccess, shouldUseUploadSse, startUploadSseStream } from './sse';
+import {
+  sendUploadPolicyError,
+  sendUploadSuccess,
+  shouldUseUploadSse,
+  startUploadSseStream,
+} from './sse';
+import { ContentFilterInputTooLargeError, UninspectableFileError } from '~/protection/files';
 
 describe('sse', () => {
   const createMockReq = (accept?: string): Request =>
@@ -213,6 +219,89 @@ describe('sse', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({ message: 'Upload complete', file_id: 'abc' });
+    });
+  });
+
+  describe('sendUploadPolicyError', () => {
+    it('sends structured policy errors as JSON', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new UninspectableFileError('extracted_text'))).toBe(
+        true,
+      );
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'content_filter_uninspectable',
+        message: 'Submitted file content could not be inspected before processing.',
+        source: 'file',
+        field: 'extracted_text',
+      });
+    });
+
+    it('preserves the upload inspection limit status and raw-free body', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new ContentFilterInputTooLargeError('content'))).toBe(
+        true,
+      );
+      expect(res.status).toHaveBeenCalledWith(413);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'content_filter_input_too_large',
+        message: 'Text file exceeds the 15 MB content inspection limit.',
+        source: 'file',
+        field: 'content',
+      });
+    });
+
+    it('sends structured policy errors over an active SSE stream', () => {
+      const res = createMockRes();
+      const sseStream = {
+        sendData: jest.fn(),
+        sendError: jest.fn(),
+        close: jest.fn(),
+      };
+
+      expect(
+        sendUploadPolicyError(res, sseStream, new UninspectableFileError('extracted_text'), {
+          tempFileId: 'temp-1',
+          toolResource: 'context',
+        }),
+      ).toBe(true);
+      expect(sseStream.sendError).toHaveBeenCalledWith({
+        error: 'content_filter_uninspectable',
+        message: 'Submitted file content could not be inspected before processing.',
+        source: 'file',
+        field: 'extracted_text',
+        code: 400,
+        temp_file_id: 'temp-1',
+        tool_resource: 'context',
+        display_to_user: true,
+      });
+      expect(res.status).not.toHaveBeenCalled();
+    });
+
+    it('leaves non-policy errors for the route-specific handler', () => {
+      const res = createMockRes();
+
+      expect(sendUploadPolicyError(res, null, new Error('provider failed'))).toBe(false);
+      expect(res.status).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
+    });
+
+    it('unwraps a policy error carried as an error cause', () => {
+      const res = createMockRes();
+      const wrapped = new Error('wrapped extraction failure', {
+        cause: new UninspectableFileError('transcript'),
+      });
+
+      expect(sendUploadPolicyError(res, null, wrapped)).toBe(true);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'content_filter_uninspectable',
+          field: 'transcript',
+        }),
+      );
     });
   });
 });

@@ -1,8 +1,9 @@
-const { getBalanceConfig } = require('@librechat/api');
 const { FileSources } = require('librechat-data-provider');
+const { getBalanceConfig, provisionSocialUser } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
-const { updateUser, createUser, getUserById } = require('~/models');
+const { getAppConfig } = require('~/server/services/Config');
+const { updateUser, getUserById, findBalanceByUser, createUserIfAbsent } = require('~/models');
 
 /**
  * Updates the avatar URL and email of an existing user. If the user's avatar URL does not include the query parameter
@@ -29,9 +30,9 @@ const handleExistingUser = async (oldUser, avatarUrl, appConfig, email) => {
   const hasManualFlag =
     typeof oldUser?.avatar === 'string' && oldUser.avatar.includes('?manual=true');
 
-  if (isLocal && (!oldUser?.avatar || !hasManualFlag)) {
+  if (avatarUrl && isLocal && (!oldUser?.avatar || !hasManualFlag)) {
     updatedAvatar = avatarUrl;
-  } else if (!isLocal && (!oldUser?.avatar || !hasManualFlag)) {
+  } else if (avatarUrl && !isLocal && (!oldUser?.avatar || !hasManualFlag)) {
     const userId = oldUser._id;
     const resizedBuffer = await resizeAvatar({
       userId,
@@ -56,9 +57,40 @@ const handleExistingUser = async (oldUser, avatarUrl, appConfig, email) => {
 };
 
 /**
+ * Processes a newly created social user's avatar through the file strategy (a local strategy keeps
+ * the provider URL) and returns the stored user.
+ *
+ * @param {string} newUserId - The new user's id.
+ * @param {string} avatarUrl - The provider's avatar URL.
+ * @param {AppConfig} appConfig - The application configuration object.
+ * @returns {Promise<User>}
+ */
+const finishNewSocialUser = async (newUserId, avatarUrl, appConfig) => {
+  const fileStrategy = appConfig?.fileStrategy ?? process.env.CDN_PROVIDER;
+  const isLocal = fileStrategy === FileSources.local;
+
+  if (avatarUrl && !isLocal) {
+    const resizedBuffer = await resizeAvatar({
+      userId: newUserId,
+      input: avatarUrl,
+    });
+    const { processAvatar } = getStrategyFunctions(fileStrategy);
+    const avatar = await processAvatar({
+      buffer: resizedBuffer,
+      userId: newUserId,
+      manual: 'false',
+    });
+    await updateUser(newUserId, { avatar });
+  }
+
+  return await getUserById(newUserId);
+};
+
+/**
  * Creates a new user with the provided user details. If the file strategy is not local, the avatar URL is
  * processed using the specified file strategy. The new user is saved to the database with the processed or
- * original avatar URL.
+ * original avatar URL. When a concurrent first login created the account first, that account is handled as
+ * an existing user instead.
  *
  * @param {Object} params - The parameters object for user creation.
  * @param {string} params.email - The email of the new user.
@@ -70,6 +102,7 @@ const handleExistingUser = async (oldUser, avatarUrl, appConfig, email) => {
  * @param {string} params.name - The name of the new user.
  * @param {AppConfig} appConfig - The application configuration object.
  * @param {boolean} [params.emailVerified=false] - Optional. Indicates whether the user's email is verified. Defaults to false.
+ * @param {SocialUserLookup} params.lookup - The login's lookup, repeated when the insert loses a concurrent first login.
  *
  * @returns {Promise<User>}
  *          A promise that resolves to the newly created user object.
@@ -86,38 +119,28 @@ const createSocialUser = async ({
   name,
   appConfig,
   emailVerified,
-}) => {
-  const update = {
-    email,
-    avatar: avatarUrl,
-    provider,
-    [providerKey]: providerId,
-    username,
-    name,
-    emailVerified,
-  };
-
-  const balanceConfig = getBalanceConfig(appConfig);
-  const newUserId = await createUser(update, balanceConfig);
-  const fileStrategy = appConfig?.fileStrategy ?? process.env.CDN_PROVIDER;
-  const isLocal = fileStrategy === FileSources.local;
-
-  if (!isLocal) {
-    const resizedBuffer = await resizeAvatar({
-      userId: newUserId,
-      input: avatarUrl,
-    });
-    const { processAvatar } = getStrategyFunctions(fileStrategy);
-    const avatar = await processAvatar({
-      buffer: resizedBuffer,
-      userId: newUserId,
-      manual: 'false',
-    });
-    await updateUser(newUserId, { avatar });
-  }
-
-  return await getUserById(newUserId);
-};
+  lookup,
+}) =>
+  provisionSocialUser({
+    lookup,
+    newUser: {
+      email,
+      avatar: avatarUrl,
+      provider,
+      [providerKey]: providerId,
+      username,
+      name,
+      emailVerified,
+    },
+    appConfig,
+    getBalanceConfig,
+    getAppConfig,
+    createUserIfAbsent,
+    findBalanceByUser,
+    finishNewUser: (user) => finishNewSocialUser(user._id, avatarUrl, appConfig),
+    refreshExistingUser: (user, accountConfig) =>
+      handleExistingUser(user, avatarUrl, accountConfig, email),
+  });
 
 module.exports = {
   handleExistingUser,

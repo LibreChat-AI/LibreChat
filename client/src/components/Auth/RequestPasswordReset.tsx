@@ -11,7 +11,7 @@ import { useLocalize } from '~/hooks';
 
 const BodyTextWrapper: FC<{ children: ReactNode }> = ({ children }) => {
   return (
-    <Alert variant="success" icon={false} className="mt-6 px-6 py-4 shadow-sm transition-all">
+    <Alert variant="success" icon={false} elevation="raised" size="roomy" className="mt-6">
       {children}
     </Alert>
   );
@@ -23,7 +23,7 @@ const ResetPasswordBodyText = () => {
     <div className="flex flex-col space-y-4">
       <p>{localize('com_auth_reset_password_if_email_exists')}</p>
       <a
-        className="inline-flex text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+        className="text-accent-primary hover:text-accent-primary-hover inline-flex text-sm font-medium transition-colors"
         href={loginPage()}
       >
         {localize('com_auth_back_to_login')}
@@ -85,6 +85,7 @@ function RequestPasswordReset() {
       <div className="space-y-2">
         <div className="relative">
           <Input
+            colorTransition
             type="email"
             id="email"
             autoComplete="off"
@@ -105,18 +106,18 @@ function RequestPasswordReset() {
               },
             })}
             aria-invalid={!!errors.email}
-            className="webkit-dark-styles transition-color peer h-auto w-full rounded-2xl border border-border-light bg-surface-primary px-3.5 pb-2.5 pt-3 text-text-primary duration-200 focus:border-accent-primary focus:outline-none"
+            variant="floating"
             placeholder=" "
           />
           <label
             htmlFor="email"
-            className="absolute -top-2 left-2 z-10 bg-surface-primary px-2 text-sm text-text-secondary transition-all peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-placeholder-shown:text-text-tertiary peer-focus:-top-2 peer-focus:text-sm peer-focus:text-accent-primary"
+            className="bg-surface-primary text-text-secondary peer-placeholder-shown:text-text-tertiary peer-focus:text-accent-primary absolute -top-2 left-2 z-10 px-2 text-sm transition-all peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-focus:-top-2 peer-focus:text-sm"
           >
             {localize('com_auth_email_address')}
           </label>
         </div>
         {errors.email && (
-          <p role="alert" className="text-sm font-medium text-text-destructive">
+          <p role="alert" className="text-text-destructive text-sm font-medium">
             {errors.email.message}
           </p>
         )}
@@ -127,13 +128,14 @@ function RequestPasswordReset() {
           type="submit"
           disabled={!!errors.email || isLoading}
           variant="submit"
-          className="h-12 w-full rounded-2xl"
+          shape="soft"
+          className="h-12 w-full"
         >
           {isLoading ? <Spinner /> : localize('com_auth_continue')}
         </Button>
         <a
           href={loginPage()}
-          className="block text-center text-sm font-medium text-accent-primary transition-colors hover:text-accent-primary-hover"
+          className="text-accent-primary hover:text-accent-primary-hover block text-center text-sm font-medium transition-colors"
         >
           {localize('com_auth_back_to_login')}
         </a>

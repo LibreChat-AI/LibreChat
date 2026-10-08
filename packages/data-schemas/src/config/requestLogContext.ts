@@ -26,6 +26,13 @@ const RESERVED_REQUEST_LOG_CONTEXT_KEYS = new Set<string>([
 
 const STRUCTURED_EVENT_LOG_CONTEXT_KEYS = [
   'event_name',
+  'tenant_id',
+  'configured',
+  'enabled',
+  'destination',
+  'change',
+  'changes',
+  'verification_result',
   'auth_strategy',
   'primary_strategy',
   'fallback_strategy',
@@ -63,6 +70,10 @@ const IDENTITY_FREE_EVENT_NAMES = new Set([
   'jwt_auth_recovered',
   'tenant_isolation_error',
 ]);
+const STRUCTURED_EVENT_NAMES = new Set([
+  ...IDENTITY_FREE_EVENT_NAMES,
+  'librechat.langfuse.connection.changed',
+]);
 const STRUCTURED_EVENT_LOG_CONTEXT_KEY_SET = new Set<string>(STRUCTURED_EVENT_LOG_CONTEXT_KEYS);
 const MAX_LOG_CONTEXT_ARRAY_LENGTH = 10;
 
@@ -73,6 +84,10 @@ type LogContextInfo =
 
 function isIdentityFreeEvent(eventName: unknown): boolean {
   return typeof eventName === 'string' && IDENTITY_FREE_EVENT_NAMES.has(eventName);
+}
+
+function isStructuredEvent(eventName: unknown): boolean {
+  return typeof eventName === 'string' && STRUCTURED_EVENT_NAMES.has(eventName);
 }
 
 function getLogTenantId(): string | undefined {
@@ -104,9 +119,10 @@ function normalizeLogContextValue(value: unknown): LogContextValue | undefined {
 export function formatLogContext(info: LogContextInfo): string {
   const context: Partial<Record<LogContextKey, LogContextValue>> = {};
   const omitIdentity = isIdentityFreeEvent(info.event_name);
+  const includeStructuredEvent = isStructuredEvent(info.event_name);
 
   LOG_CONTEXT_KEYS.forEach((key) => {
-    if (STRUCTURED_EVENT_LOG_CONTEXT_KEY_SET.has(key) && !omitIdentity) {
+    if (STRUCTURED_EVENT_LOG_CONTEXT_KEY_SET.has(key) && !includeStructuredEvent) {
       return;
     }
     if (omitIdentity && (key === 'tenantId' || key === 'userId')) {

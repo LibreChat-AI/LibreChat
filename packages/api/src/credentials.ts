@@ -11,7 +11,7 @@ export const credentialNames = [
 
 export type CredentialName = (typeof credentialNames)[number];
 
-export type CredentialSource = 'environment' | 'temporary' | 'legacy-default';
+export type CredentialSource = 'environment' | 'temporary';
 
 export interface CredentialRuntimeState {
   filePath: string;
@@ -55,6 +55,18 @@ const legacyCredentialFingerprints: Partial<Record<CredentialName, string[]>> = 
   JWT_SECRET: ['69024f21e9ad17594dcccd93e87399af24a5426ccfe6108d1787f0335966abc4'],
   JWT_REFRESH_SECRET: ['282ad5f60261639fefed381976b4d0dde52eab5527a1ab2ec75d5be1efa1165b'],
 };
+
+const legacyJwtCredentialNames = new Set<CredentialName>(['JWT_SECRET', 'JWT_REFRESH_SECRET']);
+
+function rejectLegacyJwtCredential(name: CredentialName, value: string): void {
+  if (!legacyJwtCredentialNames.has(name) || !isLegacyCredential(name, value)) {
+    return;
+  }
+
+  throw new Error(
+    `[credentials] ${name} uses a retired default value. Configure a unique replacement before starting LibreChat.`,
+  );
+}
 
 function getRuntimeState(): CredentialRuntimeState | undefined {
   const runtime = globalThis as typeof globalThis &
@@ -248,6 +260,8 @@ function adoptCredentialFile(
     if (!isUsableTemporaryCredential(name, value)) {
       return false;
     }
+
+    rejectLegacyJwtCredential(name, value);
   }
 
   for (const name of names) {
@@ -265,6 +279,19 @@ export function bootstrapCredentials(): CredentialRuntimeState {
     return existingState;
   }
 
+  // Validate explicit credentials before generating or adopting any missing values.
+  for (const name of ['CREDS_KEY', 'CREDS_IV'] as const) {
+    const value = process.env[name];
+    if (isConfiguredCredential(value) && !isUsableTemporaryCredential(name, value)) {
+      const bytes = name === 'CREDS_KEY' ? 32 : 16;
+      throw new Error(
+        `[credentials] ${name} must be exactly ${bytes * 2} hexadecimal characters (${bytes} bytes). ` +
+          'Refusing startup to prevent weak encryption or late crypto failures. ' +
+          'Restore the original credential if it protects existing data; plan a controlled migration before rotating it.',
+      );
+    }
+  }
+
   const filePath = getCredentialPath();
   const file = readCredentialFile(filePath);
   const sources = {} as Record<CredentialName, CredentialSource>;
@@ -276,13 +303,15 @@ export function bootstrapCredentials(): CredentialRuntimeState {
   for (const name of credentialNames) {
     const environmentValue = process.env[name];
     if (isConfiguredCredential(environmentValue)) {
-      sources[name] = isLegacyCredential(name, environmentValue) ? 'legacy-default' : 'environment';
+      rejectLegacyJwtCredential(name, environmentValue);
+      sources[name] = 'environment';
       continue;
     }
 
     missingFromEnvironment.push(name);
     const fileValue = file.values[name];
     if (isUsableTemporaryCredential(name, fileValue)) {
+      rejectLegacyJwtCredential(name, fileValue);
       process.env[name] = fileValue;
       sources[name] = 'temporary';
       loadedFromFile.push(name);

@@ -11,6 +11,13 @@ import Login from '~/components/Auth/Login';
 
 jest.mock('librechat-data-provider/react-query');
 
+const mockShowToast = jest.fn();
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useToastContext: () => ({ showToast: mockShowToast }),
+}));
+
 const mockStartupConfig = {
   isFetching: false,
   isLoading: false,
@@ -204,4 +211,44 @@ test('Navigates to / on successful login', async () => {
   await userEvent.click(submitButton);
 
   waitFor(() => expect(window.location.pathname).toBe('/'));
+});
+
+describe('OAuth rejection redirects', () => {
+  const enterAt = (search: string) => {
+    window.history.pushState({}, '', `/login${search}`);
+  };
+
+  afterEach(() => {
+    mockShowToast.mockClear();
+    window.history.pushState({}, '', '/login');
+  });
+
+  test.each([
+    [
+      'auth_rate_limited',
+      'Too many login attempts in a short amount of time. Please try again later.',
+    ],
+    ['auth_banned', 'Your account has been temporarily banned due to violations of our service.'],
+    ['auth_failed', 'Authentication failed. Please check your login method and try again.'],
+  ])('surfaces a localized toast for %s and clears the query', async (code, message) => {
+    enterAt(`?redirect=false&error=${code}`);
+
+    setup();
+
+    await waitFor(() => expect(mockShowToast).toHaveBeenCalledWith({ message, status: 'error' }));
+    await waitFor(() => expect(window.location.search).not.toContain('error='));
+    expect(window.location.search).not.toContain('redirect=');
+  });
+
+  test.each(['toString', 'constructor', 'unmapped_code'])(
+    'ignores the unmapped error code %s',
+    async (code) => {
+      enterAt(`?error=${code}`);
+
+      setup();
+
+      await waitFor(() => expect(getByTestId(document.body, 'login-button')).toBeInTheDocument());
+      expect(mockShowToast).not.toHaveBeenCalled();
+    },
+  );
 });

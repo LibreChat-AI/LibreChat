@@ -1,45 +1,19 @@
 import { memo, useMemo } from 'react';
-import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
+import MessageRow, { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
-import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
+import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
+import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
+import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
 import Icon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext, useLocalize } from '~/hooks';
-import SearchContent from './Content/SearchContent';
-import { fontSizeAtom } from '~/store/fontSize';
 import SearchButtons from './SearchButtons';
 import SubRow from './SubRow';
 import { cn } from '~/utils';
 import store from '~/store';
-
-const MessageAvatar = ({ iconData }: { iconData: TMessageIcon }) => (
-  <div className="relative flex flex-shrink-0 flex-col items-end">
-    <div className="pt-0.5">
-      <div className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full">
-        <Icon iconData={iconData} />
-      </div>
-    </div>
-  </div>
-);
-
-const MessageBody = ({ message, messageLabel, fontSize, authorHeader }) => (
-  <div
-    className={cn('relative flex w-11/12 flex-col', message.isCreatedByUser ? '' : 'agent-turn')}
-  >
-    <div className={cn('select-none font-semibold', fontSize)}>
-      {messageLabel}
-      <MessageTimestamp value={message.createdAt ?? message.clientTimestamp} />
-    </div>
-    <SearchContent message={message} authorHeader={authorHeader} />
-    <SubRow classes="text-xs">
-      <MinimalHoverButtons message={message} />
-      <SearchButtons message={message} />
-    </SubRow>
-  </div>
-);
 
 function searchFilesEqual(prev?: TMessage['files'], next?: TMessage['files']) {
   if (prev === next) {
@@ -85,6 +59,8 @@ export function areSearchMessagePropsEqual(
     a.iconURL === b.iconURL &&
     /** `SearchContent` renders an incomplete-response notice on `unfinished`. */
     a.unfinished === b.unfinished &&
+    /** `SearchContent` renders a failed row through the error dispatcher, not as markdown. */
+    a.error === b.error &&
     /** `SearchButtons` renders `title` and navigates by `conversationId`, so a
      *  rename/refetch that leaves the text and id intact must still re-render. */
     a.title === b.title &&
@@ -94,7 +70,6 @@ export function areSearchMessagePropsEqual(
 }
 
 function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
-  const fontSize = useAtomValue(fontSizeAtom);
   const UsernameDisplay = useRecoilValue<boolean>(store.UsernameDisplay);
   const { user } = useAuthContext();
   const localize = useLocalize();
@@ -138,17 +113,35 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
   }
 
   return (
-    <div className="text-token-text-primary w-full bg-transparent">
-      <div className="m-auto p-4 py-2 md:gap-6">
-        <div className="final-completion group mx-auto flex flex-1 gap-3 md:max-w-3xl md:px-5 lg:max-w-[40rem] lg:px-1 xl:max-w-[48rem] xl:px-5">
-          <MessageAvatar iconData={iconData} />
-          <MessageBody
-            message={message}
-            messageLabel={messageLabel}
-            fontSize={fontSize}
-            authorHeader={authorHeader}
-          />
-        </div>
+    <div className="text-text-primary w-full bg-transparent">
+      {/* A hairline where one result ends and the next begins. Results run together
+          otherwise, and a long answer followed by a short question reads as one
+          message. Drawn on the column the message occupies, not the window. */}
+      <div
+        className={cn('border-border-light mx-auto border-b px-4 py-4', getMessageRowWidthClass())}
+      >
+        <MessageRow
+          id={message.messageId}
+          icon={<Icon iconData={iconData} />}
+          label={messageLabel}
+          hoverLabel={getHeaderModelName(message.model)}
+          timestamp={message.createdAt ?? message.clientTimestamp}
+          ariaLabel={getMessageAriaLabel(message, localize)}
+          headerPrefix={getHeaderPrefixForScreenReader(message, localize)}
+          isCreatedByUser={message.isCreatedByUser === true}
+          className="final-completion"
+          footer={
+            <SubRow classes={message.isCreatedByUser ? 'justify-end text-xs' : 'text-xs'}>
+              <MinimalHoverButtons
+                message={message}
+                variant={rendersMarkdownLite(message) ? 'lite' : undefined}
+              />
+              <SearchButtons message={message} />
+            </SubRow>
+          }
+        >
+          <SearchContent message={message} authorHeader={authorHeader} />
+        </MessageRow>
       </div>
     </div>
   );

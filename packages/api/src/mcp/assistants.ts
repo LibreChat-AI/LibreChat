@@ -1,16 +1,86 @@
 import { logger } from '@librechat/data-schemas';
 import {
   Constants,
+  Tools,
   buildServerNameAliases,
   normalizeServerName,
   splitMCPToolKey,
 } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
-import type { LCAvailableTools, ParsedServerConfig } from '~/mcp/types';
+import type { MCPOptions, UIResource } from 'librechat-data-provider';
+import type { Artifacts, LCAvailableTools, LCFunctionTool, ParsedServerConfig } from '~/mcp/types';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { findShadowedServerNames } from '~/mcp/utils';
 
 const RECOVERY_CONCURRENCY = 3;
+
+interface AssistantMCPMessage {
+  messageId?: string;
+  conversationId?: string | null;
+  attachments?: unknown[];
+}
+
+interface AssistantMCPArtifactHost {
+  responseMessage?: AssistantMCPMessage;
+  finalMessage?: AssistantMCPMessage;
+  res?: {
+    destroyed?: boolean;
+    writableEnded?: boolean;
+    write(chunk: string): unknown;
+  };
+}
+
+export interface AssistantMCPToolResult {
+  output: unknown;
+  uiResources?: UIResource[];
+}
+
+/** Separates host-only App data from an MCP result before Assistants submits model-bound output. */
+export function splitAssistantMCPToolResult(
+  rawOutput: unknown,
+  isMCPTool: boolean,
+): AssistantMCPToolResult {
+  if (!isMCPTool || !Array.isArray(rawOutput) || rawOutput.length !== 2) {
+    return { output: rawOutput };
+  }
+  const [output, candidateArtifact] = rawOutput as [unknown, Artifacts];
+  const uiResources = candidateArtifact?.[Tools.ui_resources]?.data;
+  return {
+    output,
+    ...(Array.isArray(uiResources) && uiResources.length > 0 ? { uiResources } : {}),
+  };
+}
+
+/** Persists and streams an App attachment through either Assistants runtime's message owner. */
+export function appendAssistantMCPAppArtifact({
+  host,
+  toolCallId,
+  uiResources,
+}: {
+  host: AssistantMCPArtifactHost;
+  toolCallId: string;
+  uiResources: UIResource[];
+}): void {
+  const message = host.responseMessage ?? host.finalMessage;
+  if (
+    !message ||
+    typeof message.messageId !== 'string' ||
+    typeof message.conversationId !== 'string'
+  ) {
+    return;
+  }
+  const attachment = {
+    type: Tools.ui_resources,
+    messageId: message.messageId,
+    toolCallId,
+    conversationId: message.conversationId,
+    [Tools.ui_resources]: uiResources,
+  };
+  message.attachments ??= [];
+  message.attachments.push(attachment);
+  if (host.res && !host.res.destroyed && !host.res.writableEnded) {
+    host.res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+  }
+}
 
 export interface AssistantMCPUser {
   id?: string;
@@ -29,6 +99,7 @@ export interface AssistantToolDefinitionsParams {
 export interface AssistantToolCatalogSnapshot {
   tools: LCAvailableTools | null;
   publicationGeneration?: string;
+  publicationRevision?: string;
 }
 
 export interface AssistantToolDefinitionsDeps {
@@ -60,6 +131,7 @@ export interface AssistantToolDefinitionsDeps {
     serverTools: LCAvailableTools;
     serverConfig: ParsedServerConfig;
     publicationGeneration?: string;
+    publicationRevision?: string;
   }) => Promise<void>;
 }
 
@@ -134,6 +206,7 @@ async function loadServerCatalog(
         serverTools: snapshot.tools,
         serverConfig,
         publicationGeneration: snapshot.publicationGeneration,
+        publicationRevision: snapshot.publicationRevision,
       })
       .catch((error) =>
         logger.error(
@@ -151,11 +224,22 @@ async function loadServerCatalog(
   throw new Error(`MCP tool definitions unavailable for assistant server "${serverName}"`);
 }
 
+export interface AssistantToolDefinitionsResult {
+  toolDefinitions: LCAvailableTools;
+  /**
+   * Every server name the principal can reach, from the same merged registry
+   * read that resolved the catalogs — the legacy-key heal reuses it instead
+   * of repeating the app-config and registry round trips on the write path.
+   * `undefined` when the payload references no MCP tools (nothing to heal).
+   */
+  accessibleServerNames?: string[];
+}
+
 /** Loads the static catalog with the configuration-addressed MCP slices referenced by an assistant. */
 export async function getAssistantToolDefinitions(
   params: AssistantToolDefinitionsParams,
   deps: AssistantToolDefinitionsDeps,
-): Promise<LCAvailableTools> {
+): Promise<AssistantToolDefinitionsResult> {
   const mcpToolNames =
     params.tools?.filter(
       (tool): tool is string =>
@@ -163,7 +247,7 @@ export async function getAssistantToolDefinitions(
     ) ?? [];
   const userId = params.user?.id;
   if (mcpToolNames.length === 0 || !userId) {
-    return params.staticTools;
+    return { toolDefinitions: params.staticTools };
   }
 
   const configs = await resolveAssistantMcpConfigs(
@@ -179,5 +263,31 @@ export async function getAssistantToolDefinitions(
       (serverName) => loadServerCatalog(userId, serverName, configs[serverName], deps, recover),
     ),
   );
-  return Object.assign({}, params.staticTools, ...serverCatalogs);
+  /** Entries keep `serverToolName` here: the assistants heal verifies legacy
+   *  key rewrites against that upstream identity. The controllers sanitize
+   *  through {@link toProviderToolDefinition} at the submission boundary. */
+  return {
+    toolDefinitions: Object.assign({}, params.staticTools, ...serverCatalogs),
+    accessibleServerNames: [
+      ...new Set([...Object.keys(configs), ...Object.keys(params.mcpConfig)]),
+    ],
+  };
+}
+
+/**
+ * Assistant writers submit tool entries VERBATIM as provider tool definitions
+ * (`assistantData.tools` in the v1/v2 controllers), and providers reject
+ * unknown fields — the internal `serverToolName` mapping must never leave the
+ * catalog. Strings and entries without the mapping pass through by reference;
+ * the cached catalog keeps the mapping for the runtime call path.
+ */
+export function toProviderToolDefinition<T>(tool: T): T | LCFunctionTool {
+  if (tool == null || typeof tool !== 'object') {
+    return tool;
+  }
+  const entry = tool as Partial<LCFunctionTool>;
+  if (entry.serverToolName == null || entry.type !== 'function' || entry['function'] == null) {
+    return tool;
+  }
+  return { type: entry.type, ['function']: entry['function'] };
 }

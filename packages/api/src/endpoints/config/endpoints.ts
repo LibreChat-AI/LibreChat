@@ -1,5 +1,7 @@
 import {
   AuthType,
+  CODE_APPROVAL_MODES,
+  DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
   EModelEndpoint,
   isAgentsEndpoint,
   orderEndpointsConfig,
@@ -10,7 +12,9 @@ import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, TCustomEndpointsConfig } from '~/types';
 import type { GetAppConfigOptions } from '~/app/service';
 import { loadCustomEndpointsConfig as defaultLoadCustomEndpoints } from '~/endpoints/custom';
+import { isCodeEnvironmentSelectionEnabled } from '~/code/protocol';
 import { getAppConfigOptionsFromUser } from '~/app/service';
+import { getResponsesApiRouting } from './responses';
 
 type PartialEndpointEntry = Partial<TConfig> & Record<string, unknown>;
 type DefaultEndpointsResult = Record<string, PartialEndpointEntry | false | null>;
@@ -46,6 +50,15 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
       mergedConfig[EModelEndpoint.azureOpenAI] = { userProvide: false };
     }
 
+    for (const endpoint of [EModelEndpoint.openAI, EModelEndpoint.azureOpenAI] as const) {
+      const entry = mergedConfig[endpoint];
+      if (entry)
+        mergedConfig[endpoint] = {
+          ...entry,
+          responsesApiRouting: getResponsesApiRouting(appConfig, endpoint),
+        };
+    }
+
     if (appConfig.endpoints?.[EModelEndpoint.anthropic]?.vertexConfig?.enabled) {
       mergedConfig[EModelEndpoint.anthropic] = { userProvide: false };
     }
@@ -70,13 +83,72 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
     }
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
-      const { disableBuilder, capabilities, allowedProviders } =
-        appConfig.endpoints[EModelEndpoint.agents];
+      const {
+        disableBuilder,
+        capabilities,
+        allowedProviders,
+        statefulCodeSessions,
+        maxSubagents,
+        fileSharing,
+      } = appConfig.endpoints[EModelEndpoint.agents];
+      const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
+      /** Only advertise Accept edits when the endpoint fallback cannot force every
+       * unmatched tool back to Ask/Deny. Explicit rules and hooks remain free to
+       * tighten individual actions after the user selects the broader mode. */
+      let approvalModes = [...CODE_APPROVAL_MODES];
+      if (toolApproval?.enabled === false) {
+        approvalModes = [];
+      } else if (toolApproval?.enabled === true && toolApproval.mode !== 'bypass') {
+        approvalModes = ['ask'];
+      }
+      const clientStatefulCodeSessions = statefulCodeSessions
+        ? {
+            allowedEnvironments: statefulCodeSessions.allowedEnvironments,
+            ...(isCodeEnvironmentSelectionEnabled(statefulCodeSessions.allowEnvironmentSelection)
+              ? {
+                  allowEnvironmentSelection: true,
+                  maxEnvironmentChoices:
+                    statefulCodeSessions.maxEnvironmentChoices ??
+                    DEFAULT_AGENT_CODE_ENVIRONMENT_CHOICES,
+                }
+              : {}),
+            approvalsEnabled: toolApproval?.enabled !== false,
+            approvalModes,
+            environments: statefulCodeSessions.environments
+              ?.filter(
+                (environment) =>
+                  !(
+                    environment.pairing?.allowPrincipalWorkers === true &&
+                    environment.pairing.workerId == null &&
+                    environment.workerId == null
+                  ),
+              )
+              .map(({ id, name, type, default: isDefault, configSchema, settings }) => ({
+                id,
+                name,
+                type,
+                default: isDefault,
+                configSchema,
+                settings,
+              })),
+          }
+        : undefined;
       mergedConfig[EModelEndpoint.agents] = {
         ...mergedConfig[EModelEndpoint.agents],
         allowedProviders,
         disableBuilder,
         capabilities,
+        statefulCodeSessions: clientStatefulCodeSessions,
+        maxSubagents,
+        fileSharing,
+        toolApproval: {
+          enabled: toolApproval?.enabled === true,
+          agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
+          mode: toolApproval?.mode,
+          allow: toolApproval?.allow,
+          deny: toolApproval?.deny,
+          ask: toolApproval?.ask,
+        },
       };
     }
 

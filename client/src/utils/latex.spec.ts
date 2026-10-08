@@ -1,254 +1,314 @@
-import { preprocessLaTeX } from './latex';
+import { createElement } from 'react';
+import ReactMarkdown from 'react-markdown';
+import { render } from '@testing-library/react';
+import { math } from 'micromark-extension-math';
+import { mathFromMarkdown } from 'mdast-util-math';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import type { Options as ReactMarkdownOptions } from 'react-markdown';
+import {
+  getRemarkPlugins,
+  getRehypePlugins,
+} from '~/components/Chat/Messages/Content/markdownConfig';
+import { singleDollarMath } from './latex';
 
-describe('preprocessLaTeX', () => {
-  test('returns the same string if no LaTeX patterns are found', () => {
-    const content = 'This is a test string without LaTeX or dollar signs';
-    expect(preprocessLaTeX(content)).toBe(content);
+type SpecNode = {
+  type: string;
+  value?: string;
+  children?: SpecNode[];
+};
+
+/**
+ * Mirrors the production parser: `micromark-extension-math` resolves to
+ * `micromark-extension-llm-math` (vite alias in the app, moduleNameMapper here), with
+ * single-dollar spans handled exclusively by the `singleDollarMath` construct.
+ */
+const parse = (content: string): SpecNode =>
+  fromMarkdown(content, {
+    extensions: [math({ singleDollarTextMath: false }), singleDollarMath],
+    mdastExtensions: [mathFromMarkdown()],
+  }) as SpecNode;
+
+const collect = (node: SpecNode, type: string, values: string[] = []): string[] => {
+  if (node.type === type && node.value !== undefined) {
+    values.push(node.value);
+  }
+  for (const child of node.children ?? []) {
+    collect(child, type, values);
+  }
+  return values;
+};
+
+const hasType = (node: SpecNode, type: string): boolean => {
+  if (node.type === type) {
+    return true;
+  }
+  return (node.children ?? []).some((child) => hasType(child, type));
+};
+
+const inlineMath = (content: string): string[] => collect(parse(content), 'inlineMath');
+const flowMath = (content: string): string[] => collect(parse(content), 'math');
+const textOf = (content: string): string => collect(parse(content), 'text').join('');
+
+describe('singleDollarMath', () => {
+  describe('currency stays literal', () => {
+    test('Treasury buyback report (production bug)', () => {
+      const content =
+        'The U.S. Treasury said it would at least double long-dated bond buybacks, from $2bn to at least $4bn per operation starting Sept 9.';
+      expect(inlineMath(content)).toEqual([]);
+      expect(textOf(content)).toContain('from $2bn to at least $4bn per operation');
+    });
+
+    test('plain amounts', () => {
+      expect(inlineMath('Price is $50 and $100')).toEqual([]);
+      expect(inlineMath('$50 is $20 + $30')).toEqual([]);
+      expect(inlineMath('The price is $1,000,000 for this item.')).toEqual([]);
+      expect(inlineMath('Total: $29.50 plus tax')).toEqual([]);
+    });
+
+    test('abbreviated amounts', () => {
+      expect(inlineMath('Revenue: $5M to $10M, funding: $1.5B, price: $5K')).toEqual([]);
+      expect(inlineMath('$250k is 25% of $1M')).toEqual([]);
+      expect(inlineMath('More than $1bn in leveraged shorts, over $3bn total')).toEqual([]);
+    });
+
+    test('long decimals and large numbers', () => {
+      expect(inlineMath('You can win $1000000 or even $9999999.99!')).toEqual([]);
+      expect(inlineMath('Bitcoin: $0.00001234, Gas: $3.999, Rate: $1.234567890')).toEqual([]);
+      expect(
+        inlineMath('The total is $1157.90 (existing) + $500 (new investment) = $1657.90.'),
+      ).toEqual([]);
+    });
+
+    test('ranges with a punctuation dash reject on the trailing digit', () => {
+      expect(inlineMath('a $100-$200 range')).toEqual([]);
+      expect(inlineMath('a $100–$200 range')).toEqual([]);
+      expect(inlineMath('in the $10k-$20k band')).toEqual([]);
+    });
+
+    test('sums across a whole line', () => {
+      expect(inlineMath('- **Total Savings**: $500 + $200 + $150 = $850')).toEqual([]);
+    });
+
+    test('suffixed European style amounts', () => {
+      expect(inlineMath('Cela coûte 100$ et 200$ en Europe')).toEqual([]);
+    });
+
+    test('lone and trailing dollar signs', () => {
+      expect(inlineMath('A single $ sign should not be converted')).toEqual([]);
+      expect(inlineMath('The price hit $79,455 on')).toEqual([]);
+    });
+
+    test('amounts on separate lines of one paragraph', () => {
+      expect(inlineMath('Currency $100 and\nthen $200 later')).toEqual([]);
+    });
   });
 
-  test('returns the same string if no dollar signs are present', () => {
-    const content = 'This has LaTeX \\(x^2\\) and \\[y^2\\] but no dollars';
-    expect(preprocessLaTeX(content)).toBe(content);
+  describe('single-dollar math parses', () => {
+    test('basic expressions', () => {
+      expect(inlineMath('Inline math: $x^2 + y^2 = z^2$')).toEqual(['x^2 + y^2 = z^2']);
+      expect(inlineMath('Equation: $f(x) = 2x + 3$ where x is a variable.')).toEqual([
+        'f(x) = 2x + 3',
+      ]);
+      expect(inlineMath('First $a + b = c$ and second $x^2 + y^2 = z^2$')).toEqual([
+        'a + b = c',
+        'x^2 + y^2 = z^2',
+      ]);
+    });
+
+    test('digit-led expressions are still math', () => {
+      expect(
+        inlineMath('- **Goldbach Conjecture**: $2n = p + q$ (every even integer > 2)'),
+      ).toEqual(['2n = p + q']);
+      expect(inlineMath('the answer is $3$.')).toEqual(['3']);
+      expect(inlineMath('an eigenvalue of $-1$ is expected')).toEqual(['-1']);
+    });
+
+    test('letters may follow the closer (ordinals)', () => {
+      expect(inlineMath('the $n$th term')).toEqual(['n']);
+    });
+
+    test('trailing punctuation after the closer', () => {
+      expect(inlineMath('The set is defined as $\\{x | x > 0\\}$.')).toEqual(['\\{x | x > 0\\}']);
+    });
+
+    test('physics expressions', () => {
+      const content = [
+        '- **Schrödinger Equation**: $i\\hbar\\frac{\\partial}{\\partial t}|\\psi\\rangle = \\hat{H}|\\psi\\rangle$',
+        '- **Einstein Field Equations**: $G_{\\mu\\nu} = \\frac{8\\pi G}{c^4} T_{\\mu\\nu}$',
+      ].join('\n');
+      expect(inlineMath(content)).toEqual([
+        'i\\hbar\\frac{\\partial}{\\partial t}|\\psi\\rangle = \\hat{H}|\\psi\\rangle',
+        'G_{\\mu\\nu} = \\frac{8\\pi G}{c^4} T_{\\mu\\nu}',
+      ]);
+    });
+
+    test('nested braces and subscripted products', () => {
+      expect(
+        inlineMath('Totient: $\\phi(n) = n \\prod_{p|n} \\left(1 - \\frac{1}{p}\\right)$'),
+      ).toEqual(['\\phi(n) = n \\prod_{p|n} \\left(1 - \\frac{1}{p}\\right)']);
+    });
+
+    test('escaped dollars stay inside the span', () => {
+      expect(inlineMath('Calculate $\\text{Total} = \\$500 + \\$200$')).toEqual([
+        '\\text{Total} = \\$500 + \\$200',
+      ]);
+      expect(inlineMath('The formula $f(x) = \\$2x$ represents cost')).toEqual(['f(x) = \\$2x']);
+    });
+
+    test('math and prices coexist', () => {
+      expect(inlineMath('Formula $x^2$ costs $25')).toEqual(['x^2']);
+      expect(inlineMath('LaTeX $x^2$ and price $50')).toEqual(['x^2']);
+      expect(inlineMath('Price $100 then equation $x + y = z$ then another price $50')).toEqual([
+        'x + y = z',
+      ]);
+    });
+
+    test('markdown characters inside math never form emphasis', () => {
+      const content = 'terms $a_1 + b_2$ and $c_{i}^{*}$ here';
+      expect(inlineMath(content)).toEqual(['a_1 + b_2', 'c_{i}^{*}']);
+      expect(hasType(parse(content), 'emphasis')).toBe(false);
+    });
+
+    test('mhchem passes through unmangled', () => {
+      expect(inlineMath('$\\ce{H2O}$ and $\\pu{123 J}$')).toEqual(['\\ce{H2O}', '\\pu{123 J}']);
+    });
   });
 
-  test('preserves valid inline LaTeX delimiters \\(...\\)', () => {
-    const content = 'This is inline LaTeX: \\(x^2 + y^2 = z^2\\)';
-    expect(preprocessLaTeX(content)).toBe(content);
+  describe('structural protection', () => {
+    test('inline code is untouchable', () => {
+      const content = 'Outside $x^2$ and inside code: `$100`';
+      expect(inlineMath(content)).toEqual(['x^2']);
+      expect(collect(parse(content), 'inlineCode')).toEqual(['$100']);
+    });
+
+    test('a span never swallows an inline code marker', () => {
+      const content = 'The error "invalid $lookup namespace" occurs when using `$lookup` operator';
+      expect(inlineMath(content)).toEqual([]);
+      expect(collect(parse(content), 'inlineCode')).toEqual(['$lookup']);
+    });
+
+    test('math and inline code coexist', () => {
+      const content = 'Use $x + y$ in math but `$lookup` in code';
+      expect(inlineMath(content)).toEqual(['x + y']);
+      expect(collect(parse(content), 'inlineCode')).toEqual(['$lookup']);
+    });
+
+    test('fenced code is untouchable', () => {
+      const content = '```\n$100\n$variable\n```\n\nOutside $x^2$';
+      expect(inlineMath(content)).toEqual(['x^2']);
+      expect(collect(parse(content), 'code')).toEqual(['$100\n$variable']);
+    });
   });
 
-  test('preserves valid block LaTeX delimiters \\[...\\]', () => {
-    const content = 'This is block LaTeX: \\[E = mc^2\\]';
-    expect(preprocessLaTeX(content)).toBe(content);
+  describe('escapes and line boundaries', () => {
+    test('escaped dollars never open a span', () => {
+      expect(inlineMath('Already escaped \\$50 and \\$100')).toEqual([]);
+      expect(inlineMath('Escaped \\$x^2\\$ should not change')).toEqual([]);
+    });
+
+    test('single-dollar spans never cross lines', () => {
+      expect(inlineMath('This has $x\ny$ which spans lines')).toEqual([]);
+    });
+
+    test('a dangling escape abandons the span', () => {
+      expect(inlineMath('dangling $a\\')).toEqual([]);
+      expect(inlineMath('dangling $a\\\nnext line$')).toEqual([]);
+    });
   });
 
-  test('preserves valid double dollar delimiters', () => {
-    const content = 'This is valid: $$x^2 + y^2 = z^2$$';
-    expect(preprocessLaTeX(content)).toBe(content);
+  describe('unambiguous delimiters are unaffected', () => {
+    test('double dollars, inline and flow', () => {
+      expect(inlineMath('This is valid: $$x^2 + y^2 = z^2$$')).toEqual(['x^2 + y^2 = z^2']);
+      expect(flowMath('$$\nE = mc^2\n$$')).toEqual(['E = mc^2']);
+    });
+
+    test('TeX brackets from the llm-math fork', () => {
+      expect(inlineMath('This is inline LaTeX: \\(x^2 + y^2 = z^2\\)')).toEqual([
+        'x^2 + y^2 = z^2',
+      ]);
+      const display = parse('\\[\nE = mc^2\n\\]');
+      expect([...collect(display, 'math'), ...collect(display, 'inlineMath')]).toEqual([
+        'E = mc^2',
+      ]);
+    });
   });
 
-  test('converts single dollar delimiters to double dollars', () => {
-    const content = 'Inline math: $x^2 + y^2 = z^2$';
-    const expected = 'Inline math: $$x^2 + y^2 = z^2$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
+  describe('documented ambiguity limits', () => {
+    test('a trailing dollar-wrapped number still parses (Pandoc parity)', () => {
+      expect(inlineMath('Simple Interest: $A = P + Prt = $1,000 and = $1,100$')).toEqual(['1,100']);
+    });
+
+    test('unbalanced braces abandon the span', () => {
+      expect(inlineMath('weird $a}b$ y')).toEqual([]);
+      expect(inlineMath('open $a{b$ y')).toEqual([]);
+    });
+  });
+});
+
+describe('getRemarkPlugins LaTeX wiring', () => {
+  /** The config's unified@10 `PluggableList` and react-markdown's unified@11 plugin types are structurally compatible but nominally distinct, as at the production call sites. */
+  const renderMarkdown = (content: string, latexParsing: boolean) => {
+    const remarkPlugins = getRemarkPlugins(latexParsing) as ReactMarkdownOptions['remarkPlugins'];
+    return render(createElement(ReactMarkdown, { remarkPlugins }, content));
+  };
+
+  test('currency renders literally through the full plugin chain', () => {
+    const { container } = renderMarkdown('from $2bn to at least $4bn per operation', true);
+    expect(container.querySelector('.math-inline')).toBeNull();
+    expect(container.textContent).toContain('from $2bn to at least $4bn per operation');
   });
 
-  test('converts multiple single dollar expressions', () => {
-    const content = 'First $a + b = c$ and second $x^2 + y^2 = z^2$';
-    const expected = 'First $$a + b = c$$ and second $$x^2 + y^2 = z^2$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
+  test('single-dollar math renders when enabled', () => {
+    const { container } = renderMarkdown('Equation $E=mc^2$ here', true);
+    const node = container.querySelector('.math-inline');
+    expect(node?.textContent).toBe('E=mc^2');
   });
 
-  test('escapes currency dollar signs', () => {
-    const content = 'Price is $50 and $100';
-    const expected = 'Price is \\$50 and \\$100';
-    expect(preprocessLaTeX(content)).toBe(expected);
+  test('the toggle gates only single-dollar syntax', () => {
+    const single = renderMarkdown('Equation $E=mc^2$ here', false);
+    expect(single.container.querySelector('.math-inline')).toBeNull();
+    expect(single.container.textContent).toContain('$E=mc^2$');
+
+    const double = renderMarkdown('Equation $$E=mc^2$$ here', false);
+    expect(double.container.querySelector('.math-inline')).not.toBeNull();
+
+    const brackets = renderMarkdown('Equation \\(E=mc^2\\) here', false);
+    expect(brackets.container.querySelector('.math-inline')).not.toBeNull();
   });
 
-  test('escapes currency with spaces', () => {
-    const content = '$50 is $20 + $30';
-    const expected = '\\$50 is \\$20 + \\$30';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('escapes currency with commas', () => {
-    const content = 'The price is $1,000,000 for this item.';
-    const expected = 'The price is \\$1,000,000 for this item.';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('escapes currency with decimals', () => {
-    const content = 'Total: $29.50 plus tax';
-    const expected = 'Total: \\$29.50 plus tax';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('converts LaTeX expressions while escaping currency', () => {
-    const content = 'LaTeX $x^2$ and price $50';
-    const expected = 'LaTeX $$x^2$$ and price \\$50';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles Goldbach Conjecture example', () => {
-    const content = '- **Goldbach Conjecture**: $2n = p + q$ (every even integer > 2)';
-    const expected = '- **Goldbach Conjecture**: $$2n = p + q$$ (every even integer > 2)';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('does not escape already escaped dollar signs', () => {
-    const content = 'Already escaped \\$50 and \\$100';
-    expect(preprocessLaTeX(content)).toBe(content);
-  });
-
-  test('does not convert already escaped single dollars', () => {
-    const content = 'Escaped \\$x^2\\$ should not change';
-    expect(preprocessLaTeX(content)).toBe(content);
-  });
-
-  test('escapes mhchem commands', () => {
-    const content = '$\\ce{H2O}$ and $\\pu{123 J}$';
-    const expected = '$$\\\\ce{H2O}$$ and $$\\\\pu{123 J}$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles empty string', () => {
-    expect(preprocessLaTeX('')).toBe('');
-  });
-
-  test('handles complex mixed content', () => {
-    const content = `Valid double $$y^2$$
-Currency $100 and $200
-Single dollar math $x^2 + y^2$
-Chemical $\\ce{H2O}$
-Valid brackets \\[z^2\\]`;
-    const expected = `Valid double $$y^2$$
-Currency \\$100 and \\$200
-Single dollar math $$x^2 + y^2$$
-Chemical $$\\\\ce{H2O}$$
-Valid brackets \\[z^2\\]`;
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles multiple equations with currency', () => {
-    const content = `- **Euler's Totient Function**: $\\phi(n) = n \\prod_{p|n} \\left(1 - \\frac{1}{p}\\right)$
-- **Total Savings**: $500 + $200 + $150 = $850`;
-    const expected = `- **Euler's Totient Function**: $$\\phi(n) = n \\prod_{p|n} \\left(1 - \\frac{1}{p}\\right)$$
-- **Total Savings**: \\$500 + \\$200 + \\$150 = \\$850`;
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles inline code blocks', () => {
-    const content = 'Outside $x^2$ and inside code: `$100`';
-    const expected = 'Outside $$x^2$$ and inside code: `$100`';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles multiline code blocks', () => {
-    const content = '```\n$100\n$variable\n```\nOutside $x^2$';
-    const expected = '```\n$100\n$variable\n```\nOutside $$x^2$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('preserves LaTeX expressions with special characters', () => {
-    const content = 'The set is defined as $\\{x | x > 0\\}$.';
-    const expected = 'The set is defined as $$\\{x | x > 0\\}$$.';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles complex physics equations', () => {
-    const content = `- **Schrödinger Equation**: $i\\hbar\\frac{\\partial}{\\partial t}|\\psi\\rangle = \\hat{H}|\\psi\\rangle$
-- **Einstein Field Equations**: $G_{\\mu\\nu} = \\frac{8\\pi G}{c^4} T_{\\mu\\nu}$`;
-    const expected = `- **Schrödinger Equation**: $$i\\hbar\\frac{\\partial}{\\partial t}|\\psi\\rangle = \\hat{H}|\\psi\\rangle$$
-- **Einstein Field Equations**: $$G_{\\mu\\nu} = \\frac{8\\pi G}{c^4} T_{\\mu\\nu}$$`;
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles financial calculations with currency', () => {
-    const content = `- **Simple Interest**: $A = P + Prt = $1,000 + ($1,000)(0.05)(2) = $1,100$
-- **ROI**: $\\text{ROI} = \\frac{$1,200 - $1,000}{$1,000} \\times 100\\% = 20\\%$`;
-    const expected = `- **Simple Interest**: $$A = P + Prt = \\$1,000 + (\\$1,000)(0.05)(2) = \\$1,100$$
-- **ROI**: $$\\text{ROI} = \\frac{\\$1,200 - \\$1,000}{\\$1,000} \\times 100\\% = 20\\%$$`;
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('does not convert partial or malformed expressions', () => {
-    const content = 'A single $ sign should not be converted';
-    const expected = 'A single $ sign should not be converted';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles nested parentheses in LaTeX', () => {
+  test('currency alongside citation anchors stays literal', () => {
     const content =
-      'Matrix determinant: $\\det(A) = \\sum_{\\sigma \\in S_n} \\text{sgn}(\\sigma) \\prod_{i=1}^n a_{i,\\sigma(i)}$';
-    const expected =
-      'Matrix determinant: $$\\det(A) = \\sum_{\\sigma \\in S_n} \\text{sgn}(\\sigma) \\prod_{i=1}^n a_{i,\\sigma(i)}$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
+      'The U.S. Treasury said it would at least double long-dated bond buybacks, from $2bn to at least $4bn per operation starting Sept 9. turn0search4 That pushed long-end yields down.';
+    const { container } = renderMarkdown(content, true);
+    expect(container.querySelector('.math-inline')).toBeNull();
+    expect(container.textContent).toContain('from $2bn to at least $4bn per operation');
   });
 
-  test('preserves spacing in equations', () => {
-    const content = 'Equation: $f(x) = 2x + 3$ where x is a variable.';
-    const expected = 'Equation: $$f(x) = 2x + 3$$ where x is a variable.';
-    expect(preprocessLaTeX(content)).toBe(expected);
+  test('KaTeX renders the parsed spans without errors', () => {
+    const rehypePlugins = getRehypePlugins() as ReactMarkdownOptions['rehypePlugins'];
+    const remarkPlugins = getRemarkPlugins(true) as ReactMarkdownOptions['remarkPlugins'];
+    const { container } = render(
+      createElement(
+        ReactMarkdown,
+        { remarkPlugins, rehypePlugins },
+        'Water is $\\ce{H2O}$ where $E=mc^2$ costs $2bn to at least $4bn.',
+      ),
+    );
+    expect(container.querySelectorAll('.katex')).toHaveLength(2);
+    expect(container.querySelector('.katex-error')).toBeNull();
+    expect(container.textContent).toContain('costs $2bn to at least $4bn.');
   });
 
-  test('handles LaTeX with newlines inside should not be converted', () => {
-    const content = `This has $x
-y$ which spans lines`;
-    const expected = `This has $x
-y$ which spans lines`;
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles multiple dollar signs in text', () => {
-    const content = 'Price $100 then equation $x + y = z$ then another price $50';
-    const expected = 'Price \\$100 then equation $$x + y = z$$ then another price \\$50';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles complex LaTeX with currency in same expression', () => {
-    const content = 'Calculate $\\text{Total} = \\$500 + \\$200$';
-    const expected = 'Calculate $$\\text{Total} = \\$500 + \\$200$$';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('preserves already escaped dollars in LaTeX', () => {
-    const content = 'The formula $f(x) = \\$2x$ represents cost';
-    const expected = 'The formula $$f(x) = \\$2x$$ represents cost';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles adjacent LaTeX and currency', () => {
-    const content = 'Formula $x^2$ costs $25';
-    const expected = 'Formula $$x^2$$ costs \\$25';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles LaTeX with special characters and currency', () => {
-    const content = 'Set $\\{x | x > \\$0\\}$ for positive prices';
-    const expected = 'Set $$\\{x | x > \\$0\\}$$ for positive prices';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('does not convert when closing dollar is preceded by backtick', () => {
-    const content = 'The error "invalid $lookup namespace" occurs when using `$lookup` operator';
-    const expected = 'The error "invalid $lookup namespace" occurs when using `$lookup` operator';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles mixed backtick and non-backtick cases', () => {
-    const content = 'Use $x + y$ in math but `$lookup` in code';
-    const expected = 'Use $$x + y$$ in math but `$lookup` in code';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('escapes currency amounts without commas', () => {
-    const content =
-      'The total amount invested is $1157.90 (existing amount) + $500 (new investment) = $1657.90.';
-    const expected =
-      'The total amount invested is \\$1157.90 (existing amount) + \\$500 (new investment) = \\$1657.90.';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles large currency amounts', () => {
-    const content = 'You can win $1000000 or even $9999999.99!';
-    const expected = 'You can win \\$1000000 or even \\$9999999.99!';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('escapes currency with many decimal places', () => {
-    const content = 'Bitcoin: $0.00001234, Gas: $3.999, Rate: $1.234567890';
-    const expected = 'Bitcoin: \\$0.00001234, Gas: \\$3.999, Rate: \\$1.234567890';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('escapes abbreviated currency notation', () => {
-    const content = '$250k is 25% of $1M';
-    const expected = '\\$250k is 25% of \\$1M';
-    expect(preprocessLaTeX(content)).toBe(expected);
-  });
-
-  test('handles various abbreviated currency formats', () => {
-    const content = 'Revenue: $5M to $10M, funding: $1.5B, price: $5K';
-    const expected = 'Revenue: \\$5M to \\$10M, funding: \\$1.5B, price: \\$5K';
-    expect(preprocessLaTeX(content)).toBe(expected);
+  test('currency and approx-tildes inside GFM table cells stay literal', () => {
+    const content = [
+      '| Date | Level | What happened |',
+      '|---|---|---|',
+      '| Aug 19 | ~$64,500 open | Treasury buyback news hits after hours turn0search4 |',
+      '| Aug 21 | $77,300, peak $79,455 | White House Clarity Act push |',
+    ].join('\n');
+    const { container } = renderMarkdown(content, true);
+    expect(container.querySelector('.math-inline')).toBeNull();
+    expect(container.textContent).toContain('$64,500 open');
+    expect(container.textContent).toContain('$77,300, peak $79,455');
   });
 });

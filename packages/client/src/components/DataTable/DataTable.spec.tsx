@@ -30,8 +30,9 @@ jest.mock('~/hooks', () => ({
   useMediaQuery: jest.fn(() => false),
 }));
 
-// jsdom can't measure layout, so @tanstack/react-virtual's measurement-driven re-render loop
-// never converges (infinite "Too many re-renders"). Stub it to render every row deterministically.
+// jsdom reports a zero-height scroll container, so the real virtualizer resolves an empty
+// range and no row assertion below would find its row. Stub it to render every row
+// deterministically; DataTable.virtualization.spec.tsx covers the real virtualizer.
 jest.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({
     count,
@@ -53,6 +54,7 @@ jest.mock('@tanstack/react-virtual', () => ({
         })),
       getTotalSize: () => count * size,
       calculateRange: () => {},
+      measure: () => {},
       measureElement: () => {},
       scrollToIndex: () => {},
     };
@@ -66,18 +68,18 @@ jest.mock('~/svgs', () => ({
   ),
 }));
 
-// Mock lucide-react icons
-jest.mock('lucide-react', () => ({
-  ArrowUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-up" className={className} />
-  ),
-  ArrowDown: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down" className={className} />
-  ),
-  ArrowDownUp: ({ className }: { className?: string }) => (
-    <span data-testid="arrow-down-up" className={className} />
-  ),
-}));
+// Mock MorphIcon, mapping lucide icon data back to per-icon test ids
+jest.mock('../MorphIcon', () => {
+  const { createMorphIconMock } = jest.requireActual('../../test/mockMorphIcon');
+  const { ArrowUp, ArrowDown, ArrowDownUp } = jest.requireActual('lucide');
+  return {
+    MorphIcon: createMorphIconMock([
+      [ArrowUp, 'arrow-up'],
+      [ArrowDown, 'arrow-down'],
+      [ArrowDownUp, 'arrow-down-up'],
+    ]),
+  };
+});
 
 // Mock Table components
 jest.mock('../Table', () => ({

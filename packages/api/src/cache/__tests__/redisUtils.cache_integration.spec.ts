@@ -33,8 +33,8 @@ describe('redisUtils Integration Tests', () => {
       const keysToDelete: string[] = [];
 
       // Collect all keys first
-      for await (const key of keyvRedisClient.scanIterator({ MATCH: pattern })) {
-        keysToDelete.push(key);
+      for await (const page of keyvRedisClient.scanIterator({ MATCH: pattern })) {
+        keysToDelete.push(...page);
       }
 
       // Delete in parallel for cluster mode efficiency

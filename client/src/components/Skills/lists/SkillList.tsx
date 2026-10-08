@@ -3,6 +3,7 @@ import { ChevronRight } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import type { TSkillSummary } from 'librechat-data-provider';
 import SkillListItem from './SkillListItem';
+import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -47,7 +48,7 @@ export default function SkillList({
       </div>
 
       {/* Skill items */}
-      {sectionOpen && (
+      <Collapse open={sectionOpen}>
         <div className="flex flex-col gap-px">
           {skills.length === 0 ? (
             <p className="px-3 py-4 text-center text-xs text-text-secondary">
@@ -66,7 +67,7 @@ export default function SkillList({
             ))
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }

@@ -25,22 +25,34 @@ export function mapAttachments(attachments: Array<t.TAttachment | null | undefin
 }
 
 /**
- * Filters a part's mapped attachments to those owned by the part's agent:
- * provider tool-call ids repeat across agents in handoff responses (e.g.
- * `call_0`), so `toolCallId` alone can route one agent's harvested files to a
- * sibling agent's card. An attachment without `agentId` matches any part
- * (single-agent runs and legacy rows); a part without `agentId` accepts all.
+ * Filters a part's mapped attachments to its saved-agent and host run-step
+ * owner. Provider tool-call ids repeat across agents and turns, so
+ * `toolCallId` alone can route sibling output to the wrong card. Missing
+ * attachment ownership remains a wildcard for legacy rows; a live part with
+ * no step excludes step identities already owned by message siblings.
  */
 export function filterAttachmentsForPart(
   attachments: t.TAttachment[] | undefined,
   partAgentId?: string,
+  partStepId?: string,
+  siblingStepIds?: ReadonlySet<string>,
 ): t.TAttachment[] | undefined {
-  if (!attachments || partAgentId == null) {
+  if (
+    !attachments ||
+    (partAgentId == null &&
+      partStepId == null &&
+      (siblingStepIds == null || siblingStepIds.size === 0))
+  ) {
     return attachments;
   }
   const filtered = attachments.filter((attachment) => {
-    const agentId = (attachment as { agentId?: string }).agentId;
-    return agentId == null || agentId === partAgentId;
+    const agentMatches =
+      partAgentId == null || attachment.agentId == null || attachment.agentId === partAgentId;
+    const stepMatches =
+      partStepId != null
+        ? attachment.stepId == null || attachment.stepId === partStepId
+        : attachment.stepId == null || siblingStepIds?.has(attachment.stepId) !== true;
+    return agentMatches && stepMatches;
   });
   return filtered.length === attachments.length ? attachments : filtered;
 }

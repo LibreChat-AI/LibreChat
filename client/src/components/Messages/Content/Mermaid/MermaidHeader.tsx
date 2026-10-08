@@ -1,7 +1,8 @@
 import React, { memo, useState, useCallback, useRef, useEffect } from 'react';
+import { Eye, Code2 } from 'lucide';
 import copy from 'copy-to-clipboard';
-import { TooltipAnchor } from '@librechat/client';
-import { Code2, Expand, Eye } from 'lucide-react';
+import { Expand } from 'lucide-react';
+import { MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { MermaidDimensions } from '~/utils/diagram/export';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize } from '~/hooks';
@@ -24,7 +25,7 @@ interface MermaidHeaderProps {
 }
 
 const iconBtnClass =
-  'flex items-center justify-center rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-border-heavy';
+  'flex items-center justify-center rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-subtle';
 
 const MermaidHeader: React.FC<MermaidHeaderProps> = memo(
   ({
@@ -68,7 +69,7 @@ const MermaidHeader: React.FC<MermaidHeaderProps> = memo(
 
     return (
       <div className={cn('flex items-center justify-between gap-1 px-2 py-1', className)}>
-        <span className="rounded text-xs font-medium text-text-secondary">
+        <span className="text-text-secondary rounded text-xs font-medium">
           {localize('com_ui_mermaid')}
         </span>
         <div className={cn('flex items-center gap-1', actionsClassName)}>
@@ -106,11 +107,7 @@ const MermaidHeader: React.FC<MermaidHeaderProps> = memo(
                 className={iconBtnClass}
                 onClick={handleToggleCode}
               >
-                {showCode ? (
-                  <Eye className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Code2 className="h-4 w-4" aria-hidden="true" />
-                )}
+                <MorphIcon icon={showCode ? Eye : Code2} className="h-4 w-4" />
               </button>
             }
           />

@@ -1,3 +1,4 @@
+import { ScraperProviders } from 'librechat-data-provider';
 import { resolveWebSearchSSRFAgents } from './agent';
 import { isAddressAllowed } from '../auth';
 
@@ -76,6 +77,40 @@ describe('resolveWebSearchSSRFAgents', () => {
     resolveWebSearchSSRFAgents(HTTP_DEST);
 
     expect(isAddressAllowed('proxy.internal', ['proxy.internal:3128'], '3128')).toBe(true);
+  });
+
+  it('derives proxy exemptions from a custom Keenable search URL', () => {
+    process.env.HTTP_PROXY = 'http://10.11.12.13:3128';
+
+    const { httpAgent } = resolveWebSearchSSRFAgents({
+      keenableApiUrl: 'http://keenable-search.internal:8080',
+    });
+
+    expect(() => connect(httpAgent, '10.11.12.13', 3128)).not.toThrow();
+  });
+
+  it('derives proxy exemptions from the Keenable fetch URL environment override', () => {
+    process.env.HTTP_PROXY = 'http://10.11.12.14:3128';
+    process.env.KEENABLE_FETCH_URL = 'http://keenable-fetch.internal:8080';
+
+    const { httpAgent } = resolveWebSearchSSRFAgents({
+      scraperProvider: ScraperProviders.KEENABLE,
+    });
+
+    expect(() => connect(httpAgent, '10.11.12.14', 3128)).not.toThrow();
+  });
+
+  it('does not exempt the Keenable fetch proxy for another scraper', () => {
+    process.env.HTTP_PROXY = 'http://10.11.12.15:3128';
+    process.env.KEENABLE_FETCH_URL = 'http://keenable-fetch.internal:8080';
+
+    const { httpAgent } = resolveWebSearchSSRFAgents({
+      scraperProvider: ScraperProviders.FIRECRAWL,
+    });
+
+    expect(() => connect(httpAgent, '10.11.12.15', 3128)).toThrow(
+      expect.objectContaining({ code: 'ESSRF' }),
+    );
   });
 
   it('scopes the proxy exemption to its port, so another private port stays blocked', () => {

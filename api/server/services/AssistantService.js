@@ -65,7 +65,14 @@ async function createOnTextProgress({
       conversationId,
     };
 
-    logger.debug('Content data:', contentData);
+    logger.debug('Assistant content event', {
+      index,
+      type,
+      hasContent: data[type] != null,
+      messageId,
+      thread_id,
+      conversationId,
+    });
     sendEvent(openai.res, contentData);
   };
 }

@@ -3,6 +3,7 @@ import path from 'path';
 import yaml from 'js-yaml';
 import crypto from 'crypto';
 import { Types } from 'mongoose';
+import { mergeCodeEnvRef, type CodeEnvRef, type CodeEnvRefMap } from 'librechat-data-provider';
 import {
   logger,
   partitionIssues,
@@ -13,9 +14,9 @@ import {
   validateSkillFrontmatter,
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
+  normalizeSkillFrontmatterKeys,
 } from '@librechat/data-schemas';
 import type { ValidationIssue } from '@librechat/data-schemas';
-import type { CodeEnvRef } from 'librechat-data-provider';
 import { parseFrontmatter, guessMimeType } from './import';
 
 export const DEPLOYMENT_SKILLS_DIR_ENV = 'DEPLOYMENT_SKILLS_DIR';
@@ -52,6 +53,7 @@ export type DeploymentSkillFile = {
   content?: string;
   isBinary?: boolean;
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -152,7 +154,10 @@ type ListAlwaysApplyResult = {
   after?: string | null;
 };
 
-type SkillFileRow = Omit<DeploymentSkillFile, 'codeEnvRef' | 'content' | 'isBinary'> & {
+type SkillFileRow = Omit<
+  DeploymentSkillFile,
+  'codeEnvRef' | 'codeEnvRefs' | 'content' | 'isBinary'
+> & {
   storageKey?: string;
   storageRegion?: string;
   tenantId?: string;
@@ -160,6 +165,7 @@ type SkillFileRow = Omit<DeploymentSkillFile, 'codeEnvRef' | 'content' | 'isBina
 
 type SkillFileContentRow = SkillFileRow & {
   codeEnvRef?: CodeEnvRef;
+  codeEnvRefs?: CodeEnvRefMap;
   content?: string;
   isBinary?: boolean;
 };
@@ -182,6 +188,7 @@ export type DeploymentSkillBaseMethods = {
     skillId: SkillId,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
   updateSkillFileCodeEnvIds?: (
     updates: Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }>,
@@ -339,7 +346,7 @@ export class DeploymentSkillRegistry {
         dbUpdates.push(update);
         continue;
       }
-      file.codeEnvRef = update.codeEnvRef;
+      Object.assign(file, mergeCodeEnvRef(file, update.codeEnvRef));
     }
     return dbUpdates;
   }
@@ -598,6 +605,7 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
       skillId: SkillId,
       relativePath: string,
       update: { content?: string; isBinary?: boolean },
+      expectedFileId?: string,
     ): Promise<void> => {
       const deploymentFile = registry.getFileByPath(skillId, relativePath);
       if (deploymentFile) {
@@ -610,7 +618,7 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
         return;
       }
       if (base.updateSkillFileContent) {
-        await base.updateSkillFileContent(skillId, relativePath, update);
+        await base.updateSkillFileContent(skillId, relativePath, update, expectedFileId);
       }
     },
     updateSkillFileCodeEnvIds: async (
@@ -869,7 +877,11 @@ function parseStructuredFrontmatter(
     if (typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { error: `${SKILL_MD} frontmatter must be a YAML mapping.` };
     }
-    return { frontmatter: parsed as Record<string, unknown> };
+    const normalized = normalizeSkillFrontmatterKeys(parsed as Record<string, unknown>);
+    if ('error' in normalized) {
+      return { error: `Invalid ${SKILL_MD} frontmatter: ${normalized.error}` };
+    }
+    return { frontmatter: normalized.frontmatter };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { error: `Invalid ${SKILL_MD} frontmatter: ${message}` };
@@ -992,7 +1004,13 @@ function toAlwaysApplyRow(skill: DeploymentSkill): AlwaysApplySkillRow {
 }
 
 function toSkillFileRow(file: DeploymentSkillFile): SkillFileRow {
-  const { codeEnvRef: _codeEnvRef, content: _content, isBinary: _isBinary, ...row } = file;
+  const {
+    codeEnvRef: _codeEnvRef,
+    codeEnvRefs: _codeEnvRefs,
+    content: _content,
+    isBinary: _isBinary,
+    ...row
+  } = file;
   return row;
 }
 
@@ -1000,6 +1018,7 @@ function toSkillFileContentRow(file: DeploymentSkillFile): SkillFileContentRow {
   return {
     ...toSkillFileRow(file),
     codeEnvRef: file.codeEnvRef,
+    codeEnvRefs: file.codeEnvRefs,
     content: file.content,
     isBinary: file.isBinary,
   };

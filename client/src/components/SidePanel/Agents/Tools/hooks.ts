@@ -163,10 +163,24 @@ export function useAgentItems({
     permissionType: PermissionTypes.MCP_SERVERS,
     permission: Permissions.USE,
   });
+  const hasWebSearchAccess = useHasAccess({
+    permissionType: PermissionTypes.WEB_SEARCH,
+    permission: Permissions.USE,
+  });
+  const hasRunCodeAccess = useHasAccess({
+    permissionType: PermissionTypes.RUN_CODE,
+    permission: Permissions.USE,
+  });
+  const hasFileSearchAccess = useHasAccess({
+    permissionType: PermissionTypes.FILE_SEARCH,
+    permission: Permissions.USE,
+  });
   const showMemory = useShowMemory();
   const webSearchUserProvided = useWebSearchUserProvided();
   const builtinAuthMap = useBuiltinAuthMap();
 
+  const subagents = useWatch({ control, name: 'subagents' });
+  const edges = useWatch({ control, name: 'edges' });
   const toolsField = useWatch({ control, name: 'tools' });
   const skillsWatch = useWatch({ control, name: 'skills' });
   const tools = useMemo(() => (toolsField ?? []) as string[], [toolsField]);
@@ -191,7 +205,13 @@ export function useAgentItems({
         mcpServersMap: mcpServersMap ?? new Map(),
         skills,
         actions: agentActions,
-        permissions: { mcp: hasMcpAccess, skills: skillsPermission },
+        permissions: {
+          mcp: hasMcpAccess,
+          skills: skillsPermission,
+          webSearch: hasWebSearchAccess,
+          runCode: hasRunCodeAccess,
+          fileSearch: hasFileSearchAccess,
+        },
         showMemory,
         webSearchUserProvided,
         builtinAuthMap,
@@ -203,6 +223,9 @@ export function useAgentItems({
       skills,
       agentActions,
       hasMcpAccess,
+      hasWebSearchAccess,
+      hasRunCodeAccess,
+      hasFileSearchAccess,
       skillsPermission,
       showMemory,
       webSearchUserProvided,
@@ -214,6 +237,8 @@ export function useAgentItems({
     () =>
       deriveSelectedItems(
         {
+          subagents,
+          edges,
           execute_code: executeCode,
           web_search: webSearch,
           file_search: fileSearch,
@@ -229,6 +254,8 @@ export function useAgentItems({
         agentActions,
       ),
     [
+      subagents,
+      edges,
       executeCode,
       webSearch,
       fileSearch,
@@ -257,17 +284,23 @@ export function useAgentItems({
  * lookups are briefly hidden. Must be rendered inside the agent form's
  * `FormProvider`.
  */
-export function useResolvedSkills(pageSkills?: TSkillSummary[]): TSkillSummary[] | undefined {
+export function useResolvedSkills(
+  pageSkills?: TSkillSummary[],
+  /** Off and All never render allowlist rows, so resolving ids the first
+   *  catalog page missed would be one `getSkill` request per retained id for
+   *  a list nobody sees. Callers pass `false` outside Selected. */
+  resolveAllowlist = true,
+): TSkillSummary[] | undefined {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
   const skillsWatch = useWatch({ control, name: 'skills' });
   const unresolvedIds = useMemo(() => {
-    if (pageSkills === undefined) {
+    if (pageSkills === undefined || !resolveAllowlist) {
       return [];
     }
     const known = new Set(pageSkills.map((skill) => skill._id));
     return ((skillsWatch ?? []) as string[]).filter((id) => !known.has(id));
-  }, [pageSkills, skillsWatch]);
+  }, [pageSkills, skillsWatch, resolveAllowlist]);
 
   const lookups = useQueries({
     queries: unresolvedIds.map((skillId) => ({

@@ -42,12 +42,21 @@ const buildQuery = (params: Record<string, unknown>): string => {
 
 export const health = () => `${BASE_URL}/health`;
 export const user = () => `${BASE_URL}/api/user`;
+export const userPreferences = () => `${user()}/preferences`;
 
 export const balance = () => `${BASE_URL}/api/balance`;
 
 export const userPlugins = () => `${BASE_URL}/api/user/plugins`;
 
 export const deleteUser = () => `${BASE_URL}/api/user/delete`;
+export const codeEnvironments = () => `${BASE_URL}/api/code-environments`;
+export const codeEnvironmentPairings = () => `${codeEnvironments()}/pairings`;
+export const codeEnvironmentById = (id: string) =>
+  `${codeEnvironments()}/${encodeURIComponent(id)}`;
+export const codeEnvironmentSettings = (id: string) => `${codeEnvironmentById(id)}/settings`;
+export const codeEnvironmentStatus = (id: string) => `${codeEnvironmentById(id)}/status`;
+export const codeEnvironmentConversationDecision = (conversationId: string) =>
+  `${codeEnvironments()}/conversations/${encodeURIComponent(conversationId)}/decision`;
 
 const messagesRoot = `${BASE_URL}/api/messages`;
 
@@ -66,6 +75,27 @@ export const messages = (params: q.MessagesListParams) => {
 };
 
 export const messagesArtifacts = (messageId: string) => `${messagesRoot}/artifact/${messageId}`;
+
+/** One tool-call part of a stored message, in full. */
+export const messageToolCallPart = ({
+  conversationId,
+  messageId,
+  partIndex,
+  toolCallId,
+  stepId,
+  agentId,
+}: q.ToolCallPartParams) => {
+  const path = `${messagesRoot}/${encodeURIComponent(conversationId)}/${encodeURIComponent(messageId)}/parts/${partIndex}`;
+  const query = [
+    ['toolCallId', toolCallId],
+    ['stepId', stepId],
+    ['agentId', agentId],
+  ]
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
+    .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
+    .join('&');
+  return query === '' ? path : `${path}?${query}`;
+};
 
 export const messagesBranch = () => `${messagesRoot}/branch`;
 
@@ -115,13 +145,44 @@ export const conversations = (params: q.ConversationListParams) => {
 
 export const conversationById = (id: string) => `${conversationsRoot}/${id}`;
 
+export const parentSubagents = (parentConversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(parentConversationId)}/subagents`;
+
+export const subagentThread = (
+  parentConversationId: string,
+  threadId: string,
+  taskId?: string,
+  cursor?: string,
+) => {
+  const endpoint = `${conversationsRoot}/${encodeURIComponent(parentConversationId)}/subagents/${encodeURIComponent(threadId)}`;
+  if (taskId != null) return `${endpoint}?taskId=${encodeURIComponent(taskId)}`;
+  return cursor == null ? endpoint : `${endpoint}?cursor=${encodeURIComponent(cursor)}`;
+};
+
+export const subagentControl = (parentConversationId: string, threadId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(parentConversationId)}/subagents/${encodeURIComponent(threadId)}/control`;
+
+export const backgroundTasks = (conversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(conversationId)}/background-tasks`;
+
+export const backgroundTasksCancel = (conversationId: string) =>
+  `${backgroundTasks(conversationId)}/cancel`;
+
+export const conversationPullRequest = (conversationId: string) =>
+  `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
+
+export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
+
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 
 export const updateConversation = () => `${conversationsRoot}/update`;
 
 export const archiveConversation = () => `${conversationsRoot}/archive`;
+export const archiveAllConversations = () => `${conversationsRoot}/archive/all`;
 export const pinConversation = () => `${conversationsRoot}/pin`;
+export const markConversationSeen = () => `${conversationsRoot}/seen`;
+export const markConversationUnread = () => `${conversationsRoot}/unread`;
 
 export const deleteConversation = () => `${conversationsRoot}`;
 
@@ -140,6 +201,15 @@ export const projects = (params: q.ProjectListParams = {}) => {
 };
 
 export const projectById = (id: string) => `${projectsRoot}/${encodeURIComponent(id)}`;
+
+export const projectFiles = (projectId: string) => `${projectById(projectId)}/files`;
+export const projectAvailableFiles = (
+  projectId: string,
+  params: q.ProjectAvailableFilesParams = {},
+) => `${projectById(projectId)}/files/available${buildQuery(params)}`;
+
+export const projectFile = (projectId: string, fileId: string) =>
+  `${projectFiles(projectId)}/${encodeURIComponent(fileId)}`;
 
 export const projectConversation = (conversationId: string) =>
   `${projectsRoot}/conversations/${encodeURIComponent(conversationId)}`;
@@ -179,6 +249,10 @@ export const requestPasswordReset = () => `${BASE_URL}/api/auth/requestPasswordR
 export const resetPassword = () => `${BASE_URL}/api/auth/resetPassword`;
 
 export const verifyEmail = () => `${BASE_URL}/api/user/verify`;
+
+export const requestEmailChange = () => `${BASE_URL}/api/user/email/change`;
+
+export const confirmEmailChange = () => `${BASE_URL}/api/user/email/verify`;
 
 // Auth page URLs (for client-side navigation and redirects)
 export const loginPage = () => `${BASE_URL}/login`;
@@ -294,6 +368,23 @@ export const agents = ({ path = '', options }: { path?: string; options?: object
 
 export const activeJobs = () => `${BASE_URL}/api/agents/chat/active`;
 
+const agentQueuedTurnsRoot = `${BASE_URL}/api/agents/chat/queued-turns`;
+export const agentQueuedTurns = (protocolVersion?: 2) =>
+  protocolVersion === 2 ? `${agentQueuedTurnsRoot}/v2` : agentQueuedTurnsRoot;
+export const agentQueuedTurnsByConversation = (
+  conversationId: string,
+  clientRequestIds: string[] = [],
+) => {
+  const uniqueIds = Array.from(new Set(clientRequestIds)).slice(0, 100);
+  const knownIds =
+    uniqueIds.length > 0
+      ? `&${uniqueIds.map((id) => `clientRequestIds=${encodeURIComponent(id)}`).join('&')}`
+      : '';
+  return `${agentQueuedTurnsRoot}?conversationId=${encodeURIComponent(conversationId)}${knownIds}`;
+};
+export const agentQueuedTurn = (queuedTurnId: string) =>
+  `${agentQueuedTurnsRoot}/${encodeURIComponent(queuedTurnId)}`;
+
 export const mcp = {
   tools: `${BASE_URL}/api/mcp/tools`,
   servers: `${BASE_URL}/api/mcp/servers`,
@@ -390,6 +481,12 @@ export const getCategories = () => `${BASE_URL}/api/categories`;
 
 export const getAllPromptGroups = () => `${prompts()}/all`;
 
+/* Scheduled chats */
+export const schedules = () => `${BASE_URL}/api/schedules`;
+export const schedule = (id: string) => `${schedules()}/${encodeURIComponent(id)}`;
+export const scheduleMCPConsent = (id: string) => `${schedule(id)}/mcp-consent`;
+export const runSchedule = (id: string) => `${schedule(id)}/run`;
+
 /* Skills */
 export const skills = () => `${BASE_URL}/api/skills`;
 export const importSkill = () => `${skills()}/import`;
@@ -418,6 +515,28 @@ export const skillFiles = (id: string) => `${getSkill(id)}/files`;
 export const skillFile = (id: string, relativePath: string) =>
   `${skillFiles(id)}/${encodeURIComponent(relativePath)}`;
 
+export const insights = () => `${BASE_URL}/api/insights`;
+export const insightsAccess = () => `${insights()}/access`;
+
+/* Conversation traces */
+export const conversationTrace = (conversationId: string) =>
+  `${BASE_URL}/api/traces/${encodeURIComponent(conversationId)}`;
+export const conversationTraceAvailability = (conversationId: string) =>
+  `${conversationTrace(conversationId)}/availability`;
+export const conversationTraceRecords = (conversationId: string, cursor?: string) =>
+  `${conversationTrace(conversationId)}/records${
+    cursor ? `?${new URLSearchParams({ cursor }).toString()}` : ''
+  }`;
+export const conversationTraceRecord = (
+  conversationId: string,
+  recordId: string,
+  messageId: string,
+  sourceId?: string,
+) =>
+  `${conversationTrace(conversationId)}/records/${encodeURIComponent(recordId)}?${new URLSearchParams(
+    { message: messageId, ...(sourceId ? { source: sourceId } : {}) },
+  ).toString()}`;
+
 export const adminSkillsSync = () => `${BASE_URL}/api/admin/skills/sync`;
 export const adminSkillsSyncStatus = () => `${adminSkillsSync()}/status`;
 export const adminSkillsSyncRun = () => `${adminSkillsSync()}/run`;
@@ -443,6 +562,11 @@ export const skillStates = () => `${BASE_URL}/api/user/settings/skills/active`;
 /* Langfuse connection (admin) */
 export const adminLangfuseConnection = () => `${BASE_URL}/api/admin/langfuse/connection`;
 export const adminLangfuseConnectionTest = () => `${adminLangfuseConnection()}/test`;
+export const adminLangfuseSessionLink = (conversationId: string) =>
+  `${adminLangfuseConnection()}/session/${encodeURIComponent(conversationId)}`;
+
+/* Combined Pinned-section display order: favorite and pinned-chat entry keys interleaved. */
+export const pinnedOrder = () => `${BASE_URL}/api/user/settings/pinned-order`;
 
 /* Tool favorites (starred marketplace items) */
 export const toolFavorites = () => `${BASE_URL}/api/user/settings/favorites/tools`;
@@ -488,16 +612,30 @@ export const feedback = (conversationId: string, messageId: string) =>
 
 // Two-Factor Endpoints
 export const enableTwoFactor = () => `${BASE_URL}/api/auth/2fa/enable`;
+export const enableTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup`;
+export const confirmTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/confirm`;
+export const acknowledgeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/acknowledge`;
+export const finalizeTwoFactorSetup = () => `${BASE_URL}/api/auth/2fa/setup/finalize`;
 export const verifyTwoFactor = () => `${BASE_URL}/api/auth/2fa/verify`;
 export const confirmTwoFactor = () => `${BASE_URL}/api/auth/2fa/confirm`;
 export const disableTwoFactor = () => `${BASE_URL}/api/auth/2fa/disable`;
 export const regenerateBackupCodes = () => `${BASE_URL}/api/auth/2fa/backup/regenerate`;
 export const verifyTwoFactorTemp = () => `${BASE_URL}/api/auth/2fa/verify-temp`;
 
+// Passkey (WebAuthn) Endpoints
+export const passkeys = () => `${BASE_URL}/api/auth/passkey`;
+export const passkey = (passkeyId: string) => `${passkeys()}/${encodeURIComponent(passkeyId)}`;
+export const passkeyRegistrationOptions = () => `${passkeys()}/register/options`;
+export const passkeyRegistrationVerify = () => `${passkeys()}/register/verify`;
+export const passkeyLoginOptions = () => `${passkeys()}/login/options`;
+export const passkeyLoginVerify = () => `${passkeys()}/login/verify`;
+
 /* Memories */
 export const memories = () => `${BASE_URL}/api/memories`;
 export const memory = (key: string, agentId?: string) =>
   `${memories()}/${encodeURIComponent(key)}${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`;
+export const memoryById = (id: string, agentId?: string) =>
+  `${memories()}/id/${encodeURIComponent(id)}${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ''}`;
 export const memoryPreferences = () => `${memories()}/preferences`;
 
 export const searchPrincipals = (params: q.PrincipalSearchParams) => {
@@ -533,3 +671,5 @@ export const getAllEffectivePermissions = (resourceType: ResourceType) =>
 // SharePoint Graph API Token
 export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
+
+export const resetToolApprovalGrants = (): string => `${BASE_URL}/api/agents/tools/approvals/reset`;

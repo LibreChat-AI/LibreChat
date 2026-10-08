@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { IMemoryEntry } from '~/types';
 import { createMemoryMethods, type MemoryMethods } from './memory';
+import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
 
 jest.mock('~/config/winston', () => ({
@@ -109,6 +110,118 @@ describe('memory partitions', () => {
     expect(missingDelete.ok).toBe(false);
   });
 
+  it('updates by opaque id only for the owning user and selected partition', async () => {
+    await methods.setMemory({
+      userId,
+      key: 'private_key',
+      value: 'before',
+      tokenCount: 1,
+      agentId,
+    });
+    const [stored] = await methods.getUserMemories({ userId, agentId });
+    const id = stored._id.toString();
+
+    await expect(
+      methods.setMemoryById({
+        userId: otherUserId,
+        id,
+        value: 'wrong owner',
+        tokenCount: 2,
+        agentId,
+      }),
+    ).resolves.toEqual({ ok: false });
+    await expect(
+      methods.setMemoryById({
+        userId,
+        id,
+        value: 'wrong partition',
+        tokenCount: 2,
+        agentId: otherAgentId,
+      }),
+    ).resolves.toEqual({ ok: false });
+
+    const result = await methods.setMemoryById({
+      userId,
+      id,
+      value: 'after',
+      tokenCount: 2,
+      agentId,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      memory: { key: 'private_key', value: 'after', tokenCount: 2, agentId },
+    });
+    expect(await methods.getUserMemories({ userId, agentId })).toHaveLength(1);
+  });
+
+  it('renames by opaque id without creating a duplicate record', async () => {
+    await methods.setMemory({ userId, key: 'first', value: 'one', agentId });
+    await methods.setMemory({ userId, key: 'second', value: 'two', agentId });
+    const first = (await methods.getUserMemories({ userId, agentId })).find(
+      (memory) => memory.key === 'first',
+    );
+    expect(first).toBeDefined();
+
+    const conflict = await methods.setMemoryById({
+      userId,
+      id: first?._id.toString() ?? '',
+      key: 'second',
+      value: 'updated',
+      agentId,
+    });
+    expect(conflict).toEqual({ ok: false, conflict: true });
+
+    const renamed = await methods.setMemoryById({
+      userId,
+      id: first?._id.toString() ?? '',
+      key: 'renamed',
+      value: 'updated',
+      agentId,
+    });
+    expect(renamed).toMatchObject({ ok: true, memory: { key: 'renamed', value: 'updated' } });
+    expect(await MemoryEntry.countDocuments({ userId, agentId })).toBe(2);
+  });
+
+  it('updates and deletes by opaque id only in the owning tenant', async () => {
+    const id = await tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+      await methods.setMemory({ userId, key: 'private_key', value: 'stored', agentId });
+      const [stored] = await methods.getUserMemories({ userId, agentId });
+      return stored._id.toString();
+    });
+
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-b' }, async () =>
+        methods.setMemoryById({ userId, id, value: 'wrong tenant', agentId }),
+      ),
+    ).resolves.toEqual({ ok: false });
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        methods.getUserMemories({ userId, agentId }),
+      ),
+    ).resolves.toEqual([expect.objectContaining({ value: 'stored' })]);
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-b' }, async () =>
+        methods.deleteMemoryById({ userId, id, agentId }),
+      ),
+    ).resolves.toEqual({ ok: false });
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        methods.deleteMemoryById({ userId: otherUserId, id, agentId }),
+      ),
+    ).resolves.toEqual({ ok: false });
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        methods.deleteMemoryById({ userId, id, agentId: otherAgentId }),
+      ),
+    ).resolves.toEqual({ ok: false });
+    await expect(
+      tenantStorage.run({ tenantId: 'tenant-a' }, async () =>
+        methods.deleteMemoryById({ userId, id, agentId }),
+      ),
+    ).resolves.toEqual({ ok: true });
+  });
+
   it('scopes createMemory duplicate detection to the partition', async () => {
     await methods.createMemory({ userId, key: 'context', value: 'personal', tokenCount: 1 });
 
@@ -132,13 +245,40 @@ describe('memory partitions', () => {
 
     const personal = await methods.getFormattedMemories({ userId });
     expect(personal.totalTokens).toBe(5);
+    expect(personal.tokenCountsByKey).toEqual(new Map([['one', 5]]));
     expect(personal.withoutKeys).toContain('personal one');
     expect(personal.withoutKeys).not.toContain('agent two');
 
     const partitionA = await methods.getFormattedMemories({ userId, agentId });
     expect(partitionA.totalTokens).toBe(7);
+    expect(partitionA.tokenCountsByKey).toEqual(new Map([['two', 7]]));
     expect(partitionA.withKeys).toContain('"key": "two"');
     expect(partitionA.withKeys).not.toContain('personal one');
+  });
+
+  it('signals a read failure rather than reporting an empty memory partition', async () => {
+    const find = jest.spyOn(MemoryEntry, 'find').mockImplementationOnce(() => {
+      throw new Error('simulated memory read failure');
+    });
+    try {
+      const failed = await methods.getFormattedMemories({ userId });
+      expect(failed).toEqual({
+        withKeys: undefined,
+        withoutKeys: undefined,
+        totalTokens: 0,
+        tokenCountsByKey: new Map(),
+        readFailed: true,
+      });
+    } finally {
+      find.mockRestore();
+    }
+    const empty = await methods.getFormattedMemories({ userId });
+    expect(empty).toEqual({
+      withKeys: '',
+      withoutKeys: '',
+      totalTokens: 0,
+      tokenCountsByKey: new Map(),
+    });
   });
 
   it('returns every partition from getAllUserMemories and wipes them all on deleteAllUserMemories', async () => {

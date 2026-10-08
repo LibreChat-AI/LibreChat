@@ -1,6 +1,10 @@
 import { useCallback } from 'react';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
-import { excludedKeys, getDefaultParamsEndpoint } from 'librechat-data-provider';
+import {
+  excludedKeys,
+  getDefaultParamsEndpoint,
+  resolveModelCatalogKey,
+} from 'librechat-data-provider';
 import type {
   TEndpointsConfig,
   TModelsConfig,
@@ -30,7 +34,7 @@ const useDefaultConvo = () => {
         endpointsConfig,
       });
 
-      const models = modelsConfig[endpoint ?? ''] || [];
+      const models = modelsConfig[resolveModelCatalogKey(endpoint, modelsConfig)] || [];
       const conversation = { ..._convo };
       if (cleanInput === true) {
         for (const key in conversation) {

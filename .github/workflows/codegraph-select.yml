@@ -1,0 +1,98 @@
+# Codegraph test selection — OBSERVE-ONLY.
+#
+# Asks the codegraph service which test files / matrix jobs this PR actually needs and writes
+# the answer to the job summary. It gates NOTHING: no workflow reads its outputs yet, it cannot
+# fail the PR (every path exits 0), and forks without secrets no-op silently. This is the
+# production probe for the shadow-mode evaluation: the same decision CI would act on, made
+# visible next to the runs it would have replaced.
+#
+# Requires repo secrets: CODEGRAPH_URL (https endpoint), CODEGRAPH_TOKEN (bearer).
+name: Codegraph Select (observe)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ask codegraph, render, never fail
+        env:
+          URL: ${{ secrets.CODEGRAPH_URL }}
+          TOKEN: ${{ secrets.CODEGRAPH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
+        run: |
+          set +e
+          note() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          note "### Codegraph select — observe-only"
+          if [ -z "$URL" ] || [ -z "$TOKEN" ]; then note "_secrets not configured; skipped_"; exit 0; fi
+
+          # A failed or truncated page must not become a shorter file list: the pipeline would hide
+          # gh's exit status behind jq, and a partial list can turn a required lane off. Check the
+          # fetch status AND the count against the PR's own changed_files (Codex P1, #15136).
+          if ! gh api "repos/$REPO/pulls/$PR/files" --paginate \
+              --jq '.[] | {path: .filename, status, patch}' > files.ndjson; then
+            note "_could not fetch changed files; skipped_"; exit 0
+          fi
+          jq -s . files.ndjson > files.json
+          N=$(jq 'length' files.json)
+          if [ "$N" -eq 0 ] || { [ -n "$CHANGED" ] && [ "$N" -ne "$CHANGED" ]; }; then
+            note "_changed-file list incomplete ($N of ${CHANGED:-?}); skipped_"; exit 0
+          fi
+
+          jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" \
+            '{files: ., lockBaseSha: $b, lockHeadSha: $h}' files.json > body.json
+          # curl's status is checked explicitly: a transfer that times out or truncates after a
+          # parseable body must fail open, not be honoured (Codex P1, #15136). --fail-with-body
+          # also turns HTTP errors into a failure while keeping the error text for the summary.
+          RESP=$(curl -sS --fail-with-body -m 45 -H "Authorization: Bearer $TOKEN" \
+            -H 'content-type: application/json' --data-binary @body.json "$URL/v1/select"); RC=$?
+          if [ "$RC" -ne 0 ] || [ -z "$RESP" ] || ! echo "$RESP" | jq -e .selected >/dev/null 2>&1; then
+            note "_codegraph unavailable (curl exit $RC: ${RESP:0:120}); skipped, full CI runs as always_"
+            exit 0
+          fi
+
+          TABLE=$(echo "$RESP" | jq -r '
+            "graph `\(.gate.head[0:12] // "?")` · \(.engine) · \(.mode) · \(.ms)ms · reached \(.reached)",
+            "",
+            "| workspace | decision |",
+            "|---|---|",
+            (.selected | to_entries[] |
+              "| \(.key) | " + (if .value.mode == "FULL" then "FULL — \(.value.why)"
+                elif .value.mode == "NONE" then "no tests"
+                else "\(.value.files | length) test files" end) + " |"),
+            "",
+            "matrix: " + ([.matrix | to_entries[] | .key as $wf | .value | to_entries[] |
+              "\($wf)/\(.key)=" + (if .value then "run" else "SKIP" end)] | join("  ")),
+            (if .shards then "shards: " + (.shards | tojson) else empty end),
+            (if .lock_workspaces then "lockfile → " + (.lock_workspaces | tojson) else empty end),
+            (if .e2e and (.e2e.error | not) then
+              "e2e tiers: must \(.e2e.must_run | length) · floor \(.e2e.floor | length) · skippable \(.e2e.skippable | length)" +
+              (if (.e2e.must_run | length) > 0 then " — must: " + (.e2e.must_run[:4] | join(", ")) else "" end)
+            else empty end)
+          ' 2>render.err)
+          if [ -n "$TABLE" ]; then
+            echo "$TABLE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            note "_summary render failed: $(head -c 200 render.err 2>/dev/null)_"
+            note '~~~'
+            note "${RESP:0:600}"
+            note '~~~'
+          fi
+          echo "rendered summary: ${#TABLE} chars"
+          exit 0

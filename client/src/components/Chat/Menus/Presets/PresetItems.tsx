@@ -1,14 +1,17 @@
+import { useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
+import * as Ariakit from '@ariakit/react';
 import { Close } from '@radix-ui/react-popover';
-import { BookCopy, FileX2 } from 'lucide-react';
 import { Flipper, Flipped } from 'react-flip-toolkit';
-import { getEndpointField } from 'librechat-data-provider';
+import { BookCopy, FileUp, FileX2, Ellipsis } from 'lucide-react';
 import {
   Button,
   PinIcon,
   EditIcon,
   TrashIcon,
+  DropdownPopup,
   TooltipAnchor,
+  useToastContext,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -17,18 +20,21 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@librechat/client';
+import type { MenuItemProps } from '@librechat/client';
 import type { TPreset } from 'librechat-data-provider';
-import type { FC } from 'react';
-import FileUpload from '~/components/Chat/Input/Files/FileUpload';
+import type { ChangeEvent, FC } from 'react';
+import { ResolvedProviderIcon } from '~/components/Endpoints/ResolvedProviderIcon';
+import { resolveProviderIcon } from '~/hooks/Endpoint';
 import { useGetEndpointsQuery } from '~/data-provider';
-import { getPresetTitle, getIconKey } from '~/utils';
-import { icons } from '~/hooks/Endpoint/Icons';
+import { getPresetTitle } from '~/utils';
 import { MenuSeparator } from '../UI';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
+
+/** Shared by the trigger and the clear dialog's focus fallback. */
+const PRESET_MENU_ID = 'preset-options-button';
 
 const PresetItems: FC<{
   presets?: Array<TPreset | undefined>;
@@ -52,74 +58,150 @@ const PresetItems: FC<{
   const { data: endpointsConfig } = useGetEndpointsQuery();
   const defaultPreset = useRecoilValue(store.defaultPreset);
   const localize = useLocalize();
+  const { showToast } = useToastContext();
   const hasPresets = (presets?.length ?? 0) > 0;
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isClearDialogOpen, setIsClearDialogOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
+  /** Radix restores focus to whatever held it when the dialog mounted, which by
+   *  then is the menu's own focus trap rather than the item that opened it. */
+  const clearInvokerRef = useRef<HTMLElement | null>(null);
+
+  const handleImportChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    /** Cleared so re-picking the same file still fires a change event */
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        onFileSelected(JSON.parse(e.target?.result as string));
+      } catch {
+        showToast({ message: localize('com_endpoint_preset_import_error'), status: 'error' });
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const menuItems: MenuItemProps[] = [
+    {
+      label: localize('com_ui_import'),
+      onClick: () => importInputRef.current?.click(),
+      icon: <FileUp className="icon-sm text-text-primary" aria-hidden="true" />,
+    },
+    {
+      label: localize('com_ui_clear_all'),
+      onClick: () => {
+        clearInvokerRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        setIsClearDialogOpen(true);
+      },
+      icon: <FileX2 className="icon-sm" aria-hidden="true" />,
+      className: 'text-text-destructive',
+      show: hasPresets,
+      ariaHasPopup: 'dialog' as const,
+      hideOnClick: false,
+    },
+  ];
 
   return (
     <>
-      <div className="flex min-w-[300px] items-center gap-3 border-b border-border-light bg-surface-secondary px-3 py-2 md:min-w-[400px]">
+      <div className="border-border-light bg-surface-secondary flex min-w-[min(18.75rem,90vw)] items-center gap-3 border-b px-3 py-2 md:min-w-[min(25rem,90vw)]">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-text-primary">
+          <p className="text-text-primary text-sm font-medium">
             {localize('com_endpoint_examples')}
           </p>
           {hasPresets && (
-            <p className="truncate text-xs text-text-secondary">
+            <p className="text-text-secondary truncate text-xs">
               {defaultPreset
                 ? `${localize('com_endpoint_preset_default_item')} ${defaultPreset.title}`
                 : localize('com_endpoint_preset_default_none')}
             </p>
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {hasPresets && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  className="h-8 px-2 text-xs font-normal text-text-secondary hover:text-text-destructive"
-                  aria-label={localize('com_ui_clear_all')}
-                >
-                  <FileX2 className="size-4" aria-hidden="true" />
-                  {localize('com_ui_clear_all')}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent className="w-11/12 max-w-md rounded-lg">
-                <AlertDialogHeader>
-                  <AlertDialogTitle>{localize('com_ui_clear_presets')}</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {localize('com_endpoint_presets_clear_warning')}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={clearAllPresets}
-                    className="bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover"
-                  >
-                    {localize('com_ui_clear')}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          <FileUpload
-            id="preset-import"
-            onFileSelected={onFileSelected}
-            containerClassName="mr-0 h-8 hover:text-text-primary"
-          />
-        </div>
+        <DropdownPopup
+          portal={true}
+          menuId="preset-options-menu"
+          focusLoop={true}
+          className="z-[125]"
+          unmountOnHide={true}
+          isOpen={isMenuOpen}
+          setIsOpen={setIsMenuOpen}
+          trigger={
+            <Ariakit.MenuButton
+              id={PRESET_MENU_ID}
+              aria-label={localize('com_ui_more_options')}
+              aria-expanded={isMenuOpen}
+              className={cn(
+                'rounded-theme-control hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary inline-flex size-8 shrink-0 items-center justify-center transition-colors focus-visible:ring-2 focus-visible:outline-hidden',
+                isMenuOpen ? 'bg-surface-hover text-text-primary' : 'text-text-secondary',
+              )}
+            >
+              <Ellipsis className="icon-md" aria-hidden="true" />
+            </Ariakit.MenuButton>
+          }
+          items={menuItems}
+        />
       </div>
+
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        tabIndex={-1}
+        onChange={handleImportChange}
+      />
+
+      <AlertDialog open={isClearDialogOpen} onOpenChange={setIsClearDialogOpen}>
+        <AlertDialogContent
+          /** The menu stays open behind the dialog (`hideOnClick: false`), so
+           *  the item is still there to take focus back. */
+          onCloseAutoFocus={(event) => {
+            const saved = clearInvokerRef.current;
+            clearInvokerRef.current = null;
+            /** Confirming removes the item itself, since it only shows while
+             *  presets exist, so fall back to the trigger that opened the menu. */
+            const invoker =
+              saved?.isConnected === true ? saved : document.getElementById(PRESET_MENU_ID);
+            if (invoker == null) {
+              return;
+            }
+            event.preventDefault();
+            invoker.focus();
+          }}
+          className="rounded-theme-surface sm:rounded-theme-surface w-11/12 max-w-md"
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>{localize('com_ui_clear_presets')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {localize('com_endpoint_presets_clear_warning')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{localize('com_ui_cancel')}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={clearAllPresets}
+              className="bg-surface-destructive text-text-on-status hover:bg-surface-destructive-hover"
+            >
+              {localize('com_ui_clear')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {presets && presets.length === 0 && (
         <div className="flex min-h-40 flex-col items-center justify-center gap-3 px-6 py-8 text-center">
-          <div className="rounded-full bg-surface-secondary p-2.5 text-text-secondary">
+          <div className="bg-surface-secondary text-text-secondary rounded-full p-2.5">
             <BookCopy className="size-5" aria-hidden="true" />
           </div>
           <div className="space-y-1">
-            <p className="text-sm font-medium text-text-primary">
+            <p className="text-text-primary text-sm font-medium">
               {localize('com_endpoint_no_presets')}
             </p>
-            <p className="max-w-sm text-xs leading-5 text-text-secondary">
+            <p className="text-text-secondary max-w-sm text-xs leading-5">
               {localize('com_endpoint_no_presets_description')}
             </p>
           </div>
@@ -144,31 +226,31 @@ const PresetItems: FC<{
               return null;
             }
 
-            const iconKey = getIconKey({ endpoint: preset.endpoint, endpointsConfig });
-            const Icon = icons[iconKey];
+            const { provider, imageURL } = resolveProviderIcon({
+              endpoint: preset.endpoint,
+              endpointsConfig,
+            });
             const presetTitle = getPresetTitle(preset);
 
             return (
               <Close asChild key={`preset-${presetId}`}>
                 <div key={`preset-${presetId}`}>
                   <Flipped flipId={presetId}>
-                    <div className="group m-1.5 flex items-center gap-2 rounded px-3 py-1.5 text-sm hover:bg-surface-hover">
+                    <div className="group rounded-theme-control hover:bg-surface-hover m-1.5 flex items-center gap-2 px-3 py-1.5 text-sm">
                       <Button
                         variant="ghost"
                         type="button"
-                        className="h-auto min-w-0 flex-1 justify-start gap-1 bg-transparent p-2 text-left text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
+                        className="rounded-theme-control h-auto min-w-0 flex-1 justify-start gap-1 bg-transparent p-2 text-left text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
                         onClick={() => onSelectPreset(preset)}
                         aria-label={presetTitle}
                         data-testid={`preset-item-${presetId}`}
                       >
-                        {Icon != null && (
-                          <Icon
-                            context="menu-item"
-                            iconURL={getEndpointField(endpointsConfig, preset.endpoint, 'iconURL')}
-                            className="icon-md shrink-0"
-                            endpoint={preset.endpoint}
-                          />
-                        )}
+                        <ResolvedProviderIcon
+                          provider={provider}
+                          imageURL={imageURL}
+                          size={20}
+                          className="icon-md shrink-0"
+                        />
                         <span className="truncate">{presetTitle}</span>
                       </Button>
                       <div className="flex items-center justify-end gap-1">
@@ -187,12 +269,12 @@ const PresetItems: FC<{
                             <Button
                               variant="ghost"
                               className={cn(
-                                'm-0 h-full rounded-md bg-transparent p-2 text-text-tertiary hover:text-text-primary focus:text-text-primary',
+                                'rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full bg-transparent p-2',
                                 defaultPreset?.presetId === presetId
                                   ? ''
                                   : // opacity keeps buttons in the tab order; pointer-events-none
                                     // while transparent so touch/pointer cannot hit invisible controls
-                                    'sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:focus:pointer-events-auto sm:focus:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100',
+                                    'sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100',
                               )}
                               onClick={(e) => {
                                 e.preventDefault();
@@ -210,7 +292,7 @@ const PresetItems: FC<{
                           render={
                             <Button
                               variant="ghost"
-                              className="m-0 h-full rounded-md p-2 text-text-tertiary hover:text-text-primary focus:text-text-primary sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:focus:pointer-events-auto sm:focus:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100"
+                              className="rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full p-2 sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
@@ -227,7 +309,7 @@ const PresetItems: FC<{
                           render={
                             <Button
                               variant="ghost"
-                              className="m-0 h-full rounded-md p-2 text-text-tertiary hover:text-text-primary focus:text-text-primary sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:focus:pointer-events-auto sm:focus:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100"
+                              className="rounded-theme-control-round text-text-tertiary hover:text-text-primary focus:text-text-primary m-0 h-full p-2 sm:pointer-events-none sm:opacity-0 sm:transition-opacity sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:focus:pointer-events-auto sm:focus:opacity-100"
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();

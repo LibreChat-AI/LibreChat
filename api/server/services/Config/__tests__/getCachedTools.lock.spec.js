@@ -248,7 +248,7 @@ describe('global tool cache write lock', () => {
       expect.objectContaining({
         keys: [
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-generation:{user-1:server-1}`,
-          `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:config-current`,
+          `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:v2:config-current`,
         ],
         arguments: [
           'generation-current',
@@ -342,7 +342,7 @@ describe('global tool cache write lock', () => {
           `tools:mcp:write-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-legacy-fence:{user-1:server-1}`,
           `${CacheKeys.TOOL_CACHE}:tools:metadata:mcp:user-generation:{user-1:server-1}`,
-          `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:config-current`,
+          `${CacheKeys.TOOL_CACHE}:tools:mcp:user:{user-1:server-1}:v2:config-current`,
         ],
       }),
     );

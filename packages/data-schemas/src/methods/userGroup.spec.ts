@@ -484,16 +484,42 @@ describe('userGroup methods', () => {
   });
 
   describe('getUserPrincipals caching', () => {
-    function createFakeCache() {
+    function createFakeCache({ onRead }: { onRead?: () => Promise<void> } = {}) {
       const store = new Map<string, unknown>();
       return {
         store,
-        get: jest.fn(async (key: string) => store.get(key)),
+        get: jest.fn(async (key: string) => {
+          await onRead?.();
+          return store.get(key);
+        }),
         set: jest.fn(async (key: string, value: unknown) => {
           store.set(key, value);
         }),
         delete: jest.fn(async (key: string) => store.delete(key)),
         clear: jest.fn(async () => store.clear()),
+      };
+    }
+
+    /**
+     * Holds each cache read until `callers` of them are inside the miss window together, so a
+     * test about deduplicating concurrent builds actually gets concurrent builds. Delaying
+     * every read by a fixed few milliseconds instead leaves the overlap up to the scheduler:
+     * under load the first build can finish before a later caller reads, and that caller then
+     * takes the miss path on its own, which is correct behaviour but not what such a test is
+     * asserting. Reads after the barrier opens pass straight through, so a caller that reads
+     * again mid-build (after taking the lock, say) cannot deadlock.
+     */
+    function arrivalBarrier(callers: number) {
+      let arrived = 0;
+      let open!: () => void;
+      const allArrived = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return async () => {
+        if (++arrived >= callers) {
+          open();
+        }
+        await allArrived;
       };
     }
 
@@ -758,14 +784,8 @@ describe('userGroup methods', () => {
 
     it('deduplicates concurrent cache builds for the same member key', async () => {
       const user = await createTestUser({ idOnTheSource: 'dedup-ext-1' });
-      const cache = {
-        get: jest.fn(async () => {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          return undefined;
-        }),
-        set: jest.fn(async () => undefined),
-      };
-      const cachedMethods = createUserGroupMethods(mongoose, { getCache: jest.fn(() => cache) });
+      const cache = createFakeCache({ onRead: arrivalBarrier(3) });
+      const cachedMethods = createCachedMethods(cache);
       const params = {
         userId: user._id.toString(),
         role: SystemRoles.USER,
@@ -787,11 +807,7 @@ describe('userGroup methods', () => {
     it('shares one lock and DB build across concurrent same-process callers', async () => {
       const user = await createTestUser({ idOnTheSource: 'lock-ext-1' });
       const cache = {
-        get: jest.fn(async () => {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-          return undefined;
-        }),
-        set: jest.fn(async () => undefined),
+        ...createFakeCache({ onRead: arrivalBarrier(3) }),
         acquireLock: jest.fn(async () => 'lock-token'),
         releaseLock: jest.fn(async () => undefined),
         lockWaitMs: 5000,
@@ -957,7 +973,7 @@ describe('userGroup methods', () => {
       expect(groupPrincipalIds(await parkedRead)).toEqual([]);
     });
 
-    it('defers invalidation for transactional writes until the session ends', async () => {
+    it('defers invalidation for transactional writes until the session commits', async () => {
       const user = await createTestUser({ idOnTheSource: 'txn-ext-1' });
       const group = await Group.create({
         name: 'Transactional Team',
@@ -984,13 +1000,12 @@ describe('userGroup methods', () => {
       expect(groupPrincipalIds(await cachedMethods.getUserPrincipals(params))).toEqual([]);
 
       await session.commitTransaction();
-      await session.endSession();
-      await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect(cache.delete).toHaveBeenCalledWith('txn-ext-1');
       expect(groupPrincipalIds(await cachedMethods.getUserPrincipals(params))).toEqual([
         group._id.toString(),
       ]);
+      await session.endSession();
     });
 
     it('caches and invalidates under tenant-scoped keys within a tenant context', async () => {
@@ -1043,13 +1058,12 @@ describe('userGroup methods', () => {
       });
       expect(cache.delete).not.toHaveBeenCalled();
 
-      /** Session ends outside the tenant context; the snapshot must preserve it */
+      /** Commit runs outside the tenant context; the snapshot must preserve it */
       await session.commitTransaction();
-      await session.endSession();
-      await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect(cache.delete).toHaveBeenCalledWith('txn-tenant-ext-1:tenant-b');
       expect(cache.delete).toHaveBeenCalledWith('txn-tenant-ext-1');
+      await session.endSession();
     });
 
     it('runs a delayed second invalidation to evict cross-process stale rewrites', async () => {
@@ -1518,6 +1532,7 @@ describe('userGroup methods', () => {
           username: 'alice',
           password: 'password123',
           provider: 'local',
+          role: SystemRoles.ADMIN,
         },
         {
           name: 'Bob Jones',
@@ -1579,6 +1594,7 @@ describe('userGroup methods', () => {
       const userResults = results.filter((r) => r.type === PrincipalType.USER);
       expect(userResults.length).toBeGreaterThanOrEqual(1);
       expect(userResults[0].name).toBe('Alice Smith');
+      expect(userResults[0].isAdmin).toBe(true);
     });
 
     it('finds matching groups', async () => {
@@ -1610,6 +1626,21 @@ describe('userGroup methods', () => {
       const results = await methods.searchPrincipals('mod', 10, [PrincipalType.ROLE]);
       expect(results.every((r) => r.type === PrincipalType.ROLE)).toBe(true);
       expect(results.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('excludes users from a GROUP and ROLE filter', async () => {
+      const results = await methods.searchPrincipals('a', 10, [
+        PrincipalType.GROUP,
+        PrincipalType.ROLE,
+      ]);
+      expect(new Set(results.map((r) => r.type))).toEqual(
+        new Set([PrincipalType.GROUP, PrincipalType.ROLE]),
+      );
+    });
+
+    it('returns no principals for an empty type filter', async () => {
+      const results = await methods.searchPrincipals('a', 10, []);
+      expect(results).toEqual([]);
     });
 
     it('respects limitPerType', async () => {

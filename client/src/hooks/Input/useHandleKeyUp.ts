@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo } from 'react';
+import { useSetAtom } from 'jotai';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
 import { PermissionTypes, Permissions, isAssistantsEndpoint } from 'librechat-data-provider';
+import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import useAgentCapabilities from '~/hooks/Agents/useAgentCapabilities';
 import useGetAgentsConfig from '~/hooks/Agents/useGetAgentsConfig';
@@ -75,7 +77,7 @@ const useHandleKeyUp = ({
   const setShowMentionPopover = useSetRecoilState(store.showMentionPopoverFamily(index));
   const setShowPlusPopover = useSetRecoilState(store.showPlusPopoverFamily(index));
   const setShowPromptsPopover = useSetRecoilState(store.showPromptsPopoverFamily(index));
-  const setShowSkillsPopover = useSetRecoilState(store.showSkillsPopoverFamily(index));
+  const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
 
   const atCommandEnabled = useRecoilValue(store.atCommand);
   const plusCommandEnabled = useRecoilValue(store.plusCommand);

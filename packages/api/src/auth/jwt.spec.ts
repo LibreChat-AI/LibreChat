@@ -67,7 +67,9 @@ describe('createJwtExtractor', () => {
       expect(extract(request({ authorization: 'Bearer other.jwt' }))).toBe('from-authorization');
       expect(extract(request({ 'x-original-authorization': '' }))).toBe('from-authorization');
       expect(extract(request({ 'x-original-authorization': '   ' }))).toBe('from-authorization');
-      expect(extract(request({ 'x-original-authorization': 'Bearer ' }))).toBe('from-authorization');
+      expect(extract(request({ 'x-original-authorization': 'Bearer ' }))).toBe(
+        'from-authorization',
+      );
       expect(fallback).toHaveBeenCalledTimes(4);
     });
 

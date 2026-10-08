@@ -1,3 +1,4 @@
+const { CLIENT_MESSAGE_SELECT } = require('@librechat/data-schemas');
 const express = require('express');
 const request = require('supertest');
 
@@ -20,6 +21,16 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  prepareToolCallPreviews: jest.fn(() => (messages) => Promise.resolve(messages)),
+  createToolCallPartHandler: jest.fn(() => (_req, res) => res.status(404).end()),
+  rejectToolCallPreviewWrites: (_req, _res, next) => next(),
+  withMessageToolCallPreviews: (_req, message) => message,
+  createPrivateTextView: jest.fn(() => (_req, _res, next) => next()),
+  createContentFilter: jest.fn(() => (req, res, next) => next()),
+  inspectContent: jest.fn(() => null),
+  extractFeedbackContent: jest.fn(() => []),
+  extractStoredMessageContent: jest.fn(() => []),
+  contentFilterBlockResponse: jest.fn(),
   createMessageRequestMiddleware:
     jest.requireActual('@librechat/api').createMessageRequestMiddleware,
   unescapeLaTeX: jest.fn((x) => x),
@@ -31,7 +42,14 @@ jest.mock('@librechat/api', () => ({
     getJob: jest.fn(),
   },
   isPendingActionStale: jest.fn(() => false),
+  CHILD_THREAD_READ_ONLY_ERROR: 'Child thread is view-only.',
+  isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
+  requireFeedbackEnabled: (req, res, next) => next(),
 }));
+
+jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
+
+jest.mock('~/server/services/Endpoints/agents/subagentThreadStore', () => ({}));
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -49,7 +67,7 @@ jest.mock('librechat-data-provider', () => ({
 
 jest.mock('~/models', () => ({
   saveConvo: jest.fn(),
-  getConvo: jest.fn(),
+  getConvoOwnership: jest.fn(),
   getMessage: jest.fn(),
   saveMessage: jest.fn(),
   getMessages: jest.fn(),
@@ -90,7 +108,7 @@ jest.mock('~/db/models', () => ({
 
 describe('GET /api/messages/:conversationId with real validation middleware', () => {
   let app;
-  const { getConvo, getMessages } = require('~/models');
+  const { getConvoOwnership, getMessages } = require('~/models');
   const authenticatedUserId = 'user-owner-123';
 
   beforeAll(() => {
@@ -114,7 +132,7 @@ describe('GET /api/messages/:conversationId with real validation middleware', ()
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
-    expect(getConvo).not.toHaveBeenCalled();
+    expect(getConvoOwnership).not.toHaveBeenCalled();
     expect(getMessages).not.toHaveBeenCalled();
   });
 
@@ -125,7 +143,7 @@ describe('GET /api/messages/:conversationId with real validation middleware', ()
       resolveConvo = resolve;
     });
 
-    getConvo.mockImplementation(() => {
+    getConvoOwnership.mockImplementation(() => {
       events.push('convo-started');
       return convoPromise;
     });
@@ -156,12 +174,38 @@ describe('GET /api/messages/:conversationId with real validation middleware', ()
     const response = await responsePromise;
 
     expect(eventsBeforeValidation).toEqual(['convo-started', 'messages-started']);
-    expect(getConvo).toHaveBeenCalledWith(authenticatedUserId, 'convo-1');
+    expect(getConvoOwnership).toHaveBeenCalledWith(authenticatedUserId, 'convo-1');
     expect(getMessages).toHaveBeenCalledWith(
       { conversationId: 'convo-1', user: authenticatedUserId },
-      '-_id -__v -user',
+      CLIENT_MESSAGE_SELECT,
     );
     expect(response.status).toBe(200);
     expect(response.body).toEqual([{ messageId: 'message-1', conversationId: 'convo-1' }]);
+  });
+
+  it('does not return messages for a directly addressed child thread', async () => {
+    getConvoOwnership.mockResolvedValue({
+      conversationId: 'child-convo',
+      user: authenticatedUserId,
+      subagentThread: { parentConversationId: 'parent-convo' },
+    });
+    getMessages.mockResolvedValue([{ messageId: 'child-message', conversationId: 'child-convo' }]);
+
+    const response = await request(app).get('/api/messages/child-convo');
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: 'Conversation not found' });
+  });
+
+  it('does not expose a directly addressed child thread through HEAD', async () => {
+    getConvoOwnership.mockResolvedValue({
+      conversationId: 'child-convo',
+      user: authenticatedUserId,
+      subagentThread: { parentConversationId: 'parent-convo' },
+    });
+
+    const response = await request(app).head('/api/messages/child-convo');
+
+    expect(response.status).toBe(404);
   });
 });

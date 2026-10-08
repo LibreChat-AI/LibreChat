@@ -24,7 +24,112 @@ function createConditionalJob(
   );
 }
 
+/** An automatic continuation must never replace a parent turn that is still live. */
+function createWakeupJob(store: InMemoryJobStore, streamId: string) {
+  return store.createJob(
+    streamId,
+    'owner-1',
+    streamId,
+    undefined,
+    { generationProtocolVersion: 2 },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    'wakeup-create-attempt',
+    undefined,
+    true,
+  );
+}
+
 describe('generation predecessor create fence', () => {
+  test('in-memory admission refuses an active predecessor and admits a settled one', async () => {
+    const store = new InMemoryJobStore();
+    const streamId = 'in-memory-active-predecessor-fence';
+    try {
+      const parent = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+        generationProtocolVersion: 2,
+      });
+
+      await expect(createWakeupJob(store, streamId)).rejects.toBeInstanceOf(
+        JobPredecessorMismatchError,
+      );
+      /** The controller needs the live state to answer a finite PARENT_NOT_READY. */
+      await expect(createWakeupJob(store, streamId)).rejects.toMatchObject({
+        currentJob: { active: true, verified: true, status: 'running' },
+      });
+
+      await expect(
+        store.transitionStatus(streamId, {
+          from: 'running',
+          to: 'requires_action',
+          expectCreatedAt: parent.createdAt,
+        }),
+      ).resolves.toBe(true);
+      await expect(createWakeupJob(store, streamId)).rejects.toMatchObject({
+        currentJob: { active: true, status: 'requires_action' },
+      });
+
+      await expect(
+        store.transitionStatus(streamId, {
+          from: 'requires_action',
+          to: 'aborted',
+          expectCreatedAt: parent.createdAt,
+        }),
+      ).resolves.toBe(true);
+      await store.updateJob(streamId, { terminalPersistencePending: true }, parent.createdAt);
+      await expect(createWakeupJob(store, streamId)).rejects.toMatchObject({
+        currentJob: { active: true, status: 'aborted' },
+      });
+      await store.updateJob(streamId, { terminalPersistencePending: false }, parent.createdAt);
+      await store.updateJob(streamId, { terminalHostActionPending: true }, parent.createdAt);
+      await expect(createWakeupJob(store, streamId)).rejects.toMatchObject({
+        currentJob: { active: true, status: 'aborted' },
+      });
+      await expect(
+        store.createJob(streamId, 'owner-1', streamId, undefined, {
+          generationProtocolVersion: 2,
+        }),
+      ).rejects.toMatchObject({
+        currentJob: { active: true, status: 'aborted' },
+      });
+      await store.updateJob(streamId, { terminalHostActionPending: false }, parent.createdAt);
+      const wakeup = await createWakeupJob(store, streamId);
+      expect(wakeup.createdAt).toBeGreaterThanOrEqual(parent.createdAt);
+    } finally {
+      await store.destroy();
+    }
+  });
+
+  test('in-memory admission accepts an absent predecessor', async () => {
+    const store = new InMemoryJobStore();
+    const streamId = 'in-memory-absent-predecessor-fence';
+    try {
+      const wakeup = await createWakeupJob(store, streamId);
+      expect(wakeup.createdAt).toEqual(expect.any(Number));
+    } finally {
+      await store.destroy();
+    }
+  });
+
+  test('in-memory ordinary turns still replace an active predecessor', async () => {
+    const store = new InMemoryJobStore();
+    const streamId = 'in-memory-ordinary-replacement-unchanged';
+    try {
+      const first = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+        generationProtocolVersion: 2,
+      });
+      /** Without the policy a user turn keeps replacing a running generation. */
+      const second = await store.createJob(streamId, 'owner-1', streamId, undefined, {
+        generationProtocolVersion: 2,
+      });
+      expect(second.createdAt).toBeGreaterThanOrEqual(first.createdAt);
+    } finally {
+      await store.destroy();
+    }
+  });
+
   test('in-memory ordinary appends accept active states and reject retained terminal epochs', async () => {
     const store = new InMemoryJobStore();
     const streamId = 'in-memory-terminal-append-fence';

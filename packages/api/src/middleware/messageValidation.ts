@@ -27,6 +27,7 @@ export type MessageValidationRequest = {
 
 type ConversationRecord = {
   user?: string;
+  subagentThread?: unknown;
 } | null;
 
 type PendingActionRecord = unknown;
@@ -70,8 +71,25 @@ export type MessageValidationDeps = {
   logger: MessageValidationLogger;
 };
 
+export type MessageRequestValidationOptions = {
+  /**
+   * The route reads one stored message of the conversation (a tool-call part) rather than
+   * addressing a message for mutation, so a conversation that is still only an active job
+   * before its first save stays readable to the job's owner, as the conversation read is.
+   */
+  activeJobMessageRead?: boolean;
+};
+
 export type MessageRequestMiddleware = {
-  createMessageRequestValidation: (req: MessageValidationRequest) => MessageRequestValidation;
+  canReadActiveJobConversation: (
+    req: MessageValidationRequest,
+    conversationId?: string,
+    options?: MessageRequestValidationOptions,
+  ) => Promise<boolean>;
+  createMessageRequestValidation: (
+    req: MessageValidationRequest,
+    options?: MessageRequestValidationOptions,
+  ) => MessageRequestValidation;
   prepareMessageRequestValidation: (
     req: MessageValidationRequest,
     res: Response,
@@ -90,14 +108,22 @@ function hasTenantMismatch(job: GenerationJobRecord, user: MessageValidationUser
   return job?.metadata?.tenantId != null && job.metadata.tenantId !== user.tenantId;
 }
 
+function isPublicReadMethod(method?: string): boolean {
+  return method === 'GET' || method === 'HEAD';
+}
+
 export function createMessageRequestMiddleware(
   deps: MessageValidationDeps,
 ): MessageRequestMiddleware {
   async function canReadActiveJobConversation(
     req: MessageValidationRequest,
     conversationId?: string,
+    options?: MessageRequestValidationOptions,
   ): Promise<boolean> {
-    if (req.method !== 'GET' || req.params?.messageId) {
+    if (!isPublicReadMethod(req.method)) {
+      return false;
+    }
+    if (req.params?.messageId && options?.activeJobMessageRead !== true) {
       return false;
     }
 
@@ -134,11 +160,12 @@ export function createMessageRequestMiddleware(
   async function validateConversationAccess(
     req: MessageValidationRequest,
     conversationId?: string,
+    options?: MessageRequestValidationOptions,
   ): Promise<MessageValidationResult> {
     const conversation = await deps.getConvo(req.user.id, conversationId);
 
     if (!conversation) {
-      if (await canReadActiveJobConversation(req, conversationId)) {
+      if (await canReadActiveJobConversation(req, conversationId, options)) {
         return { ok: true };
       }
 
@@ -153,10 +180,20 @@ export function createMessageRequestMiddleware(
       };
     }
 
+    // Child threads are internal execution records, not standalone public
+    // conversations. Keep the same response as a missing conversation so the
+    // read boundary does not disclose whether a supplied child id exists.
+    if (isPublicReadMethod(req.method) && conversation.subagentThread != null) {
+      return { ok: false, status: 404, body: { error: 'Conversation not found' } };
+    }
+
     return { ok: true };
   }
 
-  function createMessageRequestValidation(req: MessageValidationRequest): MessageRequestValidation {
+  function createMessageRequestValidation(
+    req: MessageValidationRequest,
+    options?: MessageRequestValidationOptions,
+  ): MessageRequestValidation {
     const body = req.body ?? {};
     const paramConversationId = req.params?.conversationId;
     const bodyConversationId = body.conversationId;
@@ -191,7 +228,7 @@ export function createMessageRequestMiddleware(
     return {
       conversationId,
       shouldFetchMessages: true,
-      promise: validateConversationAccess(req, conversationId),
+      promise: validateConversationAccess(req, conversationId, options),
     };
   }
 
@@ -225,6 +262,7 @@ export function createMessageRequestMiddleware(
   }
 
   return {
+    canReadActiveJobConversation,
     createMessageRequestValidation: createMessageRequestValidation,
     prepareMessageRequestValidation: prepareMessageRequestValidation,
     sendValidationResponse: sendValidationResponse,

@@ -1,18 +1,31 @@
 import { useRef } from 'react';
-import { Button } from '@librechat/client';
+import { KeyRound, CircleCheck } from 'lucide';
 import { useFormContext } from 'react-hook-form';
-import { KeyRound, CircleCheck } from 'lucide-react';
-import { AuthType, AgentCapabilities } from 'librechat-data-provider';
+import { Button, MorphIcon } from '@librechat/client';
+import {
+  AuthType,
+  RerankerTypes,
+  SearchProviders,
+  ScraperProviders,
+  AgentCapabilities,
+} from 'librechat-data-provider';
 import type { AgentForm } from '~/common';
 import { useLocalize, useSearchApiKeyForm } from '~/hooks';
 import ApiKeyDialog from './ApiKeyDialog';
+import { cn } from '~/utils';
 
 export default function Action({
   authTypes = [],
   isToolAuthenticated = false,
+  searchProvider,
+  scraperProvider,
+  rerankerType,
 }: {
   authTypes?: [string, AuthType][];
   isToolAuthenticated?: boolean;
+  searchProvider?: SearchProviders;
+  scraperProvider?: ScraperProviders;
+  rerankerType?: RerankerTypes;
 }) {
   const localize = useLocalize();
   const { setValue } = useFormContext<AgentForm>();
@@ -50,11 +63,10 @@ export default function Action({
         aria-haspopup="dialog"
         className="w-full justify-center gap-2"
       >
-        {isToolAuthenticated ? (
-          <CircleCheck className="h-4 w-4 text-green-500" aria-hidden="true" />
-        ) : (
-          <KeyRound className="h-4 w-4" aria-hidden="true" />
-        )}
+        <MorphIcon
+          icon={isToolAuthenticated ? CircleCheck : KeyRound}
+          className={cn('h-4 w-4', isToolAuthenticated && 'text-status-success')}
+        />
         {localize(
           isToolAuthenticated
             ? 'com_ui_manage_web_search_api_keys'
@@ -68,9 +80,13 @@ export default function Action({
         onRevoke={handleRevokeApiKey}
         onOpenChange={setIsDialogOpen}
         register={keyFormMethods.register}
+        setValue={keyFormMethods.setValue}
         isToolAuthenticated={isToolAuthenticated}
         handleSubmit={keyFormMethods.handleSubmit}
         triggerRef={apiKeyButtonRef}
+        searchProvider={searchProvider}
+        scraperProvider={scraperProvider}
+        rerankerType={rerankerType}
       />
     </>
   );

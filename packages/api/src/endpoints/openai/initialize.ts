@@ -1,8 +1,8 @@
 import { ErrorTypes, EModelEndpoint, mapModelToAzureConfig } from 'librechat-data-provider';
 import type {
-  BaseInitializeParams,
   InitializeResultBase,
   OpenAIConfigOptions,
+  ProviderInitializeParams,
   UserKeyValues,
 } from '~/types';
 import {
@@ -12,8 +12,30 @@ import {
   checkUserKeyExpiry,
   getAzureCredentials,
 } from '~/utils';
+import { resolveModelTransportTimeouts } from '~/agents/config';
+import { getOpenAIEndpointParameters } from './parameters';
+import { resolveEndpointRuntime } from '~/types';
 import { validateEndpointURL } from '~/auth';
 import { getOpenAIConfig } from './config';
+
+/**
+ * Admin-configured base URL for a built-in OpenAI-family endpoint, or `undefined`
+ * when the endpoint is served by OpenAI/Azure directly.
+ *
+ * Read at call time rather than module load so environment changes apply, and
+ * shared with callers that must know the endpoint a built-in provider actually
+ * talks to before claiming its contract. May be the `user_provided` sentinel,
+ * which resolves to a per-user value only after a database read.
+ */
+export function getBuiltInBaseURL(endpoint?: string | null): string | undefined {
+  if (endpoint === EModelEndpoint.openAI) {
+    return process.env.OPENAI_REVERSE_PROXY;
+  }
+  if (endpoint === EModelEndpoint.azureOpenAI) {
+    return process.env.AZURE_OPENAI_BASEURL;
+  }
+  return undefined;
+}
 
 /**
  * Initializes OpenAI options for agent usage. This function always returns configuration
@@ -23,19 +45,16 @@ import { getOpenAIConfig } from './config';
  * @returns Promise resolving to OpenAI configuration options
  * @throws Error if API key is missing or user key has expired
  */
-export async function initializeOpenAI({
-  req,
-  endpoint,
-  model_parameters,
-  db,
-}: BaseInitializeParams): Promise<InitializeResultBase> {
-  const appConfig = req.config;
+export async function initializeOpenAI(
+  params: ProviderInitializeParams,
+): Promise<InitializeResultBase> {
+  const { endpoint, model_parameters, db } = params;
+  const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
   const openAIConfig = appConfig?.endpoints?.[EModelEndpoint.openAI];
   const allConfig = appConfig?.endpoints?.all;
-  const { PROXY, OPENAI_API_KEY, AZURE_API_KEY, OPENAI_REVERSE_PROXY, AZURE_OPENAI_BASEURL } =
-    process.env;
+  const { PROXY, OPENAI_API_KEY, AZURE_API_KEY } = process.env;
 
-  const { key: expiresAt } = req.body;
+  const { key: expiresAt } = requestBody;
   const modelName = model_parameters?.model as string | undefined;
 
   const credentials = {
@@ -43,33 +62,43 @@ export async function initializeOpenAI({
     [EModelEndpoint.azureOpenAI]: AZURE_API_KEY,
   };
 
-  const baseURLOptions = {
-    [EModelEndpoint.openAI]: OPENAI_REVERSE_PROXY,
-    [EModelEndpoint.azureOpenAI]: AZURE_OPENAI_BASEURL,
-  };
+  const configuredBaseURL = getBuiltInBaseURL(endpoint);
 
   const userProvidesKey = isUserProvided(credentials[endpoint as keyof typeof credentials]);
-  const userProvidesURL = isUserProvided(baseURLOptions[endpoint as keyof typeof baseURLOptions]);
+  const userProvidesURL = isUserProvided(configuredBaseURL);
+  const isAzureOpenAI = endpoint === EModelEndpoint.azureOpenAI;
+  const azureConfig = isAzureOpenAI && appConfig?.endpoints?.[EModelEndpoint.azureOpenAI];
+  const mappedAzureConfig = azureConfig
+    ? mapModelToAzureConfig({
+        modelName: modelName || '',
+        modelGroupMap: azureConfig.modelGroupMap,
+        groupMap: azureConfig.groupMap,
+      })
+    : null;
+  const needsUserKey = userProvidesKey && !mappedAzureConfig;
+  const needsUserURL = userProvidesURL && !mappedAzureConfig?.baseURL;
 
   let userValues: UserKeyValues | null = null;
-  if (expiresAt && (userProvidesKey || userProvidesURL)) {
+  if (expiresAt && (needsUserKey || needsUserURL)) {
     checkUserKeyExpiry(expiresAt, endpoint);
-    userValues = await db.getUserKeyValues({ userId: req.user?.id ?? '', name: endpoint });
+  }
+  if (needsUserKey || needsUserURL) {
+    userValues = await db.getUserKeyValues({ userId: user?.id ?? '', name: endpoint });
   }
 
   let apiKey = userProvidesKey
     ? userValues?.apiKey
     : credentials[endpoint as keyof typeof credentials];
-  const baseURL = userProvidesURL
-    ? userValues?.baseURL
-    : baseURLOptions[endpoint as keyof typeof baseURLOptions];
+  const baseURL = userProvidesURL ? userValues?.baseURL : configuredBaseURL;
 
   const clientOptions: OpenAIConfigOptions = {
     proxy: PROXY ?? undefined,
     reverseProxyUrl: baseURL || undefined,
     baseURLIsUserProvided: userProvidesURL,
     allowedAddresses: appConfig?.endpoints?.allowedAddresses,
+    transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
     streaming: true,
+    ...getOpenAIEndpointParameters(appConfig, endpoint, modelName),
   };
 
   /**
@@ -84,22 +113,10 @@ export async function initializeOpenAI({
     ? mergeHeaders(allConfig?.headers, openAIConfig?.headers)
     : undefined;
 
-  const isAzureOpenAI = endpoint === EModelEndpoint.azureOpenAI;
-  const azureConfig = isAzureOpenAI && appConfig?.endpoints?.[EModelEndpoint.azureOpenAI];
   let isServerless = false;
 
-  if (isAzureOpenAI && azureConfig) {
-    const { modelGroupMap, groupMap } = azureConfig;
-    const {
-      azureOptions,
-      baseURL: configBaseURL,
-      headers = {},
-      serverless,
-    } = mapModelToAzureConfig({
-      modelName: modelName || '',
-      modelGroupMap,
-      groupMap,
-    });
+  if (isAzureOpenAI && azureConfig && mappedAzureConfig) {
+    const { azureOptions, baseURL: configBaseURL, headers = {}, serverless } = mappedAzureConfig;
     isServerless = serverless === true;
 
     clientOptions.reverseProxyUrl = configBaseURL ?? clientOptions.reverseProxyUrl;
@@ -108,7 +125,7 @@ export async function initializeOpenAI({
     }
     clientOptions.headers = resolveHeaders({
       headers: { ...headers, ...(clientOptions.headers ?? {}) },
-      user: req.user,
+      user,
     });
     /** `endpoints.all` headers apply globally, but stay unresolved here — they are
      *  resolved once at request time by `resolveConfigHeaders`. Resolving them now
@@ -116,12 +133,6 @@ export async function initializeOpenAI({
      *  env-before-user invariant. Azure-managed headers stay authoritative. */
     if (globalHeaders) {
       clientOptions.headers = mergeHeaders(globalHeaders, clientOptions.headers);
-    }
-
-    const groupName = modelGroupMap[modelName || '']?.group;
-    if (groupName && groupMap[groupName]) {
-      clientOptions.addParams = groupMap[groupName]?.addParams;
-      clientOptions.dropParams = groupMap[groupName]?.dropParams;
     }
 
     apiKey = azureOptions.azureOpenAIApiKey;
@@ -179,7 +190,7 @@ export async function initializeOpenAI({
   const modelOptions = {
     ...(model_parameters ?? {}),
     model: modelName,
-    user: req.user?.id,
+    user: user?.id,
   };
 
   const finalClientOptions: OpenAIConfigOptions = {
@@ -187,7 +198,10 @@ export async function initializeOpenAI({
     modelOptions,
   };
 
-  const options = getOpenAIConfig(apiKey, finalClientOptions, endpoint);
+  const options: InitializeResultBase = getOpenAIConfig(apiKey, finalClientOptions, endpoint);
+  if (clientOptions.azure) {
+    options.azureOptions = { ...clientOptions.azure };
+  }
 
   /** Set useLegacyContent for Azure serverless deployments */
   if (isServerless) {

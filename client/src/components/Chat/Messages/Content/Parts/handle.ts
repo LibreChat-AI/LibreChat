@@ -53,6 +53,11 @@ export interface BackgroundHandle {
   message: string;
 }
 
+export interface SubagentBackgroundHandle extends BackgroundHandle {
+  subagent_thread_id: string;
+  subagent_type: string;
+}
+
 const HANDLE_KEYS: ReadonlyArray<keyof BackgroundHandle> = [
   'background_task_id',
   'tool',
@@ -85,6 +90,69 @@ export function parseBackgroundHandle(output?: string): BackgroundHandle | null 
       (parsed.message as string).includes('check_background_task')
     ) {
       return parsed as BackgroundHandle;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const SUBAGENT_HANDLE_KEYS: ReadonlyArray<keyof SubagentBackgroundHandle> = [
+  'background_task_id',
+  'subagent_thread_id',
+  'tool',
+  'subagent_type',
+  'status',
+  'message',
+];
+
+/**
+ * Extracts the host-issued durable child-thread handle from a detached
+ * `subagent` result. The strict shape check is intentional: model-authored
+ * prose or an ordinary child result that happens to mention a thread id must
+ * never become a navigation target.
+ */
+export function parseSubagentBackgroundHandle(
+  output?: string | null,
+  args?: string | Record<string, unknown>,
+): SubagentBackgroundHandle | null {
+  let parsedArgs: Record<string, unknown> | undefined;
+  if (typeof args === 'string') {
+    try {
+      const candidate = JSON.parse(args) as unknown;
+      parsedArgs =
+        candidate != null && typeof candidate === 'object' && !Array.isArray(candidate)
+          ? (candidate as Record<string, unknown>)
+          : undefined;
+    } catch {
+      return null;
+    }
+  } else {
+    parsedArgs = args;
+  }
+  if (parsedArgs?.run_in_background !== true || !output || output.length > 2_000) {
+    return null;
+  }
+  const trimmed = output.trim();
+  if (
+    !trimmed.startsWith('{') ||
+    !trimmed.includes('"background_task_id"') ||
+    !trimmed.includes('"subagent_thread_id"')
+  ) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as Partial<SubagentBackgroundHandle> | null;
+    if (
+      parsed != null &&
+      Object.keys(parsed).length === SUBAGENT_HANDLE_KEYS.length &&
+      SUBAGENT_HANDLE_KEYS.every(
+        (key) => typeof parsed[key] === 'string' && (parsed[key] as string).trim() !== '',
+      ) &&
+      parsed.tool === 'subagent' &&
+      (parsed.message as string).includes('background_task_id')
+    ) {
+      return parsed as SubagentBackgroundHandle;
     }
   } catch {
     return null;

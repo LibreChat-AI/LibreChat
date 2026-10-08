@@ -2,10 +2,13 @@ const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
   createMessageFilterPii,
+  getPreinspectedPrivateText,
+  reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
-  applyResumeContext,
+  applyResumeRequest,
   GenerationJobManager,
+  getSafeErrorMetadata,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -16,10 +19,11 @@ const {
   canAccessAgentFromBody,
 } = require('~/server/middleware');
 const { initializeClient } = require('~/server/services/Endpoints/agents');
+const guardSubagentThreadTurn = require('~/server/middleware/validate/subagentThreadTurn');
 const AgentController = require('~/server/controllers/agents/request');
 const ResumeController = require('~/server/controllers/agents/resume');
 const addTitle = require('~/server/services/Endpoints/agents/title');
-const { getRoleByName } = require('~/models');
+const { getFiles, getRoleByName } = require('~/models');
 
 const router = express.Router();
 
@@ -49,34 +53,29 @@ const restoreResumeContext = async (req, res, next) => {
     const streamId = req.body?.conversationId;
     if (streamId) {
       const job = await GenerationJobManager.getJob(streamId);
-      const resumeContext = job?.metadata?.pendingAction?.resumeContext;
-      applyResumeContext(req.body, resumeContext);
-      // Replay the paused turn's resolved model parameters. Ephemeral agents derive these
-      // (temperature, max tokens, custom endpoint params) from the request body, which the
-      // resume payload omits — without this the continuation runs with defaults. They're
-      // scattered top-level fields (folded into model_parameters by buildOptions' rest
-      // spread), not part of the RESUME_CONTEXT_KEYS allowlist, so merge them back here.
-      // Authoritative: overwrites any client-supplied values with the captured set.
-      // `model` is excluded — it's replayed via RESUME_CONTEXT_KEYS to the exact value the
-      // resume fingerprint was pinned on, so overwriting it here could trip that check.
-      const resumedModelParameters = resumeContext?.model_parameters;
-      if (resumedModelParameters && typeof resumedModelParameters === 'object') {
-        const { model: _replayedModel, ...replayParams } = resumedModelParameters;
-        Object.assign(req.body, replayParams);
-      }
+      applyResumeRequest(req, job?.metadata?.pendingAction?.resumeContext);
     }
   } catch (err) {
-    logger.warn('[agents/chat] Failed to restore resume context', err?.message ?? err);
+    logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(err));
   }
   next();
 };
 
 router.use(restoreResumeContext);
-router.use(createMessageFilterPii({ getConfig: (req) => req.config?.messageFilter?.pii }));
+router.use(
+  createMessageFilterPii({
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getConfig: (req) => req.config?.messageFilter?.pii,
+    getFilters: (req) => req.config?.filters,
+    getPreinspectedText: getPreinspectedPrivateText,
+    getFiles,
+  }),
+);
 router.use(moderateText);
 router.use(checkAgentAccess);
 router.use(checkAgentResourceAccess);
 router.use(validateConvoAccess);
+router.use(guardSubagentThreadTurn);
 router.use(buildEndpointOption);
 
 const controller = async (req, res, next) => {

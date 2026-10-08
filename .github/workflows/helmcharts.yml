@@ -18,8 +18,6 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
-    env:
-      CHART_REPOSITORY: ${{ github.repository_owner }}/librechat-chart
     steps:
       - name: Resolve chart tag
         id: chart-version
@@ -41,7 +39,9 @@ jobs:
             exit 1
           fi
 
+          # OCI repository names must be lowercase, and the repository owner is not guaranteed to be.
           {
+            printf 'CHART_REPOSITORY=%s/librechat-chart\n' "${GITHUB_REPOSITORY_OWNER,,}"
             printf 'CHART_REF=refs/tags/%s\n' "$CHART_TAG"
             printf 'CHART_TAG=%s\n' "$CHART_TAG"
             printf 'CHART_VERSION=%s\n' "$CHART_VERSION"
@@ -85,7 +85,7 @@ jobs:
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat
-          repository: ${{ env.CHART_REPOSITORY }}
+          repository: ${{ steps.chart-version.outputs.CHART_REPOSITORY }}
           tag: ${{ steps.chart-version.outputs.CHART_VERSION }}
           path: helm/librechat
           registry: ghcr.io
@@ -97,7 +97,7 @@ jobs:
         uses: appany/helm-oci-chart-releaser@v0.4.2
         with:
           name: librechat-rag-api
-          repository: ${{ env.CHART_REPOSITORY }}
+          repository: ${{ steps.chart-version.outputs.CHART_REPOSITORY }}
           tag: ${{ steps.chart-version.outputs.CHART_VERSION }}
           path: helm/librechat-rag-api
           registry: ghcr.io

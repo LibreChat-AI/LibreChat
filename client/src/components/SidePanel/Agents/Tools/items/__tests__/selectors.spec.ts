@@ -152,6 +152,34 @@ describe('deriveSelectedItems', () => {
     expect(result.find((i) => i.kind === 'mcp')?.id).toBe('srv');
   });
 
+  test('an exact normalized MCP token selects only its collision owner', () => {
+    const serverNames = ['foo mcp bar', 'foo_mcp_bar'];
+    const catalog: AgentItem[] = [
+      ...sampleCatalog,
+      ...serverNames.map(
+        (serverName): AgentItem => ({
+          kind: 'mcp',
+          id: serverName,
+          name: serverName,
+          description: '',
+          iconKey: 'mcp',
+          server: makeMcpServer({ serverName }),
+          toolCount: 0,
+        }),
+      ),
+    ];
+
+    const result = deriveSelectedItems(
+      { ...emptyFormState, tools: ['mcp_foo_mcp_bar'] },
+      catalog,
+      [],
+    );
+
+    expect(result.filter((item) => item.kind === 'mcp').map((item) => item.id)).toEqual([
+      'foo_mcp_bar',
+    ]);
+  });
+
   test('deselect-all (empty tools) leaves no MCP server selected', () => {
     const catalog: AgentItem[] = [
       ...sampleCatalog,
@@ -234,6 +262,27 @@ describe('matchesMcpServer', () => {
     expect(matchesMcpServer('search_mcp_foo_mcp_bar', 'bar', allServers)).toBe(false);
     expect(matchesMcpServer('search_mcp_bar', 'bar', allServers)).toBe(true);
     expect(matchesMcpServer('search_mcp_bar', 'foo mcp bar', allServers)).toBe(false);
+  });
+
+  test('exact MCP tokens belong only to the configured owner of a normalized name', () => {
+    /** `foo mcp bar` and the literal `foo_mcp_bar` normalize to the same
+     *  model-facing name. An exact `mcp_foo_mcp_bar` token must follow the
+     *  alias registry's identity-first ownership instead of selecting both. */
+    const collidingServers = ['foo mcp bar', 'foo_mcp_bar'];
+    expect(matchesMcpServer('mcp_foo_mcp_bar', 'foo mcp bar', collidingServers)).toBe(false);
+    expect(matchesMcpServer('mcp_foo_mcp_bar', 'foo_mcp_bar', collidingServers)).toBe(true);
+
+    /** Without an identity-name collision, the normalized exact token still
+     *  resolves back to its special-character raw server as before. */
+    expect(matchesMcpServer('mcp_foo_mcp_bar', 'foo mcp bar', ['foo mcp bar'])).toBe(true);
+    expect(matchesMcpServer('mcp_foo mcp bar', 'foo mcp bar', collidingServers)).toBe(true);
+    expect(matchesMcpServer('mcp_foo mcp bar', 'foo_mcp_bar', collidingServers)).toBe(false);
+
+    /** If neither raw name is already normalized, the alias registry's
+     *  deterministic first-configured owner is the only match. */
+    const aliasCollision = ['foo!', 'foo?'];
+    expect(matchesMcpServer('mcp_foo', 'foo!', aliasCollision)).toBe(true);
+    expect(matchesMcpServer('mcp_foo', 'foo?', aliasCollision)).toBe(false);
   });
 
   test('matches normalized-spelling tool ids for a special-character server', () => {

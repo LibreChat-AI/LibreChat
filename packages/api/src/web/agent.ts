@@ -1,4 +1,5 @@
 import { getProxyForUrl } from 'proxy-from-env';
+import { ScraperProviders } from 'librechat-data-provider';
 import type { TWebSearchConfig } from 'librechat-data-provider';
 import type https from 'node:https';
 import type http from 'node:http';
@@ -16,6 +17,7 @@ const WEB_SEARCH_URL_KEYS = [
   'jinaApiUrl',
   'tavilySearchUrl',
   'tavilyExtractUrl',
+  'keenableApiUrl',
 ] as const;
 
 /**
@@ -31,8 +33,13 @@ const WEB_SEARCH_URL_KEYS = [
  */
 function getProxyExemptions(authResult: Partial<TWebSearchConfig>): string[] {
   const entries = new Set<string>();
-  for (const key of WEB_SEARCH_URL_KEYS) {
-    const destination = authResult[key];
+  const destinations = [
+    ...WEB_SEARCH_URL_KEYS.map((key) => authResult[key]),
+    ...(authResult.scraperProvider === ScraperProviders.KEENABLE
+      ? [process.env.KEENABLE_FETCH_URL]
+      : []),
+  ];
+  for (const destination of destinations) {
     if (typeof destination !== 'string' || destination.length === 0) {
       continue;
     }

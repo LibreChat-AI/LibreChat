@@ -1,16 +1,21 @@
 /**
  * Tests for MCPConnection error detection methods.
  *
- * Rate-limit and SSE tests use standalone implementations that mirror private methods in
- * MCPConnection. OAuth classification exercises the production helper shared by the connection
- * and factory.
+ * Rate-limit tests use a standalone implementation that mirrors a private method in
+ * MCPConnection. OAuth and SSE classification exercise the production helpers shared by the
+ * connection and factory.
  *
  * Alternative approaches considered:
  * 1. Reflection/type casting - fragile and breaks with refactoring
  * 2. Protected methods with test subclass - changes public API for testing
  * 3. Integration tests - tested separately in the full MCP test suite
  */
-import { isOAuthAuthenticationError } from '~/mcp/errors';
+import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  extractSSEErrorMessage,
+  isOAuthAuthenticationError,
+  isStandaloneSseConflict,
+} from '~/mcp/errors';
 
 describe('MCPConnection Error Detection', () => {
   /**
@@ -173,119 +178,6 @@ describe('MCPConnection Error Detection', () => {
  * particularly handling the "SSE error: undefined" case from the MCP SDK.
  */
 describe('extractSSEErrorMessage', () => {
-  /**
-   * Standalone implementation of extractSSEErrorMessage for testing.
-   * This mirrors the function in connection.ts.
-   * Keep in sync with the actual implementation.
-   */
-  function extractSSEErrorMessage(error: unknown): {
-    message: string;
-    code?: number;
-    isProxyHint: boolean;
-    isTransient: boolean;
-  } {
-    if (!error || typeof error !== 'object') {
-      return {
-        message: 'Unknown SSE transport error',
-        isProxyHint: true,
-        isTransient: true,
-      };
-    }
-
-    const errorObj = error as { message?: string; code?: number; event?: unknown };
-    const rawMessage = errorObj.message ?? '';
-    const code = errorObj.code;
-
-    // Handle the common "SSE error: undefined" case
-    if (rawMessage === 'SSE error: undefined' || rawMessage === 'undefined' || !rawMessage) {
-      return {
-        message:
-          'SSE connection closed. This can occur due to: (1) idle connection timeout (normal), ' +
-          '(2) reverse proxy buffering (check proxy_buffering config), or (3) network interruption.',
-        code,
-        isProxyHint: true,
-        isTransient: true,
-      };
-    }
-
-    // Check for timeout patterns with case-insensitive matching
-    const lowerMessage = rawMessage.toLowerCase();
-    if (
-      rawMessage.includes('ETIMEDOUT') ||
-      rawMessage.includes('ESOCKETTIMEDOUT') ||
-      lowerMessage.includes('timed out') ||
-      lowerMessage.includes('timeout after') ||
-      lowerMessage.includes('request timeout')
-    ) {
-      return {
-        message: `SSE connection timed out: ${rawMessage}. If behind a reverse proxy, increase proxy_read_timeout.`,
-        code,
-        isProxyHint: true,
-        isTransient: true,
-      };
-    }
-
-    // Connection reset is often transient
-    if (rawMessage.includes('ECONNRESET')) {
-      return {
-        message: `SSE connection reset: ${rawMessage}. The server or proxy may have restarted.`,
-        code,
-        isProxyHint: false,
-        isTransient: true,
-      };
-    }
-
-    // Connection refused is more serious
-    if (rawMessage.includes('ECONNREFUSED')) {
-      return {
-        message: `SSE connection refused: ${rawMessage}. Verify the MCP server is running and accessible.`,
-        code,
-        isProxyHint: false,
-        isTransient: false,
-      };
-    }
-
-    // DNS failure
-    if (rawMessage.includes('ENOTFOUND') || rawMessage.includes('getaddrinfo')) {
-      return {
-        message: `SSE DNS resolution failed: ${rawMessage}. Check the server URL is correct.`,
-        code,
-        isProxyHint: false,
-        isTransient: false,
-      };
-    }
-
-    // Check for HTTP status codes
-    const statusMatch = rawMessage.match(/\b(4\d{2}|5\d{2})\b/);
-    if (statusMatch) {
-      const statusCode = parseInt(statusMatch[1], 10);
-      const isServerError = statusCode >= 500 && statusCode < 600;
-      return {
-        message: rawMessage,
-        code: statusCode,
-        isProxyHint: statusCode === 502 || statusCode === 503 || statusCode === 504,
-        isTransient: isServerError,
-      };
-    }
-
-    if (rawMessage === 'fetch failed') {
-      return {
-        message:
-          'fetch failed (request aborted, likely after a timeout — connection may still be usable)',
-        code,
-        isProxyHint: false,
-        isTransient: true,
-      };
-    }
-
-    return {
-      message: rawMessage,
-      code,
-      isProxyHint: false,
-      isTransient: false,
-    };
-  }
-
   describe('undefined/empty error handling', () => {
     it('should handle "SSE error: undefined" from MCP SDK', () => {
       const error = { message: 'SSE error: undefined', code: undefined };
@@ -535,6 +427,73 @@ describe('extractSSEErrorMessage', () => {
       expect(result.message).toBe('Something fetch failed to do');
       expect(result.isTransient).toBe(false);
     });
+  });
+
+  describe('status carried on code rather than in the message', () => {
+    it('should classify a 409 standalone SSE stream conflict as transient', () => {
+      const error = new StreamableHTTPError(409, 'Failed to open SSE stream: Conflict');
+      const result = extractSSEErrorMessage(error);
+
+      expect(result.code).toBe(409);
+      expect(result.isTransient).toBe(true);
+      expect(result.isProxyHint).toBe(false);
+    });
+
+    it('should classify a 5xx as transient when the message carries no digits', () => {
+      const error = new StreamableHTTPError(503, 'Failed to open SSE stream: Service Unavailable');
+      const result = extractSSEErrorMessage(error);
+
+      expect(result.code).toBe(503);
+      expect(result.isTransient).toBe(true);
+      expect(result.isProxyHint).toBe(true);
+    });
+
+    it('should keep other 4xx non-transient when the message carries no digits', () => {
+      const error = new StreamableHTTPError(403, 'Failed to open SSE stream: Forbidden');
+      const result = extractSSEErrorMessage(error);
+
+      expect(result.code).toBe(403);
+      expect(result.isTransient).toBe(false);
+    });
+
+    it('should ignore non-HTTP codes so they do not reach the status branch', () => {
+      const error = { message: 'Something went wrong', code: 42 };
+      const result = extractSSEErrorMessage(error);
+
+      expect(result.code).toBe(42);
+      expect(result.isTransient).toBe(false);
+    });
+  });
+});
+
+describe('isStandaloneSseConflict', () => {
+  it('should detect the SDK 409 raised when opening the standalone SSE stream', () => {
+    const error = new StreamableHTTPError(409, 'Failed to open SSE stream: Conflict');
+
+    expect(isStandaloneSseConflict(error)).toBe(true);
+  });
+
+  it('should not match a 409 raised for anything other than the SSE stream', () => {
+    const error = new StreamableHTTPError(409, 'Failed to send message');
+
+    expect(isStandaloneSseConflict(error)).toBe(false);
+  });
+
+  it('should not match other statuses on the SSE stream', () => {
+    const error = new StreamableHTTPError(500, 'Failed to open SSE stream: Internal Server Error');
+
+    expect(isStandaloneSseConflict(error)).toBe(false);
+  });
+
+  it('should not match a look-alike error from another transport', () => {
+    const error = Object.assign(new Error('Failed to open SSE stream: Conflict'), { code: 409 });
+
+    expect(isStandaloneSseConflict(error)).toBe(false);
+  });
+
+  it('should not match non-error values', () => {
+    expect(isStandaloneSseConflict(undefined)).toBe(false);
+    expect(isStandaloneSseConflict('Conflict')).toBe(false);
   });
 });
 

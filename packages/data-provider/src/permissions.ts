@@ -68,6 +68,10 @@ export enum PermissionTypes {
    * Type for Shared Link Permissions
    */
   SHARED_LINKS = 'SHARED_LINKS',
+  /**
+   * Type for Scheduled Chats Permissions
+   */
+  SCHEDULES = 'SCHEDULES',
 }
 
 /**
@@ -92,10 +96,20 @@ export const PERMISSION_TYPE_INTERFACE_FIELDS: Record<PermissionTypes, string> =
   [PermissionTypes.REMOTE_AGENTS]: 'remoteAgents',
   [PermissionTypes.SKILLS]: 'skills',
   [PermissionTypes.SHARED_LINKS]: 'sharedLinks',
+  [PermissionTypes.SCHEDULES]: 'schedules',
 };
 
 /** Set of interface config field names that correspond to role permissions. */
 export const INTERFACE_PERMISSION_FIELDS = new Set(Object.values(PERMISSION_TYPE_INTERFACE_FIELDS));
+
+/**
+ * Interface fields that seed a permission (use/create) BUT also carry runtime
+ * config that must survive DB/tenant/user overrides. For these, override
+ * sanitizers strip only the permission sub-keys (use/create) from the object
+ * form and PRESERVE the boolean form — for `schedules`, `interface.schedules: false`
+ * is the runtime feature disable that `getLimits` reads, not a permission toggle.
+ */
+export const RUNTIME_CONFIG_INTERFACE_FIELDS = new Set<string>(['schedules']);
 
 /**
  * YAML sub-keys within composite interface permission fields that map to permission bits.
@@ -245,6 +259,12 @@ export const skillPermissionsSchema = z.object({
 });
 export type TSkillPermissions = z.infer<typeof skillPermissionsSchema>;
 
+export const schedulesPermissionsSchema = z.object({
+  [Permissions.USE]: z.boolean().default(true),
+  [Permissions.CREATE]: z.boolean().default(true),
+});
+export type TSchedulesPermissions = z.infer<typeof schedulesPermissionsSchema>;
+
 export const sharedLinksPermissionsSchema = z.object({
   [Permissions.CREATE]: z.boolean().default(true),
   [Permissions.SHARE]: z.boolean().default(true),
@@ -270,4 +290,5 @@ export const permissionsSchema = z.object({
   [PermissionTypes.REMOTE_AGENTS]: remoteAgentsPermissionsSchema,
   [PermissionTypes.SKILLS]: skillPermissionsSchema,
   [PermissionTypes.SHARED_LINKS]: sharedLinksPermissionsSchema,
+  [PermissionTypes.SCHEDULES]: schedulesPermissionsSchema,
 });

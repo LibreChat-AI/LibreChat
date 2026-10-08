@@ -1,0 +1,86 @@
+name: Retarget PRs to dev
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+    # A deliberate canary base is never retargeted; the script also enforces this for sweeps.
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report what would change without editing any pull request'
+        type: boolean
+        default: true
+      pr_numbers:
+        description: 'Space-separated PR numbers (default: open main-based PRs; canary is excluded)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Per-pull-request for the hook so a burst of openings runs in parallel; GitHub keeps only one
+# pending job per group, so a single shared group would cancel queued retargets. Every sweep shares
+# one group so two of them cannot process the same pull request at once.
+concurrency:
+  group: pr-retarget-dev-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  on-open:
+    name: Retarget on open
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # pull_request_target runs with a write token: check out the trusted base
+          # commit only, never the pull request head.
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify canary base stays untouched
+        run: node --test .github/scripts/retarget-prs.test.mjs
+
+      - name: Retarget onto dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: .github/scripts/retarget-prs.sh "$PR_NUMBER"
+
+  sweep:
+    name: Sweep open pull requests
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Verify canary base stays untouched
+        run: node --test .github/scripts/retarget-prs.test.mjs
+
+      - name: Retarget onto dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PR_NUMBERS: ${{ inputs.pr_numbers }}
+          THROTTLE_SECONDS: '2'
+        run: |
+          numbers="$PR_NUMBERS"
+          if [ -z "$numbers" ]; then
+            numbers="$(gh api --paginate "repos/$REPO/pulls?base=main&state=open&per_page=100" --jq '.[].number')"
+          fi
+          if [ -z "$numbers" ]; then
+            echo "No open pull requests based on main."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          .github/scripts/retarget-prs.sh $numbers

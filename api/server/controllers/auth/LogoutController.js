@@ -1,7 +1,9 @@
 const cookies = require('cookie');
-const { isEnabled, clearCloudFrontCookies } = require('@librechat/api');
-const { logger } = require('@librechat/data-schemas');
+const { isEnabled, math, clearCloudFrontCookies } = require('@librechat/api');
+const { logger, DEFAULT_REFRESH_TOKEN_EXPIRY } = require('@librechat/data-schemas');
 const { logoutUser } = require('~/server/services/AuthService');
+const { deleteAllRefreshTokenBridges } = require('~/server/services/RefreshTokenBridge');
+const { revokeOpenIDRefreshTokenChain } = require('~/server/services/OpenIDRefreshRecovery');
 const { getOpenIdConfig } = require('~/strategies');
 
 /** Parses and validates OPENID_MAX_LOGOUT_URL_LENGTH, returning defaultValue on invalid input */
@@ -27,16 +29,58 @@ const logoutController = async (req, res) => {
 
   let refreshToken;
   let idToken;
+  let sessionRefreshToken;
   if (isOpenIdUser && req.session?.openidTokens) {
-    refreshToken = req.session.openidTokens.refreshToken;
+    sessionRefreshToken = req.session.openidTokens.refreshToken;
     idToken = req.session.openidTokens.idToken;
-    delete req.session.openidTokens;
   }
-  refreshToken = refreshToken || parsedCookies.refreshToken;
-  idToken = idToken || parsedCookies.openid_id_token;
+  /** Both can name distinct durable sessions when an older browser request races rotation. */
+  refreshToken = parsedCookies.refreshToken || sessionRefreshToken;
+  idToken =
+    idToken ||
+    (isOpenIdUser ? req.session?.openidLogoutIdToken : undefined) ||
+    parsedCookies.openid_id_token;
+  const logoutTokens = isOpenIdUser
+    ? [...new Set([parsedCookies.refreshToken, sessionRefreshToken].filter(Boolean))]
+    : [refreshToken];
 
   try {
-    const logout = await logoutUser(req, refreshToken);
+    if (isOpenIdUser) {
+      const userId = req.user?.id ?? req.user?._id?.toString?.();
+      const refreshIdentity = {
+        appUserId: userId,
+        openidSubject: req.session?.openidTokens?.openidSubject ?? req.user?.openidId,
+        tenantId: req.session?.openidTokens?.tenantId ?? req.user?.tenantId,
+        openidIssuer: req.session?.openidTokens?.openidIssuer ?? req.user?.openidIssuer,
+      };
+      const revokedRefreshTokens = await revokeOpenIDRefreshTokenChain({
+        req,
+        user: req.user,
+        identityContext: refreshIdentity,
+        refreshTokens: [...logoutTokens],
+        publicationKeys: [req.session?.openidTokens?.publicationFlightKey].filter(Boolean),
+        ttl: math(process.env.REFRESH_TOKEN_EXPIRY, DEFAULT_REFRESH_TOKEN_EXPIRY),
+      });
+      logoutTokens.push(...revokedRefreshTokens);
+      await deleteAllRefreshTokenBridges({
+        userId,
+        tenantId: req.user?.tenantId,
+      });
+      if (req.session) {
+        delete req.session.openidTokens;
+        delete req.session.openidLogoutIdToken;
+      }
+    }
+    if (logoutTokens.length === 0) {
+      logoutTokens.push(undefined);
+    }
+    let logout = { status: 200, message: 'Logout successful' };
+    for (const token of new Set(logoutTokens)) {
+      const result = await logoutUser(req, token);
+      if (result.status !== 200) {
+        logout = result;
+      }
+    }
     const { status, message } = logout;
 
     res.clearCookie('refreshToken');
@@ -118,7 +162,7 @@ const logoutController = async (req, res) => {
             } else {
               logger.warn(
                 '[logoutController] Neither id_token_hint nor OPENID_CLIENT_ID is available. ' +
-                  'To enable id_token_hint, set OPENID_REUSE_TOKENS=true. ' +
+                  'Sign in again to establish an OpenID session with an ID token. ' +
                   'The OIDC end-session request may be rejected by the identity provider.',
               );
             }

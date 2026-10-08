@@ -1,4 +1,4 @@
-import type { EToolResources } from './types/assistants';
+import type { EToolResources } from './types/tools';
 import type { TFileUpload } from './types/files';
 import request from './request';
 

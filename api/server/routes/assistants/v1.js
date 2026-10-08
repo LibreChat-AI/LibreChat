@@ -1,11 +1,24 @@
 const express = require('express');
+const {
+  reportLocatorTraversalFailure,
+  createContentFilter,
+  extractAssistantContent,
+} = require('@librechat/api');
 const controllers = require('~/server/controllers/assistants/v1');
+const { getFiles } = require('~/models');
 const documents = require('./documents');
 const actions = require('./actions');
 const tools = require('./tools');
 
 const router = express.Router();
 const avatar = express.Router();
+const filterAssistantContent = createContentFilter({
+  onTraversalFailure: reportLocatorTraversalFailure,
+  getFilters: (req) => req.config?.filters,
+  extract: (req) => extractAssistantContent(req.body),
+  getOpaqueFileInput: (req) => req.body,
+  getFiles,
+});
 
 /**
  * Assistant actions route.
@@ -33,7 +46,7 @@ router.use('/documents', documents);
  * @param {AssistantCreateParams} req.body - The assistant creation parameters.
  * @returns {Assistant} 201 - success response - application/json
  */
-router.post('/', controllers.createAssistant);
+router.post('/', filterAssistantContent, controllers.createAssistant);
 
 /**
  * Retrieves an assistant.
@@ -50,7 +63,7 @@ router.get('/:id', controllers.retrieveAssistant);
  * @param {AssistantUpdateParams} req.body - The assistant update parameters.
  * @returns {Assistant} 200 - success response - application/json
  */
-router.patch('/:id', controllers.patchAssistant);
+router.patch('/:id', filterAssistantContent, controllers.patchAssistant);
 
 /**
  * Deletes an assistant.

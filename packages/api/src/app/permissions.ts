@@ -49,9 +49,51 @@ function hasExplicitConfig(
       return interfaceConfig?.skills !== undefined;
     case PermissionTypes.SHARED_LINKS:
       return interfaceConfig?.sharedLinks !== undefined;
+    case PermissionTypes.SCHEDULES: {
+      // `schedules` is dual-purpose. The BOOLEAN form is the RUNTIME kill switch read
+      // by getLimits, NOT a permission config: treating it as explicit would write
+      // SCHEDULES.USE into the role docs, and removing the kill switch later would
+      // leave that disabled permission stuck (forbidden) until manual repair. Only an
+      // OBJECT carrying explicit use/create is permission intent; runtime-only limits
+      // (maxPerUser, fireConcurrency, …) are not.
+      const schedules = interfaceConfig?.schedules;
+      if (typeof schedules !== 'object' || schedules == null) {
+        return false;
+      }
+      return schedules.use !== undefined || schedules.create !== undefined;
+    }
     default:
       return false;
   }
+}
+
+/**
+ * `WEB_SEARCH.USE` gates provider-native search (the `web_search` model parameter) as well as
+ * LibreChat's `web_search` tool. Warns when model specs ask for native search that a role's
+ * effective permission blocks, whether `interface.webSearch: false` sets it or a stored role keeps it.
+ */
+function warnNativeWebSearchDenied(
+  appConfig: AppConfig,
+  deniedRoles: string[],
+  isExplicitlyConfigured: boolean,
+): void {
+  if (deniedRoles.length === 0) {
+    return;
+  }
+  const specs = (appConfig.modelSpecs?.list ?? [])
+    .filter((spec) => spec.preset?.web_search === true)
+    .map((spec) => spec.name);
+  if (specs.length === 0) {
+    return;
+  }
+  const source = isExplicitlyConfigured
+    ? '`interface.webSearch: false` denies'
+    : '`interface.webSearch` is not set, and the stored role permission keeps denying';
+  logger.warn(
+    `Model specs request provider-native web search (\`preset.web_search: true\`), but ${source} the \`WEB_SEARCH\` permission for roles ${deniedRoles.join(', ')}, which also blocks native search: ${specs.join(', ')}. ` +
+      "To offer native search without LibreChat's search tool, set `interface.webSearch: true` and remove `web_search` from `endpoints.agents.capabilities`. " +
+      'Removing `interface.webSearch` alone keeps the stored role permission; set it explicitly or update the role in the admin settings. See "Native-only web search" in UPGRADING.md.',
+  );
 }
 
 export async function updateInterfacePermissions({
@@ -111,6 +153,7 @@ export async function updateInterfacePermissions({
   };
 
   const defaults = getConfigDefaults().interface;
+  const webSearchDeniedRoles: string[] = [];
 
   // Permission precedence order:
   // 1. Explicit user configuration (from librechat.yaml)
@@ -199,6 +242,12 @@ export async function updateInterfacePermissions({
       typeof defaults.agents === 'object' ? defaults.agents?.public : undefined;
     const skillsDefaultPublic =
       typeof defaults.skills === 'object' ? defaults.skills?.public : undefined;
+    // `schedules` is intentionally absent from the interface DEFAULTS (it is
+    // experimental/default-off at runtime), so the PERMISSION defaults are stated here.
+    // Runtime availability and the role permission are separate concerns: a user may hold
+    // the permission while the feature stays off until an admin enables it.
+    const schedulesDefaultUse = true;
+    const schedulesDefaultCreate = true;
     const sharedLinksDefaultCreate =
       typeof defaults.sharedLinks === 'boolean' ? undefined : defaults.sharedLinks?.create;
     const sharedLinksDefaultShare =
@@ -528,6 +577,29 @@ export async function updateInterfacePermissions({
             }
           : {}),
       },
+      [PermissionTypes.SCHEDULES]: {
+        [Permissions.USE]: getPermissionValue(
+          // Only an OBJECT `use` drives the permission; the boolean form is the runtime
+          // kill switch and must not seed SCHEDULES.USE (see hasExplicitConfig), so a
+          // removed kill switch can never leave USE stuck false.
+          typeof loadedInterface.schedules === 'object'
+            ? loadedInterface.schedules?.use
+            : undefined,
+          defaultPerms[PermissionTypes.SCHEDULES]?.[Permissions.USE],
+          schedulesDefaultUse,
+        ),
+        ...((typeof interfaceConfig?.schedules === 'object' &&
+          'create' in interfaceConfig.schedules) ||
+        !existingPermissions?.[PermissionTypes.SCHEDULES]
+          ? {
+              [Permissions.CREATE]: getPermissionValue(
+                getConfigCreate(loadedInterface.schedules),
+                defaultPerms[PermissionTypes.SCHEDULES]?.[Permissions.CREATE],
+                schedulesDefaultCreate ?? true,
+              ),
+            }
+          : {}),
+      },
     };
 
     // Check and add each permission type if needed
@@ -725,9 +797,22 @@ export async function updateInterfacePermissions({
       }
     }
 
+    const webSearchUse =
+      permissionsToUpdate[PermissionTypes.WEB_SEARCH]?.[Permissions.USE] ??
+      existingPermissions?.[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+    if (webSearchUse === false) {
+      webSearchDeniedRoles.push(roleName);
+    }
+
     // Update permissions if any need updating
     if (Object.keys(permissionsToUpdate).length > 0) {
       await updateAccessPermissions(roleName, permissionsToUpdate, existingRole);
     }
   }
+
+  warnNativeWebSearchDenied(
+    appConfig,
+    webSearchDeniedRoles,
+    hasExplicitConfig(interfaceConfig, PermissionTypes.WEB_SEARCH),
+  );
 }

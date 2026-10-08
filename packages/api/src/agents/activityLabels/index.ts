@@ -25,14 +25,17 @@ export {
   mapCollectedMetadataToUsage,
   resolveActivityConfig,
   resolveActivityPhaseConfig,
+  resolveReasoningLabelConfig,
   resolveActivityLabelModel,
   resolveActivityPhaseLabelModel,
+  resolveReasoningLabelModel,
   settlePendingLabelFills,
 } from './host';
 export type {
   ActivityLabelAgent,
   ResolvedActivityConfig,
   ResolvedActivityPhaseConfig,
+  ResolvedReasoningLabelConfig,
   ActivityLabelUsage,
   CollectedMetadataEntry,
   ResolveActivityLabelModelParams,

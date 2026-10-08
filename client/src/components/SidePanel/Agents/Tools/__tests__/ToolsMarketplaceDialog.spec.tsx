@@ -1,9 +1,16 @@
 import '@testing-library/jest-dom/extend-expect';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { SVGProps } from 'react';
 import ToolsMarketplaceDialog from '../ToolsMarketplaceDialog';
 
 const mockSetValue = jest.fn();
-const mockGetValues = jest.fn(() => []);
+const mockGetValues = jest.fn((_: string): unknown => []);
+let mockWatchedTools: string[] = [];
+let mockExecuteCode = false;
+let mockMcpServersMap = new Map<string, object>();
+let mockIsDesktop = true;
+let mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+let mockEdges: Array<{ from: string; to: string; edgeType?: 'handoff' | 'direct' }> = [];
 
 jest.mock('react-hook-form', () => ({
   useFormContext: () => ({
@@ -13,9 +20,11 @@ jest.mock('react-hook-form', () => ({
   }),
   useWatch: ({ name }: { name: string }) => {
     const map: Record<string, unknown> = {
-      tools: [],
+      subagents: mockSubagents,
+      edges: mockEdges,
+      tools: mockWatchedTools,
       skills: [],
-      execute_code: false,
+      execute_code: mockExecuteCode,
       web_search: false,
       file_search: false,
       artifacts: '',
@@ -29,9 +38,9 @@ jest.mock('react-hook-form', () => ({
 
 jest.mock('~/Providers', () => ({
   useAgentPanelContext: () => ({
-    agentsConfig: { capabilities: ['execute_code', 'tools'] },
+    agentsConfig: { capabilities: ['execute_code', 'tools', 'subagents'] },
     regularTools: [{ pluginKey: 'dalle', name: 'DALL-E', description: 'Images' }],
-    mcpServersMap: new Map(),
+    mcpServersMap: mockMcpServersMap,
     actions: [],
   }),
 }));
@@ -66,11 +75,18 @@ jest.mock('react-router-dom', () => ({
   useNavigate: () => jest.fn(),
 }));
 
+let mockFileEntries: {
+  contextFiles: Array<[string, unknown]>;
+  knowledgeFiles: Array<[string, unknown]>;
+  codeFiles: Array<[string, unknown]>;
+} = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
+
 jest.mock('../hooks', () => {
   const { buildCatalog } = jest.requireActual('../items/catalog');
   const { deriveSelectedItems } = jest.requireActual('../items/selectors');
   return {
     useUninstallToolCredentials: () => jest.fn(),
+    useAgentFileEntries: () => mockFileEntries,
     /** Mirrors the real pipeline over the mocked panel context + form watches. */
     useAgentItems: ({ agentId }: { agentId: string }) => {
       const { useAgentPanelContext } = jest.requireMock('~/Providers');
@@ -86,10 +102,12 @@ jest.mock('../hooks', () => {
         mcpServersMap: mcpServersMap ?? new Map(),
         skills: [],
         actions: agentActions,
-        permissions: { mcp: true, skills: false },
+        permissions: { mcp: true, skills: false, webSearch: true, runCode: true, fileSearch: true },
       });
       const selected = deriveSelectedItems(
         {
+          subagents: useWatch({ name: 'subagents' }),
+          edges: useWatch({ name: 'edges' }),
           execute_code: (useWatch({ name: 'execute_code' }) ?? false) as boolean,
           web_search: (useWatch({ name: 'web_search' }) ?? false) as boolean,
           file_search: (useWatch({ name: 'file_search' }) ?? false) as boolean,
@@ -135,6 +153,8 @@ jest.mock('@librechat/client', () => {
       asChild
         ? React.createElement(React.Fragment, null, children)
         : React.createElement('button', { type: 'button' }, children),
+    VerifiedIcon: (props: SVGProps<SVGSVGElement>) => React.createElement('svg', props),
+    useMediaQuery: () => mockIsDesktop,
     useToastContext: () => ({ showToast: jest.fn() }),
   };
 });
@@ -153,8 +173,15 @@ describe('ToolsMarketplaceDialog', () => {
     mockSetValue.mockClear();
     mockGetValues.mockClear();
     mockGetValues.mockReturnValue([]);
+    mockWatchedTools = [];
+    mockExecuteCode = false;
+    mockMcpServersMap = new Map();
     mockToggleFavorite.mockClear();
     mockFavoriteKeys = new Set<string>();
+    mockIsDesktop = true;
+    mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+    mockEdges = [];
+    mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
   });
 
   test('renders cards from catalog when open', () => {
@@ -179,6 +206,43 @@ describe('ToolsMarketplaceDialog', () => {
     );
   });
 
+  test('routes a file-holding built-in to its file dialog instead of clearing the flag', () => {
+    /** Clearing the flag here left the row still selected (it reads the file count) while
+     *  the save wrote the tool off the flag alone, silently dropping it from the agent. */
+    mockExecuteCode = true;
+    mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [['c1', {}]] };
+
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_run_code/ }));
+
+    expect(mockSetValue).not.toHaveBeenCalledWith('execute_code', false, expect.anything());
+  });
+
+  test('disabling Code Interpreter clears programmatic MCP callers immediately', () => {
+    mockExecuteCode = true;
+    mockGetValues.mockImplementation((name: string) =>
+      name === 'tool_options'
+        ? {
+            search: { allowed_callers: ['code_execution'], defer_loading: true },
+            direct: { allowed_callers: ['direct'] },
+          }
+        : [],
+    );
+
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_run_code/ }));
+
+    expect(mockSetValue).toHaveBeenCalledWith('execute_code', false, { shouldDirty: true });
+    expect(mockSetValue).toHaveBeenCalledWith(
+      'tool_options',
+      {
+        search: { defer_loading: true },
+        direct: { allowed_callers: ['direct'] },
+      },
+      { shouldDirty: true },
+    );
+  });
+
   test('typing in search input filters the catalog', () => {
     render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
     const input = screen.getByPlaceholderText('com_ui_tools_marketplace_search');
@@ -197,6 +261,132 @@ describe('ToolsMarketplaceDialog', () => {
       expect.objectContaining({ shouldDirty: true }),
     );
   });
+
+  test.each([
+    [true, false, true],
+    [false, true, true],
+    [false, true, undefined],
+  ])(
+    'attaches a ready empty catalog (requestScoped=%s, connected=%s, ready=%s)',
+    (requestScoped, isConnected, isReadyForAgent) => {
+      mockMcpServersMap = new Map([
+        [
+          'runtime',
+          {
+            serverName: 'runtime',
+            tools: [],
+            isConfigured: true,
+            isConnected,
+            isReadyForAgent,
+            requestScoped,
+            metadata: { name: 'runtime', pluginKey: 'runtime', description: '' },
+          },
+        ],
+      ]);
+
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      fireEvent.click(screen.getByRole('button', { name: /runtime/ }));
+
+      expect(screen.queryByTestId('item-dialog')).not.toBeInTheDocument();
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tools',
+        ['sys__server__sys_mcp_runtime', 'sys__all__sys_mcp_runtime'],
+        { shouldDirty: true },
+      );
+    },
+  );
+
+  test('keeps concrete tool selection for an ordinary server with a populated catalog', () => {
+    mockMcpServersMap = new Map([
+      [
+        'enumerated',
+        {
+          serverName: 'enumerated',
+          tools: [{ tool_id: 'search_mcp_enumerated' }, { tool_id: 'read_mcp_enumerated' }],
+          isConfigured: true,
+          isConnected: true,
+          isReadyForAgent: true,
+          requestScoped: false,
+          metadata: { name: 'enumerated', description: '' },
+        },
+      ],
+    ]);
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /enumerated/ }));
+    expect(mockSetValue).toHaveBeenCalledWith(
+      'tools',
+      ['sys__server__sys_mcp_enumerated', 'search_mcp_enumerated', 'read_mcp_enumerated'],
+      { shouldDirty: true },
+    );
+  });
+
+  test.each([true, false])(
+    'removes a selected zero-tool server (requestScoped=%s)',
+    (requestScoped) => {
+      const selectedTools = [
+        'sys__server__sys_mcp_runtime',
+        'sys__all__sys_mcp_runtime',
+        'search_mcp_runtime',
+        'dalle',
+      ];
+      mockWatchedTools = selectedTools;
+      mockGetValues.mockReturnValue(selectedTools);
+      mockMcpServersMap = new Map([
+        [
+          'runtime',
+          {
+            serverName: 'runtime',
+            tools: [],
+            isConfigured: true,
+            isConnected: true,
+            isReadyForAgent: true,
+            requestScoped,
+            metadata: { name: 'runtime', pluginKey: 'runtime', description: '' },
+          },
+        ],
+      ]);
+
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      fireEvent.click(screen.getByRole('button', { name: /runtime/ }));
+
+      expect(screen.queryByTestId('item-dialog')).not.toBeInTheDocument();
+      expect(mockSetValue).toHaveBeenCalledWith('tools', ['dalle'], { shouldDirty: true });
+    },
+  );
+
+  test.each([
+    ['an ordinary disconnected', false, false, undefined],
+    ['a disconnected request-scoped', true, false, undefined],
+    ['an explicitly unready connected', false, true, false],
+  ])(
+    'clicking %s zero-tool server opens setup without changing the form',
+    (_description, requestScoped, isConnected, isReadyForAgent) => {
+      mockMcpServersMap = new Map([
+        [
+          'setup-required',
+          {
+            serverName: 'setup-required',
+            tools: [],
+            isConfigured: true,
+            isConnected,
+            requestScoped,
+            isReadyForAgent,
+            metadata: {
+              name: 'setup-required',
+              pluginKey: 'setup-required',
+              description: '',
+            },
+          },
+        ],
+      ]);
+
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      fireEvent.click(screen.getByRole('button', { name: /setup-required/ }));
+
+      expect(screen.getByTestId('item-dialog')).toBeInTheDocument();
+      expect(mockSetValue).not.toHaveBeenCalled();
+    },
+  );
 
   test('clicking a card star toggles the favorite without selecting the tool', () => {
     render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
@@ -217,5 +407,65 @@ describe('ToolsMarketplaceDialog', () => {
     render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
     fireEvent.click(screen.getByRole('button', { name: /com_ui_tools_view_favorites/ }));
     expect(screen.getByText('com_ui_tools_view_favorites_empty')).toBeInTheDocument();
+  });
+
+  test('below md the rail is replaced by a functional filter chip row', () => {
+    mockIsDesktop = false;
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    expect(screen.getByRole('group', { name: 'com_ui_tools_marketplace' })).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_tools_create_new')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_tools_view_favorites/ }));
+    expect(screen.getByText('com_ui_tools_view_favorites_empty')).toBeInTheDocument();
+  });
+});
+
+describe('native collaboration tools', () => {
+  beforeEach(() => {
+    mockSetValue.mockClear();
+    mockGetValues.mockReset();
+    mockGetValues.mockReturnValue([]);
+    mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+    mockEdges = [];
+  });
+
+  test.each(['subagents', 'handoffs'] as const)(
+    'the marketplace removes %s independently',
+    (id) => {
+      mockSubagents = { enabled: true, allowSelf: false, agent_ids: ['reviewer'] };
+      mockEdges = [
+        { from: 'parent', to: 'reviewer' },
+        { from: 'parent', to: 'other', edgeType: 'direct' },
+      ];
+      mockGetValues.mockImplementation((name: string) =>
+        name === 'subagents' ? mockSubagents : mockEdges,
+      );
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: new RegExp(id === 'subagents' ? 'com_ui_agent_subagents' : 'com_ui_agent_handoffs'),
+        }),
+      );
+      expect(mockSetValue.mock.calls).toEqual(
+        id === 'subagents'
+          ? [['subagents', { ...mockSubagents, enabled: false }, { shouldDirty: true }]]
+          : [['edges', [mockEdges[1]], { shouldDirty: true }]],
+      );
+    },
+  );
+
+  test('adding subagents enables the retained configuration without touching handoffs', () => {
+    mockGetValues.mockImplementation(() => mockSubagents);
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_agent_subagents/ }));
+    expect(mockSetValue.mock.calls).toEqual([
+      ['subagents', { ...mockSubagents, enabled: true }, { shouldDirty: true }],
+    ]);
+  });
+
+  test('adding handoffs opens only their destination dialog without mutating the form', () => {
+    render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_agent_handoffs/ }));
+    expect(screen.getByTestId('item-dialog')).toBeInTheDocument();
+    expect(mockSetValue).not.toHaveBeenCalled();
   });
 });

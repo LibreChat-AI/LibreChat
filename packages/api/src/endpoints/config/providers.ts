@@ -2,7 +2,7 @@ import { Providers } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import type { BaseInitializeParams, InitializeResultBase } from '~/types';
+import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
 import { resolveCustomEndpointSecrets } from '~/admin/secrets';
 import { initializeAnthropic } from '../anthropic/initialize';
 import { initializeBedrock } from '../bedrock/initialize';
@@ -14,7 +14,7 @@ import { getCustomEndpointConfig } from '~/app/config';
 /**
  * Type for initialize functions
  */
-export type InitializeFn = (params: BaseInitializeParams) => Promise<InitializeResultBase>;
+export type InitializeFn = (params: ProviderInitializeParams) => Promise<InitializeResultBase>;
 
 /**
  * Check if the provider is a known custom provider

@@ -1,9 +1,10 @@
+import { useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useLocation } from 'react-router-dom';
 import { Button, Sidebar, Spinner, TooltipAnchor } from '@librechat/client';
 import type { PromptGroupListResponse } from 'librechat-data-provider';
+import { useLocalize, useNavScrolling, activateCatalog } from '~/hooks';
 import PromptGroupSkeleton from '../lists/PromptGroupSkeleton';
-import { useLocalize, useNavScrolling } from '~/hooks';
 import { usePromptGroupsContext } from '~/Providers';
 import { PanelContent } from '~/components/ui';
 import List from '../lists/List';
@@ -34,6 +35,17 @@ export default function GroupSidePanel({
 
   /** A collapsed sidebar keeps this panel mounted, so stop draining pages into it */
   const sidebarExpanded = useRecoilValue(store.sidebarExpanded);
+  /** Mirrors UnifiedSidebar's panelExpanded: the insights route collapses the
+   * panel while the atom stays true, so visibility is atom AND route */
+  const panelVisible = sidebarExpanded && !location.pathname.startsWith('/insights');
+
+  /** The panel stays mounted while hidden, so only a visible panel releases
+   * its catalog ahead of the background warmup schedule */
+  useEffect(() => {
+    if (panelVisible) {
+      activateCatalog('prompts');
+    }
+  }, [panelVisible]);
 
   const { containerRef } = useNavScrolling<PromptGroupListResponse>({
     nextCursor: context?.nextCursor,
@@ -50,7 +62,7 @@ export default function GroupSidePanel({
   return (
     <div id="prompts-panel" className={cn('flex h-full w-full flex-col', className)}>
       {onClose && (
-        <div className="flex items-center justify-end px-2 py-[2px] md:py-2">
+        <div className="flex items-center justify-end px-2 py-0.5 md:py-2">
           <TooltipAnchor
             description={localize('com_nav_close_sidebar')}
             render={
@@ -61,7 +73,7 @@ export default function GroupSidePanel({
                 data-testid="close-prompts-panel-button"
                 aria-label={localize('com_nav_close_sidebar')}
                 aria-expanded={true}
-                className="rounded-full border-none bg-transparent p-2 hover:bg-surface-hover md:rounded-xl"
+                className="hover:bg-surface-hover rounded-full border-none bg-transparent p-2 md:rounded-xl"
                 onClick={onClose}
               >
                 <Sidebar />
@@ -71,13 +83,13 @@ export default function GroupSidePanel({
         </div>
       )}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* Sticky header: filter and toggles stay put while the list scrolls */}
-        <div className="shrink-0 space-y-2 px-3 pb-2 pt-2 text-text-primary">{children}</div>
+        {/* Sticky header: it brings its own padding via PanelHeader */}
+        <div className="text-text-primary shrink-0">{children}</div>
         <PanelContent
           ref={containerRef}
           isLoading={!!groupsQuery.isLoading}
           skeleton={<PromptGroupSkeleton />}
-          className="scrollbar-gutter-stable flex flex-col gap-2 overflow-x-hidden pl-3 pr-1 text-text-primary"
+          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden pr-1 pb-3 pl-3"
         >
           <List groups={promptGroups} isChatRoute={isChatRoute} />
           {/* Appending the next page, so the loaded rows stay put */}

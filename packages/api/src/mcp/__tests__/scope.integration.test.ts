@@ -11,6 +11,7 @@ import type { FlowStateManager } from '~/flow/manager';
 import type { MCPRequestContext } from '~/mcp/request';
 import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { getFreePort } from '~/mcp/__tests__/helpers/oauthTestServer';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
@@ -51,6 +52,8 @@ interface RequestScopedTestServer {
   sessionsCreated: () => number;
   toolCallCount: () => number;
   observedRunIds: () => string[];
+  observedParentMessageIds: () => string[];
+  observedHeaders: () => Record<string, string>[];
 }
 
 function trackSockets(httpServer: http.Server): () => Promise<void> {
@@ -72,6 +75,8 @@ function trackSockets(httpServer: http.Server): () => Promise<void> {
 async function createRequestScopedTestServer(): Promise<RequestScopedTestServer> {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
   const runIds: string[] = [];
+  const parentMessageIds: string[] = [];
+  const postHeaders: Record<string, string>[] = [];
   let created = 0;
   let deletes = 0;
   let toolCalls = 0;
@@ -83,9 +88,21 @@ async function createRequestScopedTestServer(): Promise<RequestScopedTestServer>
     }
 
     if (req.method === 'POST') {
+      postHeaders.push(
+        Object.fromEntries(
+          Object.entries(req.headers).map(([key, value]) => [
+            key,
+            Array.isArray(value) ? value.join(',') : (value ?? ''),
+          ]),
+        ),
+      );
       const runId = req.headers['x-run-id'];
       if (typeof runId === 'string') {
         runIds.push(runId);
+      }
+      const parentMessageId = req.headers['x-parent-message'];
+      if (typeof parentMessageId === 'string') {
+        parentMessageIds.push(parentMessageId);
       }
     } else if (req.method === 'DELETE') {
       deletes += 1;
@@ -101,6 +118,10 @@ async function createRequestScopedTestServer(): Promise<RequestScopedTestServer>
       mcp.tool('echo', 'Echo a value', { value: z.string() }, async ({ value }) => {
         toolCalls += 1;
         return { content: [{ type: 'text', text: value }] };
+      });
+      mcp.tool('write', 'Legacy mutation', {}, async () => {
+        toolCalls += 1;
+        return { content: [{ type: 'text', text: 'write performed' }] };
       });
       await mcp.connect(transport);
     }
@@ -127,6 +148,8 @@ async function createRequestScopedTestServer(): Promise<RequestScopedTestServer>
     sessionsCreated: () => created,
     toolCallCount: () => toolCalls,
     observedRunIds: () => [...runIds],
+    observedParentMessageIds: () => [...parentMessageIds],
+    observedHeaders: () => postHeaders.map((headers) => ({ ...headers })),
     close: async () => {
       const closing = [...sessions.values()].map((transport) =>
         transport.close().catch(() => undefined),
@@ -157,7 +180,10 @@ function createServerConfig(url: string): ParsedServerConfig {
     source: 'yaml',
     requiresOAuth: false,
     initTimeout: 500,
-    headers: { 'X-Run-Id': '{{LIBRECHAT_BODY_MESSAGEID}}' },
+    headers: {
+      'X-Run-Id': '{{LIBRECHAT_BODY_MESSAGEID}}',
+      'X-Parent-Message': '{{LIBRECHAT_BODY_PARENTMESSAGEID}}',
+    },
   };
 }
 
@@ -202,6 +228,7 @@ describe('request-scoped MCP lifecycle integration', () => {
     server = await createRequestScopedTestServer();
     manager = createManager();
     jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      isAppServerConfig: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn(async () => ({
         allowedDomains: null,
         allowedAddresses: null,
@@ -225,6 +252,213 @@ describe('request-scoped MCP lifecycle integration', () => {
     return context;
   }
 
+  it('sends enrolled reads once and never sends a revoked child/resume retry to the real server', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const invoke = (agentId: string) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: f.invocation(agentId),
+      });
+    try {
+      await invoke('root');
+      await invoke('child');
+      expect(server.toolCallCount()).toBe(2);
+      await f.revoke();
+      await expect(invoke('child')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked', automaticReplay: false },
+      });
+      await expect(invoke('root')).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(2);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+    }
+    MCPConnection.clearCooldown('warehouse');
+  });
+
+  it.each(['snapshot', 'consent'] as const)(
+    'never dispatches an enrolled operation when %s authorization storage fails',
+    async (phase) => {
+      const context = createContext();
+      const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+      const connection = await manager.getConnection({
+        user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const catalog = await connection.fetchToolsSnapshot();
+      const f = await executionFixture(
+        'resume',
+        catalog.tools.find(({ name }) => name === 'echo')!,
+        server.url,
+      );
+      const active = await manager.getConnection({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        requestScopedConnections: context,
+        flowManager,
+      });
+      const internal = new Error('PRIVATE principal/configuration/consent read');
+      if (phase === 'snapshot') f.loadAuthorization.mockRejectedValue(internal);
+      else jest.spyOn(f.service.authority, 'authorize').mockRejectedValue(internal);
+      const call = (agentId: string) =>
+        manager.callTool({
+          user: f.user,
+          serverName: 'warehouse',
+          serverConfig: config,
+          toolName: 'echo',
+          toolArguments: { value: 'read' },
+          provider: 'openai',
+          requestScopedConnections: context,
+          flowManager,
+          scheduledMCPInvocation: f.invocation(agentId),
+        });
+      try {
+        for (const agentId of ['root', 'child']) {
+          await expect(call(agentId)).rejects.toMatchObject({
+            failure: { reason: 'dependency_unavailable', automaticReplay: false },
+            outcomes: [{ server: 'warehouse', agentId, reason: 'dependency_unavailable' }],
+          });
+        }
+        expect(server.toolCallCount()).toBe(0);
+      } finally {
+        await Promise.all([connection.disconnect(), active.disconnect()]);
+        MCPConnection.clearCooldown('warehouse');
+      }
+    },
+  );
+
+  it('dispatches a paused enrolled manual read without permitting an automatic call', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const f = await executionFixture('resume', catalog.tools[0], server.url);
+    f.snapshot.enabled = false;
+    const manual = (await f.factory.resolve(f.identity, 'resume', { manual: true }))!;
+    const protectedConnection = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = (guard: ReturnType<typeof manual.bind>) =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'read' },
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: guard,
+      });
+    try {
+      await expect(call(f.invocation('root'))).rejects.toMatchObject({
+        failure: { reason: 'binding_mismatch' },
+      });
+      expect(server.toolCallCount()).toBe(0);
+      await call(manual.bind('child', 'echo'));
+      expect(server.toolCallCount()).toBe(1);
+      await f.revoke();
+      await expect(call(manual.bind('child', 'echo'))).rejects.toMatchObject({
+        failure: { reason: 'consent_revoked' },
+      });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), protectedConnection.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
+
+  it('fences a cached legacy MCP write immediately after narrower enrollment', async () => {
+    const context = createContext();
+    const config: ParsedServerConfig = { type: 'streamable-http', url: server.url };
+    const connection = await manager.getConnection({
+      user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const catalog = await connection.fetchToolsSnapshot();
+    const echo = catalog.tools.find(({ name }) => name === 'echo')!;
+    const f = await executionFixture('invoke', echo, server.url);
+    f.snapshot.enrollment = null;
+    const legacy = (await f.factory.resolve(f.identity, 'invoke'))!;
+    const cachedWrite = legacy.bind('root', 'write');
+    const active = await manager.getConnection({
+      user: f.user,
+      serverName: 'warehouse',
+      serverConfig: config,
+      requestScopedConnections: context,
+      flowManager,
+    });
+    const call = () =>
+      manager.callTool({
+        user: f.user,
+        serverName: 'warehouse',
+        serverConfig: config,
+        toolName: 'write',
+        toolArguments: {},
+        provider: 'openai',
+        requestScopedConnections: context,
+        flowManager,
+        scheduledMCPInvocation: cachedWrite,
+      });
+    try {
+      await call();
+      expect(server.toolCallCount()).toBe(1);
+      const offer = await f.service.view(f.identity);
+      await f.service.confirm(f.identity, {
+        offerDigest: offer.offer!.digest,
+        expectedRevision: null,
+        lifetimeHours: 1,
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'binding_mismatch' } });
+      expect(server.toolCallCount()).toBe(1);
+    } finally {
+      await Promise.all([connection.disconnect(), active.disconnect()]);
+      MCPConnection.clearCooldown('warehouse');
+    }
+  });
+
   it('coalesces a concurrent burst, tears down the run, and isolates the next run', async () => {
     const config = createServerConfig(server.url);
     const firstRun = createContext();
@@ -246,6 +480,7 @@ describe('request-scoped MCP lifecycle integration', () => {
     expect(server.liveSessionCount()).toBe(1);
     expect(server.toolCallCount()).toBe(burstSize);
     expect(new Set(server.observedRunIds())).toEqual(new Set(['run-1']));
+    expect(new Set(server.observedParentMessageIds())).toEqual(new Set(['parent-1']));
     expect(manager.getConnectionStats().activityEntries).toBe(0);
 
     await cleanupMCPRequestContext(firstRun);
@@ -266,6 +501,7 @@ describe('request-scoped MCP lifecycle integration', () => {
     expect(server.sessionsCreated()).toBe(2);
     expect(server.liveSessionCount()).toBe(1);
     expect(new Set(server.observedRunIds())).toEqual(new Set(['run-1', 'run-2']));
+    expect(new Set(server.observedParentMessageIds())).toEqual(new Set(['parent-1']));
   });
 
   it('clears a failed run so the same server can recover in a fresh run', async () => {
@@ -303,5 +539,261 @@ describe('request-scoped MCP lifecycle integration', () => {
     expect(server.sessionsCreated()).toBe(1);
     expect(server.toolCallCount()).toBe(1);
     expect(new Set(server.observedRunIds())).toEqual(new Set(['recovery-run']));
+  });
+});
+
+describe('operator requestHeaders integration', () => {
+  const serverName = 'request-headers';
+  let server: RequestScopedTestServer;
+  let manager: MCPManager;
+  const contexts = new Set<MCPRequestContext>();
+
+  /**
+   * `X-Conversation-Id` is declared in BOTH maps so precedence is observable,
+   * and `X-Trace-Id` only in the chat-only map so its absence proves discovery
+   * never sent it.
+   */
+  function createRequestHeadersConfig(url: string): ParsedServerConfig {
+    return {
+      type: 'streamable-http',
+      url,
+      source: 'yaml',
+      requiresOAuth: false,
+      initTimeout: 500,
+      headers: {
+        'X-Workspace': 'workspace-1',
+        'X-Conversation-Id': 'from-headers',
+      },
+      requestHeaders: {
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Trace-Id': '{{LIBRECHAT_BODY_MESSAGEID}}',
+      },
+    } as ParsedServerConfig;
+  }
+
+  beforeEach(async () => {
+    server = await createRequestScopedTestServer();
+    manager = createManager();
+    jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+      resolveAllowlists: jest.fn(async () => ({
+        allowedDomains: null,
+        allowedAddresses: null,
+        useSSRFProtection: false,
+      })),
+      getServerConfig: jest.fn(async () => createRequestHeadersConfig(server.url)),
+      isAppServerConfig: jest.fn(async () => false),
+    } as unknown as MCPServersRegistry);
+  });
+
+  afterEach(async () => {
+    await Promise.all([...contexts].map((context) => cleanupMCPRequestContext(context)));
+    contexts.clear();
+    MCPConnection.clearCooldown(serverName);
+    jest.restoreAllMocks();
+    await server.close();
+  });
+
+  function createContext(): MCPRequestContext {
+    const context = createMCPRequestContext();
+    contexts.add(context);
+    return context;
+  }
+
+  function callEchoWithBody({
+    requestScopedConnections,
+    requestBody,
+    value,
+  }: {
+    requestScopedConnections: RequestScopedMCPConnectionStore;
+    requestBody: Record<string, string>;
+    value: string;
+  }) {
+    return manager.callTool({
+      user,
+      serverName,
+      serverConfig: createRequestHeadersConfig(server.url),
+      toolName: 'echo',
+      provider: 'openai',
+      toolArguments: { value },
+      requestBody,
+      requestScopedConnections,
+      flowManager,
+    });
+  }
+
+  function conversationIdsSeen(): Set<string> {
+    return new Set(
+      server
+        .observedHeaders()
+        .map((headers) => headers['x-conversation-id'])
+        .filter((value): value is string => value != null),
+    );
+  }
+
+  it('populates the tool catalog and disposes the discovery connection', async () => {
+    const result = await manager.discoverServerTools({
+      serverName,
+      user,
+      configServers: { [serverName]: createRequestHeadersConfig(server.url) },
+    });
+
+    expect(result.tools?.map((tool) => tool.name)).toContain('echo');
+    expect(result.oauthRequired).toBe(false);
+    expect(server.deleteCount()).toBe(1);
+    expect(server.liveSessionCount()).toBe(0);
+  });
+
+  it('sends the regular headers but not the chat-only ones during discovery', async () => {
+    await manager.discoverServerTools({
+      serverName,
+      user,
+      configServers: { [serverName]: createRequestHeadersConfig(server.url) },
+    });
+
+    const observed = server.observedHeaders();
+    expect(observed.length).toBeGreaterThan(0);
+    for (const headers of observed) {
+      expect(headers['x-workspace']).toBe('workspace-1');
+      expect(headers['x-conversation-id']).toBe('from-headers');
+      expect(headers['x-trace-id']).toBeUndefined();
+    }
+  });
+
+  it('resolves and merges both maps at chat time, the request map winning', async () => {
+    await callEchoWithBody({
+      requestScopedConnections: createContext(),
+      requestBody: { conversationId: 'conv-1', messageId: 'msg-1' },
+      value: 'merged',
+    });
+
+    const observed = server.observedHeaders();
+    expect(observed.length).toBeGreaterThan(0);
+    for (const headers of observed) {
+      expect(headers['x-workspace']).toBe('workspace-1');
+      expect(headers['x-conversation-id']).toBe('conv-1');
+      expect(headers['x-trace-id']).toBe('msg-1');
+    }
+  });
+
+  it('isolates two request bodies in separate connections with distinct headers', async () => {
+    await callEchoWithBody({
+      requestScopedConnections: createContext(),
+      requestBody: { conversationId: 'conv-1', messageId: 'msg-1' },
+      value: 'first',
+    });
+    await callEchoWithBody({
+      requestScopedConnections: createContext(),
+      requestBody: { conversationId: 'conv-2', messageId: 'msg-2' },
+      value: 'second',
+    });
+
+    expect(server.sessionsCreated()).toBe(2);
+    expect(conversationIdsSeen()).toEqual(new Set(['conv-1', 'conv-2']));
+    expect(server.toolCallCount()).toBe(2);
+  });
+
+  it('admits a chat whose request override removes a catalog body requirement', async () => {
+    const config = createRequestHeadersConfig(server.url);
+    await manager.callTool({
+      user,
+      serverName,
+      toolName: 'echo',
+      provider: 'openai',
+      toolArguments: { value: 'shadowed' },
+      serverConfig: {
+        ...config,
+        headers: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+        requestHeaders: {
+          'x-conversation-id': 'fixed',
+          'X-Trace-Id': '{{LIBRECHAT_BODY_MESSAGEID}}',
+        },
+      } as ParsedServerConfig,
+      requestBody: { messageId: 'msg-1' },
+      requestScopedConnections: createContext(),
+      flowManager,
+    });
+    expect(server.toolCallCount()).toBe(1);
+    expect(conversationIdsSeen()).toEqual(new Set(['fixed']));
+  });
+
+  it.each([
+    {
+      mode: 'bearer' as const,
+      name: 'Authorization',
+      chatName: 'Authorization',
+      catalog: 'Bearer catalog-key',
+    },
+    {
+      mode: 'bearer' as const,
+      name: 'Authorization',
+      chatName: 'authorization',
+      catalog: 'Bearer catalog-key',
+    },
+    {
+      mode: 'basic' as const,
+      name: 'Authorization',
+      chatName: 'AUTHORIZATION',
+      catalog: 'Basic catalog-key',
+    },
+    { mode: 'custom' as const, name: 'X-Api-Key', chatName: 'x-api-key', catalog: 'catalog-key' },
+    {
+      mode: 'custom' as const,
+      name: 'X-Custom-Key',
+      chatName: 'x-custom-key',
+      catalog: 'catalog-key',
+    },
+  ])(
+    'uses the $mode catalog key only in discovery when chat overrides $chatName',
+    async ({ mode, name, chatName, catalog }) => {
+      const config: ParsedServerConfig = {
+        ...createRequestHeadersConfig(server.url),
+        type: 'streamable-http',
+        url: server.url,
+        apiKey: {
+          source: 'admin',
+          authorization_type: mode,
+          key: 'catalog-key',
+          ...(mode === 'custom' && name !== 'X-Api-Key' ? { custom_header: name } : {}),
+        },
+        requestHeaders: {
+          [chatName]: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        },
+      };
+      jest.spyOn(MCPServersRegistry.getInstance(), 'getServerConfig').mockResolvedValue(config);
+      await manager.discoverServerTools({ serverName, user });
+      const discoveryHeaders = server.observedHeaders();
+      expect(discoveryHeaders.length).toBeGreaterThan(0);
+      expect(discoveryHeaders.every((headers) => headers[name.toLowerCase()] === catalog)).toBe(
+        true,
+      );
+      await manager.callTool({
+        user,
+        serverName,
+        serverConfig: config,
+        toolName: 'echo',
+        provider: 'openai',
+        toolArguments: { value: 'chat-credential' },
+        requestBody: { conversationId: 'chat-key' },
+        requestScopedConnections: createContext(),
+        flowManager,
+      });
+      const chatHeaders = server.observedHeaders().slice(discoveryHeaders.length);
+      expect(chatHeaders.length).toBeGreaterThan(0);
+      expect(chatHeaders.every((headers) => headers[name.toLowerCase()] === 'chat-key')).toBe(true);
+      expect(server.toolCallCount()).toBe(1);
+    },
+  );
+
+  it('fails closed when a runtime value the request headers need is missing', async () => {
+    await expect(
+      callEchoWithBody({
+        requestScopedConnections: createContext(),
+        requestBody: { conversationId: 'conv-1' },
+        value: 'no-message-id',
+      }),
+    ).rejects.toThrow(/messageId/);
+
+    expect(server.sessionsCreated()).toBe(0);
+    expect(server.toolCallCount()).toBe(0);
   });
 });

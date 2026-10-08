@@ -5,9 +5,9 @@ import crypto from 'crypto';
 import { load } from 'js-yaml';
 import type { OpenAPIV3 } from 'openapi-types';
 import type { ActionMetadata, ActionMetadataRuntime } from './types/agents';
-import type { FunctionTool, Schema, Reference } from './types/assistants';
+import type { FunctionTool, Schema, Reference } from './types/tools';
 import { AuthTypeEnum, AuthorizationTypeEnum } from './types/agents';
-import { Tools } from './types/assistants';
+import { Tools } from './types/tools';
 
 export type ParametersSchema = {
   type: string;

@@ -1,5 +1,6 @@
 import { Schema } from 'mongoose';
 import type { ISkillFileDocument } from '~/types/skill';
+import { codeEnvRefMapSchema, codeEnvRefSchema } from './codeEnvRef';
 
 /** Max length for a skill file's relative path (e.g. "scripts/parse.sh"). */
 const SKILL_FILE_PATH_MAX_LENGTH = 500;
@@ -106,20 +107,11 @@ const skillFileSchema: Schema<ISkillFileDocument> = new Schema(
       type: Boolean,
     },
     codeEnvRef: {
-      type: new Schema(
-        {
-          kind: {
-            type: String,
-            enum: ['skill', 'agent', 'user'],
-            required: true,
-          },
-          id: { type: String, required: true },
-          storage_session_id: { type: String, required: true },
-          file_id: { type: String, required: true },
-          version: { type: Number },
-        },
-        { _id: false },
-      ),
+      type: codeEnvRefSchema,
+      default: undefined,
+    },
+    codeEnvRefs: {
+      type: codeEnvRefMapSchema,
       default: undefined,
     },
   },

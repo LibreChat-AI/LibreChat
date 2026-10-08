@@ -1,5 +1,9 @@
 const client = require('openid-client');
-const { isEnabled } = require('@librechat/api');
+const {
+  isEnabled,
+  getTokenCacheTtlMs,
+  DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
+} = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const { Client } = require('@microsoft/microsoft-graph-client');
@@ -90,7 +94,7 @@ const exchangeTokenForGraphAccess = async (config, accessToken, sub) => {
       {
         access_token: grantResponse.access_token,
       },
-      grantResponse.expires_in * 1000,
+      getTokenCacheTtlMs(grantResponse.expires_in, DEFAULT_OAUTH_TOKEN_TTL_SECONDS),
     );
 
     return grantResponse.access_token;

@@ -1,6 +1,5 @@
 const {
   checkAccess,
-  GenerationJobManager,
   handleSteerRequest,
   handleSteerCancel,
   handleSteerArm,
@@ -25,7 +24,7 @@ const db = require('~/models');
 
 /** Upper bound before the package reads the immutable live-job marker. */
 const getHostGenerationProtocol = (req) =>
-  Math.min(getRequestedGenerationProtocol(req), getServerGenerationProtocol(GenerationJobManager));
+  Math.min(getRequestedGenerationProtocol(req), getServerGenerationProtocol());
 
 /** The package returns its job-capped effective marker in every body. Keep the
  * header and JSON inseparable at this final serialization boundary. */
@@ -103,21 +102,59 @@ const createAgentAccessCheck =
  * (`handleSteerRequest`), which returns the HTTP status + JSON body to
  * serialize verbatim. DB access and permission services are injected here.
  */
-const SteerController = async (req, res) => {
+const runSteerController = async (req, res, requireIdempotentDelivery) => {
+  const abortController = new AbortController();
+  const abort = () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  };
+  req.once('aborted', abort);
+  res.once('close', abort);
   try {
     const generationProtocolVersion = getHostGenerationProtocol(req);
+    const checkAgentAccess = createAgentAccessCheck(req);
+    const expectedAgentId = requireIdempotentDelivery ? req.body?.agentId : undefined;
     const { status, body } = await handleSteerRequest(req.user ?? {}, req.body ?? {}, {
       generationProtocolVersion,
+      signal: abortController.signal,
+      ...(requireIdempotentDelivery && { requireIdempotentDelivery: true }),
       getFiles: db.getFiles,
       updateFilesUsage: db.updateFilesUsage,
-      checkAgentAccess: createAgentAccessCheck(req),
+      checkAgentAccess: requireIdempotentDelivery
+        ? async (run) =>
+            typeof expectedAgentId === 'string' &&
+            run.agentId === expectedAgentId &&
+            isAgentsEndpoint(run.endpoint) &&
+            (await checkAgentAccess(run))
+        : checkAgentAccess,
     });
+    if (res.destroyed || res.writableEnded) {
+      return;
+    }
     return sendProtocolResult(res, status, body);
   } catch (error) {
     logger.error('[SteerController] Failed to queue steer', error);
+    if (res.destroyed || res.headersSent) {
+      return;
+    }
     return sendProtocolFailure(res, 500, 'STEER_FAILED');
+  } finally {
+    req.off('aborted', abort);
+    res.off('close', abort);
   }
 };
+
+const SteerController = (req, res) => runSteerController(req, res, false);
+
+/**
+ * Strict trigger-delivery endpoint. It shares the ordinary steer route's
+ * authentication, limiters, PII filter, moderation, owner/tenant checks, and
+ * agent ACL, while refusing any job/store path that cannot persist a durable
+ * clientSteerId receipt. The dedicated path also fails closed on old replicas
+ * during a rolling deploy: they return 404 instead of accepting a legacy steer.
+ */
+const SteerDeliveryController = (req, res) => runSteerController(req, res, true);
 
 /**
  * POST /api/agents/chat/steer/cancel
@@ -163,5 +200,7 @@ const SteerArmController = async (req, res) => {
 };
 
 module.exports = SteerController;
+module.exports.SteerDeliveryController = SteerDeliveryController;
 module.exports.SteerCancelController = SteerCancelController;
 module.exports.SteerArmController = SteerArmController;
+module.exports.createAgentAccessCheck = createAgentAccessCheck;

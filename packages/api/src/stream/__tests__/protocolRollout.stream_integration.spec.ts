@@ -7,12 +7,10 @@ import { RedisJobStore } from '../implementations/RedisJobStore';
 
 describe('Redis generation protocol rollout bridge', () => {
   const keyPrefix = `Protocol-Rollout-${process.pid}-${Date.now()}:`;
-  const originalProtocol = process.env.GENERATION_PROTOCOL_VERSION;
   let redis: RedisTestClient;
   let store: RedisJobStore;
 
   beforeAll(async () => {
-    delete process.env.GENERATION_PROTOCOL_VERSION;
     redis = createRedisTestClient(keyPrefix);
     await redis.connect();
     store = new RedisJobStore(redis);
@@ -26,24 +24,47 @@ describe('Redis generation protocol rollout bridge', () => {
   afterAll(async () => {
     await store.destroy();
     await redis.quit();
-    if (originalProtocol == null) {
-      delete process.env.GENERATION_PROTOCOL_VERSION;
-    } else {
-      process.env.GENERATION_PROTOCOL_VERSION = originalProtocol;
-    }
   });
 
-  test('Redis defaults legacy jobs to v1 and isolates checkpoints only for v2', async () => {
-    const legacy = await store.createJob('redis-protocol-v1', 'user-1');
-    const current = await store.createJob('redis-protocol-v2', 'user-1', undefined, undefined, {
-      generationProtocolVersion: 2,
+  test('Redis defaults new jobs to v2 while explicit v1 remains compatible', async () => {
+    const current = await store.createJob('redis-protocol-v2', 'user-1');
+    const legacy = await store.createJob('redis-protocol-v1', 'user-1', undefined, undefined, {
+      generationProtocolVersion: 1,
     });
 
     expect(legacy.generationProtocolVersion).toBe(1);
     expect(legacy.checkpointNamespace).toBeUndefined();
     expect(current.generationProtocolVersion).toBe(2);
-    expect(current.checkpointNamespace).toBe(String(current.createdAt));
+    expect(current.checkpointNamespace).toEqual(expect.any(String));
+    expect(current.checkpointNamespace).not.toBe(String(current.createdAt));
     expect((await store.getJob(current.streamId))?.generationProtocolVersion).toBe(2);
+  });
+
+  test('same-millisecond cross-owner jobs receive distinct checkpoint scopes', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      const first = await store.createJob(
+        'redis-same-ms-a',
+        'owner-a',
+        'shared-conversation',
+        'tenant-a',
+        { providerExecutionId: 'shared-execution' },
+      );
+      const second = await store.createJob(
+        'redis-same-ms-b',
+        'owner-b',
+        'shared-conversation',
+        'tenant-b',
+        { providerExecutionId: 'shared-execution' },
+      );
+
+      expect(first.createdAt).toBe(second.createdAt);
+      expect(first.checkpointNamespace).not.toBe(second.checkpointNamespace);
+      expect(first.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+      expect(second.checkpointNamespace).toMatch(/^lcg:v2:[0-9a-f]{64}:[0-9a-f-]{36}$/);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   test('v1 receipt API falls back to a receiptless legacy queue and drain', async () => {
@@ -135,7 +156,7 @@ describe('Redis generation protocol rollout bridge', () => {
       undefined,
       undefined,
       undefined,
-      { text: leased.text, fileIds: [] },
+      { text: leased.text, fileIds: [], quotes: [] },
     );
 
     const downgraded = await store.claimParkedSteersDetailed(streamId, 'user-1', undefined, 1);
@@ -191,7 +212,7 @@ describe('Redis generation protocol rollout bridge', () => {
         undefined,
         undefined,
         undefined,
-        { text: 'legacy words', fileIds: [] },
+        { text: 'legacy words', fileIds: [], quotes: [] },
       ),
     ).rejects.toMatchObject({ code: 'RECOVERY_PAYLOAD_MISMATCH' });
   });

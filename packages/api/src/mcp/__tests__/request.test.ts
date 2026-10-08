@@ -1,6 +1,15 @@
 import { EventEmitter } from 'events';
 
-import { getMCPRequestContext, cleanupMCPRequestContextForReq } from '~/mcp/request';
+import {
+  createMCPRuntimeRequestBody,
+  createMCPRequestContext,
+  getMCPRequestSignal,
+  quiesceMCPRequestContext,
+  cleanupMCPRequestContext,
+  getMCPRequestContext,
+  cleanupMCPRequestContextForReq,
+} from '~/mcp/request';
+import { getMissingRuntimeBodyPlaceholderFields } from '~/mcp/utils';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -104,4 +113,117 @@ describe('MCP request context', () => {
     expect(disposeConnection).toHaveBeenCalledWith('user:server', connection);
     expect(connection.disconnect).not.toHaveBeenCalled();
   });
+});
+
+describe('MCP runtime request body', () => {
+  it('preserves a supplied parent message id', () => {
+    expect(
+      createMCPRuntimeRequestBody({
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        parentMessageId: 'parent-1',
+      }),
+    ).toEqual({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+      parentMessageId: 'parent-1',
+    });
+  });
+
+  it('uses the root-turn parent sentinel for an explicit root parent', () => {
+    expect(
+      createMCPRuntimeRequestBody({
+        messageId: 'response-1',
+        conversationId: 'conversation-1',
+        parentMessageId: null,
+      }),
+    ).toEqual(expect.objectContaining({ parentMessageId: '00000000-0000-0000-0000-000000000000' }));
+  });
+
+  it('leaves the parent absent when the protocol cannot supply that identity', () => {
+    const requestBody = createMCPRuntimeRequestBody({
+      messageId: 'response-1',
+      conversationId: 'conversation-1',
+    });
+
+    expect(requestBody).toEqual({ messageId: 'response-1', conversationId: 'conversation-1' });
+    expect(
+      getMissingRuntimeBodyPlaceholderFields(
+        {
+          source: 'yaml',
+          headers: { 'X-Parent': '{{LIBRECHAT_BODY_PARENTMESSAGEID}}' },
+        },
+        requestBody,
+      ),
+    ).toEqual(['parentMessageId']);
+  });
+});
+
+describe('strict occurrence completion', () => {
+  it('joins cleanup and propagates fenced admission after disposing every connection', async () => {
+    const context = createMCPRequestContext();
+    const failure = Object.assign(new Error('generation retired'), { name: 'AbortError' });
+    let reject!: (error: Error) => void;
+    const admission = new Promise<void>((_, fail) => {
+      reject = fail;
+    });
+    const first = { disconnect: jest.fn(), dispose: jest.fn(() => admission) };
+    const second = { disconnect: jest.fn(), dispose: jest.fn(async () => undefined) };
+    context.connections.set('first', first);
+    context.connections.set('second', second);
+    const observe = quiesceMCPRequestContext(context).catch((error) => error);
+    const cleanup = cleanupMCPRequestContext(context);
+    expect(context.quiesceStarted).toBe(true);
+    reject(failure);
+    await expect(observe).resolves.toBe(failure);
+    await cleanup;
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(second.dispose).toHaveBeenCalledTimes(1);
+    expect(context.connections.size).toBe(0);
+    await expect(quiesceMCPRequestContext(context)).rejects.toBe(failure);
+  });
+});
+
+it.each(['cleanup', 'quiesce'] as const)(
+  'aborts %s-owned resolver waits before joining the pending context',
+  async (mode) => {
+    const context = createMCPRequestContext();
+    const other = createMCPRequestContext();
+    const signal = getMCPRequestSignal(context);
+    const otherSignal = getMCPRequestSignal(other);
+    context.pending.set(
+      'resolver',
+      new Promise<void>((resolve) =>
+        signal.addEventListener('abort', () => resolve(), { once: true }),
+      ),
+    );
+    const closing =
+      mode === 'cleanup' ? cleanupMCPRequestContext(context) : quiesceMCPRequestContext(context);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toMatchObject({ name: 'AbortError' });
+    expect(otherSignal.aborted).toBe(false);
+    await Promise.all([closing, quiesceMCPRequestContext(context)]);
+    expect(context.pending.size).toBe(0);
+    expect(getMCPRequestSignal(context)).toBe(signal);
+  },
+);
+
+it('publishes a joinable cutoff before cancellation listeners can request cleanup again', async () => {
+  const context = createMCPRequestContext();
+  const signal = getMCPRequestSignal(context);
+  const dispose = jest.fn(async () => undefined);
+  context.connections.set('server', { disconnect: jest.fn(), dispose });
+  let nested: Promise<void> | undefined;
+  signal.addEventListener(
+    'abort',
+    () => {
+      expect(context.cleanupStarted).toBe(true);
+      nested = quiesceMCPRequestContext(context);
+    },
+    { once: true },
+  );
+  const first = quiesceMCPRequestContext(context);
+  expect(nested).toBe(first);
+  await first;
+  expect(dispose).toHaveBeenCalledTimes(1);
 });

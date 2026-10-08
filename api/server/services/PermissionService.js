@@ -1,12 +1,12 @@
 const mongoose = require('mongoose');
-const { isEnabled } = require('@librechat/api');
+const { AccessControlService, isEnabled, ensureDirectoryPrincipalUser } = require('@librechat/api');
 const {
-  getTransactionSupport,
   tenantStorage,
   getTenantId,
   logger,
+  runAfterTransaction,
 } = require('@librechat/data-schemas');
-const { ResourceType, PrincipalType, PrincipalModel } = require('librechat-data-provider');
+const { ResourceType, PrincipalType } = require('librechat-data-provider');
 const {
   entraIdPrincipalFeatureEnabled,
   getUserOwnedEntraGroups,
@@ -16,9 +16,6 @@ const {
   getGroupOwners,
 } = require('~/server/services/GraphApiService');
 const db = require('~/models');
-
-/** @type {boolean|null} */
-let transactionSupportCache = null;
 
 /**
  * Validates that the resourceType is one of the supported enum values
@@ -114,7 +111,7 @@ const grantPermission = async ({
         `Role ${accessRoleId} is for ${role.resourceType} resources, not ${resourceType}`,
       );
     }
-    return await db.grantPermission(
+    const result = await db.grantPermission(
       principalType,
       principalId,
       resourceType,
@@ -124,6 +121,12 @@ const grantPermission = async ({
       session,
       role._id,
     );
+    if (resourceType === ResourceType.PROMPTGROUP) {
+      /** A caller-owned session may not have committed yet; invalidating early
+       * would let a concurrent read re-cache pre-commit IDs under the new generation. */
+      await runAfterTransaction(session, () => db.invalidatePromptGroupAccessContext());
+    }
+    return result;
   } catch (error) {
     logger.error(`[PermissionService.grantPermission] Error: ${error.message}`);
     throw error;
@@ -334,36 +337,20 @@ const ensurePrincipalExists = async function (principal) {
   }
 
   if (principal.type === PrincipalType.USER && principal.source === 'entra') {
-    if (!principal.email || !principal.idOnTheSource) {
-      throw new Error('Entra ID user principals must have email and idOnTheSource');
-    }
-
-    let existingUser = await db.findUser({ idOnTheSource: principal.idOnTheSource });
-
-    if (!existingUser) {
-      existingUser = await db.findUser({ email: principal.email });
-    }
-
-    if (existingUser) {
-      if (!existingUser.idOnTheSource && principal.idOnTheSource) {
-        await db.updateUser(existingUser._id, {
-          idOnTheSource: principal.idOnTheSource,
-          provider: 'openid',
-        });
-      }
-      return existingUser._id.toString();
-    }
-
-    const userData = {
-      name: principal.name,
-      email: principal.email.toLowerCase(),
-      emailVerified: false,
-      provider: 'openid',
-      idOnTheSource: principal.idOnTheSource,
-    };
-
-    const userId = await db.createUser(userData, true, true);
-    return userId.toString();
+    return ensureDirectoryPrincipalUser(principal, {
+      findUserBySourceId: async (idOnTheSource) => {
+        const user = await db.findUser({ idOnTheSource });
+        return user ? { id: user._id.toString() } : null;
+      },
+      findUserByEmail: async (email) => {
+        const user = await db.findUser({ email });
+        return user ? { id: user._id.toString() } : null;
+      },
+      createUser: async (userData) => {
+        const userId = await db.createUser(userData, true, true);
+        return userId.toString();
+      },
+    });
   }
 
   if (principal.type === PrincipalType.GROUP) {
@@ -704,251 +691,12 @@ const hasPublicPermission = async ({ resourceType, resourceId, requiredPermissio
   }
 };
 
-/**
- * Bulk update permissions for a resource (grant, update, revoke)
- * Efficiently handles multiple permission changes in a single transaction
- *
- * @param {Object} params - Parameters for bulk permission update
- * @param {string} params.resourceType - Type of resource (e.g., 'agent')
- * @param {string|mongoose.Types.ObjectId} params.resourceId - The ID of the resource
- * @param {Array<TPrincipal>} params.updatedPrincipals - Array of principals to grant/update permissions for
- * @param {Array<TPrincipal>} params.revokedPrincipals - Array of principals to revoke permissions from
- * @param {string|mongoose.Types.ObjectId} params.grantedBy - User ID making the changes
- * @param {mongoose.ClientSession} [params.session] - Optional MongoDB session for transactions
- * @returns {Promise<Object>} Results object with granted, updated, revoked arrays and error details
- */
-const bulkUpdateResourcePermissions = async ({
-  resourceType,
-  resourceId,
-  updatedPrincipals = [],
-  revokedPrincipals = [],
-  grantedBy,
-  session,
-}) => {
-  const supportsTransactions = await getTransactionSupport(mongoose, transactionSupportCache);
-  transactionSupportCache = supportsTransactions;
-  let localSession = session;
-  let shouldEndSession = false;
-
-  try {
-    if (!Array.isArray(updatedPrincipals)) {
-      throw new Error('updatedPrincipals must be an array');
-    }
-
-    if (!Array.isArray(revokedPrincipals)) {
-      throw new Error('revokedPrincipals must be an array');
-    }
-
-    if (!resourceId || !mongoose.Types.ObjectId.isValid(resourceId)) {
-      throw new Error(`Invalid resource ID: ${resourceId}`);
-    }
-
-    if (!localSession && supportsTransactions) {
-      localSession = await mongoose.startSession();
-      localSession.startTransaction();
-      shouldEndSession = true;
-    }
-
-    const sessionOptions = localSession ? { session: localSession } : {};
-
-    const roles = await db.findRolesByResourceType(resourceType);
-    const rolesMap = new Map();
-    roles.forEach((role) => {
-      rolesMap.set(role.accessRoleId, role);
-    });
-
-    const results = {
-      granted: [],
-      updated: [],
-      revoked: [],
-      errors: [],
-    };
-
-    const bulkWrites = [];
-
-    /**
-     * Tracks non-public principals granted in this same request so their revoke is skipped below.
-     * Grants are flushed before deletes, so a principal present in both `updatedPrincipals` and
-     * `revokedPrincipals` would be upserted and then deleted, stripping access the caller just set
-     * (e.g. a resource owner landing in both lists from a client `id`/`idOnTheSource` mismatch).
-     * Granting wins to make owner lockout impossible regardless of the client-side diff (#14316).
-     *
-     * PUBLIC is deliberately excluded: an explicit `public: false` disable adds the public principal
-     * to the revoke list, and disabling public access must always win over a stale/contradictory
-     * grant so a resource is never left public when the caller asked to make it private.
-     */
-    const grantedPrincipalKeys = new Set();
-    const principalKey = (principal) => `${principal.type}:${principal.id}`;
-
-    for (const principal of updatedPrincipals) {
-      try {
-        if (!principal.accessRoleId) {
-          results.errors.push({
-            principal,
-            error: 'accessRoleId is required for updated principals',
-          });
-          continue;
-        }
-
-        const role = rolesMap.get(principal.accessRoleId);
-        if (!role) {
-          results.errors.push({
-            principal,
-            error: `Role ${principal.accessRoleId} not found`,
-          });
-          continue;
-        }
-
-        const query = {
-          principalType: principal.type,
-          resourceType,
-          resourceId,
-        };
-
-        if (principal.type !== PrincipalType.PUBLIC) {
-          query.principalId =
-            principal.type === PrincipalType.ROLE
-              ? principal.id
-              : new mongoose.Types.ObjectId(principal.id);
-        }
-
-        const principalModelMap = {
-          [PrincipalType.USER]: PrincipalModel.USER,
-          [PrincipalType.GROUP]: PrincipalModel.GROUP,
-          [PrincipalType.ROLE]: PrincipalModel.ROLE,
-        };
-
-        const update = {
-          $set: {
-            permBits: role.permBits,
-            roleId: role._id,
-            grantedBy,
-            grantedAt: new Date(),
-          },
-          $setOnInsert: {
-            principalType: principal.type,
-            resourceType,
-            resourceId,
-            ...(principal.type !== PrincipalType.PUBLIC && {
-              principalId:
-                principal.type === PrincipalType.ROLE
-                  ? principal.id
-                  : new mongoose.Types.ObjectId(principal.id),
-              principalModel: principalModelMap[principal.type],
-            }),
-          },
-        };
-
-        bulkWrites.push({
-          updateOne: {
-            filter: query,
-            update: update,
-            upsert: true,
-          },
-        });
-
-        results.granted.push({
-          type: principal.type,
-          id: principal.id,
-          name: principal.name,
-          email: principal.email,
-          source: principal.source,
-          avatar: principal.avatar,
-          description: principal.description,
-          idOnTheSource: principal.idOnTheSource,
-          accessRoleId: principal.accessRoleId,
-          memberCount: principal.memberCount,
-          memberIds: principal.memberIds,
-        });
-        if (principal.type !== PrincipalType.PUBLIC) {
-          grantedPrincipalKeys.add(principalKey(principal));
-        }
-      } catch (error) {
-        results.errors.push({
-          principal,
-          error: error.message,
-        });
-      }
-    }
-
-    if (bulkWrites.length > 0) {
-      await db.bulkWriteAclEntries(bulkWrites, sessionOptions);
-    }
-
-    const deleteQueries = [];
-    for (const principal of revokedPrincipals) {
-      try {
-        // Inside the try so a malformed revoke entry (e.g. a nullish principal) is recorded in
-        // results.errors and skipped, rather than throwing out after grants were already flushed.
-        if (
-          principal.type !== PrincipalType.PUBLIC &&
-          grantedPrincipalKeys.has(principalKey(principal))
-        ) {
-          continue;
-        }
-        const query = {
-          principalType: principal.type,
-          resourceType,
-          resourceId,
-        };
-
-        if (principal.type !== PrincipalType.PUBLIC) {
-          query.principalId =
-            principal.type === PrincipalType.ROLE
-              ? principal.id
-              : new mongoose.Types.ObjectId(principal.id);
-        }
-
-        deleteQueries.push(query);
-
-        results.revoked.push({
-          type: principal.type,
-          id: principal.id,
-          name: principal.name,
-          email: principal.email,
-          source: principal.source,
-          avatar: principal.avatar,
-          description: principal.description,
-          idOnTheSource: principal.idOnTheSource,
-          memberCount: principal.memberCount,
-        });
-      } catch (error) {
-        results.errors.push({
-          principal,
-          error: error.message,
-        });
-      }
-    }
-
-    if (deleteQueries.length > 0) {
-      await db.deleteAclEntries({ $or: deleteQueries }, sessionOptions);
-    }
-
-    if (shouldEndSession && supportsTransactions) {
-      await localSession.commitTransaction();
-    }
-
-    return results;
-  } catch (error) {
-    if (shouldEndSession && supportsTransactions) {
-      try {
-        await localSession.abortTransaction();
-      } catch (transactionError) {
-        /** best-effort abort; may fail if commit already succeeded */
-        logger.error(
-          `[PermissionService.bulkUpdateResourcePermissions] Error aborting transaction:`,
-          transactionError,
-        );
-      }
-    }
-    logger.error(`[PermissionService.bulkUpdateResourcePermissions] Error: ${error.message}`);
-    throw error;
-  } finally {
-    if (shouldEndSession && localSession) {
-      localSession.endSession();
-    }
-  }
-};
+/** Typed implementation; this legacy module only binds the shared model methods. */
+const accessControlService = new AccessControlService(mongoose, db);
+const bulkUpdateResourcePermissions = (params) =>
+  accessControlService.bulkUpdateResourcePermissions(params);
+const restoreInsightsPermissionChanges = (params) =>
+  accessControlService.restoreInsightsPermissionChanges(params);
 
 /**
  * Remove all permissions for a resource (cleanup when resource is deleted)
@@ -970,6 +718,10 @@ const removeAllPermissions = async ({ resourceType, resourceId }) => {
       resourceId,
     });
 
+    if (resourceType === ResourceType.PROMPTGROUP) {
+      await db.invalidatePromptGroupAccessContext();
+    }
+
     return result;
   } catch (error) {
     logger.error(`[PermissionService.removeAllPermissions] Error: ${error.message}`);
@@ -987,6 +739,7 @@ module.exports = {
   hasPublicPermission,
   getAvailableRoles,
   bulkUpdateResourcePermissions,
+  restoreInsightsPermissionChanges,
   ensurePrincipalExists,
   ensureGroupPrincipalExists,
   syncUserEntraGroupMemberships,

@@ -1,6 +1,73 @@
-import type { RedisClientType, RedisClusterType } from '@redis/client';
 import { logger } from '@librechat/data-schemas';
+import type { ClusterOptions, RedisOptions, Cluster, Redis } from 'ioredis';
+import type { RedisClientType, RedisClusterType } from '@redis/client';
+import { startRedisHeartbeat } from './heartbeat';
 import { cacheConfig } from './cacheConfig';
+
+/**
+ * Duplicates an ioredis connection with option overrides. `Cluster.duplicate` reads its
+ * first argument as an optional startup-node list and its second as the overrides,
+ * unlike `Redis.duplicate`, so options passed positionally to a cluster are silently
+ * dropped and the duplicate quietly inherits the original's behaviour.
+ */
+export function duplicateIoRedisClient(
+  client: Redis | Cluster,
+  options: RedisOptions & ClusterOptions = {},
+): Redis | Cluster {
+  if (client.isCluster) {
+    const duplicate = (client as Cluster).duplicate([], options);
+    if (options.enableOfflineQueue !== false) {
+      return duplicate;
+    }
+    let clusterHasBeenReady = duplicate.status === 'ready';
+    duplicate.once('ready', () => {
+      clusterHasBeenReady = true;
+    });
+    /** ioredis deliberately forces `enableOfflineQueue: true` on every Cluster node
+     * after applying `redisOptions`. It needs that queue while a new node discovers
+     * topology, so changing it at `+node` prevents the cluster from ever becoming
+     * ready. Initial nodes switch once connected; nodes discovered after the cluster
+     * was usable fail fast immediately, including during a slot-owner replacement. */
+    const disableNodeOfflineQueue = (node: Redis): void => {
+      const disable = (): void => {
+        node.options.enableOfflineQueue = false;
+      };
+      if (node.status === 'ready' || clusterHasBeenReady) {
+        disable();
+      } else {
+        node.once('ready', disable);
+      }
+    };
+    duplicate.on('+node', disableNodeOfflineQueue);
+    duplicate.nodes('all').forEach(disableNodeOfflineQueue);
+    return duplicate;
+  }
+  return (client as Redis).duplicate(options);
+}
+
+/**
+ * Duplicates a client for a dedicated pub/sub subscriber. `duplicate()` copies options but
+ * not listeners, so a bare duplicate reports socket errors only through ioredis's
+ * "Unhandled error event" and, between generations, carries no traffic at all: a peer
+ * that vanishes without closing the socket stays undetected until the kernel gives up.
+ * The heartbeat is the traffic the shared client gets for free.
+ */
+export function createIoRedisSubscriber(client: Redis | Cluster, label: string): Redis | Cluster {
+  const subscriber = duplicateIoRedisClient(client);
+  subscriber.on('error', (error: Error) => {
+    logger.error(`${label} error:`, error);
+  });
+  subscriber.on('ready', () => {
+    logger.info(`${label} ready`);
+  });
+  startRedisHeartbeat({
+    client: subscriber,
+    intervalMs: cacheConfig.REDIS_SUBSCRIBER_PING_INTERVAL * 1000,
+    timeoutMs: cacheConfig.REDIS_PING_TIMEOUT,
+    label,
+  });
+  return subscriber;
+}
 
 /**
  * Efficiently deletes multiple Redis keys with support for both cluster and single-node modes.
@@ -115,11 +182,11 @@ export async function scanKeys(
 
   const scanCount = count ?? cacheConfig.REDIS_SCAN_COUNT;
 
-  for await (const key of client.scanIterator({
+  for await (const page of client.scanIterator({
     MATCH: pattern,
     COUNT: scanCount,
   })) {
-    keys.push(key);
+    keys.push(...page);
   }
 
   // Performance monitoring

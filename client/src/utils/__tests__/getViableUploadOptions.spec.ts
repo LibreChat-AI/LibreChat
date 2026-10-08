@@ -1,8 +1,13 @@
-import { EToolResources } from 'librechat-data-provider';
+import { Tools, EToolResources } from 'librechat-data-provider';
 import type { FileConfig } from 'librechat-data-provider';
-import { getViableUploadOptions, type UploadOptionContext } from '../files';
+import {
+  getViableUploadOptions,
+  getUploadToolAllowances,
+  type UploadOptionContext,
+} from '../files';
 
 const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const POTX = 'application/vnd.openxmlformats-officedocument.presentationml.template';
 
 /** context accepts plain text + csv (text), pdf + xlsx (ocr); nothing else */
 const fileConfig = {
@@ -46,6 +51,13 @@ describe('getViableUploadOptions', () => {
       expect(getViableUploadOptions([file(XLSX, 'report.xlsx')], baseCtx())).toEqual([
         EToolResources.execute_code,
         EToolResources.context,
+      ]);
+    });
+
+    it('routes a PowerPoint template to file search and code, not the provider', () => {
+      expect(getViableUploadOptions([file(POTX, 'brand-template.potx')], baseCtx())).toEqual([
+        EToolResources.file_search,
+        EToolResources.execute_code,
       ]);
     });
 
@@ -124,6 +136,33 @@ describe('getViableUploadOptions', () => {
       expect(getViableUploadOptions([file(XLSX, 'report.xlsx')], ctx)).toEqual([undefined]);
     });
 
+    it('offers direct attach for a video when the custom config explicitly allows video', () => {
+      const ctx = baseCtx({
+        provider: 'MyGateway',
+        endpoint: 'MyGateway',
+        endpointType: 'custom',
+        fileSearchEnabled: false,
+        codeEnabled: false,
+        contextEnabled: false,
+        endpointSupportedMimeTypes: [/^image\/.*$/, /^application\/pdf$/, /^video\/.*$/],
+      });
+      expect(getViableUploadOptions([file('video/mp4', 'clip.mp4')], ctx)).toEqual([undefined]);
+      expect(getViableUploadOptions([file('audio/wav', 'tone.wav')], ctx)).toEqual([]);
+    });
+
+    it('does not offer video for a custom endpoint that inherits the default config', () => {
+      const ctx = baseCtx({
+        provider: 'MyGateway',
+        endpoint: 'MyGateway',
+        endpointType: 'custom',
+        fileSearchEnabled: false,
+        codeEnabled: false,
+        contextEnabled: false,
+        endpointSupportedMimeTypes: undefined,
+      });
+      expect(getViableUploadOptions([file('video/mp4', 'clip.mp4')], ctx)).toEqual([]);
+    });
+
     it('does not treat a non-permissive custom config as broad provider support', () => {
       const ctx = baseCtx({
         provider: 'MyGateway',
@@ -143,5 +182,74 @@ describe('getViableUploadOptions', () => {
     expect(getViableUploadOptions([file(XLSX, 'report.xlsx')], ctx)).toEqual([
       EToolResources.execute_code,
     ]);
+  });
+});
+
+describe('getUploadToolAllowances', () => {
+  const SAVED = 'agent_abc123';
+
+  it('offers both tool destinations in an ordinary chat, where no agent decides', () => {
+    expect(getUploadToolAllowances(null, undefined)).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+    expect(getUploadToolAllowances(undefined, undefined)).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+    expect(getUploadToolAllowances('', undefined)).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+  });
+
+  /* The regression this rule was extracted for: an ephemeral agent carries no
+     tool list, and reading one left both destinations hidden for good. */
+  it('offers both to an ephemeral agent, which has no tool list to consult', () => {
+    expect(getUploadToolAllowances('openAI__gpt-5___GPT-5', undefined)).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+    expect(getUploadToolAllowances('openAI__gpt-5___GPT-5', [])).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+  });
+
+  it('lets a saved agent offer only what it was built with', () => {
+    expect(getUploadToolAllowances(SAVED, [Tools.file_search])).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: false,
+    });
+    expect(getUploadToolAllowances(SAVED, [Tools.execute_code])).toEqual({
+      fileSearchAllowedByAgent: false,
+      codeAllowedByAgent: true,
+    });
+    expect(getUploadToolAllowances(SAVED, [Tools.file_search, Tools.execute_code])).toEqual({
+      fileSearchAllowedByAgent: true,
+      codeAllowedByAgent: true,
+    });
+  });
+
+  it('offers a saved agent nothing when its tools are absent or empty', () => {
+    expect(getUploadToolAllowances(SAVED, undefined)).toEqual({
+      fileSearchAllowedByAgent: false,
+      codeAllowedByAgent: false,
+    });
+    expect(getUploadToolAllowances(SAVED, [])).toEqual({
+      fileSearchAllowedByAgent: false,
+      codeAllowedByAgent: false,
+    });
+    expect(getUploadToolAllowances(SAVED, ['some_other_tool'])).toEqual({
+      fileSearchAllowedByAgent: false,
+      codeAllowedByAgent: false,
+    });
+  });
+
+  it('reads through an indexed agent id, which carries the suffix from a split view', () => {
+    expect(getUploadToolAllowances(`${SAVED}____1`, [Tools.execute_code])).toEqual({
+      fileSearchAllowedByAgent: false,
+      codeAllowedByAgent: true,
+    });
   });
 });

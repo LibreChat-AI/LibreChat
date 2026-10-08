@@ -31,10 +31,19 @@ import store from '~/store';
 
 const DEFAULT_PARAMS: ConversationListParams = {
   isArchived: true,
-  sortBy: 'createdAt',
+  sortBy: 'archivedAt',
   sortDirection: 'desc',
   search: '',
 };
+
+const SORTABLE_COLUMNS = new Set<ConversationListParams['sortBy']>(['title', 'archivedAt']);
+
+/**
+ * Chats archived before `archivedAt` was recorded have none, so they keep showing the
+ * date this column has always shown for them rather than going blank.
+ */
+const getArchivedDate = (conversation: TConversation): string =>
+  conversation.archivedAt?.toString() ?? conversation.createdAt?.toString() ?? '';
 
 type ArchivedConversationRow = TConversation & Record<string, unknown>;
 
@@ -62,6 +71,11 @@ export default function ArchivedChatsTable() {
     }));
   }, []);
 
+  const getRowId = useCallback(
+    (row: ArchivedConversationRow, index: number) => row.conversationId ?? `archived-${index}`,
+    [],
+  );
+
   const allConversations = useMemo<ArchivedConversationRow[]>(() => {
     if (!data?.pages) {
       return [];
@@ -74,7 +88,7 @@ export default function ArchivedChatsTable() {
   const sorting = useMemo<SortingState>(
     () => [
       {
-        id: queryParams.sortBy ?? 'createdAt',
+        id: queryParams.sortBy ?? 'archivedAt',
         desc: queryParams.sortDirection === 'desc',
       },
     ],
@@ -84,22 +98,23 @@ export default function ArchivedChatsTable() {
   const handleSortingChange = useCallback((updater: Updater<SortingState>) => {
     setQueryParams((prev) => {
       const currentSorting: SortingState = [
-        { id: prev.sortBy ?? 'createdAt', desc: prev.sortDirection === 'desc' },
+        { id: prev.sortBy ?? 'archivedAt', desc: prev.sortDirection === 'desc' },
       ];
       const nextSorting = typeof updater === 'function' ? updater(currentSorting) : updater;
       const nextSort = nextSorting[0];
+      const nextSortBy = nextSort?.id as ConversationListParams['sortBy'];
 
-      if (nextSort?.id !== 'title' && nextSort?.id !== 'createdAt') {
+      if (!SORTABLE_COLUMNS.has(nextSortBy)) {
         return {
           ...prev,
-          sortBy: 'createdAt',
+          sortBy: 'archivedAt',
           sortDirection: 'desc',
         };
       }
 
       return {
         ...prev,
-        sortBy: nextSort.id,
+        sortBy: nextSortBy,
         sortDirection: nextSort.desc ? 'desc' : 'asc',
       };
     });
@@ -151,30 +166,32 @@ export default function ArchivedChatsTable() {
         header: localize('com_nav_archive_name'),
         cell: ({ row }) => {
           const { conversationId, title } = row.original;
+          const link = (
+            <Link
+              to={`/c/${conversationId ?? ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group text-text-primary focus-visible:ring-text-primary flex items-center gap-1.5 truncate rounded-sm font-medium underline-offset-4 hover:underline focus-visible:ring-2 focus-visible:outline-hidden"
+              aria-label={localize('com_ui_open_archived_chat_new_tab_title', {
+                title: title ?? localize('com_ui_untitled'),
+              })}
+            >
+              <span className="truncate">{title}</span>
+              <ExternalLink
+                className="text-text-tertiary group-hover:text-text-secondary size-3.5 shrink-0 transition-colors"
+                aria-hidden="true"
+              />
+            </Link>
+          );
           return (
-            <div className="flex items-center gap-2">
+            <div className="flex w-0 min-w-full items-center gap-2.5">
               <MinimalIcon
                 endpoint={row.original.endpoint}
                 size={28}
                 isCreatedByUser={false}
                 iconClassName="size-4"
               />
-              <Link
-                to={`/c/${conversationId ?? ''}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group flex items-center gap-1 truncate rounded-sm text-link underline decoration-1 underline-offset-2 hover:decoration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
-                title={title ?? undefined}
-                aria-label={localize('com_ui_open_archived_chat_new_tab_title', {
-                  title: title ?? localize('com_ui_untitled'),
-                })}
-              >
-                <span className="truncate">{title}</span>
-                <ExternalLink
-                  className="size-3 flex-shrink-0 opacity-70 group-hover:opacity-100"
-                  aria-hidden="true"
-                />
-              </Link>
+              {title ? <TooltipAnchor description={title} render={link} /> : link}
             </div>
           );
         },
@@ -184,9 +201,9 @@ export default function ArchivedChatsTable() {
         },
       },
       {
-        accessorKey: 'createdAt',
+        accessorKey: 'archivedAt',
         header: localize('com_nav_archive_created_at'),
-        cell: ({ row }) => formatDate(row.original.createdAt?.toString() ?? '', isSmallScreen),
+        cell: ({ row }) => formatDate(getArchivedDate(row.original), isSmallScreen),
         meta: {
           width: 25,
           desktopOnly: true,
@@ -204,8 +221,8 @@ export default function ArchivedChatsTable() {
                 description={localize('com_ui_unarchive_conversation')}
                 render={
                   <Button
-                    variant="ghost"
-                    className="h-8 w-8 p-0 hover:bg-surface-hover"
+                    variant="row-action"
+                    size="icon-sm"
                     onClick={() =>
                       unarchiveConversation({
                         conversationId: conversation.conversationId ?? '',
@@ -223,8 +240,8 @@ export default function ArchivedChatsTable() {
                 description={localize('com_ui_delete_conversation_tooltip')}
                 render={
                   <Button
-                    variant="ghost"
-                    className="h-8 w-8 p-0 hover:bg-surface-hover"
+                    variant="row-action"
+                    size="icon-sm"
                     onClick={() => {
                       setDeleteConversation(row.original);
                       setIsDeleteOpen(true);
@@ -248,37 +265,31 @@ export default function ArchivedChatsTable() {
 
   return (
     <>
-      {/* Fixed height keeps the loading (skeleton) and loaded states the same
-          size, so the virtualized table can't reflow the dialog on load. */}
-      <div className="h-[60vh]">
-        <VirtualizedDataTable
-          columns={columns}
-          data={allConversations}
-          getRowId={(row, index) => row.conversationId ?? `archived-${index}`}
-          className="scrollbar-gutter-stable h-full max-h-none"
-          onFilterChange={handleFilterChange}
-          filterValue={queryParams.search}
-          fetchNextPage={handleFetchNextPage}
-          hasNextPage={hasNextPage}
-          isFetchingNextPage={isFetchingNextPage}
-          isFetching={isFetching}
-          isLoading={isLoading}
-          sorting={sorting}
-          onSortingChange={handleSortingChange}
-          config={{
-            selection: { enableRowSelection: false, showCheckboxes: false },
-            search: { enableSearch: searchState.enabled === true, debounce: 300 },
-          }}
-        />
-      </div>
+      {/* The skeleton count matches the minimum height so the loading and loaded
+          states are close in size, while a short list still collapses the box. */}
+      <VirtualizedDataTable
+        columns={columns}
+        data={allConversations}
+        getRowId={getRowId}
+        className="max-h-[60vh] min-h-80 scrollbar-gutter-stable"
+        onFilterChange={handleFilterChange}
+        filterValue={queryParams.search}
+        fetchNextPage={handleFetchNextPage}
+        hasNextPage={hasNextPage}
+        isFetchingNextPage={isFetchingNextPage}
+        isFetching={isFetching}
+        isLoading={isLoading}
+        sorting={sorting}
+        onSortingChange={handleSortingChange}
+        config={{
+          selection: { enableRowSelection: false, showCheckboxes: false },
+          skeleton: { count: 6 },
+          search: { enableSearch: searchState.enabled === true, debounce: 300 },
+        }}
+      />
 
       <OGDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
-        <OGDialogContent
-          title={localize('com_ui_delete_confirm', {
-            title: deleteConversation?.title ?? localize('com_ui_untitled'),
-          })}
-          className="w-11/12 max-w-md"
-        >
+        <OGDialogContent showCloseButton={false} className="w-11/12 max-w-md">
           <OGDialogHeader>
             <OGDialogTitle>
               <Trans

@@ -13,7 +13,7 @@
 # jobs:
 #   tests_e2e:
 #     name: Run Playwright tests
-#     if: github.event.pull_request.head.repo.full_name == 'danny-avila/LibreChat'
+#     if: github.event.pull_request.head.repo.full_name == github.repository
 #     timeout-minutes: 60
 #     runs-on: ubuntu-latest
 #     env:

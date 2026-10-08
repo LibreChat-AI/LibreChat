@@ -44,6 +44,7 @@ export type TAccessLevel = 'none' | 'viewer' | 'editor' | 'owner';
  */
 export enum ResourceType {
   AGENT = 'agent',
+  CODE_ENVIRONMENT = 'codeEnvironment',
   PROMPTGROUP = 'promptGroup',
   MCPSERVER = 'mcpServer',
   REMOTE_AGENT = 'remoteAgent',
@@ -63,6 +64,8 @@ export enum PermissionBits {
   DELETE = 4,
   /**  1000 - Can share agent with others (future) */
   SHARE = 8,
+  /** 10000 - Can view Insights data for an agent when VIEW is also present */
+  VIEW_INSIGHTS = 16,
 }
 
 /**
@@ -72,6 +75,9 @@ export enum AccessRoleIds {
   AGENT_VIEWER = 'agent_viewer',
   AGENT_EDITOR = 'agent_editor',
   AGENT_OWNER = 'agent_owner',
+  CODE_ENVIRONMENT_VIEWER = 'codeEnvironment_viewer',
+  CODE_ENVIRONMENT_EDITOR = 'codeEnvironment_editor',
+  CODE_ENVIRONMENT_OWNER = 'codeEnvironment_owner',
   PROMPTGROUP_VIEWER = 'promptGroup_viewer',
   PROMPTGROUP_EDITOR = 'promptGroup_editor',
   PROMPTGROUP_OWNER = 'promptGroup_owner',
@@ -103,6 +109,8 @@ export const principalSchema = z.object({
   description: z.string().optional(), // for group and role types
   idOnTheSource: z.string().optional(), // Entra ID for users/groups
   accessRoleId: z.nativeEnum(AccessRoleIds).optional(), // Access role ID for permissions
+  viewInsights: z.boolean().optional(),
+  isAdmin: z.boolean().optional(),
   memberCount: z.number().optional(), // for group type
 });
 
@@ -227,6 +235,7 @@ export type TPrincipalSearchResult = {
   memberCount?: number; // for groups
   description?: string; // for groups
   idOnTheSource?: string; // Entra ID for users (maps to openidId) and groups (maps to idOnTheSource)
+  isAdmin?: boolean;
 };
 
 /**
@@ -321,6 +330,7 @@ export function permBitsToAccessLevel(permBits: number): TAccessLevel {
 export function accessRoleToPermBits(accessRoleId: string): number {
   switch (accessRoleId) {
     case AccessRoleIds.AGENT_VIEWER:
+    case AccessRoleIds.CODE_ENVIRONMENT_VIEWER:
     case AccessRoleIds.PROMPTGROUP_VIEWER:
     case AccessRoleIds.MCPSERVER_VIEWER:
     case AccessRoleIds.REMOTE_AGENT_VIEWER:
@@ -328,12 +338,14 @@ export function accessRoleToPermBits(accessRoleId: string): number {
     case AccessRoleIds.SHARED_LINK_VIEWER:
       return PermissionBits.VIEW;
     case AccessRoleIds.AGENT_EDITOR:
+    case AccessRoleIds.CODE_ENVIRONMENT_EDITOR:
     case AccessRoleIds.PROMPTGROUP_EDITOR:
     case AccessRoleIds.MCPSERVER_EDITOR:
     case AccessRoleIds.REMOTE_AGENT_EDITOR:
     case AccessRoleIds.SKILL_EDITOR:
       return PermissionBits.VIEW | PermissionBits.EDIT;
     case AccessRoleIds.AGENT_OWNER:
+    case AccessRoleIds.CODE_ENVIRONMENT_OWNER:
     case AccessRoleIds.PROMPTGROUP_OWNER:
     case AccessRoleIds.MCPSERVER_OWNER:
     case AccessRoleIds.REMOTE_AGENT_OWNER:

@@ -60,8 +60,9 @@ jest.mock('@librechat/api', () => {
   };
 });
 
+const mockAdminLoginController = jest.fn((req, res) => res.status(200).end());
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  loginController: jest.fn((req, res) => res.status(200).end()),
+  loginController: (...args) => mockAdminLoginController(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -98,6 +99,7 @@ jest.mock('~/strategies', () => ({
 
 jest.mock('~/server/middleware', () => ({
   logHeaders: jest.fn((req, res, next) => next()),
+  requireSameOrigin: jest.fn((req, res, next) => next()),
   loginLimiter: jest.fn((req, res, next) => next()),
   checkBan: jest.fn((req, res, next) => next()),
   validateEmailLogin: jest.fn((req, res, next) => next()),
@@ -604,6 +606,54 @@ describe('admin local login route', () => {
     expect(middleware.validateEmailLogin.mock.invocationCallOrder[0]).toBeLessThan(
       middleware.requireLocalAuth.mock.invocationCallOrder[0],
     );
+  });
+
+  it('rejects cross-site submissions before rate limiting or local auth', async () => {
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.status).toBe(200);
+    expect(middleware.requireSameOrigin).toHaveBeenCalledTimes(1);
+    expect(middleware.requireSameOrigin.mock.invocationCallOrder[0]).toBeLessThan(
+      middleware.loginLimiter.mock.invocationCallOrder[0],
+    );
+
+    jest.clearAllMocks();
+    middleware.requireSameOrigin.mockImplementationOnce((req, res) =>
+      res.status(403).json({ message: 'Cross-site request rejected' }),
+    );
+
+    const rejected = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(rejected.status).toBe(403);
+    expect(middleware.loginLimiter).not.toHaveBeenCalled();
+    expect(middleware.requireLocalAuth).not.toHaveBeenCalled();
+  });
+
+  it('preserves the additive required-setup response contract for admin clients', async () => {
+    mockAdminLoginController.mockImplementationOnce((req, res) =>
+      res.status(200).json({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      }),
+    );
+
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.body).toEqual({
+      twoFAPending: true,
+      twoFASetupRequired: true,
+      tempToken: 'setup-token',
+    });
   });
 
   it('stops before local auth when the email login gate rejects the request', async () => {

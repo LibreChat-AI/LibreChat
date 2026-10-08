@@ -108,7 +108,7 @@ const initializeFakeClient = (apiKey, options, fakeMessages) => {
     const formattedMessages = orderedMessages.map((message) => {
       let { role: _role, sender, text } = message;
       const role = _role ?? sender;
-      const content = text ?? '';
+      const content = Array.isArray(message.content) ? message.content : (text ?? '');
       return {
         role: role?.toLowerCase() === 'user' ? 'user' : 'assistant',
         content,

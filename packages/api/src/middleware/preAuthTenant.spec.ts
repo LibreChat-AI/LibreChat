@@ -13,6 +13,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 describe('preAuthTenantMiddleware', () => {
+  const originalTrustTenantHeader = process.env.TRUST_TENANT_HEADER;
   let req: {
     headers: Record<string, string | string[] | undefined>;
     ip?: string;
@@ -24,8 +25,17 @@ describe('preAuthTenantMiddleware', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.TRUST_TENANT_HEADER;
     req = { headers: {} };
     res = {};
+  });
+
+  afterAll(() => {
+    if (originalTrustTenantHeader === undefined) {
+      delete process.env.TRUST_TENANT_HEADER;
+      return;
+    }
+    process.env.TRUST_TENANT_HEADER = originalTrustTenantHeader;
   });
 
   it('calls next() without ALS context when no X-Tenant-Id header is present', () => {
@@ -49,7 +59,19 @@ describe('preAuthTenantMiddleware', () => {
     expect(capturedTenantId).toBeUndefined();
   });
 
-  it('wraps downstream in ALS context when X-Tenant-Id header is present', () => {
+  it('ignores X-Tenant-Id unless the deployment explicitly trusts the header', () => {
+    req.headers = { 'x-tenant-id': 'attacker-selected' };
+    let capturedTenantId: string | undefined = 'sentinel';
+    const capturedNext: NextFunction = () => {
+      capturedTenantId = getTenantId();
+    };
+
+    preAuthTenantMiddleware(req as Request, res as Response, capturedNext);
+    expect(capturedTenantId).toBeUndefined();
+  });
+
+  it('wraps downstream in ALS context when the deployment trusts X-Tenant-Id', () => {
+    process.env.TRUST_TENANT_HEADER = 'TRUE';
     req.headers = { 'x-tenant-id': 'acme-corp' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -85,6 +107,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores __SYSTEM__ sentinel and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': '__SYSTEM__' };
     req.ip = '10.0.0.1';
     req.path = '/api/config';
@@ -102,6 +125,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores array-valued headers (Express can produce these)', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': ['a', 'b'] as unknown as string };
     let capturedTenantId: string | undefined = 'sentinel';
     const capturedNext: NextFunction = () => {
@@ -113,6 +137,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores tenant IDs containing invalid characters and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'tenant:injected' };
     req.ip = '192.168.1.1';
     req.path = '/api/auth/login';
@@ -130,6 +155,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('trims whitespace from tenant ID header', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': '  acme-corp  ' };
     let capturedTenantId: string | undefined;
     const capturedNext: NextFunction = () => {
@@ -141,6 +167,7 @@ describe('preAuthTenantMiddleware', () => {
   });
 
   it('ignores tenant IDs exceeding max length and logs warning', () => {
+    process.env.TRUST_TENANT_HEADER = 'true';
     req.headers = { 'x-tenant-id': 'a'.repeat(200) };
     req.ip = '192.168.1.1';
     req.path = '/api/share/abc';

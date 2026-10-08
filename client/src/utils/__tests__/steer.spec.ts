@@ -1,4 +1,4 @@
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, ReasoningEffort } from 'librechat-data-provider';
 import type { TMessage, TSteerAppliedEvent } from 'librechat-data-provider';
 import {
   getSteerPart,
@@ -6,8 +6,12 @@ import {
   resolveRunEndTarget,
   findSteerMessageIndex,
   appendAppliedSteerIds,
+  isLegacyDeliveryUncertain,
   resolveAbortSteerTarget,
   insertQueuedOrigin,
+  mergeRestagedQuotes,
+  collectDroppedSteerQuotes,
+  carriedSteerContext,
 } from '../steer';
 
 const buildEvent = (overrides: Partial<TSteerAppliedEvent> = {}): TSteerAppliedEvent => ({
@@ -33,6 +37,22 @@ const assistantMessage = (overrides: Partial<TMessage> = {}): TMessage =>
     ],
     ...overrides,
   }) as TMessage;
+
+describe('carriedSteerContext', () => {
+  it('preserves request-scoped reasoning through restore and recovery paths', () => {
+    expect(
+      carriedSteerContext({
+        quotes: ['excerpt'],
+        manualSkills: ['writer'],
+        reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+      }),
+    ).toEqual({
+      quotes: ['excerpt'],
+      manualSkills: ['writer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
+    });
+  });
+});
 
 describe('applySteerPart', () => {
   it('places the part at its absolute index on a new message object', () => {
@@ -60,6 +80,25 @@ describe('applySteerPart', () => {
     const twice = applySteerPart(once, buildEvent());
 
     expect(twice).toBe(once);
+  });
+
+  it('replaces a persisted steer when a later correction removes rejected files', () => {
+    const withFiles = applySteerPart(
+      assistantMessage(),
+      buildEvent({
+        part: {
+          type: ContentTypes.STEER,
+          [ContentTypes.STEER]: 'change course',
+          steerId: 'steer-1',
+          files: [{ file_id: 'rejected-file' }],
+        },
+      }),
+    );
+    const corrected = applySteerPart(withFiles, buildEvent());
+
+    expect(corrected).not.toBe(withFiles);
+    expect(getSteerPart(corrected.content?.[2])?.files).toBeUndefined();
+    expect(corrected.content).toHaveLength(3);
   });
 
   it('handles a message without content', () => {
@@ -190,6 +229,19 @@ describe('appendAppliedSteerIds', () => {
   });
 });
 
+describe('isLegacyDeliveryUncertain', () => {
+  it('locks ambiguous v1 and unnegotiated deliveries, but not v2', () => {
+    expect(
+      isLegacyDeliveryUncertain({ deliveryUncertain: true, generationProtocolVersion: 1 }),
+    ).toBe(true);
+    expect(isLegacyDeliveryUncertain({ deliveryUncertain: true })).toBe(true);
+    expect(
+      isLegacyDeliveryUncertain({ deliveryUncertain: true, generationProtocolVersion: 2 }),
+    ).toBe(false);
+    expect(isLegacyDeliveryUncertain({ generationProtocolVersion: 1 })).toBe(false);
+  });
+});
+
 describe('insertQueuedOrigin', () => {
   const staleOrigin = {
     item: {
@@ -216,5 +268,83 @@ describe('insertQueuedOrigin', () => {
       }),
       expect.objectContaining({ id: 'queued-d' }),
     ]);
+  });
+});
+
+describe('mergeRestagedQuotes', () => {
+  it('appends only fresh excerpts and keeps referential stability when none land', () => {
+    const prev = ['kept'];
+    expect(mergeRestagedQuotes(prev, ['kept'])).toBe(prev);
+    expect(mergeRestagedQuotes(prev, ['kept', 'new'])).toEqual(['kept', 'new']);
+  });
+
+  it('never grows past the sendable cap, letting already-staged chips win', () => {
+    // A chip beyond MAX_QUOTE_COUNT would render but silently miss the next
+    // send (both ends keep only the first 10) — drop the overflow explicitly.
+    const staged = Array.from({ length: 9 }, (_, i) => `staged-${i}`);
+    expect(mergeRestagedQuotes(staged, ['restored-a', 'restored-b'])).toEqual([
+      ...staged,
+      'restored-a',
+    ]);
+    const full = Array.from({ length: 10 }, (_, i) => `staged-${i}`);
+    expect(mergeRestagedQuotes(full, ['restored-a'])).toBe(full);
+  });
+});
+
+describe('collectDroppedSteerQuotes', () => {
+  const chips = [
+    { steerId: 'srv-1', clientSteerId: 'local-1', quotes: ['excerpt one'] },
+    { steerId: 'srv-2', quotes: ['excerpt two'] },
+    { steerId: 'srv-3' },
+  ];
+
+  it('collects quotes for chips whose applied part carries none', () => {
+    const values = [
+      {
+        content: [
+          { type: ContentTypes.STEER, steerId: 'srv-1' },
+          { type: ContentTypes.STEER, steerId: 'srv-2', quotes: ['excerpt two'] },
+          { type: ContentTypes.STEER, steerId: 'srv-3' },
+        ],
+      },
+    ];
+    expect(collectDroppedSteerQuotes(values, chips)).toEqual(['excerpt one']);
+  });
+
+  it('matches a quote-less part by the client correlation id too', () => {
+    const values = [{ content: [{ type: ContentTypes.STEER, clientSteerId: 'local-1' }] }];
+    expect(collectDroppedSteerQuotes(values, chips)).toEqual(['excerpt one']);
+  });
+
+  it('returns nothing when every applied part kept its quotes', () => {
+    const values = [
+      { content: [{ type: ContentTypes.STEER, steerId: 'srv-1', quotes: ['excerpt one'] }] },
+    ];
+    expect(collectDroppedSteerQuotes(values, chips)).toEqual([]);
+  });
+});
+
+describe('findSteerMessageIndex with the live placeholder ids', () => {
+  const user = { messageId: 'user-1', isCreatedByUser: true } as TMessage;
+  const placeholder = assistantMessage({ messageId: 'user-1_', content: [] });
+  const older = assistantMessage({ messageId: 'older-response' });
+  const server = assistantMessage({ messageId: 'server-resp' });
+  const event = buildEvent({ responseMessageId: 'server-resp', index: 0 });
+
+  it('prefers the exact server id when that row already exists', () => {
+    expect(findSteerMessageIndex([user, placeholder, server], event, ['user-1_'])).toBe(2);
+  });
+
+  it("falls back to the pane's own placeholder before the first run step renames it", () => {
+    expect(findSteerMessageIndex([user, placeholder], event, ['user-1_'])).toBe(1);
+  });
+
+  it('never guesses by position when the event names a row the pane has not rendered', () => {
+    expect(findSteerMessageIndex([user, older], event)).toBe(-1);
+    expect(findSteerMessageIndex([user, older], event, [undefined, null])).toBe(-1);
+  });
+
+  it('ignores a placeholder id that names a user message', () => {
+    expect(findSteerMessageIndex([user, older], event, ['user-1'])).toBe(-1);
   });
 });

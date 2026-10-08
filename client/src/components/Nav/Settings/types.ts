@@ -17,6 +17,7 @@ export type SettingsTab =
 export type SectionId =
   | 'appearance'
   | 'layout'
+  | 'notifications'
   | 'accessibility'
   | 'admin'
   | 'sending'
@@ -27,6 +28,7 @@ export type SectionId =
   | 'stt'
   | 'tts'
   | 'memory'
+  | 'codeExecution'
   | 'data'
   | 'apiKeys'
   | 'langfuse'
@@ -40,17 +42,26 @@ export interface SettingsContextValue {
   balanceEnabled: boolean;
   hasAnyPersonalizationFeature: boolean;
   hasMemoryOptOut: boolean;
+  hasStatefulCodeSessions: boolean;
   hasRemoteAgents: boolean;
   hasUserProvidedEndpoints: boolean;
   hasMultiConvo: boolean;
   hasPrompts: boolean;
   isLocalProvider: boolean;
+  emailEnabled: boolean;
+  allowEmailChange: boolean;
+  passkeyLoginEnabled: boolean;
+  isTwoFactorPolicyProvider: boolean;
   twoFactorEnabled: boolean;
   allowAccountDeletion: boolean;
   aboutEnabled: boolean;
+  mascotAllowed: boolean;
   engineTTS: string;
   langfuseConnectionAccess: boolean;
   adminPanelURL: string;
+  replyTabBadgeAllowed: boolean;
+  replyNotificationsAllowed: boolean;
+  replyNotificationSoundAllowed: boolean;
 }
 
 export interface SettingEntry {
@@ -97,6 +108,7 @@ export const TABS: TabMeta[] = [
     sections: [
       { id: 'appearance', labelKey: 'com_ui_settings_section_appearance' },
       { id: 'layout', labelKey: 'com_ui_settings_section_layout' },
+      { id: 'notifications', labelKey: 'com_ui_settings_section_notifications' },
       { id: 'accessibility', labelKey: 'com_ui_settings_section_accessibility' },
       { id: 'admin', labelKey: 'com_ui_settings_section_admin' },
     ],
@@ -141,6 +153,7 @@ export const TABS: TabMeta[] = [
     icon: createElement(DataIcon),
     sections: [
       { id: 'memory', labelKey: 'com_ui_settings_section_memory' },
+      { id: 'codeExecution', labelKey: 'com_ui_settings_section_code_execution' },
       { id: 'data', labelKey: 'com_ui_settings_section_data' },
       { id: 'apiKeys', labelKey: 'com_ui_settings_section_api_keys' },
       { id: 'danger', labelKey: 'com_ui_settings_section_danger_zone', danger: true },

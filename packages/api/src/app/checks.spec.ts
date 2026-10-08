@@ -355,4 +355,16 @@ describe('handleRateLimits', () => {
     expect(process.env.STT_USER_MAX).toEqual('30');
     expect(process.env.STT_USER_WINDOW).toEqual('20');
   });
+
+  it('should set authenticated agent-event admission limits', () => {
+    handleRateLimits({
+      agentEvents: {
+        userMax: 80,
+        userWindowInMinutes: 2,
+      },
+    });
+
+    expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
+    expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
+  });
 });

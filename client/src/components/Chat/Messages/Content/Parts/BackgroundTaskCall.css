@@ -1,0 +1,24 @@
+/* The shared collapse hook keeps the body inert. The CSS keeps the same grid/opacity
+   timing without an uninspectable style object, including a reduced-motion
+   transitionend so the lazy body can unmount after it closes. */
+[data-background-task-fold] {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-background-task-fold][data-expanded='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-background-task-fold] {
+    transition:
+      grid-template-rows 0.01ms linear,
+      opacity 0.01ms linear;
+  }
+}

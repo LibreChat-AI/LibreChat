@@ -4,7 +4,7 @@ import {
   NEW_CHAT_PATH,
   mockReply,
   selectMockEndpoint,
-  sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 test.describe('endpoint switching', () => {
@@ -15,7 +15,7 @@ test.describe('endpoint switching', () => {
 
       await selectMockEndpoint(page, endpoint);
 
-      const response = await sendMessage(page, `hello ${endpoint.model}`);
+      const response = await sendMessageAndWaitForCompletion(page, `hello ${endpoint.model}`);
       expect(response.ok()).toBeTruthy();
       await expect(mockReply(page)).toBeVisible();
     });

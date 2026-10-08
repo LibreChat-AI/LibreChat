@@ -153,37 +153,40 @@ describe('getOpenAIConfig - Google Compatibility', () => {
         expect(result.tools).toEqual([]);
       });
 
-      it('should strip Flash-blocked addParams so the transform cannot re-add them', () => {
-        const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
-        const endpoint = 'Gemini (Custom)';
-        const options = {
-          modelOptions: {
-            model: 'gemini-3.6-flash',
-          },
-          customParams: {
-            defaultParamsEndpoint: 'google',
-          },
-          addParams: {
-            temperature: 0.8,
-            topP: 0.95,
-            topK: 40,
-            presencePenalty: 0.5,
-            frequencyPenalty: 0.5,
-            maxOutputTokens: 8192, // Supported Google param, should survive
-          },
-          reverseProxyUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        };
+      it.each(['gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-3.8-flash'])(
+        'should strip Flash-blocked addParams so the transform cannot re-add them (%s)',
+        (model) => {
+          const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });
+          const endpoint = 'Gemini (Custom)';
+          const options = {
+            modelOptions: {
+              model,
+            },
+            customParams: {
+              defaultParamsEndpoint: 'google',
+            },
+            addParams: {
+              temperature: 0.8,
+              topP: 0.95,
+              topK: 40,
+              presencePenalty: 0.5,
+              frequencyPenalty: 0.5,
+              maxOutputTokens: 8192, // Supported Google param, should survive
+            },
+            reverseProxyUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+          };
 
-        const result = getOpenAIConfig(apiKey, options, endpoint);
+          const result = getOpenAIConfig(apiKey, options, endpoint);
 
-        expect(result.llmConfig).not.toHaveProperty('temperature');
-        expect(result.llmConfig).not.toHaveProperty('topP');
-        expect(result.llmConfig).not.toHaveProperty('presencePenalty');
-        expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
-        expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('topK');
-        expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('presencePenalty');
-        expect(result.llmConfig.modelKwargs).toMatchObject({ maxOutputTokens: 8192 });
-      });
+          expect(result.llmConfig).not.toHaveProperty('temperature');
+          expect(result.llmConfig).not.toHaveProperty('topP');
+          expect(result.llmConfig).not.toHaveProperty('presencePenalty');
+          expect(result.llmConfig).not.toHaveProperty('frequencyPenalty');
+          expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('topK');
+          expect(result.llmConfig.modelKwargs ?? {}).not.toHaveProperty('presencePenalty');
+          expect(result.llmConfig.modelKwargs).toMatchObject({ maxOutputTokens: 8192 });
+        },
+      );
 
       it('should drop Google native params with dropParams', () => {
         const apiKey = JSON.stringify({ GOOGLE_API_KEY: 'test-google-key' });

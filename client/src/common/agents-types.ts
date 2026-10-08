@@ -6,8 +6,12 @@ import type {
   SupportContact,
   AgentProvider,
   MemoryScope,
+  SkillsScope,
+  StatefulCodeEnvironment,
   GraphEdge,
   Agent,
+  AgentInstructionsPrompt,
+  RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
 import type { OptionWithIcon, ExtendedFile } from './types';
 
@@ -35,6 +39,10 @@ export type AgentForm = {
   name: string | null;
   description: string | null;
   instructions: string | null;
+  /** Whether instructions come from the inline editor or a linked native prompt group. */
+  instructionsSource: 'inline' | 'prompt';
+  /** The linked prompt group revision, or the restricted stub when the editor cannot view it. */
+  instructionsPrompt: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null;
   model: string | null;
   model_parameters: AgentModelParameters;
   tools?: string[];
@@ -42,8 +50,19 @@ export type AgentForm = {
   tool_options?: AgentToolOptions;
   skills?: string[];
   skills_enabled?: boolean;
+  skill_authoring_enabled?: boolean;
+  skills_scope?: SkillsScope;
   /** Memory partition: 'agent' isolates memories per (user, agent); default shared pool */
   memory_scope?: MemoryScope;
+  /** Sharing scope for stateful Code API workspaces. */
+  stateful_code_environment?: StatefulCodeEnvironment;
+  /** Operator-configured managed or attached execution environment. */
+  code_environment_id?: string | null;
+  code_environment_ids?: string[];
+  code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
+  /** Git authorship applied to sandboxed commands for this agent. */
+  git_identity?: Agent['git_identity'];
   provider?: AgentProvider | OptionWithIcon;
   /** @deprecated Use edges instead */
   agent_ids?: string[];
@@ -52,6 +71,9 @@ export type AgentForm = {
   [AgentCapabilities.artifacts]?: ArtifactModes | string;
   recursion_limit?: number;
   support_contact?: SupportContact;
+  conversation_starters?: string[];
+  /** Unsent starter text; builder-only, never sent to the API. */
+  conversation_starter_draft?: string;
   category: string;
   // Avatar management fields
   avatar_file?: File | null;

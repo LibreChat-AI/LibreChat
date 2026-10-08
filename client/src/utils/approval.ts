@@ -16,6 +16,9 @@ export const ASK_USER_QUESTION = 'ask_user_question' as const;
  * and the model needs to know the user declined rather than answered.
  */
 export const ASK_USER_DECLINED_ANSWER = 'The user chose not to answer this question.';
+const ASK_USER_QUESTION_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const MAX_ASK_USER_QUESTIONS = 4;
+const MAX_ASK_USER_QUESTION_HEADER_LENGTH = 80;
 
 /** Shape of the synthetic content part carrying an ask-user pending action. */
 export interface AskUserQuestionPart {
@@ -23,6 +26,7 @@ export interface AskUserQuestionPart {
   [ASK_USER_QUESTION]: {
     actionId: string;
     question: Agents.AskUserQuestionRequest;
+    questions?: Agents.AskUserQuestionBatchItem[];
     /** The ask tool call that raised the pause (present from
      *  `@librechat/agents` > 3.3.8) — lets the answer stamp target the exact
      *  tool-call part in multi-ask turns. */
@@ -106,7 +110,10 @@ function tagApprovalOnPart(
       approval: {
         actionId,
         allowed_decisions: reviewConfig?.allowed_decisions ?? [],
+        remember_scope: reviewConfig?.remember_scope,
+        remember_unavailable: reviewConfig?.remember_unavailable,
         description: request.description,
+        ...(reviewConfig?.allow_always === true && { allow_always: true }),
       },
     };
     changed = true;
@@ -178,6 +185,7 @@ function applyAskUserQuestion(
     [ASK_USER_QUESTION]: {
       actionId,
       question: payload.question,
+      ...(payload.questions != null && { questions: payload.questions }),
       ...(payload.tool_call_id != null && { tool_call_id: payload.tool_call_id }),
     },
   } as unknown as TMessageContentParts;
@@ -244,6 +252,60 @@ export function parseAskUserQuestionArgs(
     options: options && options.length > 0 ? options : undefined,
     multiSelect: request.multiSelect === true ? true : undefined,
   };
+}
+
+/** Parse and validate the batched form of an ask-user tool call. */
+export function parseAskUserQuestionsArgs(
+  args: string | Record<string, unknown> | undefined,
+): Agents.AskUserQuestionsRequest | null {
+  let parsed: unknown = args;
+  if (typeof args === 'string') {
+    if (args.trim().length === 0) {
+      return null;
+    }
+    try {
+      parsed = JSON.parse(args);
+    } catch {
+      return null;
+    }
+  }
+  const rawQuestions =
+    parsed != null && typeof parsed === 'object'
+      ? (parsed as { questions?: unknown }).questions
+      : undefined;
+  if (
+    !Array.isArray(rawQuestions) ||
+    rawQuestions.length === 0 ||
+    rawQuestions.length > MAX_ASK_USER_QUESTIONS
+  ) {
+    return null;
+  }
+  const questions: Agents.AskUserQuestionBatchItem[] = [];
+  const ids = new Set<string>();
+  for (const item of rawQuestions) {
+    if (item == null || typeof item !== 'object') {
+      return null;
+    }
+    const id = (item as { id?: unknown }).id;
+    const request = parseAskUserQuestionArgs(item as Record<string, unknown>);
+    if (
+      typeof id !== 'string' ||
+      !ASK_USER_QUESTION_ID_PATTERN.test(id) ||
+      ids.has(id) ||
+      request == null
+    ) {
+      return null;
+    }
+    ids.add(id);
+    const rawHeader = (item as { header?: unknown }).header;
+    const header = typeof rawHeader === 'string' ? rawHeader.trim() : '';
+    questions.push({
+      id,
+      ...(header.length > 0 && header.length <= MAX_ASK_USER_QUESTION_HEADER_LENGTH && { header }),
+      ...request,
+    });
+  }
+  return { questions };
 }
 
 /**
@@ -318,7 +380,7 @@ export const isAnsweredAskUserQuestionPart = (
 export function resolveAskUserQuestionPart(
   message: TMessage,
   actionId: string,
-  answer: string,
+  resolution: string | Record<string, string>,
 ): TMessage {
   const content = message.content;
   if (!Array.isArray(content)) {
@@ -337,6 +399,13 @@ export function resolveAskUserQuestionPart(
    *  id — several ask cards in one turn each resolve their own part. Absent
    *  (older server/SDK), the newest-unanswered fallback below applies. */
   const targetToolCallId = syntheticPart[ASK_USER_QUESTION].tool_call_id;
+  const questions = syntheticPart[ASK_USER_QUESTION].questions;
+  const args =
+    questions != null
+      ? JSON.stringify({ questions })
+      : JSON.stringify(syntheticPart[ASK_USER_QUESTION].question);
+  const output =
+    typeof resolution === 'string' ? resolution : JSON.stringify({ answers: resolution });
 
   let patched = false;
   const nextContent: TMessageContentParts[] = [];
@@ -369,13 +438,13 @@ export function resolveAskUserQuestionPart(
       ...(part as object),
       tool_call: {
         ...toolCall,
-        ...(hasArgs ? {} : { args: JSON.stringify(syntheticPart[ASK_USER_QUESTION].question) }),
-        output: answer,
+        ...(hasArgs ? {} : { args }),
+        output,
         progress: 1,
       },
     } as TMessageContentParts;
     if (typeof toolCall.id === 'string' && toolCall.id.length > 0) {
-      submittedAskAnswers.set(toolCall.id, answer);
+      submittedAskAnswers.set(toolCall.id, output);
     }
     patched = true;
     break;
@@ -424,9 +493,12 @@ export function splitOtherOption(options: Agents.AskUserQuestionOption[] | undef
  * in-flight cache, a replayed event) can put one back. Honouring it would
  * reopen the popover on a question the user already answered.
  */
-export function findLiveAskUserQuestion(
-  messages: TMessage[] | null | undefined,
-): { actionId: string; question: Agents.AskUserQuestionRequest; messageId: string } | null {
+export function findLiveAskUserQuestion(messages: TMessage[] | null | undefined): {
+  actionId: string;
+  question: Agents.AskUserQuestionRequest;
+  questions?: Agents.AskUserQuestionBatchItem[];
+  messageId: string;
+} | null {
   if (!Array.isArray(messages)) {
     return null;
   }
@@ -440,7 +512,12 @@ export function findLiveAskUserQuestion(
       const part = content[j];
       if (isAskUserQuestionPart(part) && !isAnsweredAskUserQuestionPart(part)) {
         const ask = (part as unknown as AskUserQuestionPart)[ASK_USER_QUESTION];
-        return { actionId: ask.actionId, question: ask.question, messageId: message.messageId };
+        return {
+          actionId: ask.actionId,
+          question: ask.question,
+          questions: ask.questions,
+          messageId: message.messageId,
+        };
       }
     }
   }

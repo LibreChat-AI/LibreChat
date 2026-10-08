@@ -9,12 +9,15 @@ const { CacheKeys, ErrorTypes, SystemRoles } = require('librechat-data-provider'
 const {
   isEnabled,
   logHeaders,
-  safeStringify,
+  logOpenIdRequestBody,
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
+  createOpenIDUser,
   getBalanceConfig,
   selectOpenIdRole,
+  getTokenCacheTtlMs,
+  applyOpenIDProfile,
   getAvatarSaveParams,
   isEmailDomainAllowed,
   getAvatarFileStrategy,
@@ -23,10 +26,17 @@ const {
   getOpenIdRoleSyncOptions,
   getOpenIdRolesForOpenIdSync,
   getLibreChatRolesForOpenIdSync,
+  DEFAULT_OAUTH_TOKEN_TTL_SECONDS,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
-const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
+const {
+  findUser,
+  updateUser,
+  findRolesByNames,
+  findBalanceByUser,
+  createUserIfAbsent,
+} = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -47,15 +57,7 @@ async function customFetch(url, options) {
     logger.debug(`[openidStrategy] Request method: ${options.method || 'GET'}`);
     logger.debug(`[openidStrategy] Request headers: ${logHeaders(options.headers)}`);
     if (options.body) {
-      let bodyForLogging = '';
-      if (options.body instanceof URLSearchParams) {
-        bodyForLogging = options.body.toString();
-      } else if (typeof options.body === 'string') {
-        bodyForLogging = options.body;
-      } else {
-        bodyForLogging = safeStringify(options.body);
-      }
-      logger.debug(`[openidStrategy] Request body: ${bodyForLogging}`);
+      logger.debug(`[openidStrategy] Request body: ${logOpenIdRequestBody(options.body)}`);
     }
   }
 
@@ -188,7 +190,7 @@ const exchangeAccessTokenIfNeeded = async (config, accessToken, sub, fromCache =
       {
         access_token: grantResponse.access_token,
       },
-      grantResponse.expires_in * 1000,
+      getTokenCacheTtlMs(grantResponse.expires_in, DEFAULT_OAUTH_TOKEN_TTL_SECONDS),
     );
     return grantResponse.access_token;
   }
@@ -370,12 +372,11 @@ async function exchangeTokenForOverage(accessToken, sub) {
     );
   }
 
-  const ttlMs =
-    Number.isFinite(grantResponse.expires_in) && grantResponse.expires_in > 0
-      ? grantResponse.expires_in * 1000
-      : 3600 * 1000;
-
-  await tokensCache.set(cacheKey, { access_token: grantResponse.access_token }, ttlMs);
+  await tokensCache.set(
+    cacheKey,
+    { access_token: grantResponse.access_token },
+    getTokenCacheTtlMs(grantResponse.expires_in, DEFAULT_OAUTH_TOKEN_TTL_SECONDS),
+  );
 
   return grantResponse.access_token;
 }
@@ -587,14 +588,15 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('Email domain not allowed');
   }
 
-  const result = await findOpenIDUser({
+  const lookup = {
     findUser,
     email: email,
     openidId: claims.sub || userinfo.sub,
     openidIssuer,
     idOnTheSource: claims.oid || userinfo.oid,
     strategyName: 'openidStrategy',
-  });
+  };
+  const result = await findOpenIDUser(lookup);
   let user = result.user;
   const error = result.error;
 
@@ -602,7 +604,7 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error(ErrorTypes.AUTH_FAILED);
   }
 
-  const appConfig = user?.tenantId ? await resolveAppConfigForUser(getAppConfig, user) : baseConfig;
+  let appConfig = user?.tenantId ? await resolveAppConfigForUser(getAppConfig, user) : baseConfig;
 
   if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
     logger.error(
@@ -683,33 +685,28 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('User does not exist');
   }
 
-  if (!user) {
-    user = {
-      provider: 'openid',
-      openidId: userinfo.sub,
-      username,
-      email: email || '',
-      emailVerified: userinfo.email_verified || false,
-      name: fullName,
-      idOnTheSource: userinfo.oid,
-      openidIssuer,
-    };
+  const profile = {
+    openidId: userinfo.sub,
+    openidIssuer,
+    username,
+    name: fullName,
+    email,
+    emailVerified: userinfo.email_verified || false,
+    idOnTheSource: userinfo.oid,
+  };
 
-    const balanceConfig = getBalanceConfig(appConfig);
-    user = await createUser(user, balanceConfig, true, true);
+  if (!user) {
+    ({ user, appConfig } = await createOpenIDUser({
+      lookup,
+      profile,
+      appConfig,
+      getAppConfig,
+      getBalanceConfig,
+      createUserIfAbsent,
+      findBalanceByUser,
+    }));
   } else {
-    user.provider = 'openid';
-    user.openidId = userinfo.sub;
-    if (openidIssuer) {
-      user.openidIssuer = openidIssuer;
-    }
-    user.username = username;
-    user.name = fullName;
-    user.idOnTheSource = userinfo.oid;
-    if (email && email !== user.email) {
-      user.email = email;
-      user.emailVerified = userinfo.email_verified || false;
-    }
+    user = applyOpenIDProfile(user, profile);
   }
 
   const adminRole = process.env.OPENID_ADMIN_ROLE;

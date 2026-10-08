@@ -23,6 +23,13 @@ interface RawSharedLink {
   expiredAt?: Date;
 }
 
+interface SharedLinkAccessRequest extends Request {
+  shareResourceId?: string;
+  shareTenantId?: string;
+  shareConversationId?: string;
+  shareOwnerId?: string;
+}
+
 export interface SharedLinkAccessDeps {
   mongoose: typeof import('mongoose');
   aclService?: AccessControlService;
@@ -85,6 +92,15 @@ export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
       return;
     }
 
+    const continueRequest = (): void => {
+      const sharedRequest = req as SharedLinkAccessRequest;
+      sharedRequest.shareResourceId = resourceId;
+      sharedRequest.shareTenantId = rawShare.tenantId;
+      sharedRequest.shareConversationId = rawShare.conversationId;
+      sharedRequest.shareOwnerId = rawShare.user;
+      next();
+    };
+
     const user = req.user as IUser | undefined;
 
     const runWithTenant = async (fn: () => Promise<void>): Promise<void> => {
@@ -109,8 +125,7 @@ export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
 
       if (publicGranted) {
         if (isEnabled(process.env.ALLOW_SHARED_LINKS_PUBLIC)) {
-          (req as unknown as Record<string, unknown>).shareResourceId = resourceId;
-          next();
+          continueRequest();
           return;
         }
 
@@ -119,8 +134,7 @@ export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
           return;
         }
 
-        (req as unknown as Record<string, unknown>).shareResourceId = resourceId;
-        next();
+        continueRequest();
         return;
       }
 
@@ -151,8 +165,7 @@ export function createSharedLinkAccessMiddleware(deps: SharedLinkAccessDeps) {
         return;
       }
 
-      (req as unknown as Record<string, unknown>).shareResourceId = resourceId;
-      next();
+      continueRequest();
     });
   };
 }

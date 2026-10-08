@@ -7,6 +7,8 @@ import { bindingHash } from '~/utils/shortcuts';
 import store from '~/store';
 
 export type ComposerBindings = {
+  /** Whether user-configurable keyboard shortcuts are globally enabled. */
+  shortcutsEnabled: boolean;
   /**
    * Effective `submitMessage` override: `undefined` when unset (default Ctrl/Cmd+Enter applies),
    * `null` when explicitly unbound, otherwise the rebound chord.
@@ -30,20 +32,27 @@ export type ComposerBindings = {
  * composer keydown handler and the during-run hovercard hints. */
 export default function useComposerBindings(): ComposerBindings {
   const customShortcuts = useRecoilValue(store.customShortcuts);
+  const shortcutsEnabled = useRecoilValue(store.shortcutsEnabled);
   const resolvedBindings = useMemo(
     () => resolveShortcutBindings(customShortcuts),
     [customShortcuts],
   );
 
   const submitOverride = useMemo(() => {
+    if (!shortcutsEnabled) {
+      return null;
+    }
     const override = customShortcuts['submitMessage'];
     if (!override) {
       return resolvedBindings.get('submitMessage') == null ? null : undefined;
     }
     return resolvedBindings.get('submitMessage') ?? null;
-  }, [customShortcuts, resolvedBindings]);
+  }, [customShortcuts, resolvedBindings, shortcutsEnabled]);
 
   const yieldedChords = useMemo(() => {
+    if (!shortcutsEnabled) {
+      return new Set<string>();
+    }
     const editingAllowed: ReadonlySet<string> = EDITING_ALLOWED_SHORTCUTS;
     const hashes = new Set<string>();
     for (const actionId of editingAllowed) {
@@ -56,7 +65,10 @@ export default function useComposerBindings(): ComposerBindings {
       }
     }
     return hashes;
-  }, [resolvedBindings]);
+  }, [resolvedBindings, shortcutsEnabled]);
 
-  return useMemo(() => ({ submitOverride, yieldedChords }), [submitOverride, yieldedChords]);
+  return useMemo(
+    () => ({ shortcutsEnabled, submitOverride, yieldedChords }),
+    [shortcutsEnabled, submitOverride, yieldedChords],
+  );
 }

@@ -3,7 +3,15 @@ import { logger } from '@librechat/data-schemas';
 import type Keyv from 'keyv';
 import type { IServerConfigsRepositoryInterface } from '~/mcp/registry/ServerConfigsRepositoryInterface';
 import type { ParsedServerConfig, AddServerResult } from '~/mcp/types';
-import { keyvRedisClient, observeRedisOperation, RedisUseCases, standardCache } from '~/cache';
+import {
+  cacheConfig,
+  evalKeyvRedisScript,
+  keyvRedisClient,
+  observeRedisOperation,
+  RedisUseCases,
+  standardCache,
+} from '~/cache';
+import { PRESERVE_EMPTY_ARRAYS_LUA } from './preserveEmptyArraysLua';
 import { BaseRegistryCache } from './BaseRegistryCache';
 
 /**
@@ -14,6 +22,23 @@ import { BaseRegistryCache } from './BaseRegistryCache';
  * Data persists across server restarts and is accessible from any instance in the cluster.
  */
 const BATCH_SIZE = 100;
+
+const PATCH_ENTRY = `
+${PRESERVE_EMPTY_ARRAYS_LUA}
+local encoded = redis.call('GET', KEYS[1])
+if not encoded then return 0 end
+local sentinel = emptyArraySentinel(encoded, ARGV[1])
+local envelope = cjson.decode(protectEmptyArrays(encoded, sentinel))
+if not envelope.value then return 0 end
+local fields = cjson.decode(protectEmptyArrays(ARGV[1], sentinel))
+if ARGV[2] ~= '' and tonumber(ARGV[2]) ~= envelope.value.updatedAt then return 0 end
+if fields.resolvedInstructions and envelope.value.resolvedInstructions then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+for field, value in pairs(fields) do envelope.value[field] = value end
+redis.call('SET', KEYS[1], restoreEmptyArrays(cjson.encode(envelope), sentinel))
+if ttl > 0 then redis.call('PEXPIRE', KEYS[1], ttl) end
+return 1
+`;
 
 export class ServerConfigsCacheRedis
   extends BaseRegistryCache
@@ -26,6 +51,22 @@ export class ServerConfigsCacheRedis
     super(leaderOnly);
     this.namespace = namespace;
     this.cache = standardCache(`${this.PREFIX}::Servers::${namespace}`);
+  }
+
+  private usesRedisStore(): boolean {
+    const namespace = this.cache.namespace;
+    return (
+      keyvRedisClient != null &&
+      namespace != null &&
+      !cacheConfig.FORCED_IN_MEMORY_CACHE_NAMESPACES?.includes(namespace)
+    );
+  }
+
+  private redisKey(serverName: string): string {
+    const prefix = cacheConfig.REDIS_KEY_PREFIX
+      ? `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`
+      : '';
+    return `${prefix}${this.cache.namespace}:${serverName}`;
   }
 
   public async add(serverName: string, config: ParsedServerConfig): Promise<AddServerResult> {
@@ -58,6 +99,39 @@ export class ServerConfigsCacheRedis
     this.successCheck(`upsert ${this.namespace} server "${serverName}"`, success);
   }
 
+  /** Merges derived fields into an existing entry without bumping `updatedAt` —
+   * see the interface doc: a bump would mark live connections stale. */
+  public async patch(
+    serverName: string,
+    fields: Partial<ParsedServerConfig>,
+    expectedUpdatedAt?: number,
+  ): Promise<boolean> {
+    if (this.leaderOnly) await this.leaderCheck(`patch ${this.namespace} MCP servers`);
+    if (this.usesRedisStore()) {
+      const result = await evalKeyvRedisScript(PATCH_ENTRY, {
+        keys: [this.redisKey(serverName)],
+        arguments: [
+          JSON.stringify(fields),
+          expectedUpdatedAt != null ? String(expectedUpdatedAt) : '',
+        ],
+      });
+      return result === 1;
+    }
+    const existing = (await this.cache.get(serverName)) as ParsedServerConfig | undefined;
+    if (!existing) {
+      return false;
+    }
+    if (expectedUpdatedAt != null && existing.updatedAt !== expectedUpdatedAt) {
+      return false;
+    }
+    if (fields.resolvedInstructions != null && existing.resolvedInstructions != null) {
+      return false;
+    }
+    const success = await this.cache.set(serverName, { ...existing, ...fields });
+    this.successCheck(`patch ${this.namespace} server "${serverName}"`, success);
+    return true;
+  }
+
   public async remove(serverName: string): Promise<void> {
     if (this.leaderOnly) await this.leaderCheck(`remove ${this.namespace} MCP servers`);
     const success = await this.cache.delete(serverName);
@@ -83,8 +157,8 @@ export class ServerConfigsCacheRedis
       'scan',
       async () => {
         const scannedKeys: string[] = [];
-        for await (const key of redisClient.scanIterator({ MATCH: pattern })) {
-          scannedKeys.push(key);
+        for await (const page of redisClient.scanIterator({ MATCH: pattern })) {
+          scannedKeys.push(...page);
         }
         return scannedKeys;
       },

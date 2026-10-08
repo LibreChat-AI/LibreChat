@@ -1,4 +1,8 @@
-import { parseBackgroundHandle, splitBackgroundAttachments } from '../handle';
+import {
+  parseBackgroundHandle,
+  parseSubagentBackgroundHandle,
+  splitBackgroundAttachments,
+} from '../handle';
 
 describe('parseBackgroundHandle', () => {
   const handle = JSON.stringify({
@@ -71,6 +75,16 @@ describe('parseBackgroundHandle', () => {
     expect(fileAttachments).toHaveLength(0);
   });
 
+  it('preserves the cancelled terminal status from an owned marker', () => {
+    const marker = {
+      type: 'background_task_status',
+      file_id: 'bg-tc-mine',
+      toolCallId: 'tc-mine',
+      status: 'cancelled',
+    } as never;
+    expect(splitBackgroundAttachments([marker], 'tc-mine').backgroundStatus).toBe('cancelled');
+  });
+
   it('returns null for oversized payloads (real output, not a handle)', () => {
     const big = JSON.stringify({
       background_task_id: 'task-1',
@@ -78,5 +92,45 @@ describe('parseBackgroundHandle', () => {
       padding: 'x'.repeat(2000),
     });
     expect(parseBackgroundHandle(big)).toBeNull();
+  });
+});
+
+describe('parseSubagentBackgroundHandle', () => {
+  const handle = JSON.stringify({
+    background_task_id: 'task-1',
+    subagent_thread_id: 'thread-1',
+    tool: 'subagent',
+    subagent_type: 'researcher',
+    status: 'running',
+    message:
+      'Started subagent "researcher" background task. Poll the host background-task tool with background_task_id "task-1".',
+  });
+
+  it('parses the exact host-issued detached-subagent handle', () => {
+    expect(parseSubagentBackgroundHandle(handle, { run_in_background: true })).toEqual(
+      expect.objectContaining({
+        background_task_id: 'task-1',
+        subagent_thread_id: 'thread-1',
+        tool: 'subagent',
+      }),
+    );
+  });
+
+  it.each([
+    [undefined, { run_in_background: true }],
+    ['', { run_in_background: true }],
+    ['{"subagent_thread_id":"thread-1"}', { run_in_background: true }],
+    [
+      '{"background_task_id":"task-1","subagent_thread_id":"thread-1","tool":"execute_code","subagent_type":"researcher","status":"running","message":"background_task_id task-1"}',
+      { run_in_background: true },
+    ],
+    [
+      '{"background_task_id":"task-1","subagent_thread_id":"thread-1","tool":"subagent","subagent_type":"researcher","status":"running","message":"ordinary result","extra":true}',
+      { run_in_background: true },
+    ],
+    [handle, { run_in_background: false }],
+    [handle, undefined],
+  ])('rejects non-handles and spoofable near-matches: %s', (output, args) => {
+    expect(parseSubagentBackgroundHandle(output, args)).toBeNull();
   });
 });

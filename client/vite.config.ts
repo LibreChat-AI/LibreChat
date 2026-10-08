@@ -1,11 +1,12 @@
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import { constants } from 'zlib';
 import { defineConfig } from 'vite';
 import { createRequire } from 'module';
 import { VitePWA } from 'vite-plugin-pwa';
-import { compression } from 'vite-plugin-compression2';
 import { nodePolyfills } from 'vite-plugin-node-polyfills';
+import { compression, defineAlgorithm } from 'vite-plugin-compression2';
 import type { Plugin } from 'vite';
 
 const require = createRequire(import.meta.url);
@@ -84,10 +85,11 @@ export default defineConfig(({ command }) => ({
         this.emitFile({
           type: 'asset',
           fileName: 'sw-heal.js',
-          source: fs.readFileSync(path.resolve(__dirname, 'sw/heal.js'), 'utf8'),
+          source: fs.readFileSync(path.resolve(import.meta.dirname, 'sw/heal.js'), 'utf8'),
         });
       },
     },
+    copyPublicAssets(),
     VitePWA({
       injectRegister: 'auto', // 'auto' | 'manual' | 'disabled'
       registerType: 'autoUpdate', // 'prompt' | 'autoUpdate'
@@ -102,8 +104,9 @@ export default defineConfig(({ command }) => ({
           'assets/favicon*.png',
           'assets/icon-*.png',
           'assets/apple-touch-icon*.png',
+          /** `manifest.webmanifest` is not listed: vite-plugin-pwa always appends it as an
+           * additional manifest entry, so globbing it too duplicates the precache entry. */
           'assets/maskable-icon.png',
-          'manifest.webmanifest',
         ],
         globIgnores: [
           'images/**/*',
@@ -115,6 +118,14 @@ export default defineConfig(({ command }) => ({
           'assets/query-devtools*.js',
         ],
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
+        /**
+         * vite-plugin-pwa defaults this to `/^assets\//`, which is only true for the
+         * hashed bundle output: the icons live in `assets/` under stable filenames, so the
+         * default marks them immutable (`revision: null`) and an installed PWA would keep
+         * a rebranded icon forever. Match Vite's `[name].[hash].[ext]` shape instead so
+         * hashed chunks stay revision-free while the icons get content revisions.
+         */
+        dontCacheBustURLsMatching: /\.[\w-]{8}\.(?:js|css)$/,
         /** LibreChat mutates index.html per request for subpath and language support. */
         navigateFallback: null,
         /** Reloads window clients that cannot answer a ping after activation —
@@ -178,6 +189,20 @@ export default defineConfig(({ command }) => ({
     ...(buildSourceMap ? [sourcemapExclude({ excludeNodeModules: true })] : []),
     compression({
       threshold: 10240,
+      /**
+       * Brotli's default quality of 11 costs ~13s of single-threaded CPU on this bundle
+       * against ~0.5s for gzip, and the plugin's scheduler serializes quality >= 10 as a
+       * high-memory operation. Quality 5 compresses in ~0.2s, still lands under gzip
+       * (4.3MB vs 5.0MB), and parallelizes. `.br` is only served when
+       * ENABLE_STATIC_ASSET_BROTLI is set, so the extra 0.5MB buys far less than it costs
+       * on every build of every platform.
+       */
+      algorithms: [
+        defineAlgorithm('gzip', { level: 9 }),
+        defineAlgorithm('brotliCompress', {
+          params: { [constants.BROTLI_PARAM_QUALITY]: 5 },
+        }),
+      ],
     }),
   ],
   optimizeDeps: {
@@ -197,6 +222,23 @@ export default defineConfig(({ command }) => ({
       output: {
         codeSplitting: {
           groups: [
+            /**
+             * The boot chunks import Vite's dynamic-import preload helper, the Buffer and
+             * process shims, DOMPurify, uuid and dayjs. The catch-all group below captures each
+             * module's dependencies with it, so these used to land in the mermaid chunk, which
+             * depends on them too, and every page then downloaded and evaluated that whole chunk
+             * before its first request. Claiming them first keeps mermaid lazy.
+             */
+            {
+              name: 'runtime-shims',
+              test: /vite[\\/]preload-helper|node_modules[\\/]vite-plugin-node-polyfills[\\/]/,
+              priority: 1,
+            },
+            {
+              name: 'shared-libs',
+              test: /node_modules[\\/](dompurify|uuid|dayjs)[\\/]/,
+              priority: 1,
+            },
             {
               name(id: string) {
                 const normalizedId = id.replace(/\\/g, '/');
@@ -407,8 +449,7 @@ export default defineConfig(({ command }) => ({
   },
   resolve: {
     alias: {
-      '~': path.join(__dirname, 'src/'),
-      $fonts: path.resolve(__dirname, 'public/fonts'),
+      '~': path.join(import.meta.dirname, 'src/'),
       'micromark-extension-math': 'micromark-extension-llm-math',
     },
   },
@@ -429,6 +470,56 @@ export function sourcemapExclude(opts?: SourcemapExclude): Plugin {
           map: { mappings: '' },
         };
       }
+    },
+  };
+}
+
+/**
+ * Production builds set `publicDir: false`, so nothing under public/ reaches dist on its
+ * own. This copies what the server actually has to serve: all of public/assets (the PWA
+ * icons plus the endpoint, tool and language logos referenced at runtime) and robots.txt.
+ * The font files live in the component library (`packages/client/src/theme/fonts`) and are
+ * emitted as bundle assets through the `@font-face` rules `tokens.css` imports, so only their
+ * licence texts are copied, next to them in assets/fonts: the SIL OFL lets a font be
+ * redistributed only with its licence.
+ *
+ * The copy MUST happen inside the build. vite-plugin-pwa globs dist/ for
+ * `workbox.globPatterns` from its `closeBundle` hook, which runs after every plugin's
+ * `writeBundle`, so copying here is what lets the `assets/*.png` icon patterns match. An
+ * `npm run build && node scripts/post-build.cjs` chain cannot: it runs after the service
+ * worker has already been generated, so the icons were silently absent from the precache
+ * manifest.
+ */
+export function copyPublicAssets(): Plugin {
+  const publicDir = path.resolve(import.meta.dirname, 'public');
+  const fontsDir = path.resolve(import.meta.dirname, '../packages/client/src/theme/fonts');
+  let outDir = path.resolve(import.meta.dirname, 'dist');
+  return {
+    name: 'copy-public-assets',
+    apply: 'build',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir);
+    },
+    async writeBundle() {
+      await fs.promises.cp(path.join(publicDir, 'assets'), path.join(outDir, 'assets'), {
+        recursive: true,
+      });
+      await fs.promises.copyFile(
+        path.join(publicDir, 'robots.txt'),
+        path.join(outDir, 'robots.txt'),
+      );
+      const licences = (await fs.promises.readdir(fontsDir)).filter((name) =>
+        name.endsWith('.txt'),
+      );
+      await fs.promises.mkdir(path.join(outDir, 'assets', 'fonts'), { recursive: true });
+      await Promise.all(
+        licences.map((name) =>
+          fs.promises.copyFile(
+            path.join(fontsDir, name),
+            path.join(outDir, 'assets', 'fonts', name),
+          ),
+        ),
+      );
     },
   };
 }

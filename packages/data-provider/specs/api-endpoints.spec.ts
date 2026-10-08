@@ -1,7 +1,16 @@
 /**
  * @jest-environment jsdom
  */
-import { buildLoginRedirectUrl, getSharedLinks } from '../src/api-endpoints';
+import {
+  agentQueuedTurn,
+  buildLoginRedirectUrl,
+  getSharedLinks,
+  agentQueuedTurnsByConversation,
+  enableTwoFactorSetup,
+  confirmTwoFactorSetup,
+  acknowledgeTwoFactorSetup,
+  finalizeTwoFactorSetup,
+} from '../src/api-endpoints';
 
 describe('buildLoginRedirectUrl', () => {
   afterEach(() => {
@@ -86,5 +95,38 @@ describe('getSharedLinks', () => {
     expect(result).toBe(
       '/api/share?pageSize=25&sortBy=createdAt&sortDirection=desc&search=100%25%20ready%20%26%20waiting&cursor=2030-01-01T00%3A00%3A00.000Z',
     );
+  });
+});
+
+describe('agent queued turns', () => {
+  it('encodes conversation identity exactly once', () => {
+    expect(agentQueuedTurnsByConversation('conversation/a b')).toBe(
+      '/api/agents/chat/queued-turns?conversationId=conversation%2Fa%20b',
+    );
+  });
+
+  it('encodes deduplicated known request identities as repeated bounded query values', () => {
+    expect(
+      agentQueuedTurnsByConversation('conversation/one', [
+        'request/one',
+        'request,two',
+        'request/one',
+      ]),
+    ).toBe(
+      '/api/agents/chat/queued-turns?conversationId=conversation%2Fone&clientRequestIds=request%2Fone&clientRequestIds=request%2Ctwo',
+    );
+  });
+
+  it('encodes queued-turn identity as one path segment', () => {
+    expect(agentQueuedTurn('turn/a b')).toBe('/api/agents/chat/queued-turns/turn%2Fa%20b');
+  });
+});
+
+describe('required two-factor setup endpoints', () => {
+  it('uses the purpose-specific setup paths', () => {
+    expect(enableTwoFactorSetup()).toBe('/api/auth/2fa/setup');
+    expect(confirmTwoFactorSetup()).toBe('/api/auth/2fa/setup/confirm');
+    expect(acknowledgeTwoFactorSetup()).toBe('/api/auth/2fa/setup/acknowledge');
+    expect(finalizeTwoFactorSetup()).toBe('/api/auth/2fa/setup/finalize');
   });
 });

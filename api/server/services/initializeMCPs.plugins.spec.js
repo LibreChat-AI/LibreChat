@@ -24,6 +24,7 @@ const mockRegisterShutdownTask = jest.fn();
 const mockSetHandler = jest.fn();
 
 jest.mock('@librechat/api', () => ({
+  createMCPAppBindingCodec: jest.fn(() => ({ create: jest.fn(), verify: jest.fn() })),
   get getDeploymentPluginMcpServers() {
     return mockGetDeploymentPluginMcpServers;
   },
@@ -49,6 +50,10 @@ jest.mock('./Config/mcp', () => ({
   renewMCPToolsCacheGeneration: jest.fn(),
   getNextAppToolsPublicationRevision: jest.fn(),
   updateMCPServerTools: jest.fn(),
+}));
+
+jest.mock('./MCPAuthorizationFenceRetry', () => ({
+  startMCPAuthorizationFenceRetryWorker: jest.fn(),
 }));
 
 const mockGetAppConfig = jest.fn();

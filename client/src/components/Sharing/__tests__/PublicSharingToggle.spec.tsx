@@ -26,6 +26,7 @@ describe('PublicSharingToggle', () => {
     const collapse = permissionLabel.closest('[aria-hidden="true"]');
 
     expect(collapse).toHaveClass('grid-rows-[0fr]');
+    expect(permissionLabel.closest('.overflow-hidden')).toBeInTheDocument();
 
     rerender(
       <PublicSharingToggle
@@ -38,5 +39,19 @@ describe('PublicSharingToggle', () => {
     expect(permissionLabel.closest('.bg-transparent')).toBeInTheDocument();
     expect(permissionLabel.closest('.bg-transparent')).not.toHaveClass('bg-surface-secondary/50');
     expect(permissionLabel.closest('.grid')).toHaveClass('grid-rows-[1fr]');
+  });
+
+  it('does not clip the open permission row, so the inline role menu can escape the box', () => {
+    render(
+      <PublicSharingToggle
+        isPublic={true}
+        onPublicToggle={jest.fn()}
+        onPublicRoleChange={jest.fn()}
+      />,
+    );
+
+    const permissionLabel = screen.getByText('com_ui_everyone_permission_level');
+    expect(permissionLabel.closest('.overflow-hidden')).toBeNull();
+    expect(permissionLabel.closest('.overflow-visible')).toBeInTheDocument();
   });
 });

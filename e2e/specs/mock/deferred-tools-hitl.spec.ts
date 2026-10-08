@@ -29,7 +29,7 @@ type MCPToolsResponse = {
 type AskResumeBody = {
   actionId?: string;
   agent_id?: string;
-  answer?: string;
+  answers?: Record<string, string>;
   conversationId?: string;
   endpoint?: string;
 };
@@ -127,7 +127,8 @@ test.describe('deferred tools across HITL resume', () => {
       const response = await sendMessage(page, `${PROMPT_MARKER}${label}`);
       expect(response.ok()).toBeTruthy();
       await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
-      await expect(page.getByText(question, { exact: true })).toBeVisible({ timeout: 30000 });
+      const questionCard = page.getByRole('paragraph').filter({ hasText: question });
+      await expect(questionCard).toHaveText(question, { timeout: 30000 });
 
       /** Reload the public conversation route while the graph is paused. This
        * proves the browser reconstructs the real persisted pending action,
@@ -135,25 +136,28 @@ test.describe('deferred tools across HITL resume', () => {
       const conversationPath = new URL(page.url()).pathname;
       await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(page).toHaveURL(conversationPath);
-      await expect(page.getByText(question, { exact: true })).toBeVisible({ timeout: 30000 });
+      await expect(questionCard).toHaveText(question, { timeout: 30000 });
 
       const option = page.getByRole('button', {
         name: new RegExp(`${escapeRegExp(optionLabel)}$`),
       });
       await expect(option).toBeVisible();
+      await option.click();
+      const submit = page.getByRole('button', { name: 'Submit', exact: true });
+      await expect(submit).toBeEnabled();
       const [resumeRequest, resumeResponse] = await Promise.all([
         page.waitForRequest(isResumeRequest),
         page.waitForResponse(
           (candidate) => isResumeRequest(candidate.request()) && candidate.status() === 200,
         ),
-        option.click(),
+        submit.click(),
       ]);
 
       const conversationId = conversationPath.replace('/c/', '');
       const body = resumeRequest.postDataJSON() as AskResumeBody;
       expect(body.actionId).toBeTruthy();
       expect(body.agent_id).toBe(agentId);
-      expect(body.answer).toBe(answer);
+      expect(body.answers).toEqual({ confirmation: answer });
       expect(body.conversationId).toBe(conversationId);
       expect(body.endpoint).toBe('agents');
       expect(resumeResponse.ok()).toBeTruthy();

@@ -7,7 +7,7 @@
  * - GenerationJobManager aborts the in-flight generation when its job is reaped
  *   or replaced, so client/graph references can be garbage collected.
  *
- * @see https://github.com/danny-avila/LibreChat/issues/13391
+ * @see https://github.com/LibreChat-AI/LibreChat/issues/13391
  */
 
 /** Suppress winston Console transport output (survives jest.resetModules) */
@@ -30,6 +30,35 @@ describe('InMemoryJobStore - stale running-job failsafe', () => {
 
     expect(removed).toBe(1);
     expect(await store.hasJob('s1')).toBe(false);
+
+    await store.destroy();
+  });
+
+  it('retains a terminal schedule job until reconciliation releases it', async () => {
+    const { InMemoryJobStore } = await import('../implementations/InMemoryJobStore');
+    const store = new InMemoryJobStore({ ttlAfterComplete: 0 });
+
+    const job = await store.createJob('scheduled-run', 'u1', 'scheduled-run', undefined, {
+      scheduleId: 'schedule-1',
+      preserveForScheduleReconcile: true,
+    });
+    await store.updateJob(
+      job.streamId,
+      {
+        status: 'complete',
+        completedAt: Date.now(),
+        scheduleOutcome: 'success',
+      },
+      job.createdAt,
+    );
+
+    expect(await store.cleanup()).toBe(0);
+    expect(await store.hasJob(job.streamId)).toBe(true);
+
+    await store.updateJob(job.streamId, { preserveForScheduleReconcile: false }, job.createdAt);
+
+    expect(await store.cleanup()).toBe(1);
+    expect(await store.hasJob(job.streamId)).toBe(false);
 
     await store.destroy();
   });
@@ -387,6 +416,62 @@ describe('GenerationJobManager - generation abort on reaping', () => {
     } finally {
       hasJobSpy.mockRestore();
       await manager.destroy();
+    }
+  });
+
+  it('keeps the predecessor subscription attached when reaper publication is fenced', async () => {
+    const { GenerationJobManagerClass } = await import('../GenerationJobManager');
+    const { InMemoryJobStore } = await import('../implementations/InMemoryJobStore');
+    const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+    const { GenerationPublicationFencedError } = await import('../interfaces/IJobStore');
+
+    jest.useFakeTimers();
+    try {
+      const store = new InMemoryJobStore({ ttlAfterComplete: 0, staleJobTimeout: 1000 });
+      const transport = new InMemoryEventTransport();
+      const manager = new GenerationJobManagerClass();
+      manager.configure({ jobStore: store, eventTransport: transport, isRedis: false });
+      manager.initialize();
+
+      const streamId = 'replacement-during-reaper-publication';
+      const predecessor = await manager.createJob(streamId, 'user-1', streamId);
+      const onDone = jest.fn();
+      const onError = jest.fn();
+      const subscription = await manager.subscribe(streamId, () => undefined, onDone, onError);
+      let successorCreatedAt = 0;
+      jest.spyOn(transport, 'emitError').mockImplementation(async () => {
+        const successor = await store.createJob(streamId, 'user-1', streamId);
+        successorCreatedAt = successor.createdAt;
+        throw new GenerationPublicationFencedError('error', streamId, predecessor.createdAt);
+      });
+
+      await jest.advanceTimersByTimeAsync(2000);
+      await (
+        manager as unknown as {
+          cleanup: () => Promise<void>;
+        }
+      ).cleanup();
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(transport.getSubscriberCount(streamId)).toBe(1);
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(1);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(1);
+      await transport.emitDone(
+        streamId,
+        { final: true, generationCreatedAt: successorCreatedAt },
+        predecessor.createdAt,
+      );
+      expect(onDone).toHaveBeenCalledWith({
+        final: true,
+        generationCreatedAt: successorCreatedAt,
+      });
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(0);
+      expect(manager.getRuntimeStats().fencedRuntimeRetirements).toBe(0);
+
+      subscription?.unsubscribe();
+      await manager.destroy();
+    } finally {
+      jest.useRealTimers();
     }
   });
 });

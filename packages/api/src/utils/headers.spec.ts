@@ -1,5 +1,37 @@
 import type { RunLLMConfig } from '~/types';
-import { mergeHeaders, resolveConfigHeaders } from './headers';
+import { mediaTypeEssence, mergeHeaders, resolveConfigHeaders } from './headers';
+
+describe('mediaTypeEssence', () => {
+  it('returns the bare type for a header with no parameters', () => {
+    expect(mediaTypeEssence('text/event-stream')).toBe('text/event-stream');
+  });
+
+  it('strips parameters', () => {
+    expect(mediaTypeEssence('text/event-stream; charset=utf-8')).toBe('text/event-stream');
+    expect(mediaTypeEssence('application/json;charset=utf-8')).toBe('application/json');
+  });
+
+  it('lowercases the type', () => {
+    expect(mediaTypeEssence('TEXT/EVENT-STREAM')).toBe('text/event-stream');
+    expect(mediaTypeEssence('Application/JSON; Charset=UTF-8')).toBe('application/json');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(mediaTypeEssence('  text/plain  ; charset=utf-8')).toBe('text/plain');
+  });
+
+  it('does not match a type named only inside a parameter', () => {
+    expect(mediaTypeEssence('text/plain; boundary=text/event-stream')).toBe('text/plain');
+    expect(mediaTypeEssence('text/plain; x=application/json')).toBe('text/plain');
+  });
+
+  it('returns an empty string for absent or empty headers', () => {
+    expect(mediaTypeEssence(undefined)).toBe('');
+    expect(mediaTypeEssence(null)).toBe('');
+    expect(mediaTypeEssence('')).toBe('');
+    expect(mediaTypeEssence('   ')).toBe('');
+  });
+});
 
 describe('mergeHeaders', () => {
   it('returns undefined when neither side has headers', () => {
@@ -96,22 +128,24 @@ describe('resolveConfigHeaders', () => {
     });
   });
 
-  it('leaves Google customHeaders untouched (resolved at init, not request time)', () => {
+  it('resolves only tenant placeholders in Google customHeaders', () => {
     const llmConfig = {
       customHeaders: {
         'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Tenant-Id': '{{LIBRECHAT_USER_TENANT_ID}}',
         Authorization: 'Bearer ${SOME_KEY}',
       },
     } as unknown as RunLLMConfig;
 
-    resolveConfigHeaders({ llmConfig, user, body });
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
 
-    // Native Google headers are resolved in initializeGoogle; resolveConfigHeaders
-    // must not re-process them (keeps the key-derived auth out of env expansion).
+    // Native Google headers are otherwise resolved in initializeGoogle. In
+    // particular, provider auth must never pass through environment expansion.
     expect(
       (llmConfig as unknown as { customHeaders: Record<string, string> }).customHeaders,
     ).toEqual({
       'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      'X-Tenant-Id': 'request-tenant',
       Authorization: 'Bearer ${SOME_KEY}',
     });
   });
@@ -145,6 +179,36 @@ describe('resolveConfigHeaders', () => {
 
     expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Gateway-Key': 'secret-key' });
     delete process.env.HEADERS_SPEC_GATEWAY_KEY;
+  });
+
+  it('resolves model tenant aliases without exposing tenantId through the safe user', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: {
+          'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}',
+          'X-Canonical-Tenant-ID': '{{LIBRECHAT_USER_TENANTID}}',
+        },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, tenantId: 'request-tenant', body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({
+      'X-Tenant-ID': 'request-tenant',
+      'X-Canonical-Tenant-ID': 'request-tenant',
+    });
+  });
+
+  it('blanks model tenant placeholders when the run has no tenant', () => {
+    const llmConfig = {
+      configuration: {
+        defaultHeaders: { 'X-Tenant-ID': '{{LIBRECHAT_USER_TENANT_ID}}' },
+      },
+    } as unknown as RunLLMConfig;
+
+    resolveConfigHeaders({ llmConfig, user, body });
+
+    expect(llmConfig.configuration?.defaultHeaders).toEqual({ 'X-Tenant-ID': '' });
   });
 
   it('leaves configs without header maps untouched', () => {

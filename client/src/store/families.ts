@@ -11,15 +11,10 @@ import {
   useSetRecoilState,
   useRecoilCallback,
 } from 'recoil';
-import type {
-  EModelEndpoint,
-  TConversation,
-  TSubmission,
-  TMessage,
-  TPreset,
-} from 'librechat-data-provider';
+import type { EModelEndpoint, TConversation, TSubmission, TPreset } from 'librechat-data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
 import type { TOptionSettings, ExtendedFile } from '~/common';
+import type { PendingSteer } from '~/hooks/Chat/queue';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -35,6 +30,23 @@ const submissionKeysAtom = atom<(string | number)[]>({
 
 const submissionByIndex = atomFamily<TSubmission | null, string | number>({
   key: 'submissionByIndex',
+  default: null,
+});
+
+/**
+ * Epoch ms baseline for the streaming elapsed indicator at this chat index.
+ * Stamped when this session submits a generation (every path through `ask`),
+ * cleared by the terminal handlers when that generation ends, and only FILLED
+ * — never overwritten — when resume-on-load attaches a run, preferring the
+ * server-recorded generation start so a reload reports real elapsed time.
+ * The reading therefore survives mid-stream remounts (new-conversation id
+ * hydration, navigating away from a still-live run and back) without a later,
+ * externally-started generation inheriting a stale baseline. Known residual:
+ * a run whose end this pane never observed (left mid-stream, finished
+ * elsewhere) leaves its stamp for the next attach at this index to inherit.
+ */
+const submissionStartFamily = atomFamily<number | null, string | number>({
+  key: 'submissionStartByIndex',
   default: null,
 });
 
@@ -57,7 +69,11 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
     ({ onSet, node }) => {
       onSet(async (newValue, oldValue) => {
         const index = Number(node.key.split('__')[1]);
-        logger.log('conversation', 'Setting conversation:', { index, newValue, oldValue });
+        logger.log('conversation', 'Setting conversation:', {
+          index,
+          newValue,
+          oldValue,
+        });
         if (newValue?.assistant_id != null && newValue.assistant_id) {
           localStorage.setItem(
             `${LocalStorageKeys.ASST_ID_PREFIX}${index}${newValue.endpoint}`,
@@ -105,7 +121,11 @@ const conversationByIndex = atomFamily<TConversation | null, string | number>({
           }
           const searchParams = createSearchParams(newParams);
           const url = `${window.location.pathname}?${searchParams.toString()}`;
-          window.history.pushState({}, '', url);
+          /** Mirror, not navigation: Back-worthy entries are minted by real
+           * `navigate()` calls (useNewConvo), and in-place writers like
+           * ProjectLandingChip deliberately replace. Pushing here buried the
+           * Back target under one inert entry per draft edit. */
+          window.history.replaceState({}, '', url);
         }
       });
     },
@@ -274,11 +294,6 @@ const showPromptsPopoverFamily = atomFamily<boolean, string | number | null>({
   default: false,
 });
 
-const showSkillsPopoverFamily = atomFamily<boolean, string | number | null>({
-  key: 'showSkillsPopoverByIndex',
-  default: false,
-});
-
 /**
  * Per-conversation queue of skill names the user invoked manually via the
  * `$` popover for the next submission. Structured channel that the submit
@@ -308,47 +323,23 @@ const pendingQuotesByConvoId = atomFamily<string[], string>({
 });
 
 /**
- * A steer message submitted mid-run. Server truth: `sending` covers the POST
- * in flight, `pending` means the server queued it (awaiting its injection
- * boundary — the next tool batch, or the next safe token boundary when
- * `preempt` was armed), `failed` keeps the text recoverable after a rejected
- * POST. The chip disappears when `on_steer_applied` lands (the inline content
- * part becomes the durable record).
+ * Text handed to a conversation's composer by a surface the user is leaving —
+ * today, a subagent thread continued into a chat of its own, where the panel
+ * and its composer unmount as the destination opens.
+ *
+ * Keyed by conversation rather than by composer index because the handoff
+ * outlives the navigation that carries it: a first visit resolves its record
+ * before the route moves, so the destination's composer mounts commits later.
+ * `useTextarea` drains it when that conversation's composer is on screen.
+ *
+ * Deliberately in memory rather than in the composer draft store: nothing the
+ * user has not sent should be written to storage they asked not to use, and
+ * draft restoration is itself gated on the Save Drafts preference.
  */
-export type PendingSteer = {
-  steerId: string;
-  /** Optimistic id echoed by server state when SYNC beats the POST callback. */
-  clientSteerId?: string;
-  text: string;
-  status: 'sending' | 'pending' | 'failed';
-  /** The transport failed without a definitive server rejection. The durable
-   * enqueue may have committed. Same-id Retry is safe only under protocol v2;
-   * edit/queue/remove stay hidden until ownership is resolved. */
-  deliveryUncertain?: boolean;
-  /** Protocol selected for the generation that owns this attempt. */
-  generationProtocolVersion?: GenerationProtocolVersion;
-  createdAt: number;
-  /** Attachments steered with the message (refs; already uploaded). */
-  files?: TMessage['files'];
-  /** Quote chips carried by a queued-origin steer (client-only; never sent to
-   *  the server), restored onto the queued item if the run ends first. */
-  quotes?: string[];
-  /** Manual skill picks carried the same way as `quotes`. */
-  manualSkills?: string[];
-  /** Asked the run to seal generation at the next safe boundary rather than
-   *  wait for a tool step. Labelling only — the server owns the behaviour and
-   *  echoes what it actually armed. */
-  preempt?: boolean;
-  /** Monotonic server revision; delayed ACKs cannot undo SSE corrections. */
-  preemptRevision?: number;
-  /** Exact server generation this steer belongs to. Conversation ids are
-   * reused by later turns, so retries/arm/cancel must retain this epoch rather
-   * than mutating whatever generation currently occupies the conversation. */
-  generationCreatedAt?: number;
-  /** Exact client queue identity/order to restore if this accepted steer is
-   *  returned as a terminal leftover before injection. */
-  queuedOrigin?: QueuedMessageOrigin;
-};
+const pendingComposerTextByConvoId = atomFamily<string | undefined, string>({
+  key: 'pendingComposerTextByConvoId',
+  default: undefined,
+});
 
 /**
  * Per-conversation steers awaiting injection. Reconciled against the server:
@@ -359,149 +350,6 @@ export type PendingSteer = {
 const pendingSteersByConvoId = atomFamily<PendingSteer[], string>({
   key: 'pendingSteersByConvoId',
   default: [],
-});
-
-/** A message composed during a run, queued to send after it finishes.
- *  Attachments ride the queued item (already uploaded at attach time) and are
- *  passed to `ask` as `overrideFiles` on drain — steering itself is text-only,
- *  so any during-run submit with media routes here as one unit. */
-export type QueuedMessage = {
-  id: string;
-  text: string;
-  createdAt: number;
-  /** Stable only for this queued recovery attempt and its transport retries.
-   * A failed generation re-converts the durable source with a fresh key. */
-  clientRequestId?: string;
-  /** Correlation used only to durably dismiss/reclaim the parked source. */
-  recoveryClientSteerId?: string;
-  recoverySteerId?: string;
-  /** Generation observed before this queued follow-up became eligible. */
-  expectedPredecessorCreatedAt?: number;
-  files?: TMessage['files'];
-  /** Quote chips consumed from the composer at enqueue time; passed to `ask`
-   *  as `overrideQuotes` on drain so they pair with THIS message. */
-  quotes?: string[];
-  /** Manual skill picks consumed from the composer at enqueue time; passed
-   *  to `ask` as `overrideManualSkills` on drain. */
-  manualSkills?: string[];
-  /** Front-inserted by "Interrupt & send": stays ahead of chronologically
-   *  older items when leftover steers are merged back into the queue. */
-  priority?: boolean;
-};
-
-/** Snapshot of a queued item's logical position while it is temporarily sent
- * into a live run. Neighbour ids make restoration resilient to concurrent
- * drains and sends without minting a replacement item. */
-export type QueuedMessageOrigin = {
-  item: QueuedMessage;
-  beforeIds: string[];
-  afterIds: string[];
-};
-
-/**
- * Per-conversation client-side queue of follow-up messages. Drained one per
- * run completion by `useQueueDrain` (each dequeued message starts a normal
- * turn whose own final event drains the next).
- */
-const queuedMessagesByConvoId = atomFamily<QueuedMessage[], string>({
-  key: 'queuedMessagesByConvoId',
-  default: [],
-});
-
-/**
- * One-shot run-termination signal written by the SSE final/error handlers and
- * consumed (reset to null) by `useQueueDrain`. Keyed by chat index like
- * `isSubmittingFamily`. Carrying the outcome lets the drain skip auto-send on
- * user aborts/errors while `startedAsNewConvo` migrates a queue keyed under
- * `Constants.NEW_CONVO` to the real conversation id.
- */
-export type RunEnd = {
-  conversationId: string | null;
-  outcome: 'completed' | 'aborted' | 'error';
-  startedAsNewConvo?: boolean;
-  endedAt: number;
-  /** Exact terminal epoch whose idle transition may release one queued start. */
-  generationCreatedAt?: number;
-  /** Armed "Interrupt & send" flag traveling with a PARKED signal, so
-   *  another run on the same pane can neither consume nor clear it. */
-  interruptArmed?: boolean;
-};
-
-/** A pane can receive A's terminal frame after the user has navigated to and
- * started B. Keep each terminal epoch until the queue drain has either parked
- * or consumed it; a single replaceable slot loses A when B finishes first. */
-const runEndsByIndex = atomFamily<RunEnd[], string | number>({
-  key: 'runEndsByIndex',
-  default: [],
-});
-
-/** Preserve the original nullable one-shot API for stream writers while the
- * backing state retains every not-yet-consumed terminal epoch. Writing null
- * consumes only the visible (oldest) signal. */
-const runEndByIndex = selectorFamily<RunEnd | null, string | number>({
-  key: 'runEndByIndex',
-  get:
-    (index) =>
-    ({ get }) =>
-      get(runEndsByIndex(index))[0] ?? null,
-  set:
-    (index) =>
-    ({ set }, value) => {
-      if (value instanceof DefaultValue) {
-        set(runEndsByIndex(index), []);
-        return;
-      }
-      if (value == null) {
-        set(runEndsByIndex(index), (prev) => prev.slice(1));
-        return;
-      }
-      set(runEndsByIndex(index), (prev) => [...prev, value]);
-    },
-});
-
-/** Foreign terminal epochs are moved off the shared pane immediately. This
- * per-conversation carrier is queued for the same reason as the pane carrier:
- * successive epochs cannot overwrite one another while the chat is hidden. */
-const pendingRunEndsByConvoId = atomFamily<RunEnd[], string>({
-  key: 'pendingRunEndsByConvoId',
-  default: [],
-});
-
-const pendingRunEndByConvoId = selectorFamily<RunEnd | null, string>({
-  key: 'pendingRunEndByConvoId',
-  get:
-    (conversationId) =>
-    ({ get }) =>
-      get(pendingRunEndsByConvoId(conversationId))[0] ?? null,
-  set:
-    (conversationId) =>
-    ({ set }, value) => {
-      if (value instanceof DefaultValue) {
-        set(pendingRunEndsByConvoId(conversationId), []);
-        return;
-      }
-      if (value == null) {
-        set(pendingRunEndsByConvoId(conversationId), (prev) => prev.slice(1));
-        return;
-      }
-      set(pendingRunEndsByConvoId(conversationId), (prev) => [...prev, value]);
-    },
-});
-
-export type DrainAfterAbort = {
-  conversationId: string;
-  generationCreatedAt: number;
-};
-
-/**
- * One-shot override armed by "interrupt & send": the next `aborted` run-end
- * for the exact conversation generation drains the queue exactly once (a
- * plain Stop press leaves queued chips for manual send). `false` remains the
- * clear value used by stream reconciliation paths.
- */
-const drainAfterAbortByIndex = atomFamily<DrainAfterAbort | false, string | number>({
-  key: 'drainAfterAbortByIndex',
-  default: false,
 });
 
 /**
@@ -564,11 +412,6 @@ const activeRunFamily = atomFamily<string | null, string | number | null>({
 const audioRunFamily = atomFamily<string | null, string | number | null>({
   key: 'audioRunByIndex',
   default: null,
-});
-
-const messagesSiblingIdxFamily = atomFamily<number, string | null | undefined>({
-  key: 'messagesSiblingIdx',
-  default: 0,
 });
 
 /** Setter-only access to the conversation atom: registers the key like
@@ -679,13 +522,13 @@ export default {
   filesByIndex,
   presetByIndex,
   submissionByIndex,
+  submissionStartFamily,
   textByIndex,
   showStopButtonByIndex,
   abortScrollFamily,
   isSubmittingFamily,
   optionSettingsFamily,
   showPopoverFamily,
-  messagesSiblingIdxFamily,
   anySubmittingSelector,
   allConversationsSelector,
   conversationIdByIndex,
@@ -709,14 +552,10 @@ export default {
   activePromptByIndex,
   useClearSubmissionState,
   showPromptsPopoverFamily,
-  showSkillsPopoverFamily,
+  pendingComposerTextByConvoId,
   pendingManualSkillsByConvoId,
   pendingQuotesByConvoId,
   pendingSteersByConvoId,
-  queuedMessagesByConvoId,
-  runEndByIndex,
-  pendingRunEndByConvoId,
-  drainAfterAbortByIndex,
   appliedSteerIdsByConvoId,
   acceptedSteerClientIdsByConvoId,
   activeGenerationCreatedAtByConvoId,

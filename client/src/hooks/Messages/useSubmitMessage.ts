@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import { replaceSpecialVars } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, TReasoningOverride } from 'librechat-data-provider';
 import { useChatContext, useChatFormContext, useAddedChatContext } from '~/Providers';
 import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -24,6 +24,7 @@ export default function useSubmitMessage() {
       overrideFiles?: TMessage['files'];
       overrideQuotes?: string[];
       overrideManualSkills?: string[];
+      overrideReasoning?: TReasoningOverride | null;
       overrideClientRequestId?: string;
       overrideRecoverySteerId?: string;
       overrideExpectedPredecessorCreatedAt?: number;
@@ -55,6 +56,7 @@ export default function useSubmitMessage() {
           overrideFiles: data.overrideFiles,
           overrideQuotes: data.overrideQuotes,
           overrideManualSkills: data.overrideManualSkills,
+          overrideReasoning: data.overrideReasoning,
           overrideClientRequestId: data.overrideClientRequestId,
           overrideRecoverySteerId: data.overrideRecoverySteerId,
           overrideExpectedPredecessorCreatedAt: data.overrideExpectedPredecessorCreatedAt,
@@ -72,10 +74,12 @@ export default function useSubmitMessage() {
   const submitPrompt = useCallback(
     (text: string) => {
       const parsedText = replaceSpecialVars({ text, user });
-      if (autoSendPrompts) {
-        submitMessage({ text: parsedText });
+      if (autoSendPrompts && submitMessage({ text: parsedText }) !== false) {
         return;
       }
+      /** A refused auto-send still belongs to the user. Stage it exactly like
+       * a non-auto-sent prompt so every picker, including variable dialogs,
+       * preserves the text for the composer's guarded submit route. */
 
       const textarea = document.getElementById(mainTextareaId) as HTMLTextAreaElement | null;
       const currentText = textarea?.value ?? methods.getValues('text');

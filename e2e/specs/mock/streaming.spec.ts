@@ -4,7 +4,7 @@ import {
   NEW_CHAT_PATH,
   messagesView,
   selectMockEndpoint,
-  sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 const ORDERED_PIECE_COUNT = 64;
@@ -23,7 +23,7 @@ test.describe('stream transport fidelity', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, `E2E_ORDERED_REPLY:${label}`);
+    const response = await sendMessageAndWaitForCompletion(page, `E2E_ORDERED_REPLY:${label}`);
     expect(response.ok()).toBeTruthy();
 
     const assistantContent = messagesView(page)

@@ -13,6 +13,15 @@ import { planPluginHooks } from './compatibility';
 
 export interface PluginHookRuntimeContext {
   sessionId?: string;
+  /** Authenticated principal owning the run; scopes cross-run dedup keys. */
+  userId?: string;
+  /**
+   * Session working directory for the payload's `cwd`. LibreChat runs supply
+   * none: tool paths address a remote code-execution sandbox, not the API
+   * host where hook commands run, so no host directory describes the run.
+   * Hook commands resolve their own paths from `PLUGIN_ROOT`, which is also
+   * the process working directory.
+   */
   cwd?: string;
   transcriptPath?: string | null;
   permissionMode?: string;
@@ -62,6 +71,9 @@ export interface PluginHookExecutionRequest {
   sourceEvent: string;
   targetEvent: HookEvent;
   handler: PluginHookHandler;
+  /** Declaration position in the source document; distinguishes identical handlers under different matchers. */
+  groupIndex: number;
+  handlerIndex: number;
   condition?: string;
   input: HookInput;
   payload: PluginHookPayload;
@@ -73,6 +85,14 @@ export interface PluginHookExecutionRequest {
  */
 export interface PluginHookExecutor {
   capabilities: PluginHookCapabilities;
+  /**
+   * Pre-execution gate consulted before the declaration claims its per-input
+   * dedup slot. A suppressed declaration (for example, once-state already
+   * recorded) must decline here rather than no-op inside `execute`, so an
+   * identical handler under an overlapping matcher can still claim the slot
+   * and fire independently.
+   */
+  shouldExecute?(request: PluginHookExecutionRequest): boolean | Promise<boolean>;
   execute(
     request: PluginHookExecutionRequest,
     signal: AbortSignal,
@@ -84,6 +104,12 @@ export interface RegisterPluginHooksOptions {
   registry: HookRegistry;
   document: PluginHooksDocument;
   executor: PluginHookExecutor;
+  /**
+   * Plan already computed from `document` with the SAME executor capabilities
+   * (e.g. at plugin load). Supplying it skips re-planning up to 512 handlers
+   * on every run; omitted, the document is planned here.
+   */
+  plan?: PluginHookPlan;
   context?: PluginHookRuntimeContext;
 }
 
@@ -96,6 +122,10 @@ export interface PluginHookRegistration {
 interface PluginHookPayloadState {
   compactTrigger?: string;
   toPluginToolName?: (toolName: string) => string;
+  toPluginToolInput?: (
+    toolName: string,
+    toolInput: Record<string, unknown>,
+  ) => Record<string, unknown>;
 }
 
 function getSessionId(input: HookInput, context: PluginHookRuntimeContext): string {
@@ -118,6 +148,14 @@ function getPluginToolName(toolName: string, state: PluginHookPayloadState): str
     throw new Error(`No plugin tool-name mapping is available for "${toolName}"`);
   }
   return translated;
+}
+
+function getPluginToolInput(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  state: PluginHookPayloadState,
+): Record<string, unknown> {
+  return state.toPluginToolInput?.(toolName, toolInput) ?? toolInput;
 }
 
 function getMessageText(message: unknown): string | undefined {
@@ -152,7 +190,7 @@ function toPluginBatchToolCall(
   const toolResponse = entry.status === 'success' ? entry.toolOutput : entry.error;
   return {
     tool_name: getPluginToolName(entry.toolName, state),
-    tool_input: entry.toolInput,
+    tool_input: getPluginToolInput(entry.toolName, entry.toolInput, state),
     tool_use_id: entry.toolUseId,
     ...(toolResponse !== undefined && { tool_response: toolResponse }),
   };
@@ -203,14 +241,14 @@ export function createPluginHookPayload(
       return {
         ...payload,
         tool_name: getPluginToolName(input.toolName, state),
-        tool_input: input.toolInput,
+        tool_input: getPluginToolInput(input.toolName, input.toolInput, state),
         tool_use_id: input.toolUseId,
       };
     case 'PostToolUse':
       return {
         ...payload,
         tool_name: getPluginToolName(input.toolName, state),
-        tool_input: input.toolInput,
+        tool_input: getPluginToolInput(input.toolName, input.toolInput, state),
         tool_use_id: input.toolUseId,
         tool_response: input.toolOutput,
       };
@@ -218,7 +256,7 @@ export function createPluginHookPayload(
       return {
         ...payload,
         tool_name: getPluginToolName(input.toolName, state),
-        tool_input: input.toolInput,
+        tool_input: getPluginToolInput(input.toolName, input.toolInput, state),
         tool_use_id: input.toolUseId,
         error: input.error,
       };
@@ -234,7 +272,7 @@ export function createPluginHookPayload(
       return {
         ...payload,
         tool_name: getPluginToolName(input.toolName, state),
-        tool_input: input.toolInput,
+        tool_input: getPluginToolInput(input.toolName, input.toolInput, state),
         tool_use_id: input.toolUseId,
         reason: input.reason,
       };
@@ -243,6 +281,9 @@ export function createPluginHookPayload(
       return { ...payload, agent_type: input.agentType };
     case 'Stop':
       return { ...payload, stop_hook_active: input.stopHookActive };
+    /** Internal terminal-admission phase; plugin declarations cannot target it. */
+    case 'StopFinalize':
+      return payload;
     case 'StopFailure': {
       const lastAssistantMessage = getMessageText(input.lastAssistantMessage);
       return {
@@ -301,7 +342,7 @@ function getHandlerIdentity(
 
 export function registerPluginHooks(options: RegisterPluginHooksOptions): PluginHookRegistration {
   const { pluginId, registry, document, executor, context = {} } = options;
-  const plan = planPluginHooks(document, executor.capabilities);
+  const plan = options.plan ?? planPluginHooks(document, executor.capabilities);
   const unregisters: Array<() => void> = [];
   const compactTriggers = new Map<string, string>();
   const executedHandlers = new WeakMap<HookInput, Set<string>>();
@@ -331,16 +372,46 @@ export function registerPluginHooks(options: RegisterPluginHooksOptions): Plugin
     const handlerIdentity = getHandlerIdentity(entry.sourceEvent, entry.handler, entry.condition);
     const seenSessionIds = entry.sourceEvent === 'SessionStart' ? new Set<string>() : undefined;
     const firedSessionIds = entry.handler.once === true ? new Set<string>() : undefined;
-    const toolNameTranslator = executor.capabilities.toPluginToolName;
+    /**
+     * Payloads follow the namespace each alternative was authored in: only a
+     * matcher that required alias translation gets reverse name/input
+     * translation, and when the plan records which runtime names the
+     * translation produced, it applies per invocation — a mixed matcher like
+     * `Bash|create_file` presents Claude-shaped payloads for `bash_tool` and
+     * native payloads for the natively-authored alternative.
+     */
+    const translated = entry.requiresToolNameTranslation === true;
+    const translatedNames =
+      translated && entry.translatedToolNames !== undefined
+        ? new Set(entry.translatedToolNames)
+        : undefined;
+    const inTranslatedNamespace = (toolName: string): boolean =>
+      translated && (translatedNames === undefined || translatedNames.has(toolName));
+    const toolNameTranslator = translated ? executor.capabilities.toPluginToolName : undefined;
     const toPluginToolName =
       toolNameTranslator === undefined
         ? undefined
         : (toolName: string): string =>
-            toolNameTranslator({
-              sourceEvent: entry.sourceEvent,
-              targetEvent,
-              toolName,
-            });
+            inTranslatedNamespace(toolName)
+              ? toolNameTranslator({
+                  sourceEvent: entry.sourceEvent,
+                  targetEvent,
+                  toolName,
+                })
+              : toolName;
+    const toolInputTranslator = translated ? executor.capabilities.toPluginToolInput : undefined;
+    const toPluginToolInput =
+      toolInputTranslator === undefined
+        ? undefined
+        : (toolName: string, toolInput: Record<string, unknown>): Record<string, unknown> =>
+            inTranslatedNamespace(toolName)
+              ? toolInputTranslator({
+                  sourceEvent: entry.sourceEvent,
+                  targetEvent,
+                  toolName,
+                  toolInput,
+                })
+              : toolInput;
     const hook: HookCallback<HookEvent> = (input, signal) => {
       const sessionId = getSessionId(input, context);
       const compactTrigger = compactTriggers.get(sessionId);
@@ -388,7 +459,7 @@ export function registerPluginHooks(options: RegisterPluginHooksOptions): Plugin
             targetEvent,
             condition: entry.condition,
             toolName: getPluginToolName(input.toolName, { toPluginToolName }),
-            toolInput: input.toolInput,
+            toolInput: getPluginToolInput(input.toolName, input.toolInput, { toPluginToolInput }),
           });
         } catch {
           return {};
@@ -405,27 +476,44 @@ export function registerPluginHooks(options: RegisterPluginHooksOptions): Plugin
         firedSessionIds?.add(sessionId);
         return {};
       }
-      if (handlersForInput) {
-        handlersForInput.add(handlerIdentity);
-      } else {
-        executedHandlers.set(input, new Set([handlerIdentity]));
+      const request: PluginHookExecutionRequest = {
+        pluginId,
+        sourceEvent: entry.sourceEvent,
+        targetEvent,
+        handler: entry.handler,
+        groupIndex: entry.groupIndex,
+        handlerIndex: entry.handlerIndex,
+        ...(entry.condition !== undefined && { condition: entry.condition }),
+        input,
+        payload: createPluginHookPayload(entry.sourceEvent, input, context, {
+          compactTrigger,
+          toPluginToolName,
+          toPluginToolInput,
+        }),
+      };
+      /**
+       * The per-input dedup slot is claimed only by a declaration that will
+       * actually run: one the executor suppresses (spent once-state) must
+       * not consume it, or an identical handler under an overlapping matcher
+       * could never claim the slot and would be permanently shadowed.
+       */
+      const claimAndExecute = (): HookOutput | Promise<HookOutput> => {
+        if (handlersForInput) {
+          handlersForInput.add(handlerIdentity);
+        } else {
+          executedHandlers.set(input, new Set([handlerIdentity]));
+        }
+        firedSessionIds?.add(sessionId);
+        return executor.execute(request, signal);
+      };
+      const shouldRun = executor.shouldExecute?.(request) ?? true;
+      if (shouldRun === true) {
+        return claimAndExecute();
       }
-      firedSessionIds?.add(sessionId);
-      return executor.execute(
-        {
-          pluginId,
-          sourceEvent: entry.sourceEvent,
-          targetEvent,
-          handler: entry.handler,
-          ...(entry.condition !== undefined && { condition: entry.condition }),
-          input,
-          payload: createPluginHookPayload(entry.sourceEvent, input, context, {
-            compactTrigger,
-            toPluginToolName,
-          }),
-        },
-        signal,
-      );
+      if (shouldRun === false) {
+        return {};
+      }
+      return shouldRun.then((run) => (run ? claimAndExecute() : {}));
     };
     const runtimeFiltered =
       entry.sourceEvent === 'SessionStart' ||

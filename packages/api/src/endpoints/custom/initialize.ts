@@ -9,17 +9,19 @@ import {
 import type { TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type {
-  BaseInitializeParams,
   InitializeResultBase,
   EndpointTokenConfig,
   AnthropicModelOptions,
+  ProviderInitializeParams,
 } from '~/types';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { resolveModelTransportTimeouts } from '~/agents/config';
 import { extractDefaultParams } from '~/endpoints/openai/llm';
 import { isUserProvided, checkUserKeyExpiry } from '~/utils';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getScopedTokenConfigKey } from '~/endpoints/keys';
 import { getCustomEndpointConfig } from '~/app/config';
+import { resolveEndpointRuntime } from '~/types';
 import { fetchModels } from '~/endpoints/models';
 import { validateEndpointURL } from '~/auth';
 import { tokenConfigCache } from '~/cache';
@@ -173,14 +175,12 @@ function buildAnthropicCustomConfig({
  * @returns Promise resolving to endpoint configuration options
  * @throws Error if config is missing, API key is not provided, or base URL is missing
  */
-export async function initializeCustom({
-  req,
-  endpoint,
-  model_parameters,
-  db,
-}: BaseInitializeParams): Promise<InitializeResultBase> {
-  const appConfig = req.config;
-  const { key: expiresAt } = req.body;
+export async function initializeCustom(
+  params: ProviderInitializeParams,
+): Promise<InitializeResultBase> {
+  const { endpoint, model_parameters, db } = params;
+  const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
+  const { key: expiresAt } = requestBody;
 
   const endpointConfig = getCustomEndpointConfig({
     endpoint,
@@ -214,7 +214,7 @@ export async function initializeCustom({
 
   let userValues = null;
   if (userProvidesKey || userProvidesURL) {
-    userValues = await db.getUserKeyValues({ userId: req.user?.id ?? '', name: endpoint });
+    userValues = await db.getUserKeyValues({ userId: user?.id ?? '', name: endpoint });
   }
 
   const apiKey = userProvidesKey || userProvidesURL ? userValues?.apiKey : CUSTOM_API_KEY;
@@ -250,8 +250,8 @@ export async function initializeCustom({
 
   let endpointTokenConfig: EndpointTokenConfig | undefined;
 
-  const userId = req.user?.id ?? '';
-  const tenantId = req.user?.tenantId;
+  const userId = user?.id ?? '';
+  const tenantId = user?.tenantId;
 
   const cache = tokenConfigCache();
   const hasTokenConfig = endpointConfig.tokenConfig != null;
@@ -286,7 +286,7 @@ export async function initializeCustom({
       name: endpoint,
       user: userId,
       tokenKey,
-      userObject: req.user,
+      userObject: user,
       // Mirror the security guard in `loadConfigModels`: never forward
       // header overrides when the base URL is user-supplied — configured
       // templates like {{LIBRECHAT_OPENID_ID_TOKEN}} would otherwise resolve
@@ -312,6 +312,7 @@ export async function initializeCustom({
     reverseProxyUrl: baseURL ?? null,
     baseURLIsUserProvided: userProvidesURL,
     allowedAddresses: appConfig?.endpoints?.allowedAddresses,
+    transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
     proxy: PROXY ?? null,
     ...customOptions,
   };

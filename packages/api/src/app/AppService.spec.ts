@@ -68,6 +68,17 @@ const defaultAgentCapabilitiesWithoutMemory = defaultAgentCapabilities.filter(
 );
 
 describe('AppService', () => {
+  it('preserves comparison policy in the effective request configuration', async () => {
+    const githubCompare = { enabled: true, timeoutMs: 2000 };
+    expect((await AppService({ config: { githubCompare } })).githubCompare).toEqual(githubCompare);
+    expect((await AppService({ config: {} })).githubCompare).toBeUndefined();
+  });
+
+  it('preserves the YAML passkey cap in the effective configuration', async () => {
+    const result = await AppService({ config: { passkeys: { perUserMax: 2 } } });
+    expect(result?.passkeys).toEqual({ perUserMax: 2 });
+  });
+
   const mockSystemTools: Record<string, FunctionTool> = {
     ExampleTool: {
       type: 'function',
@@ -120,7 +131,7 @@ describe('AppService', () => {
         mcpConfig: null,
         imageOutputType: expect.any(String),
         fileConfig: undefined,
-        secureImageLinks: undefined,
+        secureImageLinks: true,
         balance: { enabled: true },
         filteredTools: undefined,
         includedTools: undefined,
@@ -161,6 +172,14 @@ describe('AppService', () => {
         imageOutputType: EImageOutputType.WEBP,
       }),
     );
+  });
+
+  it('should require authentication for image links unless explicitly disabled', async () => {
+    const secureResult = await AppService({ config: {} });
+    const legacyResult = await AppService({ config: { secureImageLinks: false } });
+
+    expect(secureResult.secureImageLinks).toBe(true);
+    expect(legacyResult.secureImageLinks).toBe(false);
   });
 
   it('should default to `PNG` `imageOutputType` with no provided type', async () => {

@@ -154,6 +154,7 @@ export function synthesizeActivityLabelGapEvents(
       snapshot[ContentTypes.ACTIVITY_LABEL] === part[ContentTypes.ACTIVITY_LABEL] &&
       snapshot.activity_label_type === part.activity_label_type &&
       snapshot.activity_start_index === part.activity_start_index &&
+      snapshot.activity_end_index === part.activity_end_index &&
       snapshot.activity_count === part.activity_count &&
       snapshot.pending === part.pending;
     if (isSameLabel) {

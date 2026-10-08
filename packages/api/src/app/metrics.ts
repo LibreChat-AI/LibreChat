@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { timingSafeEqual } from 'crypto';
-import { logger } from '@librechat/data-schemas';
 import { Registry, collectDefaultMetrics, Counter, Gauge, Histogram } from 'prom-client';
+import { logger, setAgentEventActorReceiptMetricObserver } from '@librechat/data-schemas';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Mongoose } from 'mongoose';
 import type { AgentStartupMilestone, AgentStartupResult } from '~/agents/phases';
+import type { LocatorTraversalFailure } from '../protection/diagnostics';
 import { agentStartupMilestones, agentStartupResults } from '~/agents/phases';
 
 const PATH_NORMALIZATIONS: [RegExp, string][] = [
@@ -129,6 +130,24 @@ export interface PrometheusMetrics {
   metricsRouter: Router;
 }
 
+export interface AgentEventActorStorageMetricsSnapshot {
+  retainedByResolution: Record<
+    'checkpoint_verified' | 'action_compensated' | 'history_repaired',
+    number
+  >;
+  expiryEligible: number;
+  retryDeliveries: number;
+  deadDeliveries: number;
+  pendingReconciliations: number;
+  oldestPendingAgeSeconds: number;
+}
+
+export interface MetricsOptions {
+  collectAgentEventActorStorageMetrics?: () => Promise<AgentEventActorStorageMetricsSnapshot>;
+}
+
+const AGENT_EVENT_ACTOR_STORAGE_METRICS_CACHE_MS = 60_000;
+
 export type OpenIDUserLookupResult = 'found' | 'not_found' | 'migration' | 'auth_failed' | 'error';
 export type GenerationJobStore = 'memory' | 'redis';
 export type GenerationJobResult = 'created' | 'completed' | 'error' | 'aborted' | 'abort_failed';
@@ -139,17 +158,28 @@ export type GenerationStreamSubscriptionResult =
   | 'error'
   | 'found'
   | 'missing';
+export type GenerationStreamRecoveryMethod = 'redis' | 'snapshot';
+export type GenerationStreamRecoveryOutcome = 'success' | 'failed' | 'not_required';
+export type GenerationStreamAttachmentOutcome =
+  | 'attached'
+  | 'bootstrap_slow'
+  | 'disconnected'
+  | 'never_attached';
 export type RumProxyEndpoint = 'traces' | 'logs' | 'unknown';
 export type RumProxyResult =
   | 'success'
   | 'auth_drop'
   | 'auth_error'
   | 'bad_request'
+  | 'rate_limited'
+  | 'unsupported_media_type'
   | 'not_configured'
   | 'collector_4xx'
   | 'collector_5xx'
   | 'collector_error'
   | 'collector_timeout';
+export type ShareLinkOperation = 'create' | 'update';
+export type ShareLinkRejectionCode = 'TARGET_MESSAGE_NOT_FOUND' | 'NO_MESSAGES';
 export type RedisClient = 'ioredis' | 'keyv';
 export type RedisOperationStatus = 'success' | 'error';
 
@@ -186,6 +216,19 @@ type GenerationJobMetrics = {
   ) => void;
   recordResumePendingEvents: (store: GenerationJobStore, count: number) => void;
   recordEarlyBufferOverflow: (store: GenerationJobStore) => void;
+  recordRecovery: (
+    store: GenerationJobStore,
+    method: GenerationStreamRecoveryMethod,
+    outcome: GenerationStreamRecoveryOutcome,
+    durationSeconds: number,
+    reconstructedEvents: number,
+    reconstructedContent: number,
+  ) => void;
+  recordAttachment: (
+    store: GenerationJobStore,
+    outcome: GenerationStreamAttachmentOutcome,
+    delaySeconds?: number,
+  ) => void;
 };
 
 let generationJobMetrics: GenerationJobMetrics = {
@@ -194,6 +237,8 @@ let generationJobMetrics: GenerationJobMetrics = {
   recordSubscription: () => undefined,
   recordResumePendingEvents: () => undefined,
   recordEarlyBufferOverflow: () => undefined,
+  recordRecovery: () => undefined,
+  recordAttachment: () => undefined,
 };
 
 type AgentStartupMetrics = {
@@ -217,6 +262,14 @@ let rumProxyMetrics: RumProxyMetrics = {
   recordRequest: () => undefined,
 };
 
+type ShareLinkMetrics = {
+  recordRejection: (operation: ShareLinkOperation, code: ShareLinkRejectionCode) => void;
+};
+
+let shareLinkMetrics: ShareLinkMetrics = {
+  recordRejection: () => undefined,
+};
+
 type RedisOperationMetrics = {
   recordOperation: (
     client: RedisClient,
@@ -231,7 +284,16 @@ let redisOperationMetrics: RedisOperationMetrics = {
   recordOperation: () => undefined,
 };
 
+let observeLocatorTraversal: (failure: LocatorTraversalFailure) => void = () => undefined;
+
+/** Application sink supplied explicitly to content inspection callers. */
+export function reportLocatorTraversalFailure(failure: LocatorTraversalFailure): void {
+  logger.warn(`[content-filter] Locator traversal incomplete ${JSON.stringify(failure)}`, failure);
+  observeLocatorTraversal(failure);
+}
+
 const resetMetricRecorders = (): void => {
+  observeLocatorTraversal = () => undefined;
   openIDUserLookupMetrics = {
     recordLookup: () => undefined,
   };
@@ -244,6 +306,8 @@ const resetMetricRecorders = (): void => {
     recordSubscription: () => undefined,
     recordResumePendingEvents: () => undefined,
     recordEarlyBufferOverflow: () => undefined,
+    recordRecovery: () => undefined,
+    recordAttachment: () => undefined,
   };
   agentStartupMetrics = {
     recordMilestone: () => undefined,
@@ -252,9 +316,13 @@ const resetMetricRecorders = (): void => {
   rumProxyMetrics = {
     recordRequest: () => undefined,
   };
+  shareLinkMetrics = {
+    recordRejection: () => undefined,
+  };
   redisOperationMetrics = {
     recordOperation: () => undefined,
   };
+  setAgentEventActorReceiptMetricObserver();
 };
 
 export function recordGenerationJob(store: GenerationJobStore, result: GenerationJobResult): void {
@@ -284,6 +352,32 @@ export function recordGenerationStreamEarlyBufferOverflow(store: GenerationJobSt
   generationJobMetrics.recordEarlyBufferOverflow(store);
 }
 
+export function recordGenerationStreamRecovery(
+  store: GenerationJobStore,
+  method: GenerationStreamRecoveryMethod,
+  outcome: GenerationStreamRecoveryOutcome,
+  durationSeconds: number,
+  reconstructedEvents: number,
+  reconstructedContent: number,
+): void {
+  generationJobMetrics.recordRecovery(
+    store,
+    method,
+    outcome,
+    durationSeconds,
+    reconstructedEvents,
+    reconstructedContent,
+  );
+}
+
+export function recordGenerationStreamAttachment(
+  store: GenerationJobStore,
+  outcome: GenerationStreamAttachmentOutcome,
+  delaySeconds?: number,
+): void {
+  generationJobMetrics.recordAttachment(store, outcome, delaySeconds);
+}
+
 export function recordAgentStartupMilestone(
   milestone: AgentStartupMilestone,
   durationSeconds: number,
@@ -307,6 +401,13 @@ export function recordAgentStartupResult(result: AgentStartupResult): void {
 
 export function recordRumProxyRequest(endpoint: RumProxyEndpoint, result: RumProxyResult): void {
   rumProxyMetrics.recordRequest(endpoint, result);
+}
+
+export function recordShareLinkRejection(
+  operation: ShareLinkOperation,
+  code: ShareLinkRejectionCode,
+): void {
+  shareLinkMetrics.recordRejection(operation, code);
 }
 
 export function recordRedisOperation(
@@ -429,7 +530,7 @@ export function instrumentMongooseQueryMetrics(mongoose: Mongoose): void {
   queryPrototype[instrumented] = true;
 }
 
-export function createMetrics(): PrometheusMetrics {
+export function createMetrics(options: MetricsOptions = {}): PrometheusMetrics {
   if (!isMetricsConfigured()) {
     resetMetricRecorders();
     return {
@@ -440,6 +541,33 @@ export function createMetrics(): PrometheusMetrics {
 
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
+
+  observeLocatorTraversal = () => undefined;
+  const locatorTraversalFailuresTotal = new Counter({
+    name: 'content_filter_locator_traversal_failures_total',
+    help: 'Incomplete resolved file locator traversals',
+    labelNames: ['operation', 'reason'] as const,
+    registers: [registry],
+  });
+  const locatorTraversalSize = new Histogram({
+    name: 'content_filter_locator_traversal_size',
+    help: 'Structural counts at an incomplete resolved file locator traversal',
+    labelNames: ['operation', 'reason', 'dimension'] as const,
+    buckets: [0, 1, 8, 24, 64, 256, 1024, 4096, 16384],
+    registers: [registry],
+  });
+  observeLocatorTraversal = (failure: LocatorTraversalFailure): void => {
+    const labels = { operation: failure.operation, reason: failure.reason };
+    locatorTraversalFailuresTotal.inc(labels);
+    for (const dimension of [
+      'visitedNodes',
+      'depth',
+      'messageCount',
+      'resolvedFileCount',
+    ] as const) {
+      locatorTraversalSize.observe({ ...labels, dimension }, failure[dimension]);
+    }
+  };
 
   const httpRequests = new Counter({
     name: 'http_requests_total',
@@ -602,6 +730,52 @@ export function createMetrics(): PrometheusMetrics {
     registers: [registry],
   });
 
+  const generationStreamRecoveries = new Counter({
+    name: 'generation_stream_recoveries_total',
+    help: 'Early buffer recovery attempts by backing store, source, and outcome',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryDuration = new Histogram({
+    name: 'generation_stream_recovery_duration_seconds',
+    help: 'Time spent reconstructing an overflowed early generation stream',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryEvents = new Histogram({
+    name: 'generation_stream_recovery_events',
+    help: 'Event count reconstructed during early buffer recovery',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [1, 10, 100, 1_000, 5_000, 10_000, 50_000],
+    registers: [registry],
+  });
+
+  const generationStreamRecoveryContent = new Histogram({
+    name: 'generation_stream_recovery_content_parts',
+    help: 'Content part count reconstructed during early buffer recovery',
+    labelNames: ['store', 'method', 'outcome'] as const,
+    buckets: [1, 5, 10, 25, 50, 100, 500, 1_000],
+    registers: [registry],
+  });
+
+  const generationStreamAttachments = new Counter({
+    name: 'generation_stream_attachment_outcomes_total',
+    help: 'Generation stream attachment lifecycle outcomes',
+    labelNames: ['store', 'outcome'] as const,
+    registers: [registry],
+  });
+
+  const generationStreamFirstAttachmentDelay = new Histogram({
+    name: 'generation_stream_first_attachment_delay_seconds',
+    help: 'Time from generation creation to its first subscriber attachment',
+    labelNames: ['store'] as const,
+    buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
+    registers: [registry],
+  });
+
   const agentStartupMilestoneDuration = new Histogram({
     name: 'agent_startup_milestone_duration_seconds',
     help: 'Cumulative agent chat startup latency from request ingress to each milestone',
@@ -624,6 +798,13 @@ export function createMetrics(): PrometheusMetrics {
     registers: [registry],
   });
 
+  const shareLinkRejections = new Counter({
+    name: 'share_link_rejections_total',
+    help: 'Shared link publication rejections by operation and bounded domain code',
+    labelNames: ['operation', 'code'] as const,
+    registers: [registry],
+  });
+
   const redisOperations = new Counter({
     name: 'redis_operations_total',
     help: 'Logical Redis operations by client, use case, operation, and status',
@@ -639,6 +820,78 @@ export function createMetrics(): PrometheusMetrics {
     registers: [registry],
   });
 
+  const agentEventActorReceiptOperations = new Counter({
+    name: 'agent_event_actor_receipt_operations_total',
+    help: 'Event actor receipt storage operations by bounded outcome and resolution',
+    labelNames: ['operation', 'outcome', 'resolution'] as const,
+    registers: [registry],
+  });
+
+  const agentEventActorReceiptsRetained = new Gauge({
+    name: 'agent_event_actor_receipts_retained',
+    help: 'Delivery-owned event actor receipts currently retained for replay',
+    labelNames: ['resolution'] as const,
+    registers: [registry],
+  });
+  const agentEventActorReceiptsExpiryEligible = new Gauge({
+    name: 'agent_event_actor_receipts_expiry_eligible',
+    help: 'Retained event actor receipts whose Mongo TTL deadline has elapsed',
+    registers: [registry],
+  });
+  const agentEventActorReconciliationsPending = new Gauge({
+    name: 'agent_event_actor_reconciliations_pending',
+    help: 'Active event actor reconciliation markers awaiting a terminal delivery receipt',
+    registers: [registry],
+  });
+  const agentEventActorOldestReconciliationAge = new Gauge({
+    name: 'agent_event_actor_oldest_reconciliation_age_seconds',
+    help: 'Age in seconds of the oldest active event actor reconciliation marker',
+    registers: [registry],
+  });
+  const agentEventActorDeliveries = new Gauge({
+    name: 'agent_event_actor_deliveries',
+    help: 'Current retrying and dead delivery rows visible to the receipt ledger',
+    labelNames: ['state'] as const,
+    registers: [registry],
+  });
+
+  setAgentEventActorReceiptMetricObserver(({ operation, outcome, resolution }) => {
+    agentEventActorReceiptOperations.inc({
+      operation,
+      outcome,
+      resolution: resolution ?? 'none',
+    });
+  });
+
+  let actorStorageMetricsCache:
+    | { snapshot: AgentEventActorStorageMetricsSnapshot; expiresAt: number }
+    | undefined;
+  let actorStorageMetricsCollection: Promise<
+    AgentEventActorStorageMetricsSnapshot | undefined
+  > | null = null;
+  const collectActorStorageMetrics = async () => {
+    const now = Date.now();
+    if (actorStorageMetricsCache != null && actorStorageMetricsCache.expiresAt > now) {
+      return actorStorageMetricsCache.snapshot;
+    }
+    actorStorageMetricsCollection ??= Promise.resolve(
+      options.collectAgentEventActorStorageMetrics?.(),
+    )
+      .then((snapshot) => {
+        if (snapshot != null) {
+          actorStorageMetricsCache = {
+            snapshot,
+            expiresAt: Date.now() + AGENT_EVENT_ACTOR_STORAGE_METRICS_CACHE_MS,
+          };
+        }
+        return snapshot;
+      })
+      .finally(() => {
+        actorStorageMetricsCollection = null;
+      });
+    return actorStorageMetricsCollection;
+  };
+
   generationJobMetrics = {
     recordJob: (store, result) => generationJobs.inc({ store, result }),
     setJobsInFlight: (store, count) => generationJobsInFlight.set({ store }, count),
@@ -647,6 +900,26 @@ export function createMetrics(): PrometheusMetrics {
     recordResumePendingEvents: (store, count) =>
       generationStreamResumePendingEvents.inc({ store }, count),
     recordEarlyBufferOverflow: (store) => generationStreamEarlyBufferOverflows.inc({ store }),
+    recordRecovery: (
+      store,
+      method,
+      outcome,
+      durationSeconds,
+      reconstructedEvents,
+      reconstructedContent,
+    ) => {
+      const labels = { store, method, outcome };
+      generationStreamRecoveries.inc(labels);
+      generationStreamRecoveryDuration.observe(labels, durationSeconds);
+      generationStreamRecoveryEvents.observe(labels, reconstructedEvents);
+      generationStreamRecoveryContent.observe(labels, reconstructedContent);
+    },
+    recordAttachment: (store, outcome, delaySeconds) => {
+      generationStreamAttachments.inc({ store, outcome });
+      if (outcome === 'attached' && delaySeconds != null) {
+        generationStreamFirstAttachmentDelay.observe({ store }, delaySeconds);
+      }
+    },
   };
 
   agentStartupMetrics = {
@@ -657,6 +930,10 @@ export function createMetrics(): PrometheusMetrics {
 
   rumProxyMetrics = {
     recordRequest: (endpoint, result) => rumProxyRequests.inc({ endpoint, result }),
+  };
+
+  shareLinkMetrics = {
+    recordRejection: (operation, code) => shareLinkRejections.inc({ operation, code }),
   };
 
   redisOperationMetrics = {
@@ -719,7 +996,10 @@ export function createMetrics(): PrometheusMetrics {
       if (completed) return;
       completed = true;
 
-      const requestLabels = { ...labels, status: completedBy === 'close' ? 499 : res.statusCode };
+      const requestLabels = {
+        ...labels,
+        status: completedBy === 'close' ? 499 : res.statusCode,
+      };
       httpRequests.inc(requestLabels);
       end(requestLabels);
       httpRequestsInFlight.dec(labels);
@@ -777,8 +1057,22 @@ export function createMetrics(): PrometheusMetrics {
       return;
     }
 
-    void registry
-      .metrics()
+    void Promise.resolve()
+      .then(async () => {
+        const snapshot = await collectActorStorageMetrics();
+        if (snapshot == null) {
+          return;
+        }
+        for (const [resolution, count] of Object.entries(snapshot.retainedByResolution)) {
+          agentEventActorReceiptsRetained.set({ resolution }, count);
+        }
+        agentEventActorReceiptsExpiryEligible.set(snapshot.expiryEligible);
+        agentEventActorReconciliationsPending.set(snapshot.pendingReconciliations);
+        agentEventActorOldestReconciliationAge.set(snapshot.oldestPendingAgeSeconds);
+        agentEventActorDeliveries.set({ state: 'retry' }, snapshot.retryDeliveries);
+        agentEventActorDeliveries.set({ state: 'dead' }, snapshot.deadDeliveries);
+      })
+      .then(() => registry.metrics())
       .then((metrics) => {
         res.set('Content-Type', registry.contentType);
         res.end(metrics);

@@ -44,6 +44,8 @@ export type MCPServerDBObjectResponse = {
   serverName: string;
   /** True if access is only via agent (not directly shared with user) */
   consumeOnly?: boolean;
+  /** True when chat request fields are required before the server can connect. */
+  requestScoped?: boolean;
 } & MCPOptions;
 
 export type MCPServersListResponse = Record<string, MCPServerDBObjectResponse>;

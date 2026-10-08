@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { SteerEvents } from 'librechat-data-provider';
-import type { TPendingSteer, Agents } from 'librechat-data-provider';
+import type { TMessageContentParts, TPendingSteer, Agents } from 'librechat-data-provider';
 import type {
   SteerQueueItem,
   IEventTransport,
@@ -50,6 +50,17 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
       createdAt: Date.now(),
     };
   }
+
+  describe('toPendingSteer', () => {
+    test('keeps quotes in the client-safe projection while dropping userId', () => {
+      const projected = toPendingSteer({
+        ...buildSteer('with context'),
+        quotes: ['the excerpt'],
+      });
+      expect(projected.quotes).toEqual(['the excerpt']);
+      expect(projected).not.toHaveProperty('userId');
+    });
+  });
 
   describe('enqueue', () => {
     test('appends to a running job and returns the queue depth', async () => {
@@ -192,6 +203,111 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
     });
   });
 
+  describe('terminal claim-or-seal', () => {
+    test('claims a v2 FIFO batch without closing admission', async () => {
+      const streamId = 'steer-terminal-claim';
+      const job = await manager.createJob(streamId, 'user-1');
+      const first = buildSteer('first');
+      const second = buildSteer('second');
+      await manager.steering.enqueue(streamId, first, job.createdAt);
+      await manager.steering.enqueue(streamId, second, job.createdAt);
+
+      await expect(
+        manager.steering.admitTerminal(
+          streamId,
+          { allowClaim: true, keepOpenWhenEmpty: false },
+          job.createdAt,
+        ),
+      ).resolves.toEqual({ outcome: 'claimed', items: [first, second] });
+      await expect(jobStore.peekClaimedSteers(streamId, job.createdAt)).resolves.toEqual([
+        first,
+        second,
+      ]);
+      await expect(
+        manager.steering.enqueue(streamId, buildSteer('later'), job.createdAt),
+      ).resolves.toBe(1);
+    });
+
+    test.each([
+      { name: 'empty queue', queued: false, allowClaim: true },
+      { name: 'exhausted budget', queued: true, allowClaim: false },
+    ])('seals admission for $name', async ({ queued, allowClaim }) => {
+      const streamId = `steer-terminal-seal-${queued}-${allowClaim}`;
+      const job = await manager.createJob(streamId, 'user-1');
+      const existing = buildSteer('existing');
+      if (queued) {
+        await manager.steering.enqueue(streamId, existing, job.createdAt);
+      }
+
+      await expect(
+        manager.steering.admitTerminal(
+          streamId,
+          { allowClaim, keepOpenWhenEmpty: false },
+          job.createdAt,
+        ),
+      ).resolves.toEqual({ outcome: 'sealed' });
+      await expect(
+        manager.steering.enqueue(streamId, buildSteer('raced'), job.createdAt),
+      ).resolves.toBe(STEER_ENQUEUE_NOT_RUNNING);
+      await expect(manager.steering.closeAndDrain(streamId, job.createdAt)).resolves.toEqual(
+        queued ? [existing] : [],
+      );
+    });
+
+    test('refuses a stale generation without sealing its replacement', async () => {
+      const streamId = 'steer-terminal-stale';
+      const stale = await manager.createJob(streamId, 'user-1');
+      const replacement = await manager.createJob(streamId, 'user-1');
+
+      await expect(
+        manager.steering.admitTerminal(
+          streamId,
+          { allowClaim: true, keepOpenWhenEmpty: false },
+          stale.createdAt,
+        ),
+      ).resolves.toEqual({ outcome: 'unavailable' });
+      await expect(
+        manager.steering.enqueue(streamId, buildSteer('replacement'), replacement.createdAt),
+      ).resolves.toBe(1);
+    });
+
+    test('seals protocol v1 instead of claiming an unrecoverable batch', async () => {
+      const streamId = 'steer-terminal-v1';
+      const job = await manager.createJob(streamId, 'user-1', undefined, {
+        initialMetadata: { generationProtocolVersion: 1 },
+      });
+      const queued = buildSteer('legacy');
+      await manager.steering.enqueue(streamId, queued, job.createdAt);
+
+      await expect(
+        manager.steering.admitTerminal(
+          streamId,
+          { allowClaim: true, keepOpenWhenEmpty: false },
+          job.createdAt,
+        ),
+      ).resolves.toEqual({ outcome: 'sealed' });
+      await expect(manager.steering.closeAndDrain(streamId, job.createdAt)).resolves.toEqual([
+        queued,
+      ]);
+    });
+
+    test('keeps an empty queue open while another continuation is already planned', async () => {
+      const streamId = 'steer-terminal-open';
+      const job = await manager.createJob(streamId, 'user-1');
+
+      await expect(
+        manager.steering.admitTerminal(
+          streamId,
+          { allowClaim: true, keepOpenWhenEmpty: true },
+          job.createdAt,
+        ),
+      ).resolves.toEqual({ outcome: 'open' });
+      await expect(
+        manager.steering.enqueue(streamId, buildSteer('planned continuation'), job.createdAt),
+      ).resolves.toBe(1);
+    });
+  });
+
   describe('cancel', () => {
     test('removes exactly the cancelled steer and preserves queue order', async () => {
       const streamId = 'steer-cancel';
@@ -283,6 +399,103 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
       expect(
         (await manager.steering.closeAndDrain(streamId, newJob.createdAt)).map((s) => s.text),
       ).toEqual(['belongs to the new run', 'still open']);
+    });
+  });
+
+  describe('execution-bound quote capability', () => {
+    function pauseAction(streamId: string) {
+      const payload = buildToolApprovalPayload([
+        { name: 'shell', arguments: { command: 'ls' }, tool_call_id: 'call_qc' },
+      ]);
+      return buildPendingAction(payload, {
+        streamId,
+        conversationId: streamId,
+        runId: 'run-qc',
+        responseMessageId: 'msg-qc',
+      });
+    }
+
+    test('a capable resume re-binds the marker to its own execution', async () => {
+      const streamId = 'steer-quote-capability-resume';
+      const job = await manager.createJob(streamId, 'user-1', undefined, {
+        initialMetadata: { steerQuotesCapable: true },
+      });
+      expect(await manager.approvals.pause(streamId, pauseAction(streamId))).toBe(true);
+
+      expect(
+        await manager.approvals.resolve(
+          streamId,
+          undefined,
+          { steerQuotesCapable: true, providerExecutionId: 'resumed-exec', providerDrained: true },
+          job.createdAt,
+        ),
+      ).toBe(true);
+
+      const resumed = await manager.getJob(streamId);
+      expect(resumed?.metadata.steerQuotesExecutionId).toBe('resumed-exec');
+      const depth = await manager.steering.enqueue(streamId, {
+        ...buildSteer('quoted after resume'),
+        quotes: ['kept excerpt'],
+      });
+      expect(depth).toBe(1);
+      const [queued] = await manager.steering.peek(streamId);
+      expect(queued.quotes).toEqual(['kept excerpt']);
+    });
+
+    test('a legacy resume (no assertion) invalidates the previous marker atomically', async () => {
+      const streamId = 'steer-quote-capability-legacy-resume';
+      const job = await manager.createJob(streamId, 'user-1', undefined, {
+        initialMetadata: { steerQuotesCapable: true },
+      });
+      expect(await manager.approvals.pause(streamId, pauseAction(streamId))).toBe(true);
+
+      // A pre-quotes replica's patch rewrites the execution id but cannot
+      // know the marker field — exactly the omit-not-clear shape.
+      expect(
+        await manager.approvals.resolve(
+          streamId,
+          undefined,
+          { providerExecutionId: 'legacy-exec', providerDrained: true },
+          job.createdAt,
+        ),
+      ).toBe(true);
+
+      await manager.steering.enqueue(streamId, {
+        ...buildSteer('quoted after legacy resume'),
+        quotes: ['dropped excerpt'],
+      });
+      const [queued] = await manager.steering.peek(streamId);
+      expect(queued).not.toHaveProperty('quotes');
+    });
+  });
+
+  describe('recovered-steer payload proof', () => {
+    const { buildRecoveredSteerPayload, recoveredSteerPayloadMatches } =
+      jest.requireActual<typeof import('~/stream/SteerRecovery')>('~/stream/SteerRecovery');
+
+    test('binds normalized quotes into the proof (empty when none)', () => {
+      expect(buildRecoveredSteerPayload('words', undefined)).toEqual({
+        text: 'words',
+        fileIds: [],
+        quotes: [],
+      });
+      expect(buildRecoveredSteerPayload('words', undefined, ['  kept  ', ''])).toEqual({
+        text: 'words',
+        fileIds: [],
+        quotes: ['kept'],
+      });
+    });
+
+    test('a recovery matches only when the quotes match, order-significant', () => {
+      const item = { text: 'words', quotes: ['first', 'second'] };
+      const proofFor = (quotes?: unknown) => buildRecoveredSteerPayload('words', undefined, quotes);
+      expect(recoveredSteerPayloadMatches(item, proofFor(['first', 'second'])!)).toBe(true);
+      expect(recoveredSteerPayloadMatches(item, proofFor(['second', 'first'])!)).toBe(false);
+      expect(recoveredSteerPayloadMatches(item, proofFor(['first'])!)).toBe(false);
+      // A stale client omitting the quotes must not consume the parked source.
+      expect(recoveredSteerPayloadMatches(item, proofFor(undefined)!)).toBe(false);
+      // Quote-less sources keep matching quote-less recoveries (pre-quotes parity).
+      expect(recoveredSteerPayloadMatches({ text: 'words' }, proofFor(undefined)!)).toBe(true);
     });
   });
 
@@ -430,7 +643,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
 
       const failedRecovery = await manager.createJob(streamId, 'user-1', undefined, {
         recoveredSteerId: 'p3',
-        recoveredSteerPayload: { text: 'stale', fileIds: [] },
+        recoveredSteerPayload: { text: 'stale', fileIds: [], quotes: [] },
       });
       expect(await manager.steering.claim(streamId, owner)).toEqual([]);
 
@@ -443,7 +656,7 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
 
       const persistedRecovery = await manager.createJob(streamId, 'user-1', undefined, {
         recoveredSteerId: 'p3',
-        recoveredSteerPayload: { text: 'stale', fileIds: [] },
+        recoveredSteerPayload: { text: 'stale', fileIds: [], quotes: [] },
       });
       expect(
         await manager.steering.consumeRecovered(streamId, 'p3', owner, persistedRecovery.createdAt),
@@ -452,8 +665,8 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
     });
 
     test.each([
-      ['changed text', { text: 'forged words', fileIds: ['file-a', 'file-b'] }],
-      ['changed files', { text: 'original words', fileIds: ['file-a', 'file-c'] }],
+      ['changed text', { text: 'forged words', fileIds: ['file-a', 'file-b'], quotes: [] }],
+      ['changed files', { text: 'original words', fileIds: ['file-a', 'file-c'], quotes: [] }],
     ])(
       'refuses recovery with %s without leasing or consuming the source',
       async (_label, proof) => {
@@ -548,6 +761,116 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
       expect(await manager.steering.peek(streamId)).toEqual([]);
     });
 
+    test('abortJob transforms content with metadata from the winning resume-race snapshot', async () => {
+      const streamId = 'abort-resume-metadata-race';
+      const job = await manager.createJob(streamId, 'user-1');
+      const action = buildPendingAction(
+        buildToolApprovalPayload([
+          { name: 'shell', arguments: { command: 'ls' }, tool_call_id: 'call-1' },
+        ]),
+        { streamId, conversationId: streamId, runId: 'run-1', responseMessageId: 'msg-1' },
+      );
+      expect(await manager.approvals.pause(streamId, action)).toBe(true);
+      jobStore.setContentParts(streamId, [{ type: 'text', text: 'partial' }], job.createdAt);
+
+      const originalGetContentParts = jobStore.getContentParts.bind(jobStore);
+      let signalSnapshotStarted: (() => void) | undefined;
+      const snapshotStarted = new Promise<void>((resolve) => {
+        signalSnapshotStarted = resolve;
+      });
+      let releaseSnapshot: (() => void) | undefined;
+      const snapshotGate = new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      });
+      jest.spyOn(jobStore, 'getContentParts').mockImplementationOnce(async (...args) => {
+        signalSnapshotStarted?.();
+        await snapshotGate;
+        return originalGetContentParts(...args);
+      });
+      let transformedWith: unknown;
+
+      try {
+        const aborting = manager.abortJob(streamId, {
+          expectedCreatedAt: job.createdAt,
+          transformAbortContent: (content, claimedJob) => {
+            transformedWith = claimedJob.resolvedAskUserQuestions;
+            return content;
+          },
+        });
+        await snapshotStarted;
+        await expect(
+          manager.approvals.resolve(
+            streamId,
+            action.actionId,
+            {
+              resolvedAskUserQuestions: [
+                {
+                  request: 'Which environment?',
+                  output: 'staging',
+                },
+              ],
+            },
+            job.createdAt,
+          ),
+        ).resolves.toBe(true);
+        releaseSnapshot?.();
+
+        await expect(aborting).resolves.toMatchObject({ success: true });
+        expect(transformedWith).toEqual([
+          {
+            request: 'Which environment?',
+            output: 'staging',
+          },
+        ]);
+      } finally {
+        releaseSnapshot?.();
+      }
+    });
+
+    test('abortJob transforms content before filtering shifts reconstructed indices', async () => {
+      const streamId = 'abort-transform-before-filter';
+      const job = await manager.createJob(streamId, 'user-1');
+      jobStore.setContentParts(
+        streamId,
+        [
+          { type: 'text', text: '' },
+          {
+            type: 'tool_call',
+            tool_call: { id: 'ask-1', name: 'ask_user_question', args: '' },
+          },
+        ],
+        job.createdAt,
+      );
+
+      const result = await manager.abortJob(streamId, {
+        expectedCreatedAt: job.createdAt,
+        transformAbortContent: (content) => {
+          expect(content).toHaveLength(2);
+          const askPart = content[1];
+          if (askPart?.type !== 'tool_call' || !('tool_call' in askPart)) {
+            throw new Error('Expected reconstructed ask tool call at index 1');
+          }
+          const next = [...content];
+          next[1] = {
+            ...askPart,
+            tool_call: {
+              ...askPart.tool_call,
+              output: 'staging',
+              progress: 1,
+            },
+          } as unknown as TMessageContentParts;
+          return next;
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.content).toEqual([
+        expect.objectContaining({
+          tool_call: expect.objectContaining({ output: 'staging', progress: 1 }),
+        }),
+      ]);
+    });
+
     test('abortJob publishes nothing when natural completion wins its terminal CAS', async () => {
       const streamId = 'steer-abort-loses-terminal-race';
       const eventTransport = new InMemoryEventTransport();
@@ -595,6 +918,272 @@ describe('SteeringLifecycle via GenerationJobManager.steering (in-memory)', () =
         releaseSnapshot?.();
         await racingManager.destroy();
       }
+    });
+
+    test('abort final events preserve HITL paths and derive applied steer paths', async () => {
+      const streamId = 'steer-abort-provenance';
+      await manager.createJob(streamId, 'user-1');
+      await jobStore.updateJob(streamId, {
+        conversationId: streamId,
+        createdEventEmitted: true,
+        responseMessageId: 'response-1',
+        userMessage: { messageId: 'user-1' },
+        userSubmittedPaths: ['/content/0/tool_call/args'],
+        userSubmittedMessageFieldPaths: [
+          { path: '/content/0/tool_call/output', field: 'decision_response' },
+        ],
+      });
+      manager.setContentParts(streamId, [
+        {
+          type: 'tool_call',
+          tool_call: { id: 'call-1', output: 'Human response' },
+        },
+        { type: 'steer', steer: 'Change direction' },
+      ] as unknown as Agents.MessageContentComplex[]);
+
+      const result = await manager.abortJob(streamId);
+
+      expect(
+        (
+          result.finalEvent as
+            | {
+                responseMessage?: {
+                  userSubmittedPaths?: string[];
+                  userSubmittedMessageFieldPaths?: Array<{ path: string; field: string }>;
+                };
+              }
+            | undefined
+        )?.responseMessage,
+      ).toMatchObject({
+        userSubmittedPaths: ['/content/0/tool_call/args', '/content/1'],
+        userSubmittedMessageFieldPaths: [
+          { path: '/content/0/tool_call/output', field: 'decision_response' },
+        ],
+      });
+    });
+
+    describe('abort of a claimed approval resume', () => {
+      type AbortResponseMessage = {
+        userSubmittedPaths?: string[];
+        userSubmittedMessageFieldPaths?: Array<{ path: string; field: string }>;
+      };
+      const claimedMessageFieldPaths = [
+        { path: '/content/1/tool_call/output', field: 'decision_response' as const },
+      ];
+      const responseMessageOf = (finalEvent: unknown) =>
+        (finalEvent as { responseMessage?: AbortResponseMessage } | null)?.responseMessage;
+
+      async function claimResume(
+        streamId: string,
+        overrides: {
+          content?: Array<Record<string, unknown>>;
+          userSubmittedPaths?: string[];
+          userSubmittedMessageFieldPaths?: Array<{
+            path: string;
+            field: 'answer' | 'decision_response' | 'decision_reason';
+          }>;
+        } = {},
+      ) {
+        const job = await manager.createJob(streamId, 'user-1');
+        await jobStore.updateJob(streamId, {
+          conversationId: streamId,
+          createdEventEmitted: true,
+          responseMessageId: 'response-1',
+          userMessage: { messageId: 'user-1' },
+          userSubmittedPaths: ['/content/0/steer'],
+          providerExecutionStartedId: 'exec-before-pause',
+        });
+        const content: Array<Record<string, unknown>> = overrides.content ?? [
+          { type: 'text', text: 'Before the pause' },
+          { type: 'tool_call', tool_call: { id: 'call-1', args: '{"q":"model"}' } },
+        ];
+        manager.setContentParts(streamId, content as unknown as Agents.MessageContentComplex[]);
+        const action = {
+          actionId: `action-${streamId}`,
+          type: 'tool_approval',
+          payload: { action_requests: [], review_configs: [] },
+          createdAt: Date.now(),
+        } as unknown as Agents.PendingAction;
+        await manager.approvals.pause(streamId, action);
+        const claimed = await manager.approvals.resolve(
+          streamId,
+          action.actionId,
+          {
+            providerExecutionId: `exec-${streamId}`,
+            providerDrained: true,
+            userSubmittedPaths: overrides.userSubmittedPaths ?? [
+              '/content/0/steer',
+              '/content/2',
+              '/content/1/tool_call/args',
+            ],
+            userSubmittedMessageFieldPaths:
+              overrides.userSubmittedMessageFieldPaths ?? claimedMessageFieldPaths,
+          },
+          job.createdAt,
+        );
+        expect(claimed).toBe(true);
+        return { job, content };
+      }
+
+      test('does not label an unanswered ask placeholder as the claimed answer', async () => {
+        const streamId = 'steer-abort-ask-placeholder-provenance';
+        await claimResume(streamId, {
+          content: [
+            { type: 'text', text: 'Before the pause' },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'ask-1', name: 'ask_user_question', args: '{}', output: '' },
+            },
+          ],
+          userSubmittedPaths: ['/content/0/steer'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/1/tool_call/output', field: 'answer' },
+          ],
+        });
+
+        const result = await manager.abortJob(streamId);
+
+        expect(result.success).toBe(true);
+        const responseMessage = responseMessageOf(result.finalEvent);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer']);
+        expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
+      });
+
+      test('remaps an applied decision past a filtered part onto the published content', async () => {
+        const streamId = 'steer-abort-filtered-ordinal-provenance';
+        const { job } = await claimResume(streamId, {
+          content: [
+            { type: 'text', text: 'Before the pause' },
+            { type: 'text', text: '   ' },
+            {
+              type: 'tool_call',
+              tool_call: { id: 'call-1', args: '{"q":"user"}', output: 'User response' },
+            },
+          ],
+          userSubmittedPaths: ['/content/0/steer', '/content/1', '/content/2/tool_call/args'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/2/tool_call/output', field: 'decision_response' },
+          ],
+        });
+        await expect(
+          manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
+        ).resolves.toBe(true);
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const remapped = {
+          userSubmittedPaths: ['/content/0/steer', '/content/1/tool_call/args'],
+          userSubmittedMessageFieldPaths: [
+            { path: '/content/1/tool_call/output', field: 'decision_response' },
+          ],
+        };
+        expect(responseMessageOf(result.finalEvent)).toMatchObject(remapped);
+        expect(persisted).toEqual([expect.objectContaining(remapped)]);
+      });
+
+      test('publishes the pre-claim provenance when the provider never started', async () => {
+        const streamId = 'steer-abort-unapplied-provenance';
+        await claimResume(streamId);
+
+        const result = await manager.abortJob(streamId);
+
+        expect(result.success).toBe(true);
+        const responseMessage = responseMessageOf(result.finalEvent);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer', '/content/2']);
+        expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
+      });
+
+      test('publishes the pre-claim provenance while the provider has started without applying the decision', async () => {
+        const streamId = 'steer-abort-started-unapplied-provenance';
+        const { job } = await claimResume(streamId);
+        await expect(
+          manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
+        ).resolves.toBe(true);
+
+        const result = await manager.abortJob(streamId);
+
+        expect(result.success).toBe(true);
+        const responseMessage = responseMessageOf(result.finalEvent);
+        expect(responseMessage?.userSubmittedPaths).toEqual(['/content/0/steer', '/content/2']);
+        expect(responseMessage).not.toHaveProperty('userSubmittedMessageFieldPaths');
+      });
+
+      test('publishes and persists the claimed provenance once the resumed tool completed', async () => {
+        const streamId = 'steer-abort-applied-provenance';
+        const { job, content } = await claimResume(streamId);
+        await expect(
+          manager.beginProviderExecution(streamId, job.createdAt, `exec-${streamId}`),
+        ).resolves.toBe(true);
+        content[1] = {
+          type: 'tool_call',
+          tool_call: { id: 'call-1', args: '{"q":"user"}', output: 'User response' },
+        };
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        const claimedProvenance = {
+          userSubmittedPaths: ['/content/0/steer', '/content/2', '/content/1/tool_call/args'],
+          userSubmittedMessageFieldPaths: claimedMessageFieldPaths,
+        };
+        expect(responseMessageOf(result.finalEvent)).toMatchObject(claimedProvenance);
+        expect(persisted).toEqual([expect.objectContaining(claimedProvenance)]);
+      });
+
+      test.each([
+        ['steer-abort-stamped-provenance', 'Stamped answer'],
+        ['steer-abort-stamped-empty-provenance', ''],
+      ])(
+        'labels a decision output that the abort transform stamped before the provider started (%s)',
+        async (streamId, output) => {
+          await claimResume(streamId);
+
+          const result = await manager.abortJob(streamId, {
+            transformAbortContent: (parts) =>
+              parts.map((part, index) =>
+                index === 1 && part.type === 'tool_call'
+                  ? { ...part, tool_call: { ...part.tool_call, output } }
+                  : part,
+              ) as typeof parts,
+          });
+
+          expect(result.success).toBe(true);
+          expect(responseMessageOf(result.finalEvent)?.userSubmittedMessageFieldPaths).toEqual(
+            claimedMessageFieldPaths,
+          );
+        },
+      );
+
+      test('persists the same pre-claim provenance that the final event publishes', async () => {
+        const streamId = 'steer-abort-unapplied-persisted-provenance';
+        await claimResume(streamId);
+        const persisted: unknown[] = [];
+
+        const result = await manager.abortJob(streamId, {
+          beforePublish: async (pending) => {
+            persisted.push(pending.jobData);
+          },
+        });
+
+        expect(result.success).toBe(true);
+        expect(persisted).toEqual([
+          expect.objectContaining({
+            userSubmittedPaths: ['/content/0/steer', '/content/2'],
+            userSubmittedMessageFieldPaths: [],
+          }),
+        ]);
+      });
     });
   });
 
@@ -923,17 +1512,21 @@ describe('emitChunk durability (Redis-mode chunk log)', () => {
     const store = new InMemoryJobStore({ ttlAfterComplete: 60000 });
     const transport = new InMemoryEventTransport();
     const redisModeManager = buildRedisModeManager(store, transport);
+    let subscription: Awaited<ReturnType<typeof redisModeManager.subscribe>> | undefined;
     try {
       const streamId = 'steer-fire-and-forget';
       const job = await redisModeManager.createJob(streamId, 'user-1');
+      subscription = await redisModeManager.subscribe(streamId, () => undefined);
 
-      // Never resolves: the per-delta hot path must not gate on durability.
+      // After subscriber admission, the per-delta hot path must not gate on durability.
+      // Pre-admission events intentionally await the append so recovery cannot miss them.
       jest.spyOn(store, 'appendChunk').mockReturnValue(new Promise<boolean>(() => undefined));
       const publishSpy = jest.spyOn(transport, 'emitChunk');
 
       await redisModeManager.emitChunk(streamId, steerEvent);
       expect(publishSpy).toHaveBeenCalledWith(streamId, steerEvent, job.createdAt);
     } finally {
+      subscription?.unsubscribe();
       await redisModeManager.destroy();
     }
   });

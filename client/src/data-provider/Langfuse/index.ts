@@ -5,6 +5,7 @@ import type {
   TUpdateLangfuseConnectionRequest,
   TLangfuseConnectionTestRequest,
   TLangfuseConnectionTestResponse,
+  TLangfuseSessionLinkResponse,
 } from 'librechat-data-provider';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
 
@@ -14,6 +15,16 @@ export const useGetLangfuseConnectionQuery = (
   useQuery<TLangfuseConnectionStatus>(
     [QueryKeys.langfuseConnection],
     () => dataService.getLangfuseConnection(),
+    { enabled, refetchOnWindowFocus: false },
+  );
+
+export const useGetLangfuseSessionLinkQuery = (
+  conversationId: string,
+  enabled = true,
+): UseQueryResult<TLangfuseSessionLinkResponse> =>
+  useQuery<TLangfuseSessionLinkResponse>(
+    [QueryKeys.langfuseSessionLink, conversationId],
+    () => dataService.getLangfuseSessionLink(conversationId),
     { enabled, refetchOnWindowFocus: false },
   );
 
@@ -29,6 +40,7 @@ export const useUpdateLangfuseConnectionMutation = (): UseMutationResult<
       mutationKey: [MutationKeys.updateLangfuseConnection],
       onSuccess: (data) => {
         queryClient.setQueryData([QueryKeys.langfuseConnection], data);
+        queryClient.removeQueries([QueryKeys.langfuseSessionLink]);
       },
     },
   );

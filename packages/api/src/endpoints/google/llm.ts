@@ -13,6 +13,15 @@ type GoogleThinkingConfig = {
   thinkingLevel?: GoogleThinkingLevel;
 };
 
+type GeminiFlashThinkingRule = {
+  /** Model id, matched exactly or as a `${id}-` prefix for versioned aliases */
+  id: string;
+  /** Thinking level applied when the request doesn't set one */
+  default: GoogleThinkingLevel;
+  /** Levels the model rejects, mapped to the nearest level it accepts */
+  substitutions?: Partial<Record<GoogleThinkingLevel, GoogleThinkingLevel>>;
+};
+
 /**
  * Gemini Flash models (3.5+) that drop the deprecated sampling parameters
  * (`temperature`/`topP`/`topK`) and `thinkingBudget` in favor of the qualitative
@@ -22,12 +31,20 @@ type GoogleThinkingConfig = {
  * default thinking level when the request doesn't set one. Ordered
  * most-specific-first so `gemini-3.5-flash-lite` resolves before the
  * `gemini-3.5-flash` prefix.
+ *
+ * Gemini 3.7 and 3.8 Flash support only `low`/`medium`/`high` and error on
+ * `minimal`, so an explicit `minimal` is substituted with the nearest supported
+ * level.
  * @see https://ai.google.dev/gemini-api/docs/latest-model#api-changes-and-parameter-updates
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash
+ * @see https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
  */
-const geminiFlashThinkingDefaults: ReadonlyArray<readonly [string, GoogleThinkingLevel]> = [
-  ['gemini-3.6-flash', 'MEDIUM'],
-  ['gemini-3.5-flash-lite', 'MINIMAL'],
-  ['gemini-3.5-flash', 'MEDIUM'],
+const geminiFlashThinkingRules: ReadonlyArray<GeminiFlashThinkingRule> = [
+  { id: 'gemini-3.8-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
+  { id: 'gemini-3.7-flash', default: 'MEDIUM', substitutions: { MINIMAL: 'LOW' } },
+  { id: 'gemini-3.6-flash', default: 'MEDIUM' },
+  { id: 'gemini-3.5-flash-lite', default: 'MINIMAL' },
+  { id: 'gemini-3.5-flash', default: 'MEDIUM' },
 ];
 
 const geminiFlashLegacyParams = [
@@ -149,12 +166,12 @@ function normalizeGoogleThinkingLevel(value: unknown): GoogleThinkingLevel | und
   return normalized;
 }
 
-function getGeminiFlashDefaultThinkingLevel(model: string): GoogleThinkingLevel | undefined {
+function getGeminiFlashThinkingRule(model: string): GeminiFlashThinkingRule | undefined {
   const normalized = model.toLowerCase();
   const modelId = normalized.split('/').pop() ?? normalized;
-  for (const [id, level] of geminiFlashThinkingDefaults) {
-    if (modelId === id || modelId.startsWith(`${id}-`)) {
-      return level;
+  for (const rule of geminiFlashThinkingRules) {
+    if (modelId === rule.id || modelId.startsWith(`${rule.id}-`)) {
+      return rule;
     }
   }
   return undefined;
@@ -173,7 +190,7 @@ export function stripGeminiFlashBlockedParams<T extends Record<string, unknown> 
   params: T,
   model: string | undefined,
 ): T {
-  if (params == null || getGeminiFlashDefaultThinkingLevel(model ?? '') == null) {
+  if (params == null || getGeminiFlashThinkingRule(model ?? '') == null) {
     return params;
   }
   const sanitized = { ...params };
@@ -233,8 +250,8 @@ function applyGeminiFlashOverrides({
   if (typeof model !== 'string') {
     return;
   }
-  const defaultThinkingLevel = getGeminiFlashDefaultThinkingLevel(model);
-  if (!defaultThinkingLevel) {
+  const thinkingRule = getGeminiFlashThinkingRule(model);
+  if (!thinkingRule) {
     return;
   }
 
@@ -268,8 +285,14 @@ function applyGeminiFlashOverrides({
     thinkingConfig.includeThoughts = true;
   }
 
-  if (!shouldDropThinkingLevel && !thinkingConfig.thinkingLevel) {
-    thinkingConfig.thinkingLevel = defaultThinkingLevel;
+  if (!shouldDropThinkingLevel) {
+    if (!thinkingConfig.thinkingLevel) {
+      thinkingConfig.thinkingLevel = thinkingRule.default;
+    }
+    const substitute = thinkingRule.substitutions?.[thinkingConfig.thinkingLevel];
+    if (substitute) {
+      thinkingConfig.thinkingLevel = substitute;
+    }
   }
 
   if (Object.keys(thinkingConfig).length > 0) {

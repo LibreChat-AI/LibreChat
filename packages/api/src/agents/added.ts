@@ -4,14 +4,22 @@ import {
   Constants,
   isAgentsEndpoint,
   isEphemeralAgentId,
+  getEphemeralSender,
   appendAgentIdSuffix,
   encodeEphemeralAgentId,
+  resolveMCPAppsPolicy,
 } from 'librechat-data-provider';
 import type { Agent, AgentToolOptions, TConversation, TModelSpec } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { MCPClientCapabilityProfile } from '~/mcp/capabilities';
 import type { ParsedServerConfig } from '~/mcp/types';
-import { requiresEphemeralUserConnection, validateMCPServerConfig } from '~/mcp/utils';
+import {
+  requiresEphemeralUserConnection,
+  filterChatSelectableMCPServers,
+  validateMCPServerConfig,
+} from '~/mcp/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from '~/agents/hitl/askUserQuestionTool';
+import { resolveMCPClientCapabilityProfile } from '~/mcp/capabilities';
 import { synthesizeBackgroundToolOptions } from '~/agents/background';
 import { mergeSynthesizedToolOptions } from '~/agents/selection';
 import { synthesizeIntentToolOptions } from '~/agents/intent';
@@ -50,16 +58,27 @@ function applyModelSpecSubagents(
 }
 
 export interface LoadAddedAgentDeps {
-  getAgent: (searchParameter: { id: string }) => Promise<Agent | null>;
+  /** Resolves the agent without its `versions` history; `version` carries the count. */
+  getAgent: (searchParameter: {
+    id: string;
+  }) => Promise<(Agent & { version?: number; versions?: { length: number } }) | null>;
   getMCPServerTools: (
     userId: string,
     serverName: string,
     serverConfig?: ParsedServerConfig,
+    capabilityProfile?: MCPClientCapabilityProfile,
   ) => Promise<Record<string, unknown> | null>;
+  /** The MCP servers this user can reach, with the registry's tier precedence
+   *  already applied — the resolution behind the client's catalog. Omitted, the
+   *  chat selection is used as sent. */
+  getAccessibleMCPServers?: (
+    userId: string,
+    role?: string,
+  ) => Promise<Record<string, ParsedServerConfig>>;
 }
 
 interface LoadAddedAgentParams {
-  req: { user?: { id?: string }; config?: Record<string, unknown> };
+  req: { user?: { id?: string; role?: string }; config?: Record<string, unknown> };
   conversation: TConversation | null;
   primaryAgent?: Agent | null;
 }
@@ -87,9 +106,8 @@ export async function loadAddedAgent(
       return null;
     }
 
-    const agentRecord = agent as Record<string, unknown>;
-    const versions = agentRecord.versions as unknown[] | undefined;
-    agentRecord.version = versions ? versions.length : 0;
+    const agentRecord = agent as Agent & { version?: number; versions?: { length: number } };
+    agentRecord.version ??= agentRecord.versions?.length ?? 0;
     agent.id = appendAgentIdSuffix(agent.id, 1);
     return agent;
   }
@@ -115,6 +133,9 @@ export async function loadAddedAgent(
   }
 
   const appConfig = req.config as AppConfig | undefined;
+  const capabilityProfile = resolveMCPClientCapabilityProfile(
+    resolveMCPAppsPolicy(appConfig?.mcpSettings?.apps),
+  );
   const ephemeralAgent = rest.ephemeralAgent as
     | {
         mcp?: string[];
@@ -146,11 +167,11 @@ export async function loadAddedAgent(
 
     const modelSpecs = (appConfig?.modelSpecs as { list?: TModelSpec[] })?.list;
     const modelSpec = spec != null && spec !== '' ? modelSpecs?.find((s) => s.name === spec) : null;
-    const sender =
-      rest.modelLabel ??
-      modelSpec?.label ??
-      (endpointConfig?.modelDisplayLabel as string | undefined) ??
-      '';
+    const sender = getEphemeralSender({
+      modelLabel: rest.modelLabel,
+      specLabel: modelSpec?.label,
+      modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
+    });
     const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
 
     const result: Record<string, unknown> = {
@@ -181,8 +202,16 @@ export async function loadAddedAgent(
     return result as unknown as Agent;
   }
 
-  const mcpServers = new Set<string>(ephemeralAgent?.mcp);
   const userId = req.user?.id ?? '';
+  /** Narrowed like the primary ephemeral loader: picker selection only, spec
+   *  servers added below. */
+  const mcpServers = new Set<string>(
+    await filterChatSelectableMCPServers(ephemeralAgent?.mcp, {
+      userId,
+      role: req.user?.role,
+      getAccessibleMCPServers: deps.getAccessibleMCPServers,
+    }),
+  );
 
   const modelSpecs = (appConfig?.modelSpecs as { list?: TModelSpec[] })?.list;
   let modelSpec: (typeof modelSpecs extends Array<infer T> | undefined ? T : never) | null = null;
@@ -227,7 +256,7 @@ export async function loadAddedAgent(
     const serverTools =
       overlayConfig && requiresEphemeralUserConnection(overlayConfig)
         ? null
-        : await deps.getMCPServerTools(userId, mcpServer, overlayConfig);
+        : await deps.getMCPServerTools(userId, mcpServer, overlayConfig, capabilityProfile);
     if (!serverTools) {
       tools.push(`${mcp_all}${mcp_delimiter}${mcpServer}`);
       addedServers.add(mcpServer);
@@ -268,11 +297,11 @@ export async function loadAddedAgent(
     }
   }
 
-  const sender =
-    rest.modelLabel ??
-    modelSpec?.label ??
-    (endpointConfig?.modelDisplayLabel as string | undefined) ??
-    '';
+  const sender = getEphemeralSender({
+    modelLabel: rest.modelLabel,
+    specLabel: modelSpec?.label,
+    modelDisplayLabel: endpointConfig?.modelDisplayLabel as string | undefined,
+  });
   const ephemeralId = encodeEphemeralAgentId({ endpoint, model, sender, index: 1 });
 
   const result: Record<string, unknown> = {

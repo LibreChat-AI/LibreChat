@@ -60,7 +60,7 @@ const connect = require('./connect');
     console.purple(`Found user: ${user.email}`);
   }
 
-  let balance = await Balance.findOne({ user: user._id }).lean();
+  let balance = await Balance.findOne({ user: user._id }).sort({ _id: 1 }).lean();
   if (!balance) {
     console.purple('User has no balance!');
   } else {
@@ -81,11 +81,17 @@ const connect = require('./connect');
    */
   let result;
   try {
-    result = await Balance.findOneAndUpdate(
-      { user: user._id },
-      { tokenCredits: amount },
-      { upsert: true, new: true },
-    ).lean();
+    result =
+      (await Balance.findOneAndUpdate(
+        { user: user._id },
+        { tokenCredits: amount },
+        { new: true, sort: { _id: 1 } },
+      ).lean()) ??
+      (await Balance.findOneAndUpdate(
+        { _id: user._id },
+        { $set: { tokenCredits: amount }, $setOnInsert: { user: user._id } },
+        { upsert: true, new: true },
+      ).lean());
   } catch (error) {
     console.red('Error: ' + error.message);
     console.error(error);

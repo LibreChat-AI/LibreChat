@@ -7,6 +7,7 @@ import { InMemoryEventTransport } from '../implementations/InMemoryEventTranspor
 import { registerChunkPublicationCapability } from '../internal/chunkPublication';
 import { InMemoryJobStore } from '../implementations/InMemoryJobStore';
 import { STEER_ENQUEUE_RECEIPT_FULL } from '../interfaces/IJobStore';
+import { REDIS_ABORT_TERMINAL_GRACE_MS } from '../internal/timing';
 
 type ReceiptEntry = { receipt: SteerReceipt; expiresAt: number };
 type ReceiptMap = Map<string, ReceiptEntry>;
@@ -157,6 +158,7 @@ describe('InMemoryJobStore steer receipt integrity', () => {
         {
           text: item.text,
           fileIds: (item.files ?? []).flatMap((file) => file.file_id ?? []).sort(),
+          quotes: item.quotes ?? [],
         },
       );
 
@@ -208,6 +210,7 @@ describe('InMemoryJobStore steer receipt integrity', () => {
         {
           text: item.text,
           fileIds: (item.files ?? []).flatMap((file) => file.file_id ?? []).sort(),
+          quotes: item.quotes ?? [],
         },
       );
 
@@ -327,6 +330,7 @@ describe('InMemoryJobStore steer receipt integrity', () => {
     };
     const hostContent: Array<{ steerId: string; text: string }> = [];
     let subscription: { unsubscribe: () => void } | null = null;
+    jest.useFakeTimers();
 
     try {
       const job = await manager.createJob(streamId, item.userId, streamId, {
@@ -376,9 +380,15 @@ describe('InMemoryJobStore steer receipt integrity', () => {
         item,
       });
       expect(job.abortController.signal.aborted).toBe(true);
+      expect(onError).not.toHaveBeenCalled();
+      expect(manager.getRuntimeStats().runtimeStateSize).toBe(1);
+
+      await jest.advanceTimersByTimeAsync(REDIS_ABORT_TERMINAL_GRACE_MS);
+
       expect(onError).toHaveBeenCalledWith(TERMINAL_PUBLICATION_RECONNECT_ERROR);
       expect(manager.getRuntimeStats().runtimeStateSize).toBe(0);
     } finally {
+      jest.useRealTimers();
       subscription?.unsubscribe();
       await manager.destroy();
     }

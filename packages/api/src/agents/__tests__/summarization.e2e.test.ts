@@ -212,7 +212,11 @@ async function runFullTurn({
     initialSummary,
     runId: `e2e-${Date.now()}`,
     signal: abortController.signal,
-    customHandlers: buildHandlers(collectedUsage, aggregateContent, spies) as never,
+    customHandlers: buildHandlers(
+      collectedUsage,
+      aggregateContent as (params: { event: string; data: unknown }) => void,
+      spies,
+    ) as never,
     summarizationConfig,
     tokenCounter,
   });

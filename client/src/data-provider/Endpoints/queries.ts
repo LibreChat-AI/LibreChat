@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
+import { normalizeStartupConfigModelSpecs } from '~/utils';
 import store from '~/store';
 
 export const useGetEndpointsQuery = <TData = t.TEndpointsConfig>(
@@ -60,7 +61,14 @@ export const useGetStartupConfig = (
   const user = useRecoilValue<t.TUser | undefined>(store.user);
   return useQuery<t.TStartupConfig>(
     startupConfigKey(!!user, options?.context),
-    () => dataService.getStartupConfig({ context: options?.context }),
+    /**
+     * Normalized at the query boundary — once per fetch, cached — so every
+     * consumer of `modelSpecs.list` reads complete specs without per-site guards.
+     */
+    () =>
+      dataService
+        .getStartupConfig({ context: options?.context })
+        .then(normalizeStartupConfigModelSpecs),
     {
       staleTime: Infinity,
       refetchOnWindowFocus: false,

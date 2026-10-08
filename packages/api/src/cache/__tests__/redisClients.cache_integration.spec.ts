@@ -30,7 +30,7 @@ describe('redisClients Integration Tests', () => {
     expect(result).toBe(testValue);
 
     // Test delete operation
-    const deleteResult = await client.del(testKey);
+    const deleteResult = await client.del([testKey]);
     expect(deleteResult).toBe(1);
 
     // Verify key is deleted

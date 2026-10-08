@@ -10,22 +10,19 @@ permissions:
   packages: write
 
 jobs:
-  build:
+  # Validates the release tag and resolves which tags the images should carry.
+  # `latest` is only applied when this tag is both stable and the newest stable
+  # tag in the repository, so re-cutting an older patch cannot move `latest`.
+  resolve-tags:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: api-build
-            file: Dockerfile.multi
-            image_name: librechat-api
-          - target: node
-            file: Dockerfile
-            image_name: librechat
-
+    timeout-minutes: 10
+    outputs:
+      tag_suffixes: ${{ steps.tags.outputs.tag_suffixes }}
     steps:
-      # Check out the repository
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Validate release tag
         id: release-tag
@@ -46,45 +43,9 @@ jobs:
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Set up QEMU
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      # Set up Docker Buildx
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # Log in to GitHub Container Registry
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Login to Docker Hub
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Prepare the environment
-      - name: Prepare environment
-        run: |
-          cp .env.example .env
-
-      - name: Compute build metadata
-        run: |
-          echo "BUILD_COMMIT=${{ github.sha }}" >> $GITHUB_ENV
-          echo "BUILD_BRANCH=${{ github.ref_name }}" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
-
       - name: Resolve image tags
-        id: image-tags
+        id: tags
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          IMAGE_NAME: ${{ matrix.image_name }}
           IMAGE_TAG: ${{ steps.release-tag.outputs.image_tag }}
           IS_STABLE: ${{ steps.release-tag.outputs.is_stable }}
         run: |
@@ -92,27 +53,23 @@ jobs:
           git fetch --tags --force
           LATEST_STABLE_TAG=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -E '^v[0-9]+[.][0-9]+[.][0-9]+$' | head -n 1 || true)
           {
-            echo 'tags<<EOF'
-            printf 'ghcr.io/%s/%s:%s\n' "$GITHUB_REPOSITORY_OWNER" "$IMAGE_NAME" "$IMAGE_TAG"
-            printf '%s/%s:%s\n' "$DOCKERHUB_USERNAME" "$IMAGE_NAME" "$IMAGE_TAG"
+            echo 'tag_suffixes<<EOF'
+            printf '%s\n' "$IMAGE_TAG"
             if [ "$IS_STABLE" = "true" ] && [ "$IMAGE_TAG" = "$LATEST_STABLE_TAG" ]; then
-              printf 'ghcr.io/%s/%s:latest\n' "$GITHUB_REPOSITORY_OWNER" "$IMAGE_NAME"
-              printf '%s/%s:latest\n' "$DOCKERHUB_USERNAME" "$IMAGE_NAME"
+              printf 'latest\n'
             fi
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      # Build and push Docker images for each target
-      - name: Build and push Docker images
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          push: true
-          tags: ${{ steps.image-tags.outputs.tags }}
-          platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.target }}
-          build-args: |
-            BUILD_COMMIT=${{ env.BUILD_COMMIT }}
-            BUILD_BRANCH=${{ env.BUILD_BRANCH }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
+  publish:
+    needs: resolve-tags
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      images: >-
+        [{"target":"api-build","file":"Dockerfile.multi","image_name":"librechat-api"},
+         {"target":"node","file":"Dockerfile","image_name":"librechat"}]
+      tag_suffixes: ${{ needs.resolve-tags.outputs.tag_suffixes }}
+      build_branch: ${{ github.ref_name }}
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}

@@ -6,6 +6,7 @@ import {
   messagesView,
   selectMockEndpoint,
   sendMessage,
+  sendMessageAndWaitForCompletion,
 } from './helpers';
 
 const isStartupConfigRequest = (request: Request) =>
@@ -71,11 +72,12 @@ test.describe('Mermaid Artifact resource boundary', () => {
     expect(canvasBox).not.toBeNull();
     expect(canvasBox!.height).toBeGreaterThan(panelBox!.height * 0.75);
     await expect(panel.locator('iframe')).toHaveCount(0);
-    const artifactCard = messages.locator('[data-artifact-trigger^="mermaid-artifact-"]');
-    await expect(artifactCard).toHaveAttribute('aria-expanded', 'true');
-    await expect(artifactCard).toHaveClass(/\bw-fit\b/);
-    await expect(artifactCard.locator('.lucide-workflow').locator('..')).toHaveClass(
-      /\bbg-status-info-subtle\b/,
+    const artifactRow = messages.locator('[data-artifact-trigger^="mermaid-artifact-"]');
+    await expect(artifactRow).toHaveAttribute('aria-expanded', 'true');
+    /* The trigger is an `ArtifactRow`: the diagram glyph rides the row's
+     * glyph slot, tinted with the accent that marks a rendered preview. */
+    await expect(artifactRow.locator('.lucide-workflow').locator('..')).toHaveClass(
+      /\btext-status-info\b/,
     );
 
     expect(await unexpectedRequest).toBeNull();
@@ -89,7 +91,7 @@ test.describe('Mermaid Artifact resource boundary', () => {
     expect(response.ok()).toBeTruthy();
 
     const artifactButton = messagesView(page).getByRole('button', {
-      name: 'E2E HTML Artifact Click to open',
+      name: 'E2E HTML Artifact HTML Opens as a rendered preview Click to open',
       exact: true,
     });
     await expect(artifactButton).toBeVisible();
@@ -156,8 +158,14 @@ test.describe('Mermaid Artifact resource boundary', () => {
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
 
-    const response = await sendMessage(page, 'E2E_LARGE_MERMAID_ARTIFACT_REPLY');
+    // This test exercises completed-diagram exports. Mid-stream artifacts use
+    // the Code tab while their source is being generated, not a settled preview.
+    const response = await sendMessageAndWaitForCompletion(
+      page,
+      'E2E_LARGE_MERMAID_ARTIFACT_REPLY',
+    );
     expect(response.ok()).toBeTruthy();
+    await expect(page.getByRole('button', { name: 'Stop generating' })).toBeHidden();
 
     const messages = messagesView(page);
     await expect(messages.getByRole('img', { name: 'Mermaid diagram' })).toBeVisible();

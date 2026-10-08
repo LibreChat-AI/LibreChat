@@ -36,6 +36,77 @@ describe('planPluginHooks', () => {
     ]);
   });
 
+  test('gives matcherless tool declarations the document namespace', () => {
+    const plan = planPluginHooks(
+      document({
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'audit' }] }],
+        PostToolBatch: [{ hooks: [{ type: 'command', command: 'record' }] }],
+        Stop: [{ hooks: [{ type: 'command', command: 'verify' }] }],
+      }),
+      {
+        handlerTypes: new Set(['command']),
+        translateMatcher: ({ matcher }: { matcher: string }) => matcher,
+        toPluginToolName: ({ toolName }) => toolName,
+      },
+    );
+
+    expect(plan.summary.ready).toBe(3);
+    expect(
+      plan.entries.map(({ targetEvent, requiresToolNameTranslation, translatedToolNames }) => ({
+        targetEvent,
+        requiresToolNameTranslation,
+        translatedToolNames,
+      })),
+    ).toEqual([
+      {
+        targetEvent: 'PreToolUse',
+        requiresToolNameTranslation: true,
+        translatedToolNames: undefined,
+      },
+      {
+        targetEvent: 'PostToolBatch',
+        requiresToolNameTranslation: true,
+        translatedToolNames: undefined,
+      },
+      {
+        targetEvent: 'Stop',
+        requiresToolNameTranslation: undefined,
+        translatedToolNames: undefined,
+      },
+    ]);
+  });
+
+  test('marks handlers unsupported when the executor rejects them for the host', () => {
+    const plan = planPluginHooks(
+      document({
+        PreToolUse: [
+          { matcher: '^write_file$', hooks: [{ type: 'command', command: 'check' }] },
+          {
+            matcher: '^read_file$',
+            hooks: [{ type: 'command', command: 'check', commandWindows: 'check.ps1' }],
+          },
+        ],
+      }),
+      {
+        handlerTypes: new Set(['command']),
+        translateMatcher: ({ matcher }: { matcher: string }) => matcher,
+        supportsHandler: ({ handler }) =>
+          handler.commandWindows === undefined ? 'host requires commandWindows' : undefined,
+      },
+    );
+
+    expect(plan.summary).toEqual({ declared: 2, ready: 1, unsupported: 1 });
+    expect(plan.entries[0].status).toBe('unsupported');
+    expect(plan.entries[0].issues).toEqual([
+      expect.objectContaining({
+        code: 'unsupported_handler',
+        severity: 'error',
+        message: 'host requires commandWindows',
+      }),
+    ]);
+    expect(plan.entries[1].status).toBe('ready');
+  });
+
   test('maps SessionStart to RunStart with an explicit lifecycle warning', () => {
     const plan = planPluginHooks(
       document({
@@ -137,6 +208,31 @@ describe('planPluginHooks', () => {
           expect.objectContaining({
             code: 'unsupported_session_source',
             severity: 'error',
+          }),
+        ]),
+      }),
+    );
+  });
+
+  test('fails closed for SessionStart clear matchers, which no run path emits', () => {
+    const plan = planPluginHooks(
+      document({
+        SessionStart: [
+          { matcher: 'resume|clear', hooks: [{ type: 'command', command: 'reload-context' }] },
+        ],
+      }),
+      { handlerTypes: new Set(['command']), sessionLifecycle: true },
+    );
+
+    expect(plan.summary).toEqual({ declared: 1, ready: 0, unsupported: 1 });
+    expect(plan.entries[0]).toEqual(
+      expect.objectContaining({
+        status: 'unsupported',
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            code: 'unsupported_session_source',
+            severity: 'error',
+            message: expect.stringContaining('"clear"'),
           }),
         ]),
       }),
@@ -261,16 +357,20 @@ describe('planPluginHooks', () => {
     const plan = planPluginHooks(
       document({
         UserPromptExpansion: [{ hooks: [{ type: 'command', command: 'banner' }] }],
+        StopFinalize: [{ hooks: [{ type: 'command', command: 'intercept-finalization' }] }],
         Stop: [{ hooks: [{ type: 'prompt', prompt: 'Verify completion' }] }],
       }),
       commandCapabilities,
     );
 
-    expect(plan.summary).toEqual({ declared: 2, ready: 0, unsupported: 2 });
+    expect(plan.summary).toEqual({ declared: 3, ready: 0, unsupported: 3 });
     expect(plan.entries[0].issues).toEqual([
       expect.objectContaining({ code: 'unsupported_event' }),
     ]);
     expect(plan.entries[1].issues).toEqual([
+      expect.objectContaining({ code: 'unsupported_event' }),
+    ]);
+    expect(plan.entries[2].issues).toEqual([
       expect.objectContaining({ code: 'unsupported_handler' }),
     ]);
   });

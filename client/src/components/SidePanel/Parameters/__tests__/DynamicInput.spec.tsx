@@ -13,10 +13,12 @@ function setup({
   type,
   range,
   settingKey,
+  conversation = {},
 }: {
   type: 'number' | 'string';
   range?: SettingRange;
   settingKey: string;
+  conversation?: Record<string, unknown>;
 }) {
   const commit = jest.fn();
   const setOption = jest.fn(() => commit) as unknown as TSetOption;
@@ -27,11 +29,33 @@ function setup({
         type={type}
         range={range}
         setOption={setOption}
-        conversation={{}}
+        conversation={conversation}
       />
     </ChatContext.Provider>,
   );
   return { input: screen.getByRole('textbox'), commit };
+}
+
+function setupNavigable(range: SettingRange, conversation: Record<string, unknown>) {
+  const commit = jest.fn();
+  const setOption = jest.fn(() => commit) as unknown as TSetOption;
+  const tree = (next: Record<string, unknown>) => (
+    <ChatContext.Provider value={chatContextValue}>
+      <DynamicInput
+        settingKey="thinkingBudget"
+        type="number"
+        range={range}
+        setOption={setOption}
+        conversation={next}
+      />
+    </ChatContext.Provider>
+  );
+  const { rerender } = render(tree(conversation));
+  return {
+    commit,
+    input: () => screen.getByRole('textbox'),
+    navigate: (next: Record<string, unknown>) => rerender(tree(next)),
+  };
 }
 
 describe('DynamicInput', () => {
@@ -108,6 +132,173 @@ describe('DynamicInput', () => {
       jest.advanceTimersByTime(500);
     });
     expect(commit).toHaveBeenLastCalledWith(-1);
+  });
+
+  it('keeps thinkingBudget -1 on blur when a model-specific positive floor is set', () => {
+    const { input, commit } = setup({
+      type: 'number',
+      range: { min: -1, max: 32768, step: 1, positiveMin: 128 },
+      settingKey: 'thinkingBudget',
+    });
+
+    fireEvent.change(input, { target: { value: '-1' } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue('-1');
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+    expect(commit).toHaveBeenLastCalledWith(-1);
+  });
+
+  /**
+   * A preset saved while the shared range was in force can hold a budget the
+   * selected model rejects. Waiting for a model switch or a blur would leave it
+   * displayed, savable and sendable.
+   */
+  it('normalizes a stored value the selected model no longer allows on mount', () => {
+    const { input, commit } = setup({
+      type: 'number',
+      range: { min: -1, max: 24576, step: 1, positiveMin: 0, modelSpecific: true },
+      settingKey: 'thinkingBudget',
+      conversation: { thinkingBudget: 32000 },
+    });
+
+    expect(input).toHaveValue('24576');
+    expect(commit).toHaveBeenLastCalledWith(24576);
+  });
+
+  it('leaves a stored value inside the model range untouched on mount', () => {
+    const { input, commit } = setup({
+      type: 'number',
+      range: { min: -1, max: 24576, step: 1, positiveMin: 0, modelSpecific: true },
+      settingKey: 'thinkingBudget',
+      conversation: { thinkingBudget: 2048 },
+    });
+
+    expect(input).toHaveValue('2048');
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  /** The shared fallback stays in place for models that ignore the parameter,
+   *  so clamping to it would discard a value set for another model. */
+  it('does not normalize on mount against a range the model did not narrow', () => {
+    const { input, commit } = setup({
+      type: 'number',
+      range: { min: -1, max: 24576, step: 1 },
+      settingKey: 'thinkingBudget',
+      conversation: { thinkingBudget: 32000 },
+    });
+
+    expect(input).toHaveValue('32000');
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The panel stays mounted across conversations, so a legacy value can arrive
+   * under a range that never changed. Keying only on the range left it above
+   * the model ceiling, savable and sendable.
+   */
+  it('normalizes when a navigation brings in a value the same range rejects', () => {
+    const range: SettingRange = {
+      min: -1,
+      max: 24576,
+      step: 1,
+      positiveMin: 0,
+      modelSpecific: true,
+    };
+    const { navigate, input, commit } = setupNavigable(range, {
+      conversationId: 'convo-a',
+      thinkingBudget: 2048,
+    });
+    expect(commit).not.toHaveBeenCalled();
+
+    navigate({ conversationId: 'convo-b', thinkingBudget: 32000 });
+
+    expect(input()).toHaveValue('24576');
+    expect(commit).toHaveBeenLastCalledWith(24576);
+  });
+
+  it('leaves a navigation alone when the incoming value fits the range', () => {
+    const range: SettingRange = {
+      min: -1,
+      max: 24576,
+      step: 1,
+      positiveMin: 0,
+      modelSpecific: true,
+    };
+    const { navigate, commit } = setupNavigable(range, {
+      conversationId: 'convo-a',
+      thinkingBudget: 2048,
+    });
+
+    navigate({ conversationId: 'convo-b', thinkingBudget: 4096 });
+
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Applying a preset over the open conversation keeps the conversation id and
+   * the model, so neither key moves; the value simply arrives.
+   */
+  it('normalizes a stored value replaced under an unchanged conversation', () => {
+    const range: SettingRange = {
+      min: -1,
+      max: 24576,
+      step: 1,
+      positiveMin: 0,
+      modelSpecific: true,
+    };
+    const { navigate, input, commit } = setupNavigable(range, {
+      conversationId: 'convo-a',
+      thinkingBudget: 2048,
+    });
+
+    navigate({ conversationId: 'convo-a', thinkingBudget: 32000 });
+
+    expect(input()).toHaveValue('24576');
+    expect(commit).toHaveBeenLastCalledWith(24576);
+  });
+
+  /**
+   * A typed value reaches the conversation through this same field, so the two
+   * agree by the time it lands. Correcting it there would fight the user
+   * mid-edit, which is why clamping belongs on blur.
+   */
+  it('leaves the value the user typed to the blur clamp when it lands', () => {
+    const range: SettingRange = {
+      min: -1,
+      max: 32768,
+      step: 1,
+      positiveMin: 128,
+      modelSpecific: true,
+    };
+    const { navigate, input, commit } = setupNavigable(range, {
+      conversationId: 'convo-a',
+      thinkingBudget: 2048,
+    });
+
+    fireEvent.change(input(), { target: { value: '50' } });
+    /** The debounced write reaching the conversation, which is what the
+     *  normalization would otherwise read as an external replacement. */
+    navigate({ conversationId: 'convo-a', thinkingBudget: 50 });
+
+    expect(input()).toHaveValue('50');
+    expect(commit).not.toHaveBeenCalledWith(128);
+  });
+
+  it('clamps a positive thinkingBudget below the model floor on blur', () => {
+    const { input, commit } = setup({
+      type: 'number',
+      range: { min: -1, max: 32768, step: 1, positiveMin: 128 },
+      settingKey: 'thinkingBudget',
+    });
+
+    fireEvent.change(input, { target: { value: '50' } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue('128');
+    expect(commit).toHaveBeenLastCalledWith(128);
   });
 
   it('drops the minus sign when the range does not permit negatives', async () => {

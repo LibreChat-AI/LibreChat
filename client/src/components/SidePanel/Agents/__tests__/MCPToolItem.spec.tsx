@@ -24,6 +24,42 @@ const tool = {
   metadata: { name: 'execute', description: 'Runs JavaScript code against the API.' },
 } as unknown as AgentToolType;
 
+const pressedOptions: Array<{
+  name: string;
+  overrides: Partial<React.ComponentProps<typeof MCPToolItem>>;
+  label: string;
+  color: string;
+}> = [
+  {
+    name: 'deferred',
+    overrides: { deferredToolsEnabled: true, isDeferred: true },
+    label: 'com_ui_mcp_defer_loading',
+    color: 'text-series-4',
+  },
+  {
+    name: 'programmatic',
+    overrides: {
+      programmaticToolsEnabled: true,
+      programmaticToolsAvailable: true,
+      isProgrammatic: true,
+    },
+    label: 'com_ui_mcp_programmatic',
+    color: 'text-series-6',
+  },
+  {
+    name: 'background',
+    overrides: { backgroundToolsEnabled: true, isBackground: true },
+    label: 'com_ui_mcp_background',
+    color: 'text-series-1',
+  },
+  {
+    name: 'intent',
+    overrides: { toolIntentsEnabled: true, isIntent: true },
+    label: 'com_ui_mcp_intent',
+    color: 'text-series-3',
+  },
+];
+
 function setup(overrides: Partial<React.ComponentProps<typeof MCPToolItem>> = {}) {
   const props = {
     tool,
@@ -35,6 +71,7 @@ function setup(overrides: Partial<React.ComponentProps<typeof MCPToolItem>> = {}
     intentDisabled: false,
     deferredToolsEnabled: false,
     programmaticToolsEnabled: false,
+    programmaticToolsAvailable: false,
     backgroundToolsEnabled: false,
     toolIntentsEnabled: false,
     onToggleSelect: jest.fn(),
@@ -93,12 +130,23 @@ describe('MCPToolItem', () => {
     expect(props.onToggleDefer).toHaveBeenCalledTimes(1);
   });
 
-  test('deferred tool keeps its warning color while hovered', () => {
-    setup({ deferredToolsEnabled: true, isDeferred: true });
-    const deferButton = screen.getByRole('button', { name: 'com_ui_mcp_defer_loading' });
-    expect(deferButton).toHaveClass('hover:text-text-secondary');
-    expect(deferButton.querySelector('svg')).toHaveClass('text-text-warning');
-  });
+  test.each(pressedOptions)(
+    '$name option uses its semantic series border and color when pressed',
+    (option) => {
+      setup(option.overrides);
+      const button = screen.getByRole('button', { name: option.label });
+
+      expect(button).toHaveClass(
+        option.color,
+        `hover:${option.color}`,
+        option.color.replace('text-', 'border-'),
+      );
+      expect(button).not.toHaveClass('bg-surface-active', 'text-text-primary');
+      expect(button.querySelector('svg')?.className.baseVal).not.toMatch(
+        /text-(?:amber|violet|sky|teal)-/,
+      );
+    },
+  );
 
   test('defer button is absent when deferred tools are disabled', () => {
     setup();
@@ -108,8 +156,30 @@ describe('MCPToolItem', () => {
   });
 
   test('programmatic is an inline button rendered only when enabled', () => {
-    const props = setup({ programmaticToolsEnabled: true });
+    const props = setup({ programmaticToolsEnabled: true, programmaticToolsAvailable: true });
     const programmaticButton = screen.getByRole('button', { name: 'com_ui_mcp_programmatic' });
+    fireEvent.click(programmaticButton);
+    expect(props.onToggleProgrammatic).toHaveBeenCalledTimes(1);
+  });
+
+  test('programmatic is inert until Code Interpreter is selected', () => {
+    const props = setup({ programmaticToolsEnabled: true, programmaticToolsAvailable: false });
+    const programmaticButton = screen.getByRole('button', { name: 'com_ui_mcp_programmatic' });
+
+    expect(programmaticButton).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(programmaticButton);
+    expect(props.onToggleProgrammatic).not.toHaveBeenCalled();
+  });
+
+  test('an existing programmatic setting can be cleared after Code Interpreter is disabled', () => {
+    const props = setup({
+      programmaticToolsEnabled: true,
+      programmaticToolsAvailable: false,
+      isProgrammatic: true,
+    });
+    const programmaticButton = screen.getByRole('button', { name: 'com_ui_mcp_programmatic' });
+
+    expect(programmaticButton).not.toHaveAttribute('aria-disabled');
     fireEvent.click(programmaticButton);
     expect(props.onToggleProgrammatic).toHaveBeenCalledTimes(1);
   });

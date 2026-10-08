@@ -2,7 +2,7 @@
  * @jest-environment @happy-dom/jest-environment
  */
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 
 import useIsActiveItem from '../useIsActiveItem';
 
@@ -11,17 +11,24 @@ function Probe() {
   return <div ref={ref} data-testid="probe" data-active={isActive ? 'true' : 'false'} />;
 }
 
-/**
- * Observer delivery lands on the next microtask in this environment; the wait exists so the
- * test does not depend on that scheduling detail, with budget to ride out a stalled host.
- */
-const OBSERVER_WAIT = { timeout: 4000 };
-
-/** One test chains two OBSERVER_WAITs, whose budget exceeds Jest's 5s default. */
-jest.setTimeout(20_000);
-
 const getProbe = (container: HTMLElement) =>
   container.querySelector('[data-testid="probe"]') as HTMLDivElement;
+
+/**
+ * Resolves once a `data-active-item` mutation has been delivered to observers. The hook
+ * registers its observer on mount, so it is always ahead of this one in delivery order,
+ * which means the hook has already reacted by the time this resolves. Filtering matters:
+ * React writes `data-active` onto the same element when it re-renders, and an unfiltered
+ * observer would resolve on that write instead of on the attribute under test.
+ */
+const nextActiveItemMutation = (element: HTMLElement): Promise<void> =>
+  new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      observer.disconnect();
+      resolve();
+    });
+    observer.observe(element, { attributes: true, attributeFilter: ['data-active-item'] });
+  });
 
 /**
  * Resolves once an attribute mutation on `element` has been delivered to observers. The
@@ -29,13 +36,13 @@ const getProbe = (container: HTMLElement) =>
  * mutation; this unfiltered observer proves delivery happened before the test asserts
  * that the hook did not react.
  */
-const nextAttributeMutation = (element: HTMLElement): Promise<void> =>
+const nextAttributeMutation = (element: HTMLElement, attributeName: string): Promise<void> =>
   new Promise((resolve) => {
     const observer = new MutationObserver(() => {
       observer.disconnect();
       resolve();
     });
-    observer.observe(element, { attributes: true });
+    observer.observe(element, { attributes: true, attributeFilter: [attributeName] });
   });
 
 describe('useIsActiveItem', () => {
@@ -48,33 +55,39 @@ describe('useIsActiveItem', () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
-    act(() => {
+    const delivered = nextActiveItemMutation(probe);
+    await act(async () => {
       probe.setAttribute('data-active-item', '');
+      await delivered;
     });
 
-    await waitFor(() => expect(probe.getAttribute('data-active')).toBe('true'), OBSERVER_WAIT);
+    expect(probe.getAttribute('data-active')).toBe('true');
   });
 
   it('flips isActive back to false when data-active-item is removed', async () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
-    act(() => {
+    const added = nextActiveItemMutation(probe);
+    await act(async () => {
       probe.setAttribute('data-active-item', '');
+      await added;
     });
-    await waitFor(() => expect(probe.getAttribute('data-active')).toBe('true'), OBSERVER_WAIT);
+    expect(probe.getAttribute('data-active')).toBe('true');
 
-    act(() => {
+    const removed = nextActiveItemMutation(probe);
+    await act(async () => {
       probe.removeAttribute('data-active-item');
+      await removed;
     });
-    await waitFor(() => expect(probe.getAttribute('data-active')).toBe('false'), OBSERVER_WAIT);
+    expect(probe.getAttribute('data-active')).toBe('false');
   });
 
   it('ignores unrelated attribute mutations', async () => {
     const { container } = render(<Probe />);
     const probe = getProbe(container);
 
-    const delivered = nextAttributeMutation(probe);
+    const delivered = nextAttributeMutation(probe, 'data-something-else');
     await act(async () => {
       probe.setAttribute('data-something-else', 'x');
       await delivered;

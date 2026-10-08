@@ -5,9 +5,27 @@ version: 1.3.11
 cache: true
 
 interface:
+  # Isolated test fleet contains only ownership-aware replicas.
+  runningChatRename: true
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
+  # Enables the model-parameter surface, including the per-turn reasoning
+  # control in the composer. Mock Provider A resolves Anthropic's adaptive
+  # `effort` setting through its custom endpoint configuration below.
+  parameters: true
+  # Grants MULTI_CONVO.USE so the composer's `+` command opens the added-model
+  # popover. agent-skills-added.spec.ts drives that flow; without an explicit
+  # value the permission falls through to the seeded role default and
+  # `handlePlusCommand` returns before opening the popover.
+  multiConvo: true
+  # Scheduled chats are EXPERIMENTAL and default-off, so the e2e harness must opt in
+  # explicitly before schedule writes and fires are accepted.
+  # minIntervalMinutes is lowered so the spec can create a schedule without waiting
+  # out the production 60-minute floor.
+  schedules:
+    use: true
+    minIntervalMinutes: 1
 
 # Enables the memory feature so the MEMORIES.USE permission is granted and the
 # ephemeral memory badge (inline set_memory/delete_memory tools) is available.
@@ -16,14 +34,33 @@ memory:
   personalize: true
   tokenLimit: 10000
 
+# Budgets that exist only here, not in the environment, so
+# yaml-rate-limits.spec.ts proves librechat.yaml reaches the limiters that route
+# modules build while loading. No other spec calls the speech routes.
+rateLimits:
+  stt:
+    userMax: 2
+  tts:
+    userMax: 2
+# __E2E_MCP_APP_RATE_LIMITS__
+
+# __E2E_MCP_APP_SANDBOX__
+
 mcpSettings:
-  # Deliberately excludes 127.0.0.1, so the URL-based `e2e-http` server below is blocked
+  # __E2E_MCP_APPS_SETTING__
+  # Deliberately excludes the e2e-http origin below, so that server is blocked
   # at boot (stored as inspectionFailed). mcp-allowlist-override.spec.ts adds that origin
   # via an admin-panel config override and asserts the server reinitializes — proving the
   # admin override is honored by inspection/connection. stdio servers skip this check.
   allowedDomains:
     - https://allowed.example.com
+    - http://127.0.0.1:8767
+    # __E2E_MCP_APPS_ALLOWED_DOMAIN__
     # __E2E_DYNAMIC_MCP_ALLOWED_DOMAIN__
+
+actions:
+  allowedDomains:
+    - example.com
 
 mcpServers:
   e2e-memory:
@@ -41,12 +78,53 @@ mcpServers:
     title: E2E HTTP
     description: Local HTTP MCP fixture for allowlist-override e2e tests.
     timeout: 30000
+  e2e-oauth:
+    type: streamable-http
+    url: http://127.0.0.1:8767/mcp
+    startup: false
+    title: E2E OAuth
+    description: Protected MCP fixture used to verify resumable OAuth prompts.
+    timeout: 30000
+    requiresOAuth: true
+    oauth:
+      authorization_url: http://127.0.0.1:8767/authorize
+      token_url: http://127.0.0.1:8767/token
+      client_id: e2e-oauth-client
   # __E2E_DYNAMIC_MCP_NETWORK_SERVERS__
+  # __E2E_MCP_APPS_SERVER__
+
+# Per-endpoint file upload config so both upload UXs get e2e coverage:
+# - Mock Provider A keeps the legacy 3-way dropdown (chat.spec.ts exercises
+#   "Upload to Provider"); legacyFileUploadUX also forces llmDeliveryPath
+#   'provider', so that test's CSV still reaches the model.
+# - Mock Provider B uses the unified single button with spreadsheet/csv routed
+#   to llmDeliveryPath 'none' (unified-upload.spec.ts).
+fileConfig:
+  endpoints:
+    'Mock Run Files':
+      defaultLLMDeliveryPath:
+        overrides:
+          'application/pdf': 'provider'
+          'text/plain': 'text'
+          'text/csv': 'none'
+    'Mock Provider A':
+      legacyFileUploadUX: true
+    'Mock Provider B':
+      defaultLLMDeliveryPath:
+        overrides:
+          'text/csv': 'none'
+          'text/plain': 'none'
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'none'
+          # Routed to the provider: still delivered to the model AND shown in chat.
+          'text/markdown': 'provider'
 
 endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    fileSharing:
+      enabled: true
+      allowSiblingSharing: true
     capabilities:
       - deferred_tools
       - execute_code
@@ -63,12 +141,18 @@ endpoints:
       - chain
       - ocr
       - run_in_background
+      - stateful_code_sessions
+    # __E2E_CODE_BRIDGE_CONFIG__
     # Keep the shared mock profile non-interactive except for the dedicated
     # approval probe. This exercises real HITL pause/resume without wedging the
     # existing file-authoring, steering, background-tool, or MCP specs.
     toolApproval:
       enabled: true
+      agentModes: true
       mode: bypass
+      # The probe below is an `ask` rule and a hook match, so it is never offered
+      # "Always allow"; the remembered-approval scenarios assert exactly that.
+      allowAlways: true
       ask:
         - approval_probe_mcp_e2e-memory
       reason: E2E approval required before running {tool}.
@@ -76,6 +160,19 @@ endpoints:
         - module: e2e/setup/tool-approval-hook.js
           matcher: ^approval_probe_mcp_e2e-memory$
   custom:
+    # Substituted with a REAL provider endpoint only when the mock config runs
+    # in model-fixture record mode (E2E_MODEL_FIXTURES=record); a comment
+    # otherwise, so the credential-free profile never gains a live endpoint.
+    # __E2E_MODEL_RECORD_PROVIDER__
+    - name: 'Mock Run Files'
+      apiKey: 'e2e-mock-run-files'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-run-files'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Run Files'
     - name: 'Mock Provider A'
       apiKey: 'e2e-mock-key-a'
       baseURL: 'http://127.0.0.1:8889/v1'
@@ -87,7 +184,34 @@ endpoints:
       modelDisplayLabel: 'Mock Provider A'
       customParams:
         defaultParamsEndpoint: anthropic
-
+        # Explicitly advertise the effort control for the mock custom endpoint.
+        # Generic fallback inference is intentionally disabled for custom targets.
+        paramDefinitions:
+          - key: effort
+    - name: 'Mock Titles immediate'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-immediate'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: immediate
+      modelDisplayLabel: 'Mock Titles immediate'
+    - name: 'Mock Titles final'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-final'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: final
+      modelDisplayLabel: 'Mock Titles final'
     - name: 'Mock Provider B'
       apiKey: 'e2e-mock-key-b'
       baseURL: 'http://127.0.0.1:8889/v1'
@@ -122,7 +246,7 @@ endpoints:
       titleConvo: false
       modelDisplayLabel: 'Mock Provider D'
 
-    # Activity labels are enabled ONLY here. They get a dedicated endpoint
+    # Child-only activity labels are enabled here. They get a dedicated endpoint
     # because a label collapses its tool group (a labeled block auto-collapses
     # even at one call), which hides the tool cards other specs assert on —
     # enabling this on a shared endpoint broke steering.spec.ts. Provider D is
@@ -142,6 +266,24 @@ endpoints:
       activityLabel: true
       activityModel: 'mock-label-model'
 
+    # Parent activity phases need at least two sequential logical activities
+    # and have their own generated summary. Keep that behavior isolated from
+    # Provider E's child-label coverage so each endpoint exercises one config
+    # gate without changing the rendering assumptions of unrelated specs.
+    - name: 'Mock Provider F'
+      apiKey: 'e2e-mock-key-f'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-model-f'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Provider F'
+      activityLabel: true
+      activityModel: 'mock-label-model'
+      activityPhaseLabel: true
+      activityPhaseModel: 'mock-phase-label-model'
+
 modelSpecs:
   prioritize: true
   # Enforcement would reject sends from the non-spec paths addedEndpoints
@@ -150,9 +292,13 @@ modelSpecs:
   # Surfaces the endpoints menu (modelSelect defaults on when addedEndpoints is
   # set) limited to entries that don't collide with the spec labels above.
   addedEndpoints:
+    # __E2E_MODEL_RECORD_ADDED_ENDPOINT__
+    - 'Mock Titles immediate'
+    - 'Mock Titles final'
     - 'Mock Provider C'
     - 'Mock Provider D'
     - 'Mock Provider E'
+    - 'Mock Provider F'
     - 'agents'
   list:
     - name: 'e2e-mock-provider-a'

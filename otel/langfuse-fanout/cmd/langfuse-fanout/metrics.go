@@ -4,10 +4,17 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+)
+
+const (
+	maxTenantMetricLabels = 1000
+	invalidTenantID       = "<invalid>"
+	overflowTenantID      = "<overflow>"
 )
 
 type gatewayMetrics struct {
@@ -23,6 +30,8 @@ type gatewayMetrics struct {
 	uploadPlanMisses      prometheus.Counter
 	uploadPlanStoreErrors *prometheus.CounterVec
 	uploadBytes           prometheus.Histogram
+	tenantLabelsMu        sync.Mutex
+	tenantLabels          map[string]struct{}
 }
 
 func newGatewayMetrics() *gatewayMetrics {
@@ -33,7 +42,8 @@ func newGatewayMetrics() *gatewayMetrics {
 	)
 
 	metrics := &gatewayMetrics{
-		registry: registry,
+		registry:     registry,
+		tenantLabels: make(map[string]struct{}, maxTenantMetricLabels),
 		httpRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "langfuse_fanout_http_requests_total",
 			Help: "Total HTTP requests handled by the Langfuse fanout gateway.",
@@ -55,7 +65,7 @@ func newGatewayMetrics() *gatewayMetrics {
 		traceExports: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "langfuse_fanout_trace_exports_total",
 			Help: "Total trace export attempts through the Langfuse fanout gateway.",
-		}, []string{"destination", "result"}),
+		}, []string{"destination", "result", "tenant_id"}),
 		mediaDivergence: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "langfuse_fanout_media_divergence_total",
 			Help: "Media fanout upstream response divergence by kind. Values are counts only; no media IDs or URLs are exposed.",
@@ -125,11 +135,52 @@ func (m *gatewayMetrics) recordUpstream(operation string, destination string, st
 	m.upstreamDuration.With(labels).Observe(duration.Seconds())
 }
 
-func (m *gatewayMetrics) recordTraceExport(destination string, result string) {
+func (m *gatewayMetrics) recordTraceExport(destination string, result string, tenantID string) {
 	if m == nil {
 		return
 	}
-	m.traceExports.WithLabelValues(normalizeMetricLabel(destination), result).Inc()
+	m.traceExports.WithLabelValues(normalizeMetricLabel(destination), result, m.tenantMetricLabel(tenantID)).Inc()
+}
+
+func (m *gatewayMetrics) tenantMetricLabel(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return unknownTenantID
+	}
+	if tenantID == unknownTenantID || tenantID == multipleTenantIDs {
+		return tenantID
+	}
+	if !validTenantMetricID(tenantID) {
+		return invalidTenantID
+	}
+
+	m.tenantLabelsMu.Lock()
+	defer m.tenantLabelsMu.Unlock()
+	if _, ok := m.tenantLabels[tenantID]; ok {
+		return tenantID
+	}
+	if len(m.tenantLabels) >= maxTenantMetricLabels {
+		return overflowTenantID
+	}
+	m.tenantLabels[tenantID] = struct{}{}
+	return tenantID
+}
+
+func validTenantMetricID(tenantID string) bool {
+	if len(tenantID) > 128 {
+		return false
+	}
+	for _, r := range tenantID {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (m *gatewayMetrics) recordMediaDivergence(kind string, destination string) {

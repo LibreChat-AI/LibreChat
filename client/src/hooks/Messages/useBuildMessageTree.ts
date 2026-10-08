@@ -1,13 +1,14 @@
-import { useRecoilCallback } from 'recoil';
+import { useCallback } from 'react';
+import { useStore } from 'jotai';
 import type { TMessage } from 'librechat-data-provider';
-import store from '~/store';
+import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 
 export default function useBuildMessageTree() {
-  const getSiblingIdx = useRecoilCallback(
-    ({ snapshot }) =>
-      async (messageId: string | null | undefined) =>
-        await snapshot.getPromise(store.messagesSiblingIdxFamily(messageId)),
-    [],
+  const jotaiStore = useStore();
+  const getSiblingIdx = useCallback(
+    async (messageId: string | null | undefined) =>
+      jotaiStore.get(siblingIdxFamily(siblingKey(messageId))),
+    [jotaiStore],
   );
 
   // return an object or an array based on branches and recursive option

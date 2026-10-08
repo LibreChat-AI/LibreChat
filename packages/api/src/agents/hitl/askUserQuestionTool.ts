@@ -1,6 +1,11 @@
 import { z } from 'zod';
-import { askUserQuestion } from '@librechat/agents';
 import { tool } from '@librechat/agents/langchain/tools';
+import {
+  ASK_USER_QUESTION_ID_PATTERN,
+  MAX_ASK_USER_QUESTIONS,
+  askUserQuestion,
+  askUserQuestions,
+} from '@librechat/agents';
 import type { DynamicStructuredTool } from '@librechat/agents/langchain/tools';
 import type { ToolInputValidationError } from '../toolValidation';
 import { recordToolInputValidationError } from '../toolValidation';
@@ -20,6 +25,7 @@ export const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
  */
 const QUESTION_MAX = 2000;
 const DESCRIPTION_MAX = 4000;
+const HEADER_MAX = 80;
 const OPTION_LABEL_MAX = 280;
 const OPTION_VALUE_MAX = 500;
 const OPTIONS_MAX = 12;
@@ -32,10 +38,12 @@ const OPTION_LABEL_MAX_ERROR =
   'Shorten the label and retry.';
 
 const ASK_USER_QUESTION_DESCRIPTION = [
-  'Ask the user a clarifying question and pause the run until they answer; their answer is',
-  "returned as this tool's result. Use it only when you are genuinely blocked on a decision",
-  'you cannot resolve from the conversation or your other tools. Ask exactly ONE question per',
-  'turn, and NEVER call this tool in parallel with any other tool call. When the realistic',
+  'Ask the user one to four related clarifying questions and pause the run until they answer;',
+  "their answers are returned as this tool's result, keyed by each question id. Use it only",
+  'when you are genuinely blocked on decisions you cannot resolve from the conversation or your',
+  'other tools. Put every related question in this ONE tool call, and NEVER call this tool in',
+  'parallel with any other tool call. Use stable, concise ids matching',
+  '[A-Za-z][A-Za-z0-9_-]{0,63}. When the realistic',
   'answers are enumerable, provide 2-6 concise options; set multiSelect to true only when',
   'several options may sensibly apply at once (the selected option values are returned joined',
   `by ", "). Keep every option label within ${OPTION_LABEL_MAX} characters and put supporting`,
@@ -46,12 +54,14 @@ const ASK_USER_QUESTION_DESCRIPTION = [
 ].join(' ');
 
 /**
- * Mirrors the SDK's `AskUserQuestionRequest` (question / description? / options?) — the
- * validated input is passed to `askUserQuestion()` unchanged, so this schema IS the wire
- * shape the client card receives inside the pendingAction payload.
+ * Mirrors the SDK's `AskUserQuestionsRequest`; the validated input is passed to
+ * `askUserQuestions()` unchanged, so this schema is the wire shape inside the
+ * pending-action payload.
  */
-export const askUserQuestionToolSchema: z.ZodObject<
+const askUserQuestionItemSchema: z.ZodObject<
   {
+    id: z.ZodString;
+    header: z.ZodOptional<z.ZodString>;
     question: z.ZodString;
     description: z.ZodOptional<z.ZodString>;
     options: z.ZodOptional<
@@ -61,11 +71,21 @@ export const askUserQuestionToolSchema: z.ZodObject<
   },
   'strip'
 > = z.object({
+  id: z
+    .string()
+    .regex(ASK_USER_QUESTION_ID_PATTERN)
+    .describe('Unique answer key for this question.'),
+  header: z
+    .string()
+    .min(1)
+    .max(HEADER_MAX)
+    .optional()
+    .describe('Optional short heading shown above the question.'),
   question: z
     .string()
     .min(1)
     .max(QUESTION_MAX)
-    .describe('The single clarifying question to ask the user.'),
+    .describe('One clarifying question to ask the user.'),
   description: z
     .string()
     .max(DESCRIPTION_MAX)
@@ -97,6 +117,27 @@ export const askUserQuestionToolSchema: z.ZodObject<
     .describe('Allow the user to pick several options; their values are returned joined by ", ".'),
 });
 
+const askUserQuestionsArraySchema: z.ZodEffects<z.ZodArray<typeof askUserQuestionItemSchema>> = z
+  .array(askUserQuestionItemSchema)
+  .min(1)
+  .max(MAX_ASK_USER_QUESTIONS)
+  .refine(
+    (questions) => new Set(questions.map((question) => question.id)).size === questions.length,
+    {
+      message: 'Question ids must be unique.',
+    },
+  )
+  .describe('One to four related questions presented to the user in one interaction.');
+
+const legacyAskUserQuestionToolSchema = askUserQuestionItemSchema.omit({ id: true, header: true });
+
+export const askUserQuestionToolSchema: z.ZodObject<
+  { questions: typeof askUserQuestionsArraySchema },
+  'strip'
+> = z.object({
+  questions: askUserQuestionsArraySchema,
+});
+
 export type AskUserQuestionToolInput = z.infer<typeof askUserQuestionToolSchema>;
 
 /** Explicit shape of {@link AskUserQuestionToolDefinition} (isolatedDeclarations). */
@@ -106,22 +147,51 @@ export interface AskUserQuestionToolDefinitionShape {
   schema: {
     type: 'object';
     properties: {
-      question: { type: 'string'; minLength: number; maxLength: number; description: string };
-      description: { type: 'string'; maxLength: number; description: string };
-      options: {
+      questions: {
         type: 'array';
+        minItems: number;
         maxItems: number;
         description: string;
         items: {
           type: 'object';
           properties: {
-            label: { type: 'string'; minLength: number; maxLength: number; description: string };
-            value: { type: 'string'; minLength: number; maxLength: number; description: string };
+            id: { type: 'string'; pattern: string; description: string };
+            header: { type: 'string'; minLength: number; maxLength: number; description: string };
+            question: {
+              type: 'string';
+              minLength: number;
+              maxLength: number;
+              description: string;
+            };
+            description: { type: 'string'; maxLength: number; description: string };
+            options: {
+              type: 'array';
+              maxItems: number;
+              description: string;
+              items: {
+                type: 'object';
+                properties: {
+                  label: {
+                    type: 'string';
+                    minLength: number;
+                    maxLength: number;
+                    description: string;
+                  };
+                  value: {
+                    type: 'string';
+                    minLength: number;
+                    maxLength: number;
+                    description: string;
+                  };
+                };
+                required: string[];
+              };
+            };
+            multiSelect: { type: 'boolean'; description: string };
           };
           required: string[];
         };
       };
-      multiSelect: { type: 'boolean'; description: string };
     };
     required: string[];
   };
@@ -138,57 +208,78 @@ export const AskUserQuestionToolDefinition: AskUserQuestionToolDefinitionShape =
   schema: {
     type: 'object',
     properties: {
-      question: {
-        type: 'string',
-        minLength: 1,
-        maxLength: QUESTION_MAX,
-        description: 'The single clarifying question to ask the user.',
-      },
-      description: {
-        type: 'string',
-        maxLength: DESCRIPTION_MAX,
-        description: 'Optional context rendered alongside the question (why you are asking).',
-      },
-      options: {
+      questions: {
         type: 'array',
-        maxItems: OPTIONS_MAX,
-        description:
-          'Optional pre-defined choices (2-6 recommended). Omit to require a free-form answer.',
+        minItems: 1,
+        maxItems: MAX_ASK_USER_QUESTIONS,
+        description: 'One to four related questions presented in one interaction.',
         items: {
           type: 'object',
           properties: {
-            label: {
+            id: {
               type: 'string',
-              minLength: 1,
-              maxLength: OPTION_LABEL_MAX,
-              description: OPTION_LABEL_DESCRIPTION,
+              pattern: ASK_USER_QUESTION_ID_PATTERN.source,
+              description: 'Unique answer key for this question.',
             },
-            value: {
+            header: {
               type: 'string',
               minLength: 1,
-              maxLength: OPTION_VALUE_MAX,
-              description: 'Value returned as the answer if this option is picked.',
+              maxLength: HEADER_MAX,
+              description: 'Optional short heading shown above the question.',
+            },
+            question: {
+              type: 'string',
+              minLength: 1,
+              maxLength: QUESTION_MAX,
+              description: 'One clarifying question to ask the user.',
+            },
+            description: {
+              type: 'string',
+              maxLength: DESCRIPTION_MAX,
+              description: 'Optional context rendered alongside the question.',
+            },
+            options: {
+              type: 'array',
+              maxItems: OPTIONS_MAX,
+              description: 'Optional pre-defined choices. Omit for free-form only.',
+              items: {
+                type: 'object',
+                properties: {
+                  label: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: OPTION_LABEL_MAX,
+                    description: OPTION_LABEL_DESCRIPTION,
+                  },
+                  value: {
+                    type: 'string',
+                    minLength: 1,
+                    maxLength: OPTION_VALUE_MAX,
+                    description: 'Value returned if this option is picked.',
+                  },
+                },
+                required: ['label', 'value'],
+              },
+            },
+            multiSelect: {
+              type: 'boolean',
+              description: 'Allow several option values for this question.',
             },
           },
-          required: ['label', 'value'],
+          required: ['id', 'question'],
         },
       },
-      multiSelect: {
-        type: 'boolean',
-        description:
-          'Allow the user to pick several options; their values are returned joined by ", ".',
-      },
     },
-    required: ['question'],
+    required: ['questions'],
   },
 };
 
 /**
  * Create the `ask_user_question` tool instance. The func calls the SDK's
- * `askUserQuestion()` helper, which raises a LangGraph `interrupt()` — on the first
+ * `askUserQuestions()` helper, which raises a LangGraph `interrupt()` — on the first
  * pass execution unwinds (the run pauses; `run.getInterrupt().payload.type ===
  * 'ask_user_question'`), and on the resume pass it returns the host-supplied
- * `{ answer }`, which becomes the ToolMessage content the model sees.
+ * `{ answers }`, which becomes the ToolMessage content the model sees.
  *
  * Requirements at the run level (wired in `agents/run.ts`): a checkpointer must be
  * attached (the interrupt must be durable to be resumable) and the tool must be
@@ -201,26 +292,27 @@ export const AskUserQuestionToolDefinition: AskUserQuestionToolDefinitionShape =
  * from the top on the resume pass, and sibling tools in the same batch re-execute —
  * which is why the description forbids parallel calls.
  */
-/**
- * `askUserQuestion` with the optional attribution argument shipped in
- * `@librechat/agents` > 3.3.8 (interrupt payload gains `tool_call_id`, letting
- * the host stamp the question/answer onto the exact tool-call part in
- * multi-ask turns). The pinned release still types the single-arg form; the
- * extra argument is ignored at runtime by older versions. Drop this alias once
- * the dependency pin includes the two-arg signature.
- */
-const askUserQuestionWithId = askUserQuestion as (
-  question: AskUserQuestionToolInput,
-  options?: { toolCallId?: string },
-) => ReturnType<typeof askUserQuestion>;
-
 export function createAskUserQuestionTool(
   validationErrorsByToolCallId?: Map<string, ToolInputValidationError>,
 ): DynamicStructuredTool<typeof askUserQuestionToolSchema> {
+  /** Kept out of the provider-facing definition. A graph rebuilt during a
+   * rolling deploy can still rerun checkpointed legacy `{ question, ... }`
+   * arguments through this schema and consume its retained `{ answer }` resume. */
+  const legacyAskTool = tool(
+    async (input, config?: { toolCall?: { id?: string } }) => {
+      const resolution = askUserQuestion(input, { toolCallId: config?.toolCall?.id });
+      return JSON.stringify(resolution);
+    },
+    {
+      name: ASK_USER_QUESTION_TOOL_NAME,
+      description: ASK_USER_QUESTION_DESCRIPTION,
+      schema: legacyAskUserQuestionToolSchema,
+    },
+  );
   const askTool = tool(
     async (input: AskUserQuestionToolInput, config?: { toolCall?: { id?: string } }) => {
-      const { answer } = askUserQuestionWithId(input, { toolCallId: config?.toolCall?.id });
-      return answer;
+      const resolution = askUserQuestions(input, { toolCallId: config?.toolCall?.id });
+      return JSON.stringify(resolution);
     },
     {
       name: ASK_USER_QUESTION_TOOL_NAME,
@@ -233,8 +325,16 @@ export function createAskUserQuestionTool(
    *  the tool boundary so the thrown validation error can be correlated with
    *  the real call ID without inferring failure from persisted output text. */
   const invoke = askTool.invoke.bind(askTool);
-  askTool.invoke = async (input, config) => {
+  askTool.invoke = (async (input, config) => {
     try {
+      const candidate =
+        typeof input === 'object' && input != null && 'args' in input ? input.args : input;
+      if (legacyAskUserQuestionToolSchema.safeParse(candidate).success) {
+        return await legacyAskTool.invoke(
+          input as unknown as Parameters<typeof legacyAskTool.invoke>[0],
+          config,
+        );
+      }
       return await invoke(input, config);
     } catch (error) {
       const toolCallId =
@@ -242,7 +342,7 @@ export function createAskUserQuestionTool(
       recordToolInputValidationError(validationErrorsByToolCallId, error, toolCallId);
       throw error;
     }
-  };
+  }) as typeof askTool.invoke;
 
   return askTool;
 }
