@@ -491,6 +491,23 @@ describe('PullRequestRowMark', () => {
     await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
   });
 
+  it('keeps the card open when a scroller that does not hold the row scrolls', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const messages = document.createElement('div');
+    document.body.appendChild(messages);
+    try {
+      movePointerOver(screen.getByTestId('row-title'));
+      await screen.findByTestId('pull-request-card');
+      fireEvent.scroll(messages);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(screen.getByTestId('pull-request-card')).toBeInTheDocument();
+    } finally {
+      messages.remove();
+    }
+  });
+
   it('keeps the card open when its own content scrolls', async () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark({}, true);

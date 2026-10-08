@@ -36,8 +36,8 @@ const hasTraveled = (event: MouseEvent) => {
  * Like the anchor's own hover intent, only real pointer travel counts: a row that scrolls under
  * a still pointer, or a tap on touch, does not open it. Pressing a button or a key on the row,
  * or moving with a button held (a drag), cancels a pending open, so selecting or dragging the
- * conversation does not pop the card over it. Scrolling the list cancels it too, and closes a
- * card the row opened, since the row no longer sits under the pointer.
+ * conversation does not pop the card over it. Scrolling the list that holds the row cancels it
+ * too, and closes a card the row opened, since the row no longer sits under the pointer.
  */
 export default function useRowHover(
   store: Ariakit.HovercardStore,
@@ -72,11 +72,14 @@ export default function useRowHover(
         store.show();
       }, showTimeout ?? timeout);
     };
+    /* Only a scroller that holds the row moves it: the message list or the card's own content
+       scrolling leaves the row where it was. */
     const onScroll = (event: Event) => {
-      const { contentElement, anchorElement, open } = store.getState();
-      if (event.target instanceof Node && contentElement?.contains(event.target)) {
+      const { target } = event;
+      if (!(target instanceof Node) || (target !== document && !target.contains(row))) {
         return;
       }
+      const { anchorElement, open } = store.getState();
       clear();
       if (open && anchorElement === row) {
         store.hide();
