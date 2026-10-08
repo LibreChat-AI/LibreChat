@@ -28,18 +28,29 @@ export const GLOSSARY = [
   'Railway',
   'Zeabur',
   'Sealos',
+  'API',
+  'URL',
+  'SDK',
+  'OAuth',
+  'JSON',
+  'YAML',
+  'CLI',
+  'npm',
+  'GitHub',
+  'Discord',
+  'YouTube',
 ];
 
 export const hash = (text) => createHash('sha256').update(text).digest('hex').slice(0, 16);
 
 const GLOSSARY_PATTERN = new RegExp(
-  GLOSSARY.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+  `\\b(?:${GLOSSARY.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?:['’]s|s)?\\b`,
   'gi',
 );
 const MIN_WORDS_FOR_CONTENT_CHECK = 3;
 const MIN_LENGTH_RATIO = 0.2;
 const MAX_UNTRANSLATED_SHARE = 0.6;
-const TEXT_ATTRIBUTE = /\b(alt|title|aria-label)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
+const TEXT_ATTRIBUTE = /(?<![\w-])(alt|title|aria-label)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/g;
 const HTML_PIECE = /<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>/g;
 
 const parse = (markdown) =>
@@ -96,8 +107,10 @@ function proseWords(markdown, withAttributes = true) {
   const parts = [];
   walk(parse(markdown), (node) => {
     if (node.type === 'text') parts.push(node.value);
-    else if (node.type === 'image' && node.alt && withAttributes) parts.push(node.alt);
-    else if (node.type === 'html') {
+    else if (withAttributes && (node.type === 'image' || node.type === 'link')) {
+      if (node.alt) parts.push(node.alt);
+      if (node.title) parts.push(node.title);
+    } else if (node.type === 'html') {
       if (withAttributes) {
         for (const match of node.value.matchAll(TEXT_ATTRIBUTE)) parts.push(unquote(match[2]));
       }
@@ -120,7 +133,7 @@ const normalizeTag = (tag) =>
     : tag
         .replace(/=\s*'([^']*)'/g, '="$1"')
         .replace(TEXT_ATTRIBUTE, '$1=""')
-        .replace(/\s+/g, ' ');
+        .replace(/("[^"]*")|\s+/g, (match, quoted) => quoted ?? ' ');
 
 function htmlTokens(raw) {
   const tokens = [];
@@ -145,7 +158,7 @@ function skeleton(markdown) {
     if (node.type === 'inlineCode') return push(`code:${node.value}`);
     if (node.type === 'code') return push(`fence:${node.lang ?? ''}:${node.value}`);
     if (node.type === 'html') return htmlTokens(node.value).forEach(push);
-    if (node.type === 'image') return push(`image:${node.url}`);
+    if (node.type === 'image') return push(`image:${node.url}:${node.title ? 'titled' : ''}`);
     const detail = [
       node.depth,
       node.url,
@@ -155,6 +168,7 @@ function skeleton(markdown) {
       node.identifier,
       node.referenceType,
       node.title ? 'titled' : undefined,
+      node.align?.map((align) => align ?? 'none').join(','),
     ].filter((value) => value !== undefined && value !== null);
     const tag = [node.type, ...detail].join(':');
     if (!node.children) return push(tag);
@@ -184,7 +198,11 @@ export function validate(source, translated, code) {
   }
   const script = LANGUAGES[code]?.script;
   const words = proseWords(source);
-  if (script && proseWords(source, false).length > 0 && !script.test(translated)) {
+  if (
+    script &&
+    (proseWords(source, false).length > 0 || words.length >= MIN_WORDS_FOR_CONTENT_CHECK) &&
+    !script.test(translated)
+  ) {
     problems.push(
       'output is not in the target language (add intentional English terms to GLOSSARY)',
     );

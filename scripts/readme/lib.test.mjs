@@ -133,3 +133,21 @@ test('cleanOutput unwraps a fenced answer and keeps indentation', () => {
   assert.equal(cleanOutput('\n  plain  \n'), '  plain');
   assert.equal(cleanOutput('  - Child\n  - Two'), '  - Child\n  - Two');
 });
+
+test('validate and needsTranslation handle brand suffixes, titles, tables and data attributes', () => {
+  assert.equal(needsTranslation("LibreChat's MCPs"), false);
+  assert.equal(needsTranslation('# API'), false);
+  assert.equal(needsTranslation('[`x`](https://x.y "Read the docs")'), true);
+  assert.ok(validate('![Logo](img.svg "Read the docs")', '![Логотип](img.svg)', 'ru').length > 0);
+  const table = '| A | B |\n| :-- | --: |\n| 1 | 2 |';
+  assert.ok(validate(table, '| А | Б |\n| --: | :-- |\n| 1 | 2 |', 'ru').length > 0);
+  const div = '<div data-title="build-id  7">Text</div>';
+  assert.ok(validate(div, '<div data-title="build-id 7">Текст</div>', 'ru').length > 0);
+  assert.ok(
+    validate(
+      '<img alt="Translation Progress now live" src="x.svg">',
+      '<img alt="Translation Progress now live" src="x.svg">',
+      'ru',
+    ).length > 0,
+  );
+});
