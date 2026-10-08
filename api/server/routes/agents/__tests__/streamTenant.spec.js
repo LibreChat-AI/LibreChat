@@ -455,6 +455,42 @@ describe('SSE stream tenant isolation', () => {
       }
     });
 
+    it('keeps the default keepalive when the config middleware reports an error', async () => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      mockConfigMiddleware = (req, _res, next) => {
+        req.config = { endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } };
+        next(new Error('config store unavailable'));
+      };
+      try {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'user-123' },
+          status: 'running',
+          createdAt: 1000,
+        });
+        let finish;
+        mockGenerationJobManager.subscribe.mockImplementation(
+          async (_streamId, _writeEvent, onDone) => {
+            finish = onDone;
+            return { unsubscribe: jest.fn() };
+          },
+        );
+
+        const pending = request(app)
+          .get('/agents/chat/stream/stream-123')
+          .then((res) => res);
+        await jest.advanceTimersByTimeAsync(0);
+        await new Promise((resolve) => setImmediate(resolve));
+        await jest.advanceTimersByTimeAsync(60_000);
+        finish({ final: true });
+        const res = await pending;
+
+        expect(res.text.startsWith(':\n\n')).toBe(true);
+      } finally {
+        mockConfigMiddleware = (_req, _res, next) => next();
+        jest.useRealTimers();
+      }
+    });
+
     it('subscribes and keeps the stream alive while the app config never loads', async () => {
       jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
       mockConfigMiddleware = () => undefined;

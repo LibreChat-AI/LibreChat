@@ -220,7 +220,10 @@ router.get('/chat/stream/:streamId', async (req, res) => {
 
   const keepaliveMs = loadStreamKeepaliveMs(
     req.config,
-    () => new Promise((resolve) => configMiddleware(req, res, () => resolve(req.config))),
+    () =>
+      new Promise((resolve, reject) =>
+        configMiddleware(req, res, (error) => (error ? reject(error) : resolve(req.config))),
+      ),
   );
   const job = await GenerationJobManager.getJob(streamId);
   if (attachmentAbortController.signal.aborted) {
