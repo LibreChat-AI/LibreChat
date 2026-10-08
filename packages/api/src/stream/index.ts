@@ -76,8 +76,13 @@ export {
   startSseKeepalive,
   loadStreamKeepaliveMs,
   resolveStreamKeepaliveMs,
+  createStreamKeepaliveLoader,
 } from './keepalive';
-export type { SseKeepaliveResponse, StreamKeepaliveConfig } from './keepalive';
+export type {
+  SseKeepaliveResponse,
+  StreamKeepaliveConfig,
+  StreamKeepaliveRequest,
+} from './keepalive';
 export {
   projectTerminalEvent,
   TRANSIENT_MESSAGE_FIELDS,

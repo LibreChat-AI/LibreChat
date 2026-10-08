@@ -1,6 +1,8 @@
 import { logger } from '@librechat/data-schemas';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
+import type { AppConfigUserLike, GetAppConfigOptions } from '~/app/service';
+import { getAppConfigOptionsFromUser } from '~/app/service';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
 /** An SSE comment line: clients skip it, intermediaries see bytes on the wire. */
@@ -45,6 +47,25 @@ export async function loadStreamKeepaliveMs(
     );
     return DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS;
   }
+}
+
+export interface StreamKeepaliveRequest {
+  config?: StreamKeepaliveConfig;
+  user?: AppConfigUserLike | null;
+}
+
+/**
+ * Builds the request-scoped interval reader for the stream route. Only YAML settings are
+ * needed here, so the principal's config is read without runtime augmentation: a stream
+ * attach or reconnect never pays for code-environment merges or their database reads.
+ */
+export function createStreamKeepaliveLoader(
+  getAppConfig: (options: GetAppConfigOptions) => Promise<StreamKeepaliveConfig | undefined | null>,
+): (req: StreamKeepaliveRequest) => Promise<number> {
+  return (req) =>
+    loadStreamKeepaliveMs(req.config, () =>
+      getAppConfig({ ...getAppConfigOptionsFromUser(req.user), skipRuntimeAugmentation: true }),
+    );
 }
 
 const isClosed = (res: SseKeepaliveResponse): boolean =>

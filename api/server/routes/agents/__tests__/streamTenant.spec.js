@@ -55,7 +55,10 @@ jest.mock('~/server/middleware', () => ({
   moderateText: (req, res, next) => next(),
   messageIpLimiter: (req, res, next) => next(),
   configMiddleware: (req, res, next) => next(),
-  loadPlainAppConfig: (...args) => mockLoadPlainAppConfig(...args),
+  loadStreamKeepaliveMs: (req) =>
+    jest
+      .requireActual('@librechat/api')
+      .createStreamKeepaliveLoader((...args) => mockLoadPlainAppConfig(...args))(req),
   messageUserLimiter: (req, res, next) => next(),
 }));
 
@@ -452,6 +455,9 @@ describe('SSE stream tenant isolation', () => {
 
       expect(res.status).toBe(200);
       expect(mockLoadPlainAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockLoadPlainAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user-123', skipRuntimeAugmentation: true }),
+      );
     });
 
     it('keeps the default keepalive when the config read fails', async () => {

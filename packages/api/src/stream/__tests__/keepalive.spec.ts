@@ -7,6 +7,7 @@ import {
   startSseKeepalive,
   loadStreamKeepaliveMs,
   resolveStreamKeepaliveMs,
+  createStreamKeepaliveLoader,
 } from '../keepalive';
 
 class FakeResponse extends EventEmitter implements SseKeepaliveResponse {
@@ -125,6 +126,30 @@ describe('loadStreamKeepaliveMs', () => {
 
     expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
     warn.mockRestore();
+  });
+});
+
+describe('createStreamKeepaliveLoader', () => {
+  it('reads the principal config without runtime augmentation', async () => {
+    const getAppConfig = jest
+      .fn()
+      .mockResolvedValue({ endpoints: { agents: { streamKeepaliveIntervalMs: 4_000 } } });
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await expect(load({ user: { id: 'user-1', role: 'USER' } })).resolves.toBe(4_000);
+    expect(getAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1', role: 'USER', skipRuntimeAugmentation: true }),
+    );
+  });
+
+  it('uses a config already on the request', async () => {
+    const getAppConfig = jest.fn();
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await expect(
+      load({ config: { endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } } }),
+    ).resolves.toBe(0);
+    expect(getAppConfig).not.toHaveBeenCalled();
   });
 });
 
