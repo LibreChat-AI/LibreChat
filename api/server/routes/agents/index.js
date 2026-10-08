@@ -29,6 +29,8 @@ const {
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
   generationRetryLimiter,
+  startSseKeepalive,
+  resolveStreamKeepaliveMs,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
 const { logger } = require('@librechat/data-schemas');
@@ -187,7 +189,7 @@ router.use(uaParser);
  * @description Sends sync event with resume state, replays missed chunks, then streams live
  * @query resume=true - Indicates this is a reconnection (sends sync event)
  */
-router.get('/chat/stream/:streamId', async (req, res) => {
+router.get('/chat/stream/:streamId', chatConfigMiddleware, async (req, res) => {
   const { streamId } = req.params;
   const isResume = req.query.resume === 'true';
   const requestProtocolVersion = negotiateRequestGenerationProtocol(req);
@@ -286,6 +288,7 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
+  startSseKeepalive(res, resolveStreamKeepaliveMs(req.config?.endpoints?.agents));
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 

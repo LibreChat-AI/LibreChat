@@ -397,6 +397,38 @@ describe('SSE stream tenant isolation', () => {
       expect(mockGenerationJobManager.markSyncSent).toHaveBeenCalledWith('stream-123', 1000);
     });
 
+    it('keeps a silent stream alive with SSE comment frames', async () => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      try {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'user-123' },
+          status: 'running',
+          createdAt: 1000,
+        });
+        let finish;
+        mockGenerationJobManager.subscribe.mockImplementation(
+          async (_streamId, _writeEvent, onDone) => {
+            finish = onDone;
+            return { unsubscribe: jest.fn() };
+          },
+        );
+
+        const pending = request(app)
+          .get('/agents/chat/stream/stream-123')
+          .then((res) => res);
+        await jest.advanceTimersByTimeAsync(0);
+        await new Promise((resolve) => setImmediate(resolve));
+        await jest.advanceTimersByTimeAsync(60_000);
+        finish({ final: true });
+        const res = await pending;
+
+        expect(res.status).toBe(200);
+        expect(res.text.startsWith(':\n\n')).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('detaches a paused resume subscription when the response ends before activation', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue({
         metadata: { userId: 'user-123' },
