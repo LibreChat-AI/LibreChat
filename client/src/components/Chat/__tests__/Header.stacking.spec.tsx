@@ -5,6 +5,14 @@ import Header from '../Header';
 
 const mockEndpoint = { current: 'agents' };
 const mockSmallScreen = { current: false };
+const codeConversation = {
+  conversationId: 'convo-1',
+  codeEnvironmentMode: 'attached',
+  codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
+};
+const mockConversation: { current: Record<string, unknown> | null } = {
+  current: codeConversation,
+};
 
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'convo-1' }),
@@ -24,6 +32,9 @@ jest.mock('librechat-data-provider', () => ({
 }));
 jest.mock('~/data-provider', () => ({ useGetStartupConfig: () => ({ data: undefined }) }));
 jest.mock('~/hooks', () => ({ useHasAccess: () => false }));
+jest.mock('~/Providers', () => ({
+  useChatContext: () => ({ conversation: mockConversation.current }),
+}));
 jest.mock('~/hooks/Nav/useDrawerViewport', () => () => mockSmallScreen.current);
 jest.mock('~/store', () => ({
   __esModule: true,
@@ -71,6 +82,7 @@ describe('Header stacking', () => {
     headerMenu.mockClear();
     mockEndpoint.current = 'agents';
     mockSmallScreen.current = false;
+    mockConversation.current = codeConversation;
   });
 
   test('keeps header controls above the z-10 composer approval review', () => {
@@ -119,6 +131,28 @@ describe('Header stacking', () => {
   test('offers the overflow menu no pull request for a child thread', () => {
     mockSmallScreen.current = true;
     render(<Header parentConversationId="parent" />);
+    expect(headerMenu.mock.calls[0][0].pullRequestConversationId).toBeUndefined();
+  });
+
+  test('does not mount the pull request chip for an ordinary conversation', () => {
+    mockConversation.current = { conversationId: 'convo-1' };
+    render(<Header />);
+    expect(pullRequestChip).not.toHaveBeenCalled();
+  });
+
+  test('does not mount the chip while the context still holds the previous chat', () => {
+    mockConversation.current = { ...codeConversation, conversationId: 'other' };
+    render(<Header />);
+    expect(pullRequestChip).not.toHaveBeenCalled();
+  });
+
+  test('offers the overflow menu no pull request for an ordinary conversation', () => {
+    mockSmallScreen.current = true;
+    mockConversation.current = {
+      conversationId: 'convo-1',
+      codeEnvironmentMode: 'without_attached',
+    };
+    render(<Header />);
     expect(headerMenu.mock.calls[0][0].pullRequestConversationId).toBeUndefined();
   });
 });

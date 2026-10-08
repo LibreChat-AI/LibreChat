@@ -18,8 +18,10 @@ import { useGetStartupConfig } from '~/data-provider';
 import ExportAndShareMenu from './ExportAndShareMenu';
 import SubagentThreadLink from './SubagentThreadLink';
 import { PullRequestChip } from './PullRequest';
+import { isCodeConversation } from './PullRequest/code';
 import BookmarkMenu from './Menus/BookmarkMenu';
 import AddMultiConvo from './AddMultiConvo';
+import { useChatContext } from '~/Providers';
 import { useHasAccess } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -45,6 +47,14 @@ function Header({
    *  conversation has no id in the route yet, so absence counts as new too. */
   const { conversationId: routeConversationId } = useParams();
   const isNewChat = routeConversationId == null || routeConversationId === Constants.NEW_CONVO;
+  /** The context conversation can still be the previous chat for a render, so it counts only
+   *  once it is the routed one. Only a code conversation can have a pull request. */
+  const { conversation } = useChatContext();
+  const showPullRequest =
+    !isNewChat &&
+    parentConversationId == null &&
+    conversation?.conversationId === routeConversationId &&
+    isCodeConversation(conversation);
 
   const interfaceConfig = useMemo(
     () => startupConfig?.interface ?? defaultInterface,
@@ -115,7 +125,7 @@ function Header({
         )}
         {/* Desktop only: its details open to the right, into the room this cluster leaves free.
             Small screens reach the same card from the overflow menu. */}
-        {!isSmallScreen && !isNewChat && parentConversationId == null && (
+        {!isSmallScreen && showPullRequest && (
           <PullRequestChip key={`pr-${routeConversationId}`} conversationId={routeConversationId} />
         )}
       </div>
@@ -134,9 +144,7 @@ function Header({
           startupConfig={startupConfig}
           trace={trace}
           readOnly={readOnly}
-          pullRequestConversationId={
-            isNewChat || parentConversationId != null ? undefined : routeConversationId
-          }
+          pullRequestConversationId={showPullRequest ? routeConversationId : undefined}
           className={isSmallScreen ? undefined : 'hidden'}
         />
         <div className={cn('items-center gap-2', isSmallScreen ? 'hidden' : 'flex')}>

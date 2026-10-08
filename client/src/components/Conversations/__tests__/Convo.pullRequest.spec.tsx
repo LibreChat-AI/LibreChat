@@ -86,13 +86,16 @@ import Conversation from '../Convo';
 const conversation = {
   conversationId: 'convo-1',
   title: 'Tool Approval UI',
+  codeEnvironmentMode: 'attached',
+  codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
 } as TConversation;
+const ordinary = { conversationId: 'convo-1', title: 'Tool Approval UI' } as TConversation;
 
-const renderRow = (props: { isGenerating?: boolean } = {}) =>
+const renderRow = (props: { isGenerating?: boolean; convo?: TConversation } = {}) =>
   render(
     <DndProvider backend={HTML5Backend}>
       <Conversation
-        conversation={conversation}
+        conversation={props.convo ?? conversation}
         retainView={jest.fn()}
         toggleNav={jest.fn()}
         isGenerating={props.isGenerating}
@@ -163,6 +166,19 @@ describe('Conversation row pull request', () => {
   ])('draws nothing and describes nothing when the feature is %s', (_label, startup) => {
     mockStartup.current = startup;
     renderRow();
+    expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
+    expect(mockMarkProps).toHaveLength(0);
+    expect(rowButton().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it.each([
+    ['has no code decision', ordinary],
+    [
+      'runs without an attached workspace',
+      { ...ordinary, codeEnvironmentMode: 'without_attached' },
+    ],
+  ])('never asks for a chat that %s, so ordinary chats cost no lookup', (_label, convo) => {
+    renderRow({ convo: convo as TConversation });
     expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
     expect(mockMarkProps).toHaveLength(0);
     expect(rowButton().getAttribute('aria-describedby')).toBeNull();

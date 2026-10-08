@@ -57,6 +57,9 @@ export type MinimalConversation = Pick<
   | 'lastResponseIsManual'
   | 'isMarkedUnread'
   | 'lastSeenAt'
+  /** Lets a row tell a code conversation, the only kind that can have a pull request. */
+  | 'codeEnvironmentMode'
+  | 'codeWorkspaces'
 >;
 
 export type ConversationListResponse = {
