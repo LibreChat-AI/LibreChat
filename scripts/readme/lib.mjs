@@ -141,7 +141,7 @@ export const needsTranslation = (markdown) => proseWords(markdown).length > 0;
 
 const normalizeTag = (tag) =>
   tag.startsWith('<!--')
-    ? '<!---->'
+    ? tag
     : tag
         .replace(/=\s*'([^']*)'/g, '="$1"')
         .replace(TEXT_ATTRIBUTE, (match, name, value) =>

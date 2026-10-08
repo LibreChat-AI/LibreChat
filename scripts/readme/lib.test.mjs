@@ -187,3 +187,9 @@ test('validate keeps translatable attributes nonempty and compares echoes by pro
   const list = '- **Multilingual UI**:\n  - English, 中文, Deutsch';
   assert.ok(validate(list, '* **Multilingual UI**:\n  * English, 中文, Deutsch', 'ru').length > 0);
 });
+
+test('validate compares HTML comment contents exactly', () => {
+  const source = '<!-- omit from toc -->\n\n## Heading text here';
+  assert.ok(validate(source, '<!-- пропустить -->\n\n## Заголовок здесь', 'ru').length > 0);
+  assert.deepEqual(validate(source, '<!-- omit from toc -->\n\n## Заголовок здесь', 'ru'), []);
+});
