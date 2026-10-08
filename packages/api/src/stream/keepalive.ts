@@ -1,6 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 /** An SSE comment line: clients skip it, intermediaries see bytes on the wire. */
 export const SSE_KEEPALIVE_FRAME = ':\n\n';
@@ -39,7 +40,10 @@ export async function loadStreamKeepaliveMs(
     const loaded = await load();
     return resolveStreamKeepaliveMs(loaded?.endpoints?.agents);
   } catch (error) {
-    logger.warn('[streamKeepalive] Could not load config; using the default interval', error);
+    logger.warn(
+      '[streamKeepalive] Could not load config; using the default interval',
+      getSafeErrorMetadata(error),
+    );
     return DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS;
   }
 }
@@ -68,4 +72,28 @@ export function startSseKeepalive(res: SseKeepaliveResponse, intervalMs: number)
   }
   res.once('close', stop);
   return stop;
+}
+
+/**
+ * Starts the keepalive at the default interval right away, then switches to the
+ * configured one once it resolves. Neither the subscription nor the first frame waits on
+ * the config read, so a slow or hung config load cannot stall the stream.
+ */
+export function keepSseStreamAlive(
+  res: SseKeepaliveResponse,
+  intervalMs: Promise<number>,
+): () => void {
+  let stopped = false;
+  let stopCurrent = startSseKeepalive(res, DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
+  void intervalMs.then((resolvedMs) => {
+    if (stopped || resolvedMs === DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS) {
+      return;
+    }
+    stopCurrent();
+    stopCurrent = startSseKeepalive(res, resolvedMs);
+  });
+  return () => {
+    stopped = true;
+    stopCurrent();
+  };
 }

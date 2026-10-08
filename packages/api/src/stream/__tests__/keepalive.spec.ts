@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
+import { logger } from '@librechat/data-schemas';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
 import type { SseKeepaliveResponse } from '../keepalive';
 import {
+  keepSseStreamAlive,
   SSE_KEEPALIVE_FRAME,
   startSseKeepalive,
   loadStreamKeepaliveMs,
@@ -112,5 +114,56 @@ describe('loadStreamKeepaliveMs', () => {
     await expect(loadStreamKeepaliveMs(undefined, load)).resolves.toBe(
       DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS,
     );
+  });
+
+  it('logs only safe metadata when loading fails', async () => {
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = Object.assign(new Error('mongodb://admin:secret@db/config failed'), {
+      query: { secret: 'value' },
+    });
+
+    await loadStreamKeepaliveMs(undefined, () => Promise.reject(error));
+
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('secret');
+    warn.mockRestore();
+  });
+});
+
+describe('keepSseStreamAlive', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('keeps the stream alive at the default interval while the interval is unresolved', () => {
+    const res = new FakeResponse();
+    keepSseStreamAlive(res, new Promise<number>(() => undefined));
+
+    jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
+
+    expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME]);
+  });
+
+  it('switches to the resolved interval once it is known', async () => {
+    const res = new FakeResponse();
+    keepSseStreamAlive(res, Promise.resolve(1_000));
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(3_500);
+
+    expect(res.writes).toHaveLength(3);
+  });
+
+  it('stops when the resolved interval disables the keepalive', async () => {
+    const res = new FakeResponse();
+    keepSseStreamAlive(res, Promise.resolve(0));
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS * 3);
+
+    expect(res.writes).toEqual([]);
   });
 });

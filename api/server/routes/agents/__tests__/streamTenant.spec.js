@@ -17,7 +17,6 @@ const mockGenerationJobManager = {
 const mockCaptureAgentCheckpointGeneration = jest.fn();
 const mockDeleteAgentCheckpoint = jest.fn();
 const mockSaveMessage = jest.fn();
-const mockGetAppConfig = jest.fn().mockResolvedValue({});
 let mockConfigMiddleware = (_req, _res, next) => next();
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -57,11 +56,6 @@ jest.mock('~/server/middleware', () => ({
   messageIpLimiter: (req, res, next) => next(),
   configMiddleware: (req, res, next) => mockConfigMiddleware(req, res, next),
   messageUserLimiter: (req, res, next) => next(),
-}));
-
-jest.mock('~/server/services/Config', () => ({
-  ...jest.requireActual('~/server/services/Config'),
-  getAppConfig: (...args) => mockGetAppConfig(...args),
 }));
 
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());
@@ -444,7 +438,6 @@ describe('SSE stream tenant isolation', () => {
       mockConfigMiddleware = (_req, _res, next) => {
         configGate.then(() => next());
       };
-      mockGetAppConfig.mockImplementation(() => configGate.then(() => ({})));
       mockGenerationJobManager.getJob.mockResolvedValue(null);
 
       try {
@@ -459,7 +452,40 @@ describe('SSE stream tenant isolation', () => {
       } finally {
         releaseConfig();
         mockConfigMiddleware = (_req, _res, next) => next();
-        mockGetAppConfig.mockResolvedValue({});
+      }
+    });
+
+    it('subscribes and keeps the stream alive while the app config never loads', async () => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      mockConfigMiddleware = () => undefined;
+      try {
+        mockGenerationJobManager.getJob.mockResolvedValue({
+          metadata: { userId: 'user-123' },
+          status: 'running',
+          createdAt: 1000,
+        });
+        let finish;
+        mockGenerationJobManager.subscribe.mockImplementation(
+          async (_streamId, _writeEvent, onDone) => {
+            finish = onDone;
+            return { unsubscribe: jest.fn() };
+          },
+        );
+
+        const pending = request(app)
+          .get('/agents/chat/stream/stream-123')
+          .then((res) => res);
+        await jest.advanceTimersByTimeAsync(0);
+        await new Promise((resolve) => setImmediate(resolve));
+        await jest.advanceTimersByTimeAsync(60_000);
+
+        expect(mockGenerationJobManager.subscribe).toHaveBeenCalled();
+        finish({ final: true });
+        const res = await pending;
+        expect(res.text.startsWith(':\n\n')).toBe(true);
+      } finally {
+        mockConfigMiddleware = (_req, _res, next) => next();
+        jest.useRealTimers();
       }
     });
 
