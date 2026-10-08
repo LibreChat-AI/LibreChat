@@ -100,6 +100,15 @@ test('validate protects inline code, link order and non-text HTML attributes', (
   assert.deepEqual(validate(img, "<img src='logo.svg' width='400' alt='Логотип'>", 'ru'), []);
 });
 
+test('validate keeps reference identifiers and link title presence', () => {
+  const ref = '[Docs][setup]\n\n[setup]: https://x.y';
+  assert.ok(validate(ref, '[Документы][документация]\n\n[setup]: https://x.y', 'ru').length > 0);
+  assert.deepEqual(validate(ref, '[Документы][setup]\n\n[setup]: https://x.y', 'ru'), []);
+  const titled = '[Docs](https://x.y "Read the docs")';
+  assert.ok(validate(titled, '[Документы](https://x.y)', 'ru').length > 0);
+  assert.deepEqual(validate(titled, '[Документы](https://x.y "Читать документацию")', 'ru'), []);
+});
+
 test('validate rejects echoed, mixed, refused, truncated and empty output', () => {
   const source = 'This sentence should become Russian for sure, thanks.';
   assert.ok(validate(source, source, 'ru').length > 0);
@@ -111,7 +120,12 @@ test('validate rejects echoed, mixed, refused, truncated and empty output', () =
     validate(source, 'Это предложение обязательно станет русским, спасибо.', 'ru'),
     [],
   );
-  assert.deepEqual(validate('Features', 'Features', 'ru'), []);
+  assert.ok(validate('# Features', '# Features', 'ru').length > 0);
+  assert.deepEqual(validate('# Features', '# Возможности', 'ru'), []);
+  assert.deepEqual(
+    validate('<img alt="Trendshift" src="x.svg">', '<img alt="Trendshift" src="x.svg">', 'ru'),
+    [],
+  );
 });
 
 test('cleanOutput unwraps a fenced answer and keeps indentation', () => {
