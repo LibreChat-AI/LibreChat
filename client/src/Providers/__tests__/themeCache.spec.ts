@@ -182,7 +182,7 @@ describe('theme cache storage', () => {
  * - definitions with one or both mode blocks absent.
  * A new role, or a new fallback, joins by construction.
  */
-const PIN = { fingerprint: '1.2.leqd1k', digest: 'e9kel2' };
+const PIN = { fingerprint: '1.2.leqd1k', inputs: '6tsx5o', digest: 'bzbbva' };
 
 const digestOf = (text: string): string => {
   let hash = 5381;
@@ -191,6 +191,9 @@ const digestOf = (text: string): string => {
   }
   return hash.toString(36);
 };
+
+/** Locale-independent, so the digest does not depend on the collation Jest runs under. */
+const byCodePoint = (a: string, b: string): number => (a < b ? -1 : Number(a > b));
 
 const APPEARANCE_CANDIDATES = [
   '0.5rem',
@@ -386,8 +389,8 @@ function modeFixtures(): Fixture[] {
 
 /** Property order is positional in the cache entry and means nothing to the page. */
 const canonical = ({ properties, attributes }: ResolvedThemeStyle) => ({
-  properties: [...properties].sort(([a], [b]) => a.localeCompare(b)),
-  attributes: Object.fromEntries(Object.entries(attributes).sort(([a], [b]) => a.localeCompare(b))),
+  properties: [...properties].sort(([a], [b]) => byCodePoint(a, b)),
+  attributes: Object.fromEntries(Object.entries(attributes).sort(([a], [b]) => byCodePoint(a, b))),
 });
 
 const persistedOutput = () => {
@@ -397,7 +400,7 @@ const persistedOutput = () => {
     ...roleFixtures(),
     ...derivedFixtures(),
     ...modeFixtures(),
-  ].sort((a, b) => a.key.localeCompare(b.key));
+  ].sort((a, b) => byCodePoint(a.key, b.key));
   return fixtures.map(({ key, theme }) => {
     const { light, dark } = buildThemeCache(OWNER, key, theme).modes;
     return [key, canonical(light), canonical(dark)];
@@ -405,10 +408,13 @@ const persistedOutput = () => {
 };
 
 /** What the contributor has to do, or an empty string when the pin is current. */
-function pinStatus(actual: { fingerprint: string; digest: string }): string {
-  const refreshed = JSON.stringify({ fingerprint: actual.fingerprint, digest: actual.digest });
+function pinStatus(actual: typeof PIN): string {
+  const refreshed = JSON.stringify(actual);
   if (actual.fingerprint !== PIN.fingerprint) {
     return `The cache version changed (role set, theme version or epoch), which already retires cached entries: set PIN to ${refreshed}.`;
+  }
+  if (actual.inputs !== PIN.inputs) {
+    return `The generated fixture inputs changed (an appearance sample the validator now accepts), not the resolver: set PIN to ${refreshed}.`;
   }
   if (actual.digest !== PIN.digest) {
     return `The persisted output changed without a version change: bump THEME_CACHE_EPOCH in packages/data-provider/src/theme.ts, then set PIN to the refreshed fingerprint and digest (digest ${actual.digest}).`;
@@ -420,6 +426,7 @@ describe('resolver output pin', () => {
   it('matches the persisted output of every cacheable definition and generated fixture', () => {
     const status = pinStatus({
       fingerprint: themeRoleFingerprint(),
+      inputs: digestOf(JSON.stringify(SAMPLES)),
       digest: digestOf(JSON.stringify(persistedOutput())),
     });
     expect(status).toBe('');
@@ -434,6 +441,7 @@ describe('resolver output pin', () => {
 
   it('tells a version change from an output change', () => {
     expect(pinStatus({ ...PIN, fingerprint: 'other' })).toMatch(/cache version changed/);
+    expect(pinStatus({ ...PIN, inputs: 'other' })).toMatch(/fixture inputs changed/);
     expect(pinStatus({ ...PIN, digest: 'other' })).toMatch(/bump THEME_CACHE_EPOCH/);
     expect(pinStatus(PIN)).toBe('');
   });
