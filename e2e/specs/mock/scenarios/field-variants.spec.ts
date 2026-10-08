@@ -488,6 +488,7 @@ for (const theme of THEMES) {
               node.focus();
             }
             await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+            await Promise.all(node.getAnimations().map((animation) => animation.finished));
             const style = getComputedStyle(node);
             const rings = style.boxShadow
               .split(/,(?![^(]*\))/)
