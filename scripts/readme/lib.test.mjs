@@ -167,3 +167,23 @@ test('validate accepts a translated label that keeps language names and rejects 
   assert.deepEqual(validate(source, out, 'ru'), []);
   assert.ok(validate(source, source, 'ru').includes('output is unchanged'));
 });
+
+test('isSwitcher recognizes the switcher of every language and nothing else', () => {
+  for (const code of ['en', 'zh', 'ru']) assert.ok(isSwitcher(renderSwitcher(code)));
+  assert.equal(
+    isSwitcher('<p align="center">\n  <a href="https://librechat.ai">Site</a>\n</p>'),
+    false,
+  );
+  assert.equal(isSwitcher('Some text'), false);
+});
+
+test('validate keeps translatable attributes nonempty and compares echoes by prose, not formatting', () => {
+  const sponsors = '<a aria-label="Sponsors" href="https://x.y"></a>';
+  assert.ok(validate(sponsors, '<a aria-label="" href="https://x.y"></a>', 'ru').length > 0);
+  assert.deepEqual(
+    validate(sponsors, '<a aria-label="Спонсоры" href="https://x.y"></a>', 'ru'),
+    [],
+  );
+  const list = '- **Multilingual UI**:\n  - English, 中文, Deutsch';
+  assert.ok(validate(list, '* **Multilingual UI**:\n  * English, 中文, Deutsch', 'ru').length > 0);
+});
