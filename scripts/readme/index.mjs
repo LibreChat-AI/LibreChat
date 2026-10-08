@@ -112,7 +112,7 @@ for (const code of langs) {
     if (isSwitcher(chunk) || !needsTranslation(chunk)) continue;
     const key = hash(chunk);
     if (previous[key] !== undefined) next[key] = previous[key];
-    else pending.push({ key, chunk });
+    else if (!pending.some((item) => item.key === key)) pending.push({ key, chunk });
   }
   console.log(
     `${code}: ${pending.length} chunk(s) to translate, ${Object.keys(next).length} cached`,
