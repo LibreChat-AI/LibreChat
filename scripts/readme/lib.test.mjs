@@ -151,3 +151,12 @@ test('validate and needsTranslation handle brand suffixes, titles, tables and da
     ).length > 0,
   );
 });
+
+test('validate keeps emoji, image alt presence and raw HTML code content', () => {
+  assert.ok(validate('## 🚀 Whats New today', '## Что нового сегодня', 'ru').length > 0);
+  assert.deepEqual(validate('## 🚀 Whats New today', '## 🚀 Что нового сегодня', 'ru'), []);
+  assert.ok(validate('![](logo.svg)', '![Логотип](logo.svg)', 'ru').length > 0);
+  const code = 'Run <code>npm install package</code> first.';
+  assert.ok(validate(code, 'Сначала <code>npm установить пакет</code>.', 'ru').length > 0);
+  assert.deepEqual(validate(code, 'Сначала запустите <code>npm install package</code>.', 'ru'), []);
+});

@@ -97,6 +97,11 @@ export function renderSwitcher(current, available = Object.keys(LANGUAGES)) {
   return `<p align="center">\n  ${items.join(' ·\n  ')}\n</p>`;
 }
 
+/** Change in `<code>`/`<pre>` nesting that an HTML fragment causes. */
+const rawCodeDelta = (html) =>
+  (html.match(/<(?:code|pre)[\s>]/gi) ?? []).length -
+  (html.match(/<\/(?:code|pre)>/gi) ?? []).length;
+
 function walk(node, visit) {
   visit(node);
   for (const child of node.children ?? []) walk(child, visit);
@@ -105,8 +110,10 @@ function walk(node, visit) {
 /** Words a reader sees: text, image alt, and alt, title and aria-label values, minus glossary terms. */
 function proseWords(markdown, withAttributes = true) {
   const parts = [];
+  let rawCode = 0;
   walk(parse(markdown), (node) => {
-    if (node.type === 'text') parts.push(node.value);
+    if (node.type === 'html') rawCode = Math.max(rawCode + rawCodeDelta(node.value), 0);
+    if (node.type === 'text' && rawCode === 0) parts.push(node.value);
     else if (withAttributes && (node.type === 'image' || node.type === 'link')) {
       if (node.alt) parts.push(node.alt);
       if (node.title) parts.push(node.title);
@@ -114,7 +121,8 @@ function proseWords(markdown, withAttributes = true) {
       if (withAttributes) {
         for (const match of node.value.matchAll(TEXT_ATTRIBUTE)) parts.push(unquote(match[2]));
       }
-      parts.push(node.value.replace(HTML_PIECE, ' '));
+      const visible = node.value.replace(/<(code|pre)[\s>][\s\S]*?<\/\1>/gi, ' ');
+      parts.push(visible.replace(HTML_PIECE, ' '));
     }
   });
   const text = parts
@@ -153,12 +161,23 @@ function skeleton(markdown) {
   const push = (token) => {
     if (token !== 'T' || tokens.at(-1) !== 'T') tokens.push(token);
   };
+  let rawCode = 0;
   const visit = (node) => {
-    if (node.type === 'text') return push('T');
+    if (node.type === 'text') {
+      if (rawCode > 0) return push(`rawcode:${node.value}`);
+      push('T');
+      const emoji = node.value.match(/\p{Extended_Pictographic}/gu);
+      return emoji && push(`emoji:${emoji.join('')}`);
+    }
     if (node.type === 'inlineCode') return push(`code:${node.value}`);
     if (node.type === 'code') return push(`fence:${node.lang ?? ''}:${node.value}`);
-    if (node.type === 'html') return htmlTokens(node.value).forEach(push);
-    if (node.type === 'image') return push(`image:${node.url}:${node.title ? 'titled' : ''}`);
+    if (node.type === 'html') {
+      rawCode = Math.max(rawCode + rawCodeDelta(node.value), 0);
+      return htmlTokens(node.value).forEach(push);
+    }
+    if (node.type === 'image') {
+      return push(`image:${node.url}:${node.title ? 'titled' : ''}:${node.alt ? 'alt' : ''}`);
+    }
     const detail = [
       node.depth,
       node.url,
