@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { fieldBase, fieldEmbedded, fieldFlush, fieldInvalid } from './Field';
+import { fieldBase, fieldEmbedded, fieldFlush, fieldInvalid, fieldFillTransparent } from './Field';
 import { cn } from '~/utils';
 import './Field.css';
 
@@ -11,9 +11,9 @@ const TEXTAREA_VARIANTS: Record<
   string
 > = {
   default: 'bg-surface-secondary',
-  transparent: 'bg-transparent',
-  document: 'bg-transparent text-base leading-relaxed',
-  flush: `bg-transparent ${fieldFlush}`,
+  transparent: fieldFillTransparent,
+  document: `${fieldFillTransparent} text-base leading-relaxed`,
+  flush: fieldFlush,
   embedded: fieldEmbedded,
 };
 

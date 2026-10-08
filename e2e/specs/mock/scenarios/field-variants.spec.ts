@@ -330,5 +330,232 @@ for (const theme of THEMES) {
         theme === 'clickhouse' ? 'theme-field-fill:bg-field-fill' : 'bg-surface-primary';
       expect(chip).toBe(await probeStyle(page, expectedRole, 'background-color'));
     });
+
+    test(`every field primitive and variant resolves its fill, edge, ring and outline the same way in each state @scenario:field-variant-matrix`, async ({
+      page,
+    }) => {
+      const { Input, Textarea, TextareaAutosize, SecretInput } = await primitives();
+      type Fill = 'field' | 'secondary' | 'transparent' | 'embedded';
+      type Cell = {
+        id: string;
+        node: (props: Record<string, unknown>) => React.ReactElement;
+        fill: Fill;
+        bordered: boolean;
+        ring: boolean;
+        keyboardOutline: boolean;
+        pointerEdge: 'reset' | 'keep' | 'none';
+      };
+      const lcField = (
+        id: string,
+        node: Cell['node'],
+        fill: Fill,
+        variant: 'edged' | 'flush' | 'embedded',
+      ): Cell => ({
+        id,
+        node,
+        fill,
+        bordered: variant === 'edged',
+        ring: variant !== 'flush',
+        keyboardOutline: false,
+        pointerEdge: variant === 'edged' ? 'reset' : 'none',
+      });
+      const input = (variant: string) => (p: Record<string, unknown>) =>
+        h(Input, { ...p, variant });
+      const secret = (variant: string) => (p: Record<string, unknown>) =>
+        h(SecretInput, { ...p, variant });
+      const area = (variant: string) => (p: Record<string, unknown>) =>
+        h(Textarea, { ...p, variant });
+      const auto = (variant: string) => (p: Record<string, unknown>) =>
+        h(TextareaAutosize, { ...p, variant });
+      const cells: Cell[] = [
+        lcField('input-default', input('default'), 'field', 'edged'),
+        lcField('input-floating', input('floating'), 'field', 'edged'),
+        lcField('input-flush', input('flush'), 'transparent', 'flush'),
+        lcField('input-embedded', input('embedded'), 'embedded', 'embedded'),
+        lcField('secret-default', secret('default'), 'field', 'edged'),
+        lcField('secret-flush', secret('flush'), 'transparent', 'flush'),
+        lcField('secret-embedded', secret('embedded'), 'embedded', 'embedded'),
+        lcField('textarea-default', area('default'), 'secondary', 'edged'),
+        lcField('textarea-transparent', area('transparent'), 'transparent', 'edged'),
+        lcField('textarea-document', area('document'), 'transparent', 'edged'),
+        lcField('textarea-flush', area('flush'), 'transparent', 'flush'),
+        lcField('textarea-embedded', area('embedded'), 'embedded', 'embedded'),
+        {
+          id: 'auto-default',
+          node: auto('default'),
+          fill: 'transparent',
+          bordered: false,
+          ring: false,
+          keyboardOutline: true,
+          pointerEdge: 'none',
+        },
+        {
+          id: 'auto-framed',
+          node: auto('framed'),
+          fill: 'transparent',
+          bordered: true,
+          ring: true,
+          keyboardOutline: false,
+          pointerEdge: 'keep',
+        },
+        {
+          id: 'auto-flush',
+          node: auto('flush'),
+          fill: 'transparent',
+          bordered: false,
+          ring: false,
+          keyboardOutline: false,
+          pointerEdge: 'none',
+        },
+        {
+          id: 'auto-embedded',
+          node: auto('embedded'),
+          fill: 'embedded',
+          bordered: false,
+          ring: false,
+          keyboardOutline: true,
+          pointerEdge: 'none',
+        },
+      ];
+
+      await openWithMarkup(
+        page,
+        theme,
+        render(
+          h(
+            'div',
+            null,
+            ...cells.flatMap((cell) => [
+              h(
+                'div',
+                { key: cell.id },
+                cell.node({ id: cell.id, 'aria-label': cell.id, value: '', onChange: () => null }),
+              ),
+              h(
+                'div',
+                { key: `${cell.id}-bad` },
+                cell.node({
+                  id: `${cell.id}-bad`,
+                  'aria-label': `${cell.id}-bad`,
+                  'aria-invalid': true,
+                  value: '',
+                  onChange: () => null,
+                }),
+              ),
+            ]),
+          ),
+        ),
+      );
+
+      const transparent = 'rgba(0, 0, 0, 0)';
+      const fills: Record<Fill, string> = {
+        field:
+          theme === 'clickhouse'
+            ? await probeStyle(page, 'theme-field-fill:bg-field-fill', 'background-color')
+            : transparent,
+        secondary:
+          theme === 'clickhouse'
+            ? await probeStyle(page, 'theme-field-fill:bg-field-fill', 'background-color')
+            : await probeStyle(page, 'bg-surface-secondary', 'background-color'),
+        transparent,
+        embedded: await probeStyle(page, 'bg-surface-tertiary-alt', 'background-color'),
+      };
+      const destructive = await probeStyle(page, 'border-border-destructive', 'border-top-color');
+      const resetEdge =
+        theme === 'clickhouse'
+          ? await probeStyle(page, 'border-border-field-focus', 'border-top-color')
+          : await probeStyle(page, 'border-border-light', 'border-top-color');
+
+      const read = (id: string, modality: 'keyboard' | 'pointer' | null) =>
+        page.evaluate(
+          async ([target, mode]) => {
+            const node = document.getElementById(target) as HTMLElement;
+            if (document.activeElement instanceof HTMLElement) {
+              document.activeElement.blur();
+            }
+            if (mode === null) {
+              document.documentElement.removeAttribute('data-input-modality');
+            } else {
+              document.documentElement.setAttribute('data-input-modality', mode);
+              node.focus();
+            }
+            await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+            const style = getComputedStyle(node);
+            return {
+              fill: style.backgroundColor,
+              width: style.borderTopWidth,
+              edge: style.borderTopColor,
+              shadow: style.boxShadow,
+              outline: style.outlineStyle,
+            };
+          },
+          [id, modality] as const,
+        );
+
+      for (const cell of cells) {
+        const label = `${theme} ${cell.id}`;
+        const rest = await read(cell.id, null);
+        expect.soft(rest.fill, `${label} fill`).toBe(fills[cell.fill]);
+        expect.soft(rest.width !== '0px', `${label} draws an edge`).toBe(cell.bordered);
+
+        const keyboard = await read(cell.id, 'keyboard');
+        expect.soft(keyboard.fill, `${label} fill on keyboard focus`).toBe(fills[cell.fill]);
+        expect.soft(keyboard.shadow !== 'none', `${label} ring on keyboard focus`).toBe(cell.ring);
+        expect
+          .soft(keyboard.outline !== 'none', `${label} outline on keyboard focus`)
+          .toBe(cell.keyboardOutline);
+
+        const pointer = await read(cell.id, 'pointer');
+        expect.soft(pointer.shadow, `${label} ring on pointer focus`).toBe('none');
+        expect.soft(pointer.outline, `${label} outline on pointer focus`).toBe('none');
+        if (cell.pointerEdge === 'reset') {
+          expect.soft(pointer.edge, `${label} edge on pointer focus`).toBe(resetEdge);
+        }
+        if (cell.pointerEdge === 'keep') {
+          expect.soft(pointer.edge, `${label} edge on pointer focus`).toBe(rest.edge);
+        }
+
+        if (!cell.bordered) {
+          continue;
+        }
+        for (const mode of [null, 'keyboard', 'pointer'] as const) {
+          const bad = await read(`${cell.id}-bad`, mode);
+          expect.soft(bad.edge, `${label} invalid edge (${mode ?? 'rest'})`).toBe(destructive);
+          if (mode === 'pointer') {
+            expect.soft(bad.shadow, `${label} invalid ring on pointer focus`).toBe('none');
+            expect.soft(bad.outline, `${label} invalid outline on pointer focus`).toBe('none');
+          }
+        }
+      }
+    });
+
+    test(`flush and framed editors keep the outline as the only indicator under forced colors @scenario:field-variant-matrix`, async ({
+      page,
+    }) => {
+      const { TextareaAutosize } = await primitives();
+      await openWithMarkup(
+        page,
+        theme,
+        render(
+          h(
+            'div',
+            null,
+            h(TextareaAutosize, { 'aria-label': 'flush', id: 'flush', variant: 'flush' }),
+            h(TextareaAutosize, { 'aria-label': 'framed', id: 'framed', variant: 'framed' }),
+          ),
+        ),
+      );
+      await page.emulateMedia({ forcedColors: 'active' });
+      for (const id of ['flush', 'framed']) {
+        const outline = await page.evaluate(async (target) => {
+          document.documentElement.setAttribute('data-input-modality', 'keyboard');
+          const node = document.getElementById(target) as HTMLElement;
+          node.focus();
+          await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+          return getComputedStyle(node).outlineStyle;
+        }, id);
+        expect(outline, `${theme} ${id} outline under forced colors`).not.toBe('none');
+      }
+    });
   });
 }

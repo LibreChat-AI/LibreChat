@@ -8,7 +8,7 @@ import { Textarea } from './Textarea';
 import { Input } from './Input';
 import { cn } from '~/utils';
 
-const FLUSH = ['border-0', 'focus-visible:ring-0'];
+const FLUSH = ['border-0', 'focus-visible:ring-0', 'theme-field-fill:bg-transparent'];
 const EMBEDDED = [
   'bg-surface-tertiary-alt',
   'h-auto',
@@ -19,7 +19,7 @@ const EMBEDDED = [
   'text-sm',
 ];
 const FRAMED = [
-  'lc-framed',
+  'lc-own-focus',
   'rounded-xl',
   'border',
   'border-border-medium',
@@ -119,5 +119,32 @@ describe('field variants', () => {
   it('paints the floating label chip in the field fill when the theme fills fields', () => {
     expect(floatingLabel).toContain('bg-surface-primary');
     expect(floatingLabel).toContain('theme-field-fill:bg-field-fill');
+  });
+
+  it('flush and embedded variants drop the base field fill in every control that carries it', () => {
+    render(
+      <div>
+        <Input aria-label="if" variant="flush" />
+        <Input aria-label="ie" variant="embedded" />
+        <Textarea aria-label="tf" variant="flush" />
+        <Textarea aria-label="te" variant="embedded" />
+        <Textarea aria-label="tt" variant="transparent" />
+        <Textarea aria-label="td" variant="document" />
+      </div>,
+    );
+    for (const label of ['if', 'ie', 'tf', 'te', 'tt', 'td']) {
+      expect(screen.getByLabelText(label).className).not.toContain('bg-field-fill');
+    }
+  });
+
+  it('TextareaAutosize flush and framed keep the global textarea outline off', () => {
+    render(
+      <div>
+        <TextareaAutosize aria-label="f" variant="flush" />
+        <TextareaAutosize aria-label="r" variant="framed" />
+      </div>,
+    );
+    expect(screen.getByLabelText('f')).toHaveClass('lc-own-focus');
+    expect(screen.getByLabelText('r')).toHaveClass('lc-own-focus');
   });
 });

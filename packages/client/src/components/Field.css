@@ -58,11 +58,12 @@ html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-v
   -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
 }
 
-/* The framed editor (`lc-framed`) draws its own ring, so the app's global focus outline for
-   non-`.lc-field` textareas would add a second indicator outside it. `:root` lifts this above
-   that rule's weight; forced colors keep the outline as the only indicator. */
+/* A control outside `.lc-field` that carries `lc-own-focus` (the framed and flush editors) has
+   its own ring, or a frame that owns the indicator, so the app's global focus outline for
+   non-`.lc-field` textareas would add a second one. `:root` lifts this above that rule's
+   weight; forced colors keep the outline as the only indicator. */
 @media not (forced-colors: active) {
-  html:root textarea.lc-framed:focus-visible {
+  html:root textarea.lc-own-focus:focus-visible {
     outline: none !important;
   }
 }
