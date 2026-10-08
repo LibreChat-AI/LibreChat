@@ -199,7 +199,8 @@ function skeleton(markdown) {
   return tokens;
 }
 
-const lowerWords = (words) => words.filter((word) => /^[a-z]{4,}$/.test(word));
+/** Common lowercase English words; capitalized names such as language names legitimately stay. */
+const commonWords = (words) => words.filter((word) => /^[a-z]{4,}$/.test(word));
 
 /**
  * Returns a list of problems with a translation: any difference in structure, links, code or
@@ -217,6 +218,9 @@ export function validate(source, translated, code) {
   }
   const script = LANGUAGES[code]?.script;
   const words = proseWords(source);
+  if (script && translated.trim() === source.trim() && proseWords(source, false).length > 0) {
+    problems.push('output is unchanged');
+  }
   if (
     script &&
     (proseWords(source, false).length > 0 || words.length >= MIN_WORDS_FOR_CONTENT_CHECK) &&
@@ -228,7 +232,7 @@ export function validate(source, translated, code) {
   }
   if (script && words.length >= MIN_WORDS_FOR_CONTENT_CHECK) {
     if (translated.length < source.length * MIN_LENGTH_RATIO) problems.push('output is truncated');
-    const plain = lowerWords(words.map((word) => word.toLowerCase()));
+    const plain = commonWords(words);
     const kept = new Set(proseWords(translated).map((word) => word.toLowerCase()));
     const share = plain.filter((word) => kept.has(word)).length / (plain.length || 1);
     if (plain.length >= MIN_WORDS_FOR_CONTENT_CHECK && share > MAX_UNTRANSLATED_SHARE) {

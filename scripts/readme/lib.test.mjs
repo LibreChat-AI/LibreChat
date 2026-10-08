@@ -160,3 +160,10 @@ test('validate keeps emoji, image alt presence and raw HTML code content', () =>
   assert.ok(validate(code, 'Сначала <code>npm установить пакет</code>.', 'ru').length > 0);
   assert.deepEqual(validate(code, 'Сначала запустите <code>npm install package</code>.', 'ru'), []);
 });
+
+test('validate accepts a translated label that keeps language names and rejects the unchanged chunk', () => {
+  const source = '- **Multilingual UI**:\n  - English, 中文 (简体), Deutsch, Español, Русский';
+  const out = '- **Многоязычный интерфейс**:\n  - English, 中文 (简体), Deutsch, Español, Русский';
+  assert.deepEqual(validate(source, out, 'ru'), []);
+  assert.ok(validate(source, source, 'ru').includes('output is unchanged'));
+});
