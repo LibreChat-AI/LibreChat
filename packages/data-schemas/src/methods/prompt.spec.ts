@@ -10,6 +10,7 @@ import {
   PermissionBits,
 } from 'librechat-data-provider';
 import type { IPromptGroup, AccessRole as TAccessRole, AclEntry as TAclEntry } from '..';
+import { tenantStorage } from '~/config/tenantContext';
 import { createAclEntryMethods } from './aclEntry';
 import { createMethods } from './index';
 
@@ -765,5 +766,209 @@ describe('Prompt method failure contracts', () => {
 
     const all = await methods.getListPromptGroupsByAccess({ accessibleIds });
     expect(all.data).toHaveLength(2);
+  });
+});
+
+describe('PromptGroup source identity', () => {
+  beforeAll(async () => {
+    await PromptGroup.syncIndexes();
+  });
+
+  it('rejects a native group (default source) without a productionId', async () => {
+    const group = new PromptGroup({
+      name: 'Native Default Source',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    });
+    await expect(group.validate()).rejects.toThrow(/productionId/);
+  });
+
+  it('rejects a native group (explicit source) without a productionId', async () => {
+    const group = new PromptGroup({
+      name: 'Native Explicit Source',
+      source: 'native',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    });
+    await expect(group.validate()).rejects.toThrow(/productionId/);
+  });
+
+  it('saves a langfuse group with identity fields and no productionId', async () => {
+    const group = (
+      await PromptGroup.create({
+        name: 'Langfuse Mirrored Prompt',
+        source: 'langfuse',
+        sourcePromptName: 'welcome-prompt',
+        sourceProjectId: 'project-1',
+        sourceDestination: 'eu',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+      })
+    ).toObject() as unknown as LeanPromptGroup;
+
+    expect(group.productionId).toBeUndefined();
+    expect(group.source).toBe('langfuse');
+  });
+
+  it('rejects a langfuse group missing sourcePromptName', async () => {
+    const group = new PromptGroup({
+      name: 'Langfuse Missing Prompt Name',
+      source: 'langfuse',
+      sourceProjectId: 'project-1',
+      sourceDestination: 'eu',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    });
+    await expect(group.validate()).rejects.toThrow(/sourcePromptName/);
+  });
+
+  it('rejects a langfuse group missing sourceProjectId', async () => {
+    const group = new PromptGroup({
+      name: 'Langfuse Missing Project Id',
+      source: 'langfuse',
+      sourcePromptName: 'welcome-prompt',
+      sourceDestination: 'eu',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    });
+    await expect(group.validate()).rejects.toThrow(/sourceProjectId/);
+  });
+
+  it('rejects a langfuse group missing sourceDestination', async () => {
+    const group = new PromptGroup({
+      name: 'Langfuse Missing Destination',
+      source: 'langfuse',
+      sourcePromptName: 'welcome-prompt',
+      sourceProjectId: 'project-1',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    });
+    await expect(group.validate()).rejects.toThrow(/sourceDestination/);
+  });
+
+  it('rejects a duplicate langfuse identity within the same tenant', async () => {
+    const identity = {
+      source: 'langfuse',
+      sourcePromptName: 'dup-prompt',
+      sourceProjectId: 'project-dup',
+      sourceDestination: 'eu',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    };
+
+    await tenantStorage.run({ tenantId: 'tenant-dup-a' }, async () => {
+      await PromptGroup.create({ ...identity, name: 'Dup Prompt A1' });
+      await expect(PromptGroup.create({ ...identity, name: 'Dup Prompt A2' })).rejects.toThrow(
+        /E11000/,
+      );
+    });
+  });
+
+  it('allows the same langfuse identity in a different tenant', async () => {
+    const identity = {
+      source: 'langfuse',
+      sourcePromptName: 'cross-tenant-prompt',
+      sourceProjectId: 'project-cross',
+      sourceDestination: 'eu',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+    };
+
+    await tenantStorage.run({ tenantId: 'tenant-cross-a' }, async () => {
+      await PromptGroup.create({ ...identity, name: 'Cross A' });
+    });
+    await tenantStorage.run({ tenantId: 'tenant-cross-b' }, async () => {
+      await expect(PromptGroup.create({ ...identity, name: 'Cross B' })).resolves.toBeTruthy();
+    });
+  });
+
+  it('creates a new native group instead of matching an existing langfuse group with the same name', async () => {
+    const langfuseGroup = (
+      await PromptGroup.create({
+        name: 'Shared Name Group',
+        source: 'langfuse',
+        sourcePromptName: 'shared-name-group',
+        sourceProjectId: 'project-shared',
+        sourceDestination: 'eu',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+      })
+    ).toObject() as unknown as LeanPromptGroup;
+
+    const { group: nativeGroup } = await methods.createPromptGroup({
+      prompt: { prompt: 'Native prompt text', type: 'text' },
+      group: { name: 'Shared Name Group' },
+      author: String(testUsers.owner._id),
+      authorName: testUsers.owner.name ?? '',
+    });
+
+    expect(String((nativeGroup as { _id: unknown })._id)).not.toBe(String(langfuseGroup._id));
+    expect((nativeGroup as { source?: string }).source).toBe('native');
+    expect((nativeGroup as { productionId?: unknown }).productionId).toBeTruthy();
+
+    const unchangedLangfuseGroup = (await PromptGroup.findById(
+      langfuseGroup._id,
+    ).lean()) as unknown as LeanPromptGroup & { source?: string; productionId?: unknown };
+    expect(unchangedLangfuseGroup.productionId).toBeUndefined();
+    expect(unchangedLangfuseGroup.source).toBe('langfuse');
+  });
+
+  it('allows two native groups with the same name', async () => {
+    const first = await PromptGroup.create({
+      name: 'Duplicate Name Group',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+      productionId: new ObjectId(),
+    });
+    const second = await PromptGroup.create({
+      name: 'Duplicate Name Group',
+      author: testUsers.owner._id,
+      authorName: testUsers.owner.name,
+      productionId: new ObjectId(),
+    });
+    expect(String(first._id)).not.toBe(String(second._id));
+  });
+});
+
+describe('PromptGroup list projections', () => {
+  it('returns source identity fields from getAllPromptGroups, getPromptGroups, and getListPromptGroupsByAccess', async () => {
+    const langfuseGroup = (
+      await PromptGroup.create({
+        name: 'Projection Langfuse Prompt',
+        source: 'langfuse',
+        sourcePromptName: 'projection-prompt',
+        sourceProjectId: 'project-projection',
+        sourceDestination: 'eu',
+        author: testUsers.owner._id,
+        authorName: testUsers.owner.name,
+      })
+    ).toObject() as unknown as LeanPromptGroup;
+
+    const allGroups = (await methods.getAllPromptGroups({
+      name: 'Projection Langfuse Prompt',
+    })) as Array<Record<string, unknown>>;
+    const fromGetAll = allGroups.find((g) => String(g._id) === String(langfuseGroup._id));
+    expect(fromGetAll?.source).toBe('langfuse');
+    expect(fromGetAll?.sourcePromptName).toBe('projection-prompt');
+    expect(fromGetAll?.sourceProjectId).toBe('project-projection');
+    expect(fromGetAll?.sourceDestination).toBe('eu');
+
+    const paged = (await methods.getPromptGroups({
+      name: 'Projection Langfuse Prompt',
+    })) as { promptGroups: Array<Record<string, unknown>> };
+    const fromGetPage = paged.promptGroups.find((g) => String(g._id) === String(langfuseGroup._id));
+    expect(fromGetPage?.source).toBe('langfuse');
+    expect(fromGetPage?.sourcePromptName).toBe('projection-prompt');
+    expect(fromGetPage?.sourceProjectId).toBe('project-projection');
+    expect(fromGetPage?.sourceDestination).toBe('eu');
+
+    const byAccess = await methods.getListPromptGroupsByAccess({
+      accessibleIds: [langfuseGroup._id],
+    });
+    const fromAccess = byAccess.data.find((g) => String(g._id) === String(langfuseGroup._id));
+    expect(fromAccess?.source).toBe('langfuse');
+    expect(fromAccess?.sourcePromptName).toBe('projection-prompt');
+    expect(fromAccess?.sourceProjectId).toBe('project-projection');
+    expect(fromAccess?.sourceDestination).toBe('eu');
   });
 });

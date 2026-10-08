@@ -21,12 +21,19 @@ export function toPromptRecord(record: object): PromptRecord {
   return withStringIds(record) as unknown as PromptRecord;
 }
 
-/** Converts a stored group, and its Production revision when present, to string IDs. */
+/**
+ * Converts a stored group, and its Production revision when present, to string IDs.
+ * A stored group with no `source` predates the field; it defaults here to `native`,
+ * the only place that default is applied.
+ */
 export function toPromptGroupRecord(record: object): PromptGroupRecord {
   const plain = withStringIds(record);
   const production = plain.productionPrompt;
   if (production != null && typeof production === 'object') {
     plain.productionPrompt = withStringIds(production);
+  }
+  if (plain.source == null) {
+    plain.source = 'native';
   }
   return plain as unknown as PromptGroupRecord;
 }

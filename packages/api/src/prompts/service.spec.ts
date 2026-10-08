@@ -247,6 +247,39 @@ describe('createPromptService', () => {
       expect(prompt?.groupId).not.toBe(otherGroupId);
     });
 
+    it('drops client-supplied source identity fields before writing the group', async () => {
+      const create = jest.spyOn(db, 'createPromptGroup');
+      const importedGroup = {
+        name: 'Imported group',
+        source: 'langfuse',
+        sourcePromptName: 'langfuse-prompt',
+        sourceProjectId: 'project-1',
+        sourceDestination: 'destination-1',
+      };
+
+      const result = await service.createPromptGroup({
+        prompt: { prompt: 'New prompt', type: 'text' },
+        group: importedGroup,
+        author,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({ group: { name: 'Imported group' } }),
+      );
+
+      const groupId = result.ok ? result.value.prompt?.groupId : undefined;
+      // Read the raw document directly: toPromptGroupRecord defaults a missing `source` to
+      // 'native', so asserting through it would prove nothing about what was actually stored.
+      const stored = (await mongoose.models.PromptGroup.findById(groupId).lean()) as {
+        source?: string;
+      } | null;
+      expect(stored?.source).toBe('native');
+      expect(stored).not.toHaveProperty('sourcePromptName');
+      expect(stored).not.toHaveProperty('sourceProjectId');
+      expect(stored).not.toHaveProperty('sourceDestination');
+    });
+
     it('rejects protected content before writing', async () => {
       const create = jest.spyOn(db, 'createPromptGroup');
 

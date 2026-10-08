@@ -1141,6 +1141,8 @@ export type TPrompt = {
   _id?: string;
 };
 
+export type TPromptGroupSource = 'native' | 'langfuse';
+
 export type TPromptGroup = {
   name: string;
   numberOfGenerations?: number;
@@ -1155,6 +1157,10 @@ export type TPromptGroup = {
   createdAt?: Date;
   updatedAt?: Date;
   _id?: string;
+  source: TPromptGroupSource;
+  sourcePromptName?: string;
+  sourceProjectId?: string;
+  sourceDestination?: string;
 };
 
 export type TCreatePrompt = {
@@ -1200,7 +1206,10 @@ export type TCreatePromptResponse = {
   group?: TPromptGroup;
 };
 
-export type TUpdatePromptGroupPayload = Partial<TPromptGroup>;
+/** Source identity is set by the server and cannot be updated. */
+export type TUpdatePromptGroupPayload = Partial<
+  Omit<TPromptGroup, 'source' | 'sourcePromptName' | 'sourceProjectId' | 'sourceDestination'>
+>;
 
 export type TUpdatePromptGroupVariables = {
   id: string;
