@@ -202,6 +202,9 @@ for (const theme of THEMES) {
         ),
       );
 
+      await page.evaluate(() =>
+        document.documentElement.setAttribute('data-input-modality', 'keyboard'),
+      );
       const props = [...FIELD_PROPS, 'border-top-color', 'color'];
       expect(await styleOf(page, '#framed', props, true)).toEqual(
         await styleOf(page, '#legacy', props, true),
