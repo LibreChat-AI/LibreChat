@@ -141,6 +141,14 @@ for (const code of Object.keys(LANGUAGES)) {
   if (!langs.includes(code) && stored[code]) cache[code] = stored[code];
 }
 
+// Languages not selected keep their body, but their switcher must list every available language.
+for (const [code, { file }] of Object.entries(LANGUAGES)) {
+  const existing = langs.includes(code) ? null : await readIfExists(file);
+  const current = existing && splitChunks(existing).find((unit) => isSwitcher(unit.text));
+  if (!current || current.text === renderSwitcher(code, available)) continue;
+  outputs[file] = existing.replace(current.text, () => renderSwitcher(code, available));
+}
+
 const switcher = chunks.find(isSwitcher);
 if (switcher && switcher !== renderSwitcher('en', available)) {
   outputs[SOURCE] = source.replace(switcher, () => renderSwitcher('en', available));

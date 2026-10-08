@@ -79,7 +79,11 @@ export function splitChunks(markdown) {
   return chunks;
 }
 
-export const isSwitcher = (chunk) => /^<p align="center">\s*<strong>English<\/strong>/.test(chunk);
+const SWITCHER_ITEM = '(?:<strong>[^<]+</strong>|<a href="README(?:\\.\\w+)?\\.md">[^<]+</a>)';
+const SWITCHER = new RegExp(`^<p align="center">\\s*(?:${SWITCHER_ITEM}\\s*·?\\s*)+</p>$`);
+
+/** True for the language switcher block in any README, whichever language is current. */
+export const isSwitcher = (chunk) => SWITCHER.test(chunk.trim());
 
 /** `available` lists the language codes whose README exists or is being generated. */
 export function renderSwitcher(current, available = Object.keys(LANGUAGES)) {
@@ -140,7 +144,9 @@ const normalizeTag = (tag) =>
     ? '<!---->'
     : tag
         .replace(/=\s*'([^']*)'/g, '="$1"')
-        .replace(TEXT_ATTRIBUTE, '$1=""')
+        .replace(TEXT_ATTRIBUTE, (match, name, value) =>
+          unquote(value).trim() === '' ? `${name}=""` : `${name}="*"`,
+        )
         .replace(/("[^"]*")|\s+/g, (match, quoted) => quoted ?? ' ');
 
 function htmlTokens(raw) {
@@ -218,7 +224,8 @@ export function validate(source, translated, code) {
   }
   const script = LANGUAGES[code]?.script;
   const words = proseWords(source);
-  if (script && translated.trim() === source.trim() && proseWords(source, false).length > 0) {
+  const sameWords = (a, b) => a.length === b.length && a.every((word, index) => word === b[index]);
+  if (script && proseWords(source, false).length > 0 && sameWords(words, proseWords(translated))) {
     problems.push('output is unchanged');
   }
   if (
