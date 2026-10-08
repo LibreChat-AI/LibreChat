@@ -221,7 +221,8 @@ function PromptsCommand({
           <Input
             ref={initInputRef}
             placeholder={localize('com_ui_command_usage_placeholder')}
-            className="bg-surface-tertiary-alt mb-1 h-auto w-full rounded-none border-0 p-2"
+            variant="embedded"
+            className="mb-1"
             autoComplete="off"
             value={searchValue}
             onKeyDown={(e) => {

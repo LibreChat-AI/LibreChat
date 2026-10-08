@@ -480,6 +480,7 @@ function Conversation({
             conversationId={conversationId ?? ''}
             labelId={pullRequestLabelId}
             onDescribed={setPullRequestDescribed}
+            rowRef={containerRef}
             selected={isActiveConvo || isPopoverActive}
           />
         </span>
