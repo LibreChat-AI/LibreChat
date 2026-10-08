@@ -37,19 +37,15 @@ describe('field variants', () => {
     render(<Input aria-label="name" variant="flush" />);
     const input = screen.getByLabelText('name');
     expect(input).toHaveClass(...FLUSH);
-    expect(input).not.toHaveClass('border', 'focus-visible:ring-2');
+    ['border', 'focus-visible:ring-2'].forEach((name) => expect(input).not.toHaveClass(name));
   });
 
   it('Input embedded merges to the same classes as the call site it replaces', () => {
     render(<Input aria-label="name" variant="embedded" />);
     const input = screen.getByLabelText('name');
     expect(input).toHaveClass(...EMBEDDED);
-    expect(input).not.toHaveClass(
-      'rounded-lg',
-      'border',
-      'px-3',
-      'bg-transparent',
-      'text-sm text-field-text',
+    ['rounded-lg', 'border', 'px-3', 'bg-transparent'].forEach((name) =>
+      expect(input).not.toHaveClass(name),
     );
   });
 
