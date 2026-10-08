@@ -9,9 +9,11 @@
    nearest themed root, so a field under a ring root nested in a border root is
    reset again, and a browser without style queries keeps the default reset. A field marked
    `aria-invalid` keeps its destructive edge through both border resets but still
-   loses the ring and outline on pointer focus. */
-html[data-input-modality='pointer'] .lc-field:focus,
-html[data-input-modality='pointer'] .lc-field:focus-visible {
+   loses the ring and outline on pointer focus. The framed and flush editors
+   (`lc-own-focus`) take the same ring and outline reset, so they behave alike
+   without the SPA's global textarea rules. */
+html[data-input-modality='pointer'] :is(.lc-field, .lc-own-focus):focus,
+html[data-input-modality='pointer'] :is(.lc-field, .lc-own-focus):focus-visible {
   box-shadow: none;
   outline: none;
 }
@@ -33,9 +35,10 @@ html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-v
    The app's dark-mode `:focus-visible` outline is unlayered, so it outranks the field's own
    `focus-visible:outline-hidden` utility and would add a second indicator; `:is(:root *)` keeps
    this rule's weight above it. Forced colors drop the edge color and the ring, so there the
-   outline stays as the only indicator. */
+   outline stays as the only indicator, and the contrast modes enlarge the outline to 3px on
+   purpose, so `html.high-contrast` keeps it. */
 @media not (forced-colors: active) {
-  .lc-field:is(:root *):focus-visible {
+  html:not(.high-contrast) .lc-field:focus-visible {
     outline: none;
   }
 }
@@ -69,9 +72,10 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
 /* A control outside `.lc-field` that carries `lc-own-focus` (the framed and flush editors) has
    its own ring, or a frame that owns the indicator, so the app's global focus outline for
    non-`.lc-field` textareas would add a second one. `:root` lifts this above that rule's
-   weight; forced colors keep the outline as the only indicator. */
+   weight; forced colors keep the outline as the only indicator, and the contrast modes keep
+   their enlarged outline. */
 @media not (forced-colors: active) {
-  html:root textarea.lc-own-focus:focus-visible {
+  html:root:not(.high-contrast) textarea.lc-own-focus:focus-visible {
     outline: none !important;
   }
 }

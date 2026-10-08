@@ -515,6 +515,7 @@ for (const theme of THEMES) {
               ring: rings.length > 0,
               outline: style.outlineStyle !== 'none' && style.outlineColor !== 'rgba(0, 0, 0, 0)',
               ink: style.color,
+              outlineWidth: style.outlineWidth,
             };
           },
           [id, modality] as const,
@@ -545,6 +546,18 @@ for (const theme of THEMES) {
         if (cell.pointerEdge === 'keep') {
           expect.soft(pointer.edge, `${label} edge on pointer focus`).toBe(rest.edge);
         }
+
+        await page.evaluate(() => document.documentElement.classList.add('high-contrast'));
+        const contrastKeyboard = await read(cell.id, 'keyboard');
+        expect
+          .soft(
+            [contrastKeyboard.outline, contrastKeyboard.outlineWidth],
+            `${label} high-contrast keyboard outline`,
+          )
+          .toEqual([true, '3px']);
+        const contrastPointer = await read(cell.id, 'pointer');
+        expect.soft(contrastPointer.outline, `${label} high-contrast pointer outline`).toBe(false);
+        await page.evaluate(() => document.documentElement.classList.remove('high-contrast'));
 
         if (!cell.bordered) {
           continue;
@@ -587,6 +600,45 @@ for (const theme of THEMES) {
         }, id);
         expect(outline, `${theme} ${id} outline under forced colors`).not.toBe('none');
       }
+    });
+
+    test(`the framed and flush editors clear their ring on pointer focus with only the package stylesheet @scenario:field-variant-matrix`, async ({
+      page,
+    }) => {
+      const { TextareaAutosize } = await primitives();
+      await page.goto('about:blank');
+      await page.setContent(
+        `<!doctype html><html><body>${render(
+          h(
+            'div',
+            null,
+            h(TextareaAutosize, { 'aria-label': 'framed', id: 'framed', variant: 'framed' }),
+            h(TextareaAutosize, { 'aria-label': 'plain', id: 'plain', variant: 'default' }),
+          ),
+        )}</body></html>`,
+      );
+      await page.addStyleTag({ path: 'packages/client/dist/style.css' });
+      // The published stylesheet carries no Tailwind utilities, so a stand-in rule at the weight of
+      // `focus-visible:ring-2` draws the ring that the package's pointer reset has to clear.
+      await page.addStyleTag({
+        content: '.lc-own-focus:focus-visible { box-shadow: 0 0 0 2px rgb(0 0 255); }',
+      });
+      const ring = (id: string, modality: string) =>
+        page.evaluate(
+          async ([target, mode]) => {
+            document.documentElement.setAttribute('data-input-modality', mode);
+            (document.getElementById(target) as HTMLElement).focus();
+            await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+            const style = getComputedStyle(document.getElementById(target) as HTMLElement);
+            return [
+              style.boxShadow !== 'none' && !/0px 0px 0px 0px/.test(style.boxShadow),
+              style.outlineStyle,
+            ];
+          },
+          [id, modality] as const,
+        );
+      expect((await ring('framed', 'keyboard'))[0]).toBe(true);
+      expect(await ring('framed', 'pointer')).toEqual([false, 'none']);
     });
   });
 }
