@@ -22,7 +22,7 @@ const chipVariants: (props?: ChipVariantProps & ClassProp) => string = cva(
         success: 'border-status-success-border bg-status-success-subtle text-status-success',
         warning: 'border-status-warning-border bg-status-warning-subtle text-status-warning',
         error: 'border-status-error-border bg-status-error-subtle text-status-error',
-        merged: 'border-brand-purple/40 bg-brand-purple/10 text-brand-purple',
+        merged: 'border-brand-purple/40 bg-transparent text-brand-purple',
       },
       size: {
         sm: 'min-h-6 px-2 py-0.5',
