@@ -311,6 +311,16 @@ for (const theme of THEMES) {
       expect((await styleOf(page, '#current', ['background-color']))['background-color']).toBe(
         navSelected,
       );
+
+      await page.mouse.move(0, 400);
+      await page.evaluate(() => document.documentElement.classList.add('high-contrast'));
+      const perimeter = ['outline-style', 'outline-width', 'outline-offset'];
+      expect(await styleOf(page, '#current', perimeter)).toEqual({
+        'outline-style': 'solid',
+        'outline-width': '3px',
+        'outline-offset': '-3px',
+      });
+      expect((await styleOf(page, '#rest', ['outline-style']))['outline-style']).toBe('none');
     });
 
     test(`the floating label chip paints the field fill when the theme fills fields @scenario:floating-label-chip-field-fill`, async ({
@@ -461,6 +471,7 @@ for (const theme of THEMES) {
         embedded: await probeStyle(page, 'bg-surface-tertiary-alt', 'background-color'),
       };
       const destructive = await probeStyle(page, 'border-border-destructive', 'border-top-color');
+      const primaryInk = await probeStyle(page, 'text-text-primary', 'color');
       const resetEdge =
         theme === 'clickhouse'
           ? await page.evaluate(() => {
@@ -503,6 +514,7 @@ for (const theme of THEMES) {
               edge: style.borderTopColor,
               ring: rings.length > 0,
               outline: style.outlineStyle !== 'none' && style.outlineColor !== 'rgba(0, 0, 0, 0)',
+              ink: style.color,
             };
           },
           [id, modality] as const,
@@ -511,6 +523,9 @@ for (const theme of THEMES) {
       for (const cell of cells) {
         const label = `${theme} ${cell.id}`;
         const rest = await read(cell.id, null);
+        if (cell.fill === 'embedded') {
+          expect.soft(rest.ink, `${label} ink`).toBe(primaryInk);
+        }
         expect.soft(rest.fill, `${label} fill`).toBe(fills[cell.fill]);
         expect.soft(rest.width !== '0px', `${label} draws an edge`).toBe(cell.bordered);
 

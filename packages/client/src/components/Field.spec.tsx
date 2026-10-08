@@ -17,6 +17,8 @@ const EMBEDDED = [
   'p-2',
   'rounded-none',
   'text-sm',
+  'text-text-primary',
+  'theme-field-fill:bg-surface-tertiary-alt',
 ];
 const FRAMED = [
   'lc-own-focus',

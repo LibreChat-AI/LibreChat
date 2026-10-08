@@ -38,4 +38,4 @@ export const fieldInvalid: string =
 
 /** A field set into a list or popover edge to edge, filling its row and leaving the frame to the host. */
 export const fieldEmbedded: string =
-  'bg-surface-tertiary-alt theme-field-fill:bg-surface-tertiary-alt theme-field-fill:disabled:hover:bg-surface-tertiary-alt h-auto w-full border-0 p-2 rounded-none text-sm';
+  'bg-surface-tertiary-alt theme-field-fill:bg-surface-tertiary-alt theme-field-fill:disabled:hover:bg-surface-tertiary-alt h-auto w-full border-0 p-2 rounded-none text-sm text-text-primary';
