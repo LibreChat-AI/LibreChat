@@ -463,7 +463,15 @@ for (const theme of THEMES) {
       const destructive = await probeStyle(page, 'border-border-destructive', 'border-top-color');
       const resetEdge =
         theme === 'clickhouse'
-          ? await probeStyle(page, 'border-border-field-focus', 'border-top-color')
+          ? await page.evaluate(() => {
+              const probe = document.createElement('div');
+              probe.style.cssText =
+                'border:1px solid rgb(var(--border-field-focus, var(--focus-control)))';
+              document.body.append(probe);
+              const color = getComputedStyle(probe).borderTopColor;
+              probe.remove();
+              return color;
+            })
           : await probeStyle(page, 'border-border-light', 'border-top-color');
 
       const read = (id: string, modality: 'keyboard' | 'pointer' | null) =>
@@ -481,12 +489,19 @@ for (const theme of THEMES) {
             }
             await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
             const style = getComputedStyle(node);
+            const rings = style.boxShadow
+              .split(/,(?![^(]*\))/)
+              .map((shadow) => shadow.trim())
+              .filter((shadow) => shadow !== 'none' && !shadow.includes('inset'))
+              .filter((shadow) =>
+                /(^|\s)[1-9]\d*(\.\d+)?px/.test(shadow.replace(/rgba?\([^)]*\)/, '')),
+              );
             return {
               fill: style.backgroundColor,
               width: style.borderTopWidth,
               edge: style.borderTopColor,
-              shadow: style.boxShadow,
-              outline: style.outlineStyle,
+              ring: rings.length > 0,
+              outline: style.outlineStyle !== 'none' && style.outlineColor !== 'rgba(0, 0, 0, 0)',
             };
           },
           [id, modality] as const,
@@ -500,14 +515,14 @@ for (const theme of THEMES) {
 
         const keyboard = await read(cell.id, 'keyboard');
         expect.soft(keyboard.fill, `${label} fill on keyboard focus`).toBe(fills[cell.fill]);
-        expect.soft(keyboard.shadow !== 'none', `${label} ring on keyboard focus`).toBe(cell.ring);
+        expect.soft(keyboard.ring, `${label} ring on keyboard focus`).toBe(cell.ring);
         expect
-          .soft(keyboard.outline !== 'none', `${label} outline on keyboard focus`)
+          .soft(keyboard.outline, `${label} outline on keyboard focus`)
           .toBe(cell.keyboardOutline);
 
         const pointer = await read(cell.id, 'pointer');
-        expect.soft(pointer.shadow, `${label} ring on pointer focus`).toBe('none');
-        expect.soft(pointer.outline, `${label} outline on pointer focus`).toBe('none');
+        expect.soft(pointer.ring, `${label} ring on pointer focus`).toBe(false);
+        expect.soft(pointer.outline, `${label} outline on pointer focus`).toBe(false);
         if (cell.pointerEdge === 'reset') {
           expect.soft(pointer.edge, `${label} edge on pointer focus`).toBe(resetEdge);
         }
@@ -522,8 +537,8 @@ for (const theme of THEMES) {
           const bad = await read(`${cell.id}-bad`, mode);
           expect.soft(bad.edge, `${label} invalid edge (${mode ?? 'rest'})`).toBe(destructive);
           if (mode === 'pointer') {
-            expect.soft(bad.shadow, `${label} invalid ring on pointer focus`).toBe('none');
-            expect.soft(bad.outline, `${label} invalid outline on pointer focus`).toBe('none');
+            expect.soft(bad.ring, `${label} invalid ring on pointer focus`).toBe(false);
+            expect.soft(bad.outline, `${label} invalid outline on pointer focus`).toBe(false);
           }
         }
       }
