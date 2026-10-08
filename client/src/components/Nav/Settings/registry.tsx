@@ -44,6 +44,7 @@ import { ForkSettings } from '../SettingsTabs/Chat/ForkSettings';
 import ChatDirection from '../SettingsTabs/Chat/ChatDirection';
 import { DeleteCache } from '../SettingsTabs/Data/DeleteCache';
 import { ManageFiles } from '../SettingsTabs/Data/ManageFiles';
+import { inlineVisualsAtom } from '~/components/Visuals/store';
 import { smoothStreamingAtom } from '~/store/smoothStreaming';
 import ChangeEmail from '../SettingsTabs/Account/ChangeEmail';
 import { RevokeKeys } from '../SettingsTabs/Data/RevokeKeys';
@@ -437,6 +438,20 @@ export const registry: SettingEntry[] = [
       stateAtom: showThinkingAtom,
       localizationKey: 'com_nav_show_thinking',
       switchId: 'showThinking',
+    }),
+  },
+  {
+    id: 'inlineVisuals',
+    tab: CHAT,
+    section: 'messages',
+    labelKey: 'com_nav_inline_visuals',
+    keywords: ['charts', 'diagrams', 'visuals', 'interactive', 'graphs'],
+    show: (ctx) => ctx.visualsAllowed,
+    Component: toggleControl({
+      stateAtom: inlineVisualsAtom,
+      localizationKey: 'com_nav_inline_visuals',
+      switchId: 'inlineVisuals',
+      hoverCardText: 'com_nav_info_inline_visuals',
     }),
   },
   {

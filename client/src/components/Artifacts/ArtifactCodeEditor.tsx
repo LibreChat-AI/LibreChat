@@ -64,6 +64,7 @@ const TYPE_MAP: Record<string, string> = {
   'text/md': 'markdown',
   'text/plain': 'plaintext',
   'application/vnd.mermaid': 'markdown',
+  'application/vnd.librechat.visual': 'html',
 };
 
 const HIGH_CONTRAST_LIGHT_EDITOR_THEME = 'librechat-high-contrast-light';

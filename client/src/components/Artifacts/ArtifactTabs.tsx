@@ -4,10 +4,12 @@ import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
 import type { editor } from 'monaco-editor';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
+import type { Artifact } from '~/common/artifacts';
+import { MERMAID_ARTIFACT_TYPE, VISUAL_ARTIFACT_TYPE } from '~/common/artifacts';
 import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
-import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
 import { useArtifactCode } from '~/Providers/EditorContext';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
+import VisualFrame from '~/components/Visuals/Frame';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
 
@@ -84,7 +86,41 @@ function MermaidArtifactTabs({
   );
 }
 
+/** Inline visuals keep their own sandboxed frame in the panel; the source is read-only. */
+function VisualArtifactTabs({ artifact }: Pick<ArtifactTabsProps, 'artifact'>) {
+  const localize = useLocalize();
+  const monacoRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+
+  return (
+    <div className="flex h-full w-full flex-col">
+      <Tabs.Content
+        value="code"
+        id="artifacts-code"
+        className="h-full w-full grow overflow-auto"
+        tabIndex={-1}
+      >
+        <ArtifactCodeEditor artifact={artifact} monacoRef={monacoRef} readOnly />
+      </Tabs.Content>
+      <Tabs.Content
+        value="preview"
+        className="min-h-0 w-full flex-1 overflow-auto p-4"
+        tabIndex={-1}
+      >
+        <VisualFrame
+          key={artifact.id}
+          html={artifact.content ?? ''}
+          title={artifact.title ?? localize('com_ui_visual')}
+        />
+      </Tabs.Content>
+    </div>
+  );
+}
+
 export default function ArtifactTabs(props: ArtifactTabsProps) {
+  if (props.artifact.type === VISUAL_ARTIFACT_TYPE) {
+    return <VisualArtifactTabs artifact={props.artifact} />;
+  }
+
   if (props.artifact.type === MERMAID_ARTIFACT_TYPE) {
     return (
       <MermaidArtifactTabs

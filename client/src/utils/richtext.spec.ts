@@ -156,6 +156,15 @@ describe('markdownToHtml', () => {
     );
   });
 
+  it('pastes a visual as its title, then any prose written after its fence', () => {
+    expect(markdownToHtml(':::visual{title="Revenue"}\n```html\n<p>x</p>\n```\n:::')).toBe(
+      '<p>Revenue</p>',
+    );
+    expect(markdownToHtml(':::visual{title="Revenue"}\n```html\n<p>x</p>\n```\n\nAfter.')).toBe(
+      '<p>Revenue</p><p>After.</p>',
+    );
+  });
+
   it('falls back to the button default for an untitled artifact', () => {
     expect(markdownToHtml('::artifact{identifier="a" type="x"}')).toBe('<p>untitled</p>');
   });

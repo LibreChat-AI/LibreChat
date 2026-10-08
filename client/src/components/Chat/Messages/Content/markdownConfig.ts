@@ -16,6 +16,7 @@ import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/C
 import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
 import { code, a, p, img, table } from './MarkdownComponents';
+import { Visual, visualPlugin } from '~/components/Visuals';
 import { unicodeCitation } from '~/components/Web';
 
 /**
@@ -42,6 +43,7 @@ export const getRemarkPlugins = (latexParsing = true): PluggableList => [
   remarkGfm,
   remarkDirective,
   artifactPlugin,
+  visualPlugin,
   [remarkMath, { singleDollarTextMath: false }],
   ...(latexParsing ? [remarkSingleDollarMath] : []),
   unicodeCitation,
@@ -60,6 +62,7 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   img,
   table,
   artifact: Artifact,
+  visual: Visual,
   citation: Citation,
   'highlighted-text': HighlightedText,
   'composite-citation': CompositeCitation,

@@ -22,6 +22,11 @@ describe('buildPreLoginInterface', () => {
     });
   });
 
+  it('carries only a disabled visuals flag', () => {
+    expect(buildPreLoginInterface({ visuals: false })).toEqual({ visuals: false });
+    expect(buildPreLoginInterface({ visuals: true })).toBeUndefined();
+  });
+
   it('carries a bundled theme name', () => {
     expect(buildPreLoginInterface({ theme: 'clickhouse', modelSelect: true })).toEqual({
       theme: 'clickhouse',

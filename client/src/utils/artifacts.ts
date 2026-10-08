@@ -16,7 +16,7 @@ import type { TStartupConfig, TAttachment, TFile } from 'librechat-data-provider
 import type { PhrasingContent } from 'mdast';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { Artifact } from '~/common';
-import { MERMAID_ARTIFACT_TYPE } from '~/common/artifacts';
+import { MERMAID_ARTIFACT_TYPE, VISUAL_ARTIFACT_TYPE } from '~/common/artifacts';
 import { getCodeBlockFilename } from './downloadFile';
 
 const artifactFilename = {
@@ -488,6 +488,16 @@ const PREVIEW_ONLY_ARTIFACT_TYPES: ReadonlySet<ToolArtifactType> = new Set([
   TOOL_ARTIFACT_TYPES.SPREADSHEET,
   TOOL_ARTIFACT_TYPES.PRESENTATION,
 ]);
+
+/** Types the panel previews with its own renderer, so no Sandpack client sits behind them. */
+const NON_SANDPACK_PREVIEW_TYPES: ReadonlySet<string> = new Set([
+  MERMAID_ARTIFACT_TYPE,
+  VISUAL_ARTIFACT_TYPE,
+]);
+
+export function hasSandpackPreview(type: string | null | undefined): boolean {
+  return type == null || !NON_SANDPACK_PREVIEW_TYPES.has(type);
+}
 
 export function isPreviewOnlyArtifact(type: string | null | undefined): boolean {
   if (type == null) {

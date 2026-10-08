@@ -43,6 +43,7 @@ const user = require('./user');
 const mcp = require('./mcp');
 const rum = require('./rum');
 const insights = require('./insights');
+const visuals = require('./visuals');
 
 module.exports = {
   insights,
@@ -90,4 +91,5 @@ module.exports = {
   categories,
   staticRoute,
   accessPermissions,
+  visuals,
 };

@@ -61,6 +61,7 @@ import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
+import { inlineVisualsAtom } from '~/components/Visuals/store';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { activeUsageResponseIdFamily } from '~/store/usage';
 import { revealedQueuedTurnFamily } from '~/store/steer';
@@ -478,6 +479,8 @@ export default function useChatFunctions({
     const ephemeralAgent = getEphemeralAgent(conversationId ?? Constants.NEW_CONVO);
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]);
     const startupConfig = queryClient.getQueryData<TStartupConfig>(startupConfigKey(true));
+    const visuals =
+      startupConfig?.interface?.visuals !== false && jotaiStore.get(inlineVisualsAtom);
     const endpointType = getEndpointField(endpointsConfig, endpoint, 'type');
     const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, endpoint);
     /**
@@ -921,6 +924,7 @@ export default function useChatFunctions({
       codeApprovalMode,
       codeEnvironmentMode,
       codeWorkspaces,
+      visuals,
       clientRequestId,
       recoverySteerId: overrideRecoverySteerId,
       expectedPredecessorCreatedAt: overrideExpectedPredecessorCreatedAt,

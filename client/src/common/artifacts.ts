@@ -6,6 +6,9 @@ export interface CodeBlock {
 
 export const MERMAID_ARTIFACT_TYPE = 'application/vnd.mermaid' as const;
 
+/** An inline visual opened in the panel; previewed in its own sandboxed frame, not Sandpack. */
+export const VISUAL_ARTIFACT_TYPE = 'application/vnd.librechat.visual' as const;
+
 /**
  * Original-file download metadata for artifacts backed by a real
  * code-interpreter file (e.g. an office document whose panel preview is

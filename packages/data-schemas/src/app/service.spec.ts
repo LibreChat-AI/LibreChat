@@ -4,7 +4,12 @@ import {
   defaultAssistantsVersion,
 } from 'librechat-data-provider';
 import type { DeepPartial, TCustomConfig } from 'librechat-data-provider';
-import { AppService, loadFiltersConfig, loadSummarizationConfig } from './service';
+import {
+  AppService,
+  loadFiltersConfig,
+  loadVisualsConfig,
+  loadSummarizationConfig,
+} from './service';
 import logger from '~/config/winston';
 
 jest.mock('~/config/winston', () => ({
@@ -340,6 +345,20 @@ describe('AppService conversation list limits', () => {
       config: { conversationList: { maxEndpointFilters: 10 } } as DeepPartial<TCustomConfig>,
     });
     expect(result.conversationList).toEqual({ maxEndpointFilters: 10, maxEndpointNameLength: 128 });
+  });
+});
+
+describe('loadVisualsConfig', () => {
+  it('fails closed on an invalid source list, allowing no origins', () => {
+    expect(loadVisualsConfig({ visuals: { sources: ['cdn.example.com'] } } as never)).toEqual({
+      sources: [],
+    });
+  });
+
+  it('keeps a valid list', () => {
+    expect(
+      loadVisualsConfig({ visuals: { sources: ['https://cdn.example.com'] } } as never),
+    ).toEqual({ sources: ['https://cdn.example.com'] });
   });
 });
 

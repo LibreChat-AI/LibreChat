@@ -82,6 +82,7 @@ export * from './assistants';
 export * from './actions';
 /* Prompts */
 export * from './prompts';
+export * from './visuals';
 /* Projects */
 export * from './projects';
 /* Conversations */
