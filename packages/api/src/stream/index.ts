@@ -72,7 +72,6 @@ export type { StreamServicesConfig, StreamServices } from './createStreamService
 export { filterPersistableAbortContent, hasPersistableAbortContent } from './abortContent';
 export { getGenerationElapsedMs } from './elapsed';
 export {
-  keepSseStreamAlive,
   SSE_KEEPALIVE_FRAME,
   startSseKeepalive,
   loadStreamKeepaliveMs,

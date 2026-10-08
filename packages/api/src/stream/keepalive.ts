@@ -25,9 +25,8 @@ export function resolveStreamKeepaliveMs(agentsConfig: KeepaliveAgentsConfig | u
 }
 
 /**
- * Resolves the interval from the request's config, or loads it when absent. Meant to be
- * started alongside the job lookup rather than before it, so it adds no serial read to a
- * stream attachment. A failed load keeps the default instead of failing the stream.
+ * Resolves the interval from the request's config, or loads it when absent. A failed load
+ * keeps the default instead of failing the stream, and logs only safe error metadata.
  */
 export async function loadStreamKeepaliveMs(
   config: StreamKeepaliveConfig | undefined,
@@ -48,52 +47,65 @@ export async function loadStreamKeepaliveMs(
   }
 }
 
+const isClosed = (res: SseKeepaliveResponse): boolean =>
+  res.writableEnded || res.destroyed === true;
+
 /**
- * Writes a comment frame on a fixed interval until the response closes, so a
- * proxy idle timeout (Cloudflare drops a response after 100 s without bytes)
- * cannot cut a stream that is quiet while a long tool call runs.
- * Returns a stop function; `intervalMs <= 0` disables it.
+ * Writes a comment frame whenever the response has been quiet for the interval, until it
+ * closes, so a proxy idle timeout (Cloudflare drops a response after 100 s without bytes)
+ * cannot cut a stream that is silent while a long tool call runs.
+ *
+ * The interval may be a promise: the default applies until it resolves, so neither the
+ * caller nor the first frame waits on a config read. A late interval counts the time
+ * already waited, so switching never pushes the next frame past its deadline. `0` stops it.
  */
-export function startSseKeepalive(res: SseKeepaliveResponse, intervalMs: number): () => void {
-  if (!(intervalMs > 0) || res.writableEnded || res.destroyed === true) {
+export function startSseKeepalive(
+  res: SseKeepaliveResponse,
+  intervalMs: number | Promise<number>,
+): () => void {
+  if (isClosed(res)) {
     return () => undefined;
   }
-  const timer = setInterval(() => {
-    if (res.writableEnded || res.destroyed === true) {
+  let currentMs =
+    typeof intervalMs === 'number' ? intervalMs : DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS;
+  let lastFrameAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+
+  const stop = (): void => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+  const schedule = (): void => {
+    clearTimeout(timer);
+    if (stopped || !(currentMs > 0)) {
+      return;
+    }
+    const delay = Math.max(0, currentMs - (Date.now() - lastFrameAt));
+    timer = setTimeout(beat, delay);
+    timer.unref?.();
+  };
+  const beat = (): void => {
+    if (isClosed(res)) {
       stop();
       return;
     }
     res.write(SSE_KEEPALIVE_FRAME);
     res.flush?.();
-  }, intervalMs);
-  timer.unref?.();
-  function stop(): void {
-    clearInterval(timer);
-  }
-  res.once('close', stop);
-  return stop;
-}
-
-/**
- * Starts the keepalive at the default interval right away, then switches to the
- * configured one once it resolves. Neither the subscription nor the first frame waits on
- * the config read, so a slow or hung config load cannot stall the stream.
- */
-export function keepSseStreamAlive(
-  res: SseKeepaliveResponse,
-  intervalMs: Promise<number>,
-): () => void {
-  let stopped = false;
-  let stopCurrent = startSseKeepalive(res, DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
-  void intervalMs.then((resolvedMs) => {
-    if (stopped || resolvedMs === DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS) {
-      return;
-    }
-    stopCurrent();
-    stopCurrent = startSseKeepalive(res, resolvedMs);
-  });
-  return () => {
-    stopped = true;
-    stopCurrent();
+    lastFrameAt = Date.now();
+    schedule();
   };
+
+  res.once('close', stop);
+  schedule();
+  if (typeof intervalMs !== 'number') {
+    void intervalMs.then(
+      (resolvedMs) => {
+        currentMs = resolvedMs;
+        schedule();
+      },
+      () => undefined,
+    );
+  }
+  return stop;
 }

@@ -12,6 +12,18 @@ jest.mock('~/server/services/Config', () => ({
 
 const configMiddleware = require('./app');
 
+describe('loadPlainAppConfig', () => {
+  it('reads the principal config without runtime augmentation', async () => {
+    mockGetAppConfig.mockResolvedValue({ endpoints: {} });
+
+    await configMiddleware.loadPlainAppConfig({ user: { id: 'user-1', role: 'USER' } });
+
+    expect(mockGetAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-1', role: 'USER', skipRuntimeAugmentation: true }),
+    );
+  });
+});
+
 describe('configMiddleware logging', () => {
   beforeEach(() => {
     jest.clearAllMocks();

@@ -3,7 +3,6 @@ import { logger } from '@librechat/data-schemas';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
 import type { SseKeepaliveResponse } from '../keepalive';
 import {
-  keepSseStreamAlive,
   SSE_KEEPALIVE_FRAME,
   startSseKeepalive,
   loadStreamKeepaliveMs,
@@ -129,7 +128,7 @@ describe('loadStreamKeepaliveMs', () => {
   });
 });
 
-describe('keepSseStreamAlive', () => {
+describe('startSseKeepalive with a pending interval', () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -140,7 +139,7 @@ describe('keepSseStreamAlive', () => {
 
   it('keeps the stream alive at the default interval while the interval is unresolved', () => {
     const res = new FakeResponse();
-    keepSseStreamAlive(res, new Promise<number>(() => undefined));
+    startSseKeepalive(res, new Promise<number>(() => undefined));
 
     jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS);
 
@@ -149,7 +148,7 @@ describe('keepSseStreamAlive', () => {
 
   it('switches to the resolved interval once it is known', async () => {
     const res = new FakeResponse();
-    keepSseStreamAlive(res, Promise.resolve(1_000));
+    startSseKeepalive(res, Promise.resolve(1_000));
     await Promise.resolve();
 
     jest.advanceTimersByTime(3_500);
@@ -157,9 +156,27 @@ describe('keepSseStreamAlive', () => {
     expect(res.writes).toHaveLength(3);
   });
 
+  it('counts the time already waited when a longer interval resolves', async () => {
+    const res = new FakeResponse();
+    let resolveInterval: (ms: number) => void = () => undefined;
+    startSseKeepalive(
+      res,
+      new Promise<number>((resolve) => {
+        resolveInterval = resolve;
+      }),
+    );
+
+    jest.advanceTimersByTime(20_000);
+    resolveInterval(50_000);
+    await Promise.resolve();
+    jest.advanceTimersByTime(30_000);
+
+    expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME]);
+  });
+
   it('stops when the resolved interval disables the keepalive', async () => {
     const res = new FakeResponse();
-    keepSseStreamAlive(res, Promise.resolve(0));
+    startSseKeepalive(res, Promise.resolve(0));
     await Promise.resolve();
 
     jest.advanceTimersByTime(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS * 3);

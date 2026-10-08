@@ -29,7 +29,7 @@ const {
   isConfirmedGenerationRetry,
   generationRetryProbeLimiter,
   generationRetryLimiter,
-  keepSseStreamAlive,
+  startSseKeepalive,
   loadStreamKeepaliveMs,
 } = require('@librechat/api');
 const { createSseStreamTelemetry } = require('@librechat/api/telemetry');
@@ -42,6 +42,7 @@ const {
   messageIpLimiter,
   configMiddleware,
   messageUserLimiter,
+  loadPlainAppConfig,
 } = require('~/server/middleware');
 const SteerController = require('~/server/controllers/agents/steer');
 const {
@@ -218,13 +219,6 @@ router.get('/chat/stream/:streamId', async (req, res) => {
     result?.unsubscribe();
   });
 
-  const keepaliveMs = loadStreamKeepaliveMs(
-    req.config,
-    () =>
-      new Promise((resolve, reject) =>
-        configMiddleware(req, res, (error) => (error ? reject(error) : resolve(req.config))),
-      ),
-  );
   const job = await GenerationJobManager.getJob(streamId);
   if (attachmentAbortController.signal.aborted) {
     return;
@@ -295,7 +289,12 @@ router.get('/chat/stream/:streamId', async (req, res) => {
   res.setHeader(GENERATION_PROTOCOL_HEADER, String(generationProtocolVersion));
   res.flushHeaders();
   streamTelemetry.recordHeadersFlushed();
-  keepSseStreamAlive(res, keepaliveMs);
+  /** Started only for an authorized attachment, and never awaited: the keepalive runs at
+   * the default interval until the narrow config read resolves. */
+  startSseKeepalive(
+    res,
+    loadStreamKeepaliveMs(req.config, () => loadPlainAppConfig(req)),
+  );
 
   logger.debug(`[AgentStream] Client subscribed to ${streamId}, resume: ${isResume}`);
 

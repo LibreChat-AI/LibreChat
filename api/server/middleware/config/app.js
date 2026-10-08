@@ -43,5 +43,11 @@ const strictConfigMiddleware = async (req, res, next) => {
   }
 };
 
+/** The principal's config without runtime augmentation, for reads that need only YAML
+ * settings (for example the stream keepalive interval) on a hot path. */
+const loadPlainAppConfig = (req) =>
+  getAppConfig({ ...getAppConfigOptionsFromUser(req.user), skipRuntimeAugmentation: true });
+
 module.exports = configMiddleware;
 module.exports.strictConfigMiddleware = strictConfigMiddleware;
+module.exports.loadPlainAppConfig = loadPlainAppConfig;

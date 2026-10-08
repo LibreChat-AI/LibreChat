@@ -17,7 +17,7 @@ const mockGenerationJobManager = {
 const mockCaptureAgentCheckpointGeneration = jest.fn();
 const mockDeleteAgentCheckpoint = jest.fn();
 const mockSaveMessage = jest.fn();
-let mockConfigMiddleware = (_req, _res, next) => next();
+const mockLoadPlainAppConfig = jest.fn().mockResolvedValue({});
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -54,7 +54,8 @@ jest.mock('~/server/middleware', () => ({
   },
   moderateText: (req, res, next) => next(),
   messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => mockConfigMiddleware(req, res, next),
+  configMiddleware: (req, res, next) => next(),
+  loadPlainAppConfig: (...args) => mockLoadPlainAppConfig(...args),
   messageUserLimiter: (req, res, next) => next(),
 }));
 
@@ -430,37 +431,32 @@ describe('SSE stream tenant isolation', () => {
       }
     });
 
-    it('looks up the job while the app config is still loading', async () => {
-      let releaseConfig;
-      const configGate = new Promise((resolve) => {
-        releaseConfig = resolve;
-      });
-      mockConfigMiddleware = (_req, _res, next) => {
-        configGate.then(() => next());
-      };
+    it('does not load the app config for a stream it refuses', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(null);
 
-      try {
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      const res = await request(app).get('/agents/chat/stream/stream-123');
 
-        expect(mockGenerationJobManager.getJob).toHaveBeenCalledWith('stream-123');
-        releaseConfig();
-        await pending;
-      } finally {
-        releaseConfig();
-        mockConfigMiddleware = (_req, _res, next) => next();
-      }
+      expect(res.status).toBe(404);
+      expect(mockLoadPlainAppConfig).not.toHaveBeenCalled();
     });
 
-    it('keeps the default keepalive when the config middleware reports an error', async () => {
+    it('reads the keepalive interval without runtime config augmentation', async () => {
+      mockSubscribeSuccess();
+      mockGenerationJobManager.getJob.mockResolvedValue({
+        metadata: { userId: 'user-123' },
+        status: 'running',
+        createdAt: 1000,
+      });
+
+      const res = await request(app).get('/agents/chat/stream/stream-123');
+
+      expect(res.status).toBe(200);
+      expect(mockLoadPlainAppConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the default keepalive when the config read fails', async () => {
       jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
-      mockConfigMiddleware = (req, _res, next) => {
-        req.config = { endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } };
-        next(new Error('config store unavailable'));
-      };
+      mockLoadPlainAppConfig.mockRejectedValueOnce(new Error('config store unavailable'));
       try {
         mockGenerationJobManager.getJob.mockResolvedValue({
           metadata: { userId: 'user-123' },
@@ -486,14 +482,13 @@ describe('SSE stream tenant isolation', () => {
 
         expect(res.text.startsWith(':\n\n')).toBe(true);
       } finally {
-        mockConfigMiddleware = (_req, _res, next) => next();
         jest.useRealTimers();
       }
     });
 
     it('subscribes and keeps the stream alive while the app config never loads', async () => {
       jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
-      mockConfigMiddleware = () => undefined;
+      mockLoadPlainAppConfig.mockReturnValueOnce(new Promise(() => undefined));
       try {
         mockGenerationJobManager.getJob.mockResolvedValue({
           metadata: { userId: 'user-123' },
@@ -520,7 +515,6 @@ describe('SSE stream tenant isolation', () => {
         const res = await pending;
         expect(res.text.startsWith(':\n\n')).toBe(true);
       } finally {
-        mockConfigMiddleware = (_req, _res, next) => next();
         jest.useRealTimers();
       }
     });
