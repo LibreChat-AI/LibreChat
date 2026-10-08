@@ -92,7 +92,8 @@ async function pool(items, worker) {
 const readIfExists = async (file) => readFile(file, 'utf8').catch(() => null);
 
 const source = await readFile(SOURCE, 'utf8');
-const chunks = splitChunks(source);
+const units = splitChunks(source);
+const chunks = units.map((unit) => unit.text);
 const stored = JSON.parse((await readIfExists(CACHE)) ?? '{}');
 const cache = { version: 1 };
 const outputs = {};
@@ -119,12 +120,13 @@ for (const code of langs) {
   await pool(pending, async ({ key, chunk }) => {
     next[key] = await translate(code, chunk);
   });
-  const body = chunks
-    .map((chunk) => {
-      if (isSwitcher(chunk)) return renderSwitcher(code, available);
-      return needsTranslation(chunk) ? next[hash(chunk)] : chunk;
+  const body = units
+    .map(({ text, joiner }, index) => {
+      const part = isSwitcher(text) ? renderSwitcher(code, available) : text;
+      const out = !isSwitcher(text) && needsTranslation(text) ? next[hash(text)] : part;
+      return index === 0 ? out : joiner + out;
     })
-    .join('\n\n');
+    .join('');
   const notice =
     '<!-- Generated from README.md by .github/workflows/readme-translate.yml. Do not edit by hand. -->';
   outputs[file] = `${notice}\n\n${body}\n`;

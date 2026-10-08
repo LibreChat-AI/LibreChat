@@ -42,6 +42,9 @@ jobs:
         with:
           node-version: '24.16.0'
 
+      - name: Install Translation Dependencies
+        run: npm ci --prefix scripts/readme --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
+
       - name: Test Translation Helpers
         run: node --test scripts/readme/lib.test.mjs
 
