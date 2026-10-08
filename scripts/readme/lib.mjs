@@ -92,13 +92,15 @@ function walk(node, visit) {
 }
 
 /** Words a reader sees: text, image alt, and alt, title and aria-label values, minus glossary terms. */
-function proseWords(markdown) {
+function proseWords(markdown, withAttributes = true) {
   const parts = [];
   walk(parse(markdown), (node) => {
     if (node.type === 'text') parts.push(node.value);
-    else if (node.type === 'image' && node.alt) parts.push(node.alt);
+    else if (node.type === 'image' && node.alt && withAttributes) parts.push(node.alt);
     else if (node.type === 'html') {
-      for (const match of node.value.matchAll(TEXT_ATTRIBUTE)) parts.push(unquote(match[2]));
+      if (withAttributes) {
+        for (const match of node.value.matchAll(TEXT_ATTRIBUTE)) parts.push(unquote(match[2]));
+      }
       parts.push(node.value.replace(HTML_PIECE, ' '));
     }
   });
@@ -144,9 +146,16 @@ function skeleton(markdown) {
     if (node.type === 'code') return push(`fence:${node.lang ?? ''}:${node.value}`);
     if (node.type === 'html') return htmlTokens(node.value).forEach(push);
     if (node.type === 'image') return push(`image:${node.url}`);
-    const detail = [node.depth, node.url, node.ordered, node.checked, node.start].filter(
-      (value) => value !== undefined && value !== null,
-    );
+    const detail = [
+      node.depth,
+      node.url,
+      node.ordered,
+      node.checked,
+      node.start,
+      node.identifier,
+      node.referenceType,
+      node.title ? 'titled' : undefined,
+    ].filter((value) => value !== undefined && value !== null);
     const tag = [node.type, ...detail].join(':');
     if (!node.children) return push(tag);
     push(`<${tag}>`);
@@ -175,8 +184,12 @@ export function validate(source, translated, code) {
   }
   const script = LANGUAGES[code]?.script;
   const words = proseWords(source);
+  if (script && proseWords(source, false).length > 0 && !script.test(translated)) {
+    problems.push(
+      'output is not in the target language (add intentional English terms to GLOSSARY)',
+    );
+  }
   if (script && words.length >= MIN_WORDS_FOR_CONTENT_CHECK) {
-    if (!script.test(translated)) problems.push('output is not in the target language');
     if (translated.length < source.length * MIN_LENGTH_RATIO) problems.push('output is truncated');
     const plain = lowerWords(words.map((word) => word.toLowerCase()));
     const kept = new Set(proseWords(translated).map((word) => word.toLowerCase()));
