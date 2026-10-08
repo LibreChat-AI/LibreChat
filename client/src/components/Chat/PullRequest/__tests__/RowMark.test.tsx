@@ -253,7 +253,7 @@ describe('PullRequestRowMark', () => {
     mockGetMany.mockResolvedValue(answer('convo-1', pr));
     renderMark({ selected: false });
     const dot = await screen.findByTestId('pull-request-ci-dot');
-    expect(dot).toHaveClass('bg-status-success', 'ring-surface-primary-alt');
+    expect(dot).toHaveClass('bg-status-success', 'ring-surface-sidebar');
     expect(screen.getByTestId('convo-pull-request').querySelector('svg')).toHaveClass(
       'text-status-success',
     );

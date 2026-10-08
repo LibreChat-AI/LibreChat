@@ -375,7 +375,7 @@ export default function SharedLinkButton({
                     ref={deleteButtonRef}
                     type="button"
                     onClick={() => setShowDeleteDialog(true)}
-                    variant="destructive"
+                    variant="destructive-soft"
                     size="icon"
                     className="size-9 sm:size-10"
                     aria-label={localize('com_ui_delete_link')}

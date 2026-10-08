@@ -14,6 +14,7 @@ import {
   themeColorTokens,
   validateThemeDefinition,
 } from './registry';
+import { describeResolvedTheme } from './utils/applyTheme';
 import { clickHouseTheme } from './themes/clickhouse';
 import { defaultTheme } from './themes/default';
 import { darkTheme } from './themes/dark';
@@ -505,6 +506,38 @@ describe('theme registry', () => {
     expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('20 21 22');
     expect(resolveTheme(theme, 'dark').colors['rgb-drawer-edge']).toBe('30 31 32');
     expect(explicit.colors['rgb-drawer-edge']).toBe('1 2 3');
+  });
+
+  it('draws the light drawer edge on the sidebar role when a theme sets it', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22', 'rgb-surface-sidebar': '40 41 42' };
+    const theme = {
+      version: 1 as const,
+      name: 'sidebar-drawer-edge',
+      modes: { light: { colors } },
+    };
+
+    expect(resolveTheme(theme, 'light').colors['rgb-drawer-edge']).toBe('40 41 42');
+  });
+
+  it('keeps the page canvas on the surface a theme repaints, unless it sets the role', () => {
+    const colors = { 'rgb-surface-primary-alt': '20 21 22' };
+    const theme = {
+      version: 1 as const,
+      name: 'legacy-page-canvas',
+      modes: { light: { colors }, dark: { colors } },
+    };
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-page-canvas',
+        modes: { dark: { colors: { ...colors, 'rgb-page-canvas': '1 2 3' } } },
+      },
+      'dark',
+    );
+
+    expect(resolveTheme(theme, 'dark').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(resolveTheme(theme, 'light').colors['rgb-page-canvas']).toBe('20 21 22');
+    expect(explicit.colors['rgb-page-canvas']).toBe('1 2 3');
   });
 
   it('inks the default avatar in the primary text a theme sets, unless it sets the role', () => {
@@ -1119,6 +1152,7 @@ describe('theme registry', () => {
     it('names the legacy surface of each layer outright', () => {
       const legacy: Record<string, [string, string]> = {
         'rgb-surface-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+        'rgb-page-canvas': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
         'rgb-surface-user-message': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
         'rgb-surface-card': ['rgb-surface-secondary', 'rgb-surface-secondary'],
         'rgb-surface-card-hover': ['rgb-surface-tertiary', 'rgb-surface-tertiary'],
@@ -1130,6 +1164,7 @@ describe('theme registry', () => {
         'rgb-border-menu': ['rgb-border-light', 'rgb-border-light'],
         'rgb-surface-composer': ['rgb-surface-chat', 'rgb-surface-chat'],
         'rgb-surface-search': ['rgb-surface-secondary', 'rgb-surface-secondary'],
+        'rgb-surface-sidebar': ['rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
       };
       expect(
         Object.fromEntries(layerRoleSources.map(([role, light, dark]) => [role, [light, dark]])),
@@ -1467,6 +1502,7 @@ describe('theme registry', () => {
       ['lg', 'textLg', 'leadingLg'],
       ['xl', 'textXl', 'leadingXl'],
       ['2xl', 'text2xl', 'leading2xl'],
+      ['3xl', 'text3xl', 'leading3xl'],
     ] as const;
     const declared = (name: string) =>
       new RegExp(`--${name}:\\s*([^;]+);`).exec(tailwind)?.[1].trim();
@@ -1477,13 +1513,30 @@ describe('theme registry', () => {
     });
   });
 
-  it('keeps every bundled theme’s largest themed step below the unthemed text-3xl', () => {
-    const rem = (value: string) => parseFloat(value);
-    [
+  /** A heading never shrinks as the scale rises, and the largest themed step stays at or below
+   *  Tailwind's unthemed `text-4xl` (2.25rem). */
+  it('keeps the type scale monotonic in every bundled theme', () => {
+    const sizes = [
+      'textXs',
+      'textSm',
+      'textBase',
+      'textLg',
+      'textXl',
+      'text2xl',
+      'text3xl',
+    ] as const;
+    const appearances = [
       defaultAppearance,
-      { ...defaultAppearance, ...clickHouseTheme.modes.light?.appearance },
-    ].forEach((appearance) => {
-      expect(rem(appearance.text2xl)).toBeLessThan(1.875);
+      ...Object.values(clickHouseTheme.modes).map((mode) => ({
+        ...defaultAppearance,
+        ...mode?.appearance,
+      })),
+    ];
+
+    appearances.forEach((appearance) => {
+      const rems = sizes.map((size) => parseFloat(appearance[size]));
+      expect(rems).toEqual([...rems].sort((a, b) => a - b));
+      expect(rems[rems.length - 1]).toBeLessThanOrEqual(2.25);
     });
   });
 
@@ -2146,4 +2199,42 @@ describe('theme registry', () => {
     expect(validateThemeDefinition(definition as ThemeDefinition)).toContain(expectedError);
     expect(() => resolveTheme(definition as ThemeDefinition, 'light')).toThrow(TypeError);
   });
+});
+
+describe('appearance families substitute through the emitted variables', () => {
+  const reference: ThemeDefinition = {
+    version: 1,
+    name: 'family-reference',
+    modes: {
+      light: {
+        appearance: {
+          radiusLg: '0.125rem',
+          fontFamily: 'Georgia, serif',
+          shadowMd: '0 1px 2px 0 rgb(0 0 0 / 0.3)',
+          controlHeight: '3rem',
+          spaceNormal: '1rem',
+        },
+      },
+    },
+  };
+  const emitted = (theme: ThemeDefinition) =>
+    new Map(describeResolvedTheme(resolveTheme(theme, 'light')).properties);
+
+  it.each([
+    ['radius', '--theme-radius-lg', '0.125rem'],
+    ['font', '--theme-font-family', 'Georgia, serif'],
+    ['shadow', '--theme-shadow-md', '0 1px 2px 0 rgb(0 0 0 / 0.3)'],
+    ['density (control height)', '--theme-control-height', '3rem'],
+    ['density (spacing)', '--theme-space-normal', '1rem'],
+  ])(
+    'changes the %s variable and only restates it for a reference theme',
+    (_family, property, value) => {
+      const base = emitted(libreChatTheme);
+      const themed = emitted(reference);
+
+      expect(base.get(property)).toBeDefined();
+      expect(themed.get(property)).toBe(value);
+      expect(themed.get(property)).not.toBe(base.get(property));
+    },
+  );
 });

@@ -497,7 +497,7 @@ export default function McpSection({ item }: Props) {
 
       <div className="flex flex-col gap-2">
         <div className="flex min-h-7 flex-wrap items-center justify-between gap-x-2 gap-y-1">
-          <span className="text-text-secondary text-[11px] font-medium tracking-wide uppercase">
+          <span className="text-text-secondary text-2xs font-medium tracking-wide uppercase">
             {localize('com_ui_tools_mcp_tools_section')}
           </span>
           {(hasTools || runtimeToolsAvailable) && (
@@ -578,7 +578,7 @@ export default function McpSection({ item }: Props) {
                       ? localize('com_ui_tools_mcp_deselect_all')
                       : localize('com_ui_tools_mcp_select_all')
                   }
-                  className="border-border-medium rounded border"
+                  className="border-border-medium rounded"
                 />
                 <span>
                   {(hasTools ? allSelected : isWildcardAttached)
@@ -633,12 +633,18 @@ export default function McpSection({ item }: Props) {
           </Collapse>
           <Collapse open={!hasTools && toolsLoading}>
             <div className="flex flex-col gap-1" aria-busy="true" aria-live="polite">
-              {['w-3/5', 'w-1/2', 'w-2/5'].map((width) => (
-                <div key={width} className="flex items-center gap-2.5 rounded-lg px-2 py-2">
-                  <Skeleton className="size-4 shrink-0 rounded" />
-                  <Skeleton className={cn('h-4 rounded', width)} />
-                </div>
-              ))}
+              <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
+                <Skeleton className="size-4 shrink-0 rounded" />
+                <Skeleton className="h-4 w-3/5 rounded" />
+              </div>
+              <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
+                <Skeleton className="size-4 shrink-0 rounded" />
+                <Skeleton className="h-4 w-1/2 rounded" />
+              </div>
+              <div className="flex items-center gap-2.5 rounded-lg px-2 py-2">
+                <Skeleton className="size-4 shrink-0 rounded" />
+                <Skeleton className="h-4 w-2/5 rounded" />
+              </div>
             </div>
           </Collapse>
           <Collapse open={!hasTools && !toolsLoading}>

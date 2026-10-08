@@ -121,6 +121,17 @@ test.describe('form control outline', () => {
       const { border, surface } = await outlineAgainstSurface(page);
       const ratio = contrast(parseRgb(border), parseRgb(surface));
 
+      if (palette.definition !== undefined) {
+        /** ClickHouse holds Click UI's field.color.stroke.default, which misses 3:1 by owner decision. */
+        const mode = palette.appearance === 'dark' ? 'dark' : 'light';
+        const stroke = clickHouseTheme.modes[mode]?.colors?.['rgb-border-control'] ?? '';
+        expect({ border, visible: ratio > 1 }).toEqual({
+          border: `rgb(${stroke.split(' ').join(', ')})`,
+          visible: true,
+        });
+        return;
+      }
+
       expect({ border, surface, clears: ratio >= WCAG_NON_TEXT }).toEqual({
         border,
         surface,

@@ -59,7 +59,7 @@ function SourceItem({ source, expanded = false }: SourceItemProps) {
   }
 
   return (
-    <span className="not-prose relative inline-block h-full w-full">
+    <span className="relative inline-block h-full w-full">
       <Ariakit.HovercardProvider showTimeout={150} hideTimeout={150}>
         <div className="flex h-full items-center">
           <Ariakit.HovercardAnchor

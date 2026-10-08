@@ -277,7 +277,7 @@ export default function Parameters() {
           type="button"
           onClick={resetParameters}
           aria-label={localize('com_ui_reset_var', { 0: localize('com_ui_model_parameters') })}
-          className="flex h-auto min-h-9 flex-auto items-center justify-center gap-2 px-4 py-2 text-sm whitespace-normal active:scale-[0.98] motion-reduce:transform-none"
+          className="flex h-auto min-h-9 flex-auto items-center justify-center whitespace-normal active:scale-[0.98] motion-reduce:transform-none"
         >
           <RotateCcw
             key={resetCount}
@@ -292,7 +292,7 @@ export default function Parameters() {
         <Button
           variant="default"
           onClick={openDialog}
-          className="flex h-auto min-h-9 flex-auto items-center justify-center px-4 py-2 font-semibold whitespace-normal"
+          className="flex h-auto min-h-9 flex-auto items-center justify-center font-semibold whitespace-normal"
           type="button"
         >
           {localize('com_endpoint_save_as_preset')}

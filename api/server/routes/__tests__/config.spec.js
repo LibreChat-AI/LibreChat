@@ -671,43 +671,65 @@ describe('GET /api/config', () => {
       expect(response.body.insightsEnabled).toBe(true);
     });
 
-    it.each([
-      ['unset', undefined, false],
-      ['disabled', { enabled: false }, false],
-      ['enabled', { enabled: true }, true],
-    ])(
-      'should advertise pull requests only when they are enabled (%s)',
-      async (_label, pullRequests, expected) => {
+    describe('pull requests', () => {
+      const savedEnv = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+      beforeEach(() => {
+        delete process.env.GITHUB_TOKEN;
+        delete process.env.GH_TOKEN;
+        delete process.env.GITHUB_PULL_REQUEST_TOKEN;
+      });
+      afterEach(() => {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      });
+
+      it.each([
+        ['unset', undefined, 'tok', false],
+        ['switched off', { enabled: false, allowAllRepositories: true }, 'tok', false],
+        ['scoped but without any token', { allowAllRepositories: true }, undefined, false],
+        ['a token but no repository scope', { enabled: true }, 'tok', false],
+        ['scoped with a token, no enabled switch', { allowAllRepositories: true }, 'tok', true],
+        ['listed repositories with a token', { allowedRepositories: ['o/r'] }, 'tok', true],
+      ])(
+        'should advertise pull requests only when they can work (%s)',
+        async (_label, pullRequests, token, expected) => {
+          if (token) process.env.GITHUB_TOKEN = token;
+          mockGetAppConfig.mockResolvedValue({
+            ...baseAppConfig,
+            endpoints: { agents: pullRequests ? { pullRequests } : {} },
+          });
+          const response = await request(createApp(mockUser)).get('/api/config');
+          expect(response.body.pullRequestsEnabled).toBe(expected);
+          /** The batch route's version rides with the flag, so a client never sees one without the other. */
+          if (expected) {
+            expect(response.body.pullRequestsBatchVersion).toBe(1);
+            expect(response.body.pullRequestsMaxConcurrentLookups).toBe(4);
+          } else {
+            expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
+            expect(response.body).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
+          }
+        },
+      );
+
+      it('advertises the configured lookup limit so a fallback client can keep to it', async () => {
+        process.env.GITHUB_TOKEN = 'tok';
         mockGetAppConfig.mockResolvedValue({
           ...baseAppConfig,
-          endpoints: { agents: pullRequests ? { pullRequests } : {} },
+          endpoints: {
+            agents: { pullRequests: { allowAllRepositories: true, maxConcurrentLookups: 2 } },
+          },
         });
         const response = await request(createApp(mockUser)).get('/api/config');
-        expect(response.body.pullRequestsEnabled).toBe(expected);
-        /** The batch route's version rides with the flag, so a client never sees one without the other. */
-        if (expected) {
-          expect(response.body.pullRequestsBatchVersion).toBe(1);
-          expect(response.body.pullRequestsMaxConcurrentLookups).toBe(4);
-        } else {
-          expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
-          expect(response.body).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
-        }
-      },
-    );
-
-    it('advertises the configured lookup limit so a fallback client can keep to it', async () => {
-      mockGetAppConfig.mockResolvedValue({
-        ...baseAppConfig,
-        endpoints: { agents: { pullRequests: { enabled: true, maxConcurrentLookups: 2 } } },
+        expect(response.body.pullRequestsMaxConcurrentLookups).toBe(2);
       });
-      const response = await request(createApp(mockUser)).get('/api/config');
-      expect(response.body.pullRequestsMaxConcurrentLookups).toBe(2);
-    });
 
-    it('should not advertise pull requests for a config with no endpoints', async () => {
-      mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      const response = await request(createApp(mockUser)).get('/api/config');
-      expect(response.body.pullRequestsEnabled).toBe(false);
+      it('should not advertise pull requests for a config with no endpoints', async () => {
+        mockGetAppConfig.mockResolvedValue(baseAppConfig);
+        const response = await request(createApp(mockUser)).get('/api/config');
+        expect(response.body.pullRequestsEnabled).toBe(false);
+      });
     });
 
     it('should advertise Langfuse fanout only when the toggle and collector URL are configured', async () => {

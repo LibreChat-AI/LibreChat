@@ -42,7 +42,7 @@ export const RevokeKeys = ({
       <OGDialog open={open} onOpenChange={setOpen}>
         <OGDialogTrigger asChild>
           <Button
-            variant="destructive"
+            variant="destructive-soft"
             onClick={() => setOpen(true)}
             disabled={disabled}
             aria-labelledby="revoke-info-label"

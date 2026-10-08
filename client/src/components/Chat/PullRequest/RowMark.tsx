@@ -14,7 +14,7 @@ import CiDot from './CiDot';
 
 /** The row's own surface at each state, so the dot's ring blends into it. */
 const RING_SELECTED = 'ring-surface-nav-selected';
-const RING_IDLE = 'ring-surface-primary-alt group-hover:ring-surface-nav-hover';
+const RING_IDLE = 'ring-surface-sidebar group-hover:ring-surface-nav-hover';
 
 /**
  * The pull request a conversation opened, as a mark in its sidebar row: the state icon with the

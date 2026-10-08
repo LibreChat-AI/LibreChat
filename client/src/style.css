@@ -39,9 +39,6 @@
 
 /* Custom Variables */
 :root {
-  --gizmo-gray-500: 153 153 153;
-  --gizmo-gray-600: 102 102 102;
-  --gizmo-gray-950: 15 15 15;
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;
   --font-size-base: 1rem;
@@ -122,41 +119,6 @@ html {
     transition: none !important;
     transform: none !important;
   }
-}
-
-.gizmo {
-  --text-primary: var(--gizmo-gray-950);
-  --text-secondary: var(--gizmo-gray-600);
-  --text-tertiary: var(--gizmo-gray-500);
-  --text-muted: 105 110 121; /* Click UI global.color.text.muted #696e79 */
-  --surface-primary: var(--white);
-  --chart-widget-surface: 255 255 255; /* Click UI dashboards.chartWidget.color.background.default #ffffff */
-  --chart-widget-stroke: 230 231 233; /* Click UI dashboards.chartWidget.color.stroke.default #e6e7e9 */
-  --surface-secondary: var(--gray-50);
-  --surface-tertiary: var(--gray-100);
-  --border-light: 0 0 0;
-  --border-light-alpha: 0.1;
-  --border-medium: 0 0 0;
-  --border-medium-alpha: 0.15;
-  --border-heavy: 0 0 0;
-  --border-heavy-alpha: 0.2;
-  --border-xheavy: 0 0 0;
-  --border-xheavy-alpha: 0.25;
-}
-.gizmo.dark {
-  --text-primary: var(--gray-100);
-  --text-secondary: var(--gray-300);
-  --text-tertiary: var(--gizmo-gray-500);
-  --text-muted: 179 182 189; /* Click UI global.color.text.muted #b3b6bd */
-  --surface-primary: var(--gray-900);
-  --chart-widget-surface: 40 40 40; /* Click UI dashboards.chartWidget.color.background.default #282828 */
-  --chart-widget-stroke: 50 50 50; /* Click UI dashboards.chartWidget.color.stroke.default #323232 */
-  --surface-secondary: var(--gray-800);
-  --surface-tertiary: var(--gray-700);
-  --border-light: 217 217 227;
-  --border-medium: 217 217 227;
-  --border-heavy: 217 217 227;
-  --border-xheavy: 217 217 227;
 }
 
 /* High contrast appearance modes.
@@ -348,8 +310,8 @@ html.high-contrast.dark .btn-neutral:hover {
   width: 2rem;
 }
 
-/* Forced-colors overrides the inline `background-color: currentColor` a masked
- * CustomIcon paints with; `!important` is needed to beat that inline style. */
+/* Forced-colors overrides the `background-color: currentColor` a masked CustomIcon
+ * paints with. */
 @media (forced-colors: active) {
   .custom-icon-tint {
     background-color: CanvasText !important;
@@ -377,23 +339,13 @@ html.high-contrast.dark .btn-neutral:hover {
     background-repeat: no-repeat;
     background-size: 1.5em 1.5em;
     padding-right: 2.5rem;
-    background-color: #fff;
-    border-color: #8e8ea0;
+    background-color: rgb(var(--select-fill));
+    border-color: rgb(var(--select-edge));
     border-radius: 0;
     border-width: 1px;
     font-size: 1rem;
     line-height: 1.5rem;
   }
-}
-
-.reset-rc-number-input input {
-  width: 100%;
-  border: none !important;
-  background: transparent;
-}
-
-.reset-rc-number-input-text-right input {
-  text-align: right;
 }
 
 p > small {
@@ -998,68 +950,13 @@ pre[class*='language-'] {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.btn-primary {
-  --tw-bg-opacity: 1;
-  --tw-text-opacity: 1;
-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
-  color: rgba(255, 255, 255, var(--tw-text-opacity));
-}
-.btn-primary:hover {
-  --tw-bg-opacity: 1;
-  background-color: rgba(26, 127, 100, var(--tw-bg-opacity));
-}
-.btn-primary:focus {
-  --tw-ring-offset-shadow: var(--tw-ring-inset) 0 0 0 var(--tw-ring-offset-width)
-    var(--tw-ring-offset-color);
-  --tw-ring-shadow: var(--tw-ring-inset) 0 0 0 calc(2px + var(--tw-ring-offset-width))
-    var(--tw-ring-color);
-  --tw-ring-offset-width: 2px;
-  box-shadow:
-    var(--tw-ring-offset-shadow),
-    var(--tw-ring-shadow),
-    0 0 transparent;
-  box-shadow:
-    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow, 0 0 transparent);
-}
-.btn-primary.focus-visible {
-  --tw-ring-opacity: 1;
-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
-}
-.btn-primary:focus-visible {
-  --tw-ring-opacity: 1;
-  --tw-ring-color: rgba(25, 195, 125, var(--tw-ring-opacity));
-}
-.btn-primary:disabled:hover {
-  --tw-bg-opacity: 1;
-  background-color: rgba(16, 163, 127, var(--tw-bg-opacity));
-}
-.btn-secondary {
-  --tw-border-opacity: 1;
-  --tw-bg-opacity: 1;
-  --tw-text-opacity: 1;
-  background-color: transparent;
-  background-color: rgba(16, 163, 156, var(--tw-bg-opacity));
-  color: rgba(255, 255, 255, var(--tw-text-opacity));
-}
-.btn-secondary:hover {
-  --tw-bg-opacity: 1;
-  border-color: rgba(0, 0, 0, 0.1);
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
-  background-color: rgba(236, 236, 241, var(--tw-bg-opacity));
-}
-.dark .btn-secondary:hover {
-  --tw-bg-opacity: 1;
-  border-color: rgba(8, 82, 78, var(--tw-border-opacity));
-  color: rgba(255, 255, 240, var(--tw-text-opacity));
-  background-color: rgba(8, 82, 78, var(--tw-bg-opacity));
-}
 .btn-neutral {
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: rgb(var(--surface-secondary));
-  border-color: rgba(0, 0, 0, 0.1);
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 0.1));
   border-width: 1px;
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
+  color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
   font-size: 0.875rem;
   line-height: 1.25rem;
   transition: all 0.1s ease-in-out;
@@ -1067,7 +964,7 @@ pre[class*='language-'] {
 
 .btn-neutral:hover {
   --tw-bg-opacity: 1;
-  background-color: rgba(236, 236, 241, var(--tw-bg-opacity));
+  background-color: rgb(var(--button-neutral-hover) / var(--tw-bg-opacity));
 }
 
 .btn-neutral:focus {
@@ -1076,17 +973,16 @@ pre[class*='language-'] {
 }
 
 .dark .btn-neutral {
-  --tw-border-opacity: 1;
   --tw-bg-opacity: 1;
   --tw-text-opacity: 1;
   background-color: transparent;
-  border-color: rgba(66, 66, 66, var(--tw-border-opacity));
-  color: rgba(255, 255, 240, var(--tw-text-opacity));
+  border-color: rgb(var(--button-neutral-border) / var(--theme-button-neutral-border-opacity, 1));
+  color: rgb(var(--button-neutral-text) / var(--tw-text-opacity));
 }
 
 .dark .btn-neutral:hover {
   --tw-bg-opacity: 1;
-  background-color: rgba(66, 66, 66, var(--tw-bg-opacity));
+  background-color: rgb(var(--button-neutral-hover) / var(--tw-bg-opacity));
 }
 
 .dark .btn-neutral:focus {
@@ -1110,12 +1006,12 @@ pre[class*='language-'] {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(0, 0, 0, 0.1);
+  background-color: rgb(var(--scrollbar-thumb) / var(--scrollbar-thumb-alpha));
   border-radius: 9999px;
 }
 
 .dark ::-webkit-scrollbar-thumb {
-  background-color: hsla(0, 0%, 100%, 0.1);
+  background-color: rgb(var(--scrollbar-thumb) / var(--scrollbar-thumb-alpha));
 }
 
 ::-webkit-scrollbar-track {
@@ -1179,12 +1075,6 @@ html {
 html[data-drawer-nav],
 html[data-drawer-nav] body {
   overscroll-behavior: none;
-}
-
-.dark body,
-.dark html {
-  --tw-bg-opacity: 1;
-  background-color: rgba(23, 23, 23, var(--tw-bg-opacity));
 }
 
 #__next,
@@ -1316,19 +1206,6 @@ html:not(.high-contrast) .markdown :is(th, td):last-child {
 .group:hover .group-hover\:visible {
   visibility: visible;
 }
-.group:hover .group-hover\:from-\[\#2A2B32\] {
-  --tw-gradient-from: #2a2b32;
-  --tw-gradient-to: rgba(42, 43, 50, 0);
-  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to);
-}
-.group:hover .group-hover\:text-gray-500 {
-  --tw-text-opacity: 1;
-  color: rgba(142, 142, 160, var(--tw-text-opacity));
-}
-.group:hover .group-hover\:text-gray-700 {
-  --tw-text-opacity: 1;
-  color: rgba(64, 65, 79, var(--tw-text-opacity));
-}
 .dark .prose {
   --tw-prose-body: var(--tw-prose-invert-body);
   --tw-prose-headings: var(--tw-prose-invert-headings);
@@ -1367,7 +1244,7 @@ html {
 }
 .dark body,
 .dark html {
-  background-color: rgb(var(--surface-primary-alt));
+  background-color: rgb(var(--page-canvas));
 }
 #__next,
 #root {
@@ -1473,8 +1350,8 @@ html {
 }
 .toast-root .alert-root {
   box-shadow:
-    0 0 1px rgba(67, 90, 111, 0.3),
-    0 5px 8px -4px rgba(67, 90, 111, 0.3);
+    0 0 1px rgb(var(--toast-edge) / 0.3),
+    0 5px 8px -4px rgb(var(--toast-edge) / 0.3);
   flex-shrink: 0;
   pointer-events: all;
 }
@@ -1560,13 +1437,11 @@ html {
   }
 }
 
-.avatar-stroke,
-.shadow-stroke {
+.avatar-stroke {
   position: relative;
 }
-.avatar-stroke:after,
-.shadow-stroke:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+.avatar-stroke:after {
+  --tw-shadow: inset 0 0 0 1px rgb(var(--stroke-ink) / var(--stroke-ink-alpha));
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
   border-radius: 9999px;
   bottom: 0;
@@ -1577,9 +1452,7 @@ html {
   top: 0;
 }
 .dark .avatar-stroke:after,
-.dark .shadow-stroke:after,
-.avatar-stroke:after,
-.shadow-stroke:after {
+.avatar-stroke:after {
   box-shadow:
     0 0 transparent,
     0 0 transparent,
@@ -1588,9 +1461,8 @@ html {
     var(--tw-ring-offset-shadow, 0 0 transparent), var(--tw-ring-shadow, 0 0 transparent),
     var(--tw-shadow);
 }
-.dark .avatar-stroke:after,
-.dark .shadow-stroke:after {
-  --tw-shadow: inset 0 0 0 1px hsla(0, 0%, 100%, 0.3);
+.dark .avatar-stroke:after {
+  --tw-shadow: inset 0 0 0 1px rgb(var(--stroke-ink) / var(--stroke-ink-alpha));
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
 }
 
@@ -1608,7 +1480,7 @@ html {
 }
 
 .assistant-item:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  --tw-shadow: inset 0 0 0 1px rgb(var(--black) / 0.25);
   --tw-shadow-colored: inset 0 0 0 1px var(--tw-shadow-color);
   border-radius: 9999px;
   bottom: 0;
@@ -1627,7 +1499,7 @@ html {
 }
 
 .dark .assistant-item:after {
-  --tw-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  --tw-shadow: inset 0 0 0 1px rgb(var(--black) / 0.25);
   --tw-shadow-colored: inset 0 0 0 0 1px var(--tw-shadow-color);
 }
 
@@ -1999,11 +1871,11 @@ html {
   font-size: var(--theme-tooltip-text-size, 1rem);
   line-height: 1.5;
   color: rgb(var(--text-tooltip, var(--text-primary)));
-  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(0 0 0 / 0.25));
+  box-shadow: var(--theme-tooltip-shadow, 0 2px 4px 0 rgb(var(--black) / 0.25));
 }
 
 .tooltip:where(.dark, .dark *) {
-  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(0 0 0 / 0.35));
+  box-shadow: var(--theme-tooltip-shadow, 0 1px 2px 0 rgb(var(--black) / 0.35));
 }
 
 @layer base {
@@ -2070,7 +1942,10 @@ html[data-input-modality='keyboard']
   }
 }
 
-.dark :focus-visible {
+/* A control that declares its own focus outline utility (`focus-visible:outline-hidden`,
+ * `focus-visible:outline-2 focus-visible:outline-focus-subtle`) keeps it: this rule is unlayered,
+ * so it would otherwise outrank every outline utility and repaint the global role over them. */
+.dark :focus-visible:not([class*='focus-visible:outline-'], [class*='focus:outline-']) {
   outline: var(--theme-focus-ring-width, 2px) solid rgb(var(--focus-outline));
   outline-offset: var(--theme-focus-ring-offset, 2px);
 }
@@ -2091,8 +1966,8 @@ html[data-input-modality='keyboard']
   /* The `menuShadow` role, whose light default is this literal. */
   box-shadow: var(
     --theme-menu-shadow,
-    0 10px 15px -3px rgb(0 0 0 / 0.1),
-    0 4px 6px -4px rgb(0 0 0 / 0.1)
+    0 10px 15px -3px rgb(var(--black) / 0.1),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
   );
   transform-origin: var(--popover-transform-origin, top);
   opacity: 0;
@@ -2127,8 +2002,8 @@ html[data-input-modality='keyboard']
   color: rgb(var(--text-secondary));
   box-shadow: var(
     --theme-menu-shadow,
-    0 10px 15px -3px rgb(0 0 0 / 0.25),
-    0 4px 6px -4px rgb(0 0 0 / 0.1)
+    0 10px 15px -3px rgb(var(--black) / 0.25),
+    0 4px 6px -4px rgb(var(--black) / 0.1)
   );
 }
 

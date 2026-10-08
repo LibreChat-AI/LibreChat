@@ -169,11 +169,8 @@ export default function HeaderMenu({
                 render={
                   <Button
                     size="icon"
-                    variant="outline"
-                    className={cn(
-                      'bg-presentation hover:bg-surface-active-alt relative size-9 shrink-0 rounded-xl',
-                      className,
-                    )}
+                    variant="header-action"
+                    className={cn('relative size-9 shrink-0', className)}
                   />
                 }
               >

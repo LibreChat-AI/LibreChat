@@ -167,9 +167,10 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
   const descriptionMotion = {
     layout: 'position' as const,
     layoutId: morphing ? agentMorphId('description', agent.id) : undefined,
-    style: { willChange: morphing ? 'transform' : undefined },
-    className:
+    className: cn(
+      morphing && 'will-change-transform',
       'relative mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-text-secondary sm:text-base',
+    ),
     ...shared,
   };
   useLayoutEffect(() => {
@@ -215,11 +216,11 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
            does not promote it on its own. The hint stands for as long as this
            dialog shares the card's surface, and is never set on a dialog that
            has no morph to run. */
-        style={{
-          borderRadius: surfaceRadius,
-          willChange: morphing ? 'transform' : undefined,
-        }}
-        className="rounded-theme-surface bg-surface-dialog high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none relative flex max-h-[88dvh] w-full flex-col overflow-hidden shadow-lg"
+        style={{ borderRadius: surfaceRadius }}
+        className={cn(
+          morphing && 'will-change-transform',
+          'rounded-theme-surface bg-surface-dialog high-contrast:border high-contrast:border-solid high-contrast:border-border-medium high-contrast:shadow-none relative flex max-h-[88dvh] w-full flex-col overflow-hidden shadow-lg',
+        )}
         {...shared}
       >
         {/* Card-coloured wash so the surface interpolates its fill and border
@@ -299,7 +300,7 @@ const AgentDetailContent: React.FC<AgentDetailContentProps> = ({
                     focusOutline="hidden"
                     ref={titleRef}
                     tabIndex={-1}
-                    className="text-text-primary text-2xl leading-tight font-semibold break-words sm:text-3xl"
+                    className="text-2xl leading-tight font-semibold break-words sm:text-3xl"
                   >
                     {agent.name?.trim() || localize('com_ui_agent')}
                   </OGDialogTitle>

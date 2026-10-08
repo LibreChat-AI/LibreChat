@@ -43,11 +43,10 @@ export const AssistantAvatar = ({
       <div className="relative h-20 w-20 overflow-hidden rounded-full">
         <img
           src={url}
-          className="bg-avatar-placeholder h-full w-full rounded-full object-cover"
+          className={`bg-avatar-placeholder h-full w-full rounded-full object-cover ${progress < 1 ? 'opacity-40' : 'opacity-100'}`}
           alt="GPT"
           width="80"
           height="80"
-          style={{ opacity: progress < 1 ? 0.4 : 1 }}
         />
         {progress < 1 && (
           <ProgressCircle

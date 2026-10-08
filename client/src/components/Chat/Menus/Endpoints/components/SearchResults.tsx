@@ -309,10 +309,7 @@ export function SearchResults({ results, localize, searchValue }: SearchResultsP
           >
             <div className="flex items-center gap-2">
               {endpoint.icon && (
-                <div
-                  className="border-border-light flex items-center justify-center overflow-hidden rounded-full border p-1"
-                  style={{ borderRadius: '50%' }}
-                >
+                <div className="border-border-light flex items-center justify-center overflow-hidden rounded-full border p-1">
                   {endpoint.icon}
                 </div>
               )}

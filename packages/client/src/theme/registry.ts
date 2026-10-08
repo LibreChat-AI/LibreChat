@@ -127,6 +127,7 @@ export const layerRoleSources: ReadonlyArray<
   readonly [keyof IThemeRGB, keyof IThemeRGB, keyof IThemeRGB]
 > = [
   ['rgb-surface-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
+  ['rgb-page-canvas', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
   ['rgb-surface-user-message', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
   ['rgb-surface-card', 'rgb-surface-secondary', 'rgb-surface-secondary'],
   ['rgb-surface-card-hover', 'rgb-surface-tertiary', 'rgb-surface-tertiary'],
@@ -138,6 +139,7 @@ export const layerRoleSources: ReadonlyArray<
   ['rgb-border-menu', 'rgb-border-light', 'rgb-border-light'],
   ['rgb-surface-composer', 'rgb-surface-chat', 'rgb-surface-chat'],
   ['rgb-surface-search', 'rgb-surface-secondary', 'rgb-surface-secondary'],
+  ['rgb-surface-sidebar', 'rgb-surface-primary-alt', 'rgb-surface-primary-alt'],
 ];
 
 export function layerRoleFallbacks(colors: IThemeRGB, mode: ThemeMode): IThemeRGB {
@@ -234,6 +236,7 @@ export const themeAppearanceProperties: Readonly<
   radius3xl: '--theme-radius-3xl',
   controlHeight: '--theme-control-height',
   controlPaddingX: '--theme-control-padding-x',
+  buttonPaddingX: '--theme-button-padding-x',
   controlGap: '--theme-control-gap',
   iconSize: '--theme-icon-size',
   iconSizeMd: '--theme-icon-size-md',
@@ -272,12 +275,18 @@ export const themeAppearanceProperties: Readonly<
   textLg: '--theme-text-lg',
   textXl: '--theme-text-xl',
   text2xl: '--theme-text-2xl',
+  text3xs: '--theme-text-3xs',
+  text2xs: '--theme-text-2xs',
+  text1xs: '--theme-text-1xs',
+  text1sm: '--theme-text-1sm',
+  text3xl: '--theme-text-3xl',
   leadingXs: '--theme-text-xs-leading',
   leadingSm: '--theme-text-sm-leading',
   leadingBase: '--theme-text-base-leading',
   leadingLg: '--theme-text-lg-leading',
   leadingXl: '--theme-text-xl-leading',
   leading2xl: '--theme-text-2xl-leading',
+  leading3xl: '--theme-text-3xl-leading',
   dialogStroke: '--theme-dialog-stroke',
   dialogPaddingX: '--theme-dialog-padding-x',
   dialogHeaderGap: '--theme-dialog-header-gap',
@@ -288,6 +297,7 @@ export const themeAppearanceProperties: Readonly<
   scrimOpacity: '--theme-scrim-opacity',
   alertScrimOpacity: '--theme-alert-scrim-opacity',
   modalScrimOpacity: '--theme-modal-scrim-opacity',
+  buttonNeutralBorderOpacity: '--theme-button-neutral-border-opacity',
   elevationSurface: '--theme-elevation-surface',
   elevationDrag: '--theme-elevation-drag',
   shadow2xs: '--theme-shadow-2xs',
@@ -332,6 +342,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   radius3xl: '1.5rem',
   controlHeight: '2.25rem',
   controlPaddingX: '0.75rem',
+  buttonPaddingX: '1rem',
   controlGap: '0.375rem',
   iconSize: '1rem',
   iconSizeMd: '1.25rem',
@@ -370,12 +381,18 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   textLg: '1.125rem',
   textXl: '1.25rem',
   text2xl: '1.5rem',
+  text3xs: '0.625rem',
+  text2xs: '0.6875rem',
+  text1xs: '0.8125rem',
+  text1sm: '0.9375rem',
+  text3xl: '1.875rem',
   leadingXs: 'calc(1 / 0.75)',
   leadingSm: 'calc(1.25 / 0.875)',
   leadingBase: 'calc(1.5 / 1)',
   leadingLg: 'calc(1.75 / 1.125)',
   leadingXl: 'calc(1.75 / 1.25)',
   leading2xl: 'calc(2 / 1.5)',
+  leading3xl: 'calc(2.25 / 1.875)',
   dialogStroke: '0px',
   dialogPaddingX: '1.5rem',
   dialogHeaderGap: '0.375rem',
@@ -386,6 +403,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   scrimOpacity: '0.8',
   alertScrimOpacity: '0.9',
   modalScrimOpacity: '0.65',
+  buttonNeutralBorderOpacity: '0.1',
   elevationSurface: '0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   elevationDrag: '0 10px 25px rgb(0 0 0 / 0.1)',
   shadow2xs: '0 1px rgb(0 0 0 / 0.05)',
@@ -412,6 +430,7 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
 export const darkAppearanceDefaults: Readonly<Partial<IThemeAppearance>> = Object.freeze({
   menuShadow: '0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1)',
   tooltipShadow: '0 1px 2px 0 rgb(0 0 0 / 0.35)',
+  buttonNeutralBorderOpacity: '1',
 });
 
 /** Every appearance default in `mode`. */
@@ -713,7 +732,7 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   const drawerEdgeSource =
     mode === 'dark'
       ? customColors?.['rgb-border-xheavy']
-      : customColors?.['rgb-surface-primary-alt'];
+      : (customColors?.['rgb-surface-sidebar'] ?? customColors?.['rgb-surface-primary-alt']);
   const drawerEdgeFallback: Partial<IThemeRGB> =
     customColors?.['rgb-drawer-edge'] === undefined && drawerEdgeSource !== undefined
       ? { 'rgb-drawer-edge': drawerEdgeSource }

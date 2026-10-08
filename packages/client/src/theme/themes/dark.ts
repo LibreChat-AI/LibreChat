@@ -106,6 +106,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-menu': '33 33 33', // matching border-light
   'rgb-surface-composer': '47 47 47', // matching surface-chat
   'rgb-surface-search': '33 33 33', // matching surface-secondary
+  'rgb-surface-sidebar': '23 23 23', // matching surface-primary-alt
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)
@@ -155,6 +156,16 @@ export const darkTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-scrollbar-thumb': '255 255 255', // #ffffff
+  'rgb-page-canvas': '23 23 23', // #171717 (gray-850)
+  'rgb-select-fill': '255 255 255', // #ffffff
+  'rgb-select-edge': '142 142 160', // #8e8ea0
+  'rgb-button-neutral-border': '66 66 66', // #424242 (gray-600)
+  'rgb-button-neutral-text': '255 255 240', // #fffff0
+  'rgb-button-neutral-hover': '66 66 66', // #424242 (gray-600)
+  'rgb-link-inline': '82 160 255', // #52a0ff
+  'rgb-toast-edge': '67 90 111', // #435a6f
+  'rgb-stroke-ink': '255 255 255', // #ffffff at 30%
   'rgb-file-document': '255 85 136', // #ff5588
   'rgb-file-sheet': '16 163 127', // #10a37f
   'rgb-file-code': '255 110 60', // #ff6e3c

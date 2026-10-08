@@ -31,10 +31,8 @@ export default function SiblingSwitch({
   };
 
   const buttonStyle = cn(
-    'hover-button h-auto p-1.5 text-text-secondary-alt',
-    'hover:text-text-primary hover:bg-surface-hover',
+    'hover-button',
     'group-hover:visible group-focus-visible:visible group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:visible group-[.final-completion]:visible',
-    'focus-visible:ring-2 focus-visible:ring-text-primary',
   );
 
   return siblingCount > 1 ? (
@@ -46,7 +44,7 @@ export default function SiblingSwitch({
       aria-label={localize('com_ui_sibling_navigation')}
     >
       <Button
-        variant="ghost"
+        variant="message-action"
         className={buttonStyle}
         onClick={previous}
         disabled={siblingIdx == 0}
@@ -64,7 +62,7 @@ export default function SiblingSwitch({
         {siblingIdx + 1} / {siblingCount}
       </span>
       <Button
-        variant="ghost"
+        variant="message-action"
         className={buttonStyle}
         onClick={next}
         disabled={siblingIdx == siblingCount - 1}

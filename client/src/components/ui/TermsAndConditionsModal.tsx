@@ -76,7 +76,7 @@ const TermsAndConditionsModal = ({
             className="max-h-[60vh] overflow-y-auto p-4"
             aria-label={localize('com_ui_terms_and_conditions')}
           >
-            <div className="prose dark:prose-invert !text-text-primary w-full max-w-none">
+            <div className="prose !text-text-primary w-full max-w-none">
               {content !== '' ? (
                 <MarkdownLite content={content} />
               ) : (

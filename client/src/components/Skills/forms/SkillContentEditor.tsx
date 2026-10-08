@@ -75,10 +75,9 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                 aria-label={isEditing ? localize('com_ui_save') : localize('com_ui_edit')}
                 className="hover:bg-surface-tertiary size-8 p-0"
               >
-                <MorphIcon
-                  icon={isEditing ? Check : SquarePen}
-                  className="text-text-secondary size-4"
-                />
+                <span className="text-text-secondary flex">
+                  <MorphIcon icon={isEditing ? Check : SquarePen} className="size-4" />
+                </span>
               </Button>
             }
           />
@@ -134,8 +133,8 @@ const SkillContentEditor: React.FC<SkillContentEditorProps> = ({
                   </ReactMarkdown>
                 )}
                 <div className="pointer-events-none sticky bottom-1/2 z-10 flex translate-y-1/2 items-center justify-center opacity-0 transition-all duration-200 group-hover/preview:opacity-100">
-                  <div className="border-border-light bg-surface-primary flex items-center gap-2 rounded-lg border px-3 py-1.5 shadow-md">
-                    <MorphIcon icon={SquarePen} className="text-text-secondary size-4" />
+                  <div className="border-border-light bg-surface-primary text-text-secondary flex items-center gap-2 rounded-lg border px-3 py-1.5 shadow-md">
+                    <MorphIcon icon={SquarePen} className="size-4" />
                     <span className="text-text-primary text-sm font-medium">
                       {localize('com_ui_click_to_edit')}
                     </span>

@@ -11,33 +11,23 @@ import type {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { GetAppConfigOptions } from '~/app/service';
+import type { PullRequestSettings } from './settings';
 import type { PullRequestLookup } from './types';
 import type { ServerRequest } from '~/types';
+import { isPullRequestFeatureActive, resolvePullRequestToken } from './settings';
+import { ALL_REPOSITORIES, isAllowedRepository } from './repository';
 import { getAppConfigOptionsFromUser } from '~/app/service';
-import { isAllowedRepository } from './repository';
 import { getSafeErrorMetadata } from '~/utils';
 
 const MAX_CONVERSATION_ID_LENGTH = 256;
-const TOKEN_REFERENCE = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 
 export type ConversationLaneGit = { branch: string | null; head: string | null; repo?: string };
-
-/** Resolves `${NAME}` against the environment; the config never holds the token itself. */
-export function resolveTokenReference(
-  reference: string | undefined,
-  env: Readonly<Record<string, string | undefined>>,
-): string | null {
-  const name = reference == null ? undefined : TOKEN_REFERENCE.exec(reference)?.[1];
-  if (name == null) return null;
-  return env[name]?.trim() || null;
-}
 
 const validConversationId = (value: string | undefined): value is string =>
   value != null && value.trim() !== '' && value.length <= MAX_CONVERSATION_ID_LENGTH;
 
 const NONE: TConversationPullRequestResponse = { pullRequest: null };
 
-type PullRequestSettings = NonNullable<TAgentsEndpoint['pullRequests']>;
 type EligibleLane = { branch: string; head: string | null; repo: string };
 
 /** Lookups in flight at once for one batch, unless configured. */
@@ -163,13 +153,17 @@ async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T | typeof
   }
 }
 
+/** The list a lane's repository is checked against, and a fork's checks are authorized by. */
+const repositoryScope = (settings: PullRequestSettings): readonly string[] =>
+  settings.allowAllRepositories === true ? ALL_REPOSITORIES : (settings.allowedRepositories ?? []);
+
 /** A lane the server's token may be used for: it names a branch and an allowed repository. */
 function eligibleLane(
   laneGit: ConversationLaneGit | null | undefined,
   settings: PullRequestSettings,
 ): EligibleLane | null {
   if (laneGit?.branch == null || laneGit.repo == null) return null;
-  if (!isAllowedRepository(laneGit.repo, settings.allowedRepositories)) return null;
+  if (!isAllowedRepository(laneGit.repo, repositoryScope(settings))) return null;
   return { branch: laneGit.branch, head: laneGit.head, repo: laneGit.repo };
 }
 
@@ -183,7 +177,7 @@ function lookupInput(settings: PullRequestSettings, token: string, lane: Eligibl
     ttlMs: (settings.cacheTtlSeconds ?? 30) * 1000,
     cacheMaxEntries: settings.cacheMaxEntries ?? 500,
     cacheMaxCredentials: settings.cacheMaxCredentials ?? 256,
-    allowedRepositories: settings.allowedRepositories ?? [],
+    allowedRepositories: repositoryScope(settings),
     limits: {
       requestTimeoutMs: (settings.requestTimeoutSeconds ?? 10) * 1000,
       lookupTimeoutMs: (settings.lookupTimeoutSeconds ?? 30) * 1000,
@@ -258,7 +252,7 @@ export function createConversationPullRequestHandler(deps: {
       ]);
       const settings = (appConfig.endpoints?.[EModelEndpoint.agents] as TAgentsEndpoint | undefined)
         ?.pullRequests;
-      if (settings?.enabled !== true) {
+      if (!settings || !isPullRequestFeatureActive(settings, deps.env)) {
         res.status(200).json(NONE);
         return;
       }
@@ -272,7 +266,7 @@ export function createConversationPullRequestHandler(deps: {
         return;
       }
 
-      const token = resolveTokenReference(settings.token, deps.env);
+      const token = resolvePullRequestToken(settings.token, deps.env);
       if (token == null) {
         logger.warn('[PullRequests] Enabled without a usable token reference');
         res.status(503).json({ error: 'Pull requests are not configured', code: 'NOT_CONFIGURED' });
@@ -354,7 +348,7 @@ export function createConversationPullRequestsHandler(deps: {
       const none = (): TConversationPullRequestsResponse => ({
         results: ids.map((conversationId) => ({ conversationId, pullRequest: null })),
       });
-      if (settings?.enabled !== true) {
+      if (!settings || !isPullRequestFeatureActive(settings, deps.env)) {
         res.status(200).json(none());
         return;
       }
@@ -379,7 +373,7 @@ export function createConversationPullRequestsHandler(deps: {
        * A missing token is a fact about the conversations that needed one, not about the request:
        * those entries say so, and every other conversation keeps its correct "no pull request".
        */
-      const token = resolveTokenReference(settings.token, deps.env);
+      const token = resolvePullRequestToken(settings.token, deps.env);
       if (token == null) {
         logger.warn('[PullRequests] Enabled without a usable token reference');
         res.status(200).json({

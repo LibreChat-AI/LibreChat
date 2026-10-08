@@ -26,7 +26,7 @@ function PullRequestCard({
 
   return (
     <div className="flex flex-col gap-3 p-3" data-testid="pull-request-card">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2.25">
         <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />
         <span className="text-text-primary text-sm font-medium">
           {localize('com_ui_pr_label', { 0: pullRequest.number })}
@@ -55,7 +55,7 @@ function PullRequestCard({
               rel="noopener noreferrer"
               aria-label={openLabel}
               data-testid="pull-request-github-link"
-              className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2"
+              className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex size-7 shrink-0 items-center justify-center rounded-md outline-hidden focus-visible:ring-2 [&_svg]:size-4"
             >
               <GithubIcon />
             </a>

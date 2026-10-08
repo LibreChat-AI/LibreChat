@@ -1,7 +1,7 @@
 import type { TConversationPullRequest } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 
-export type PullRequestTone = 'success' | 'error' | 'warning' | 'neutral';
+export type PullRequestTone = 'success' | 'error' | 'warning' | 'neutral' | 'merged';
 
 export type PullRequestIcon = 'open' | 'draft' | 'merged' | 'closed';
 
@@ -33,9 +33,9 @@ function stateOf(
   if (pr.state === 'merged') {
     return {
       icon: 'merged',
-      iconTone: 'neutral',
+      iconTone: 'merged',
       stateKey: 'com_ui_pr_state_merged',
-      stateTone: 'neutral',
+      stateTone: 'merged',
     };
   }
   if (pr.state === 'closed') {
@@ -86,6 +86,7 @@ export const TONE_ICON_CLASS: Record<PullRequestTone, string> = {
   error: 'text-status-error',
   warning: 'text-status-warning',
   neutral: 'text-text-secondary',
+  merged: 'text-brand-purple',
 };
 
 export const TONE_DOT_CLASS: Record<PullRequestTone, string> = {
@@ -93,4 +94,5 @@ export const TONE_DOT_CLASS: Record<PullRequestTone, string> = {
   error: 'bg-status-error',
   warning: 'bg-status-warning',
   neutral: 'bg-status-neutral',
+  merged: 'bg-brand-purple',
 };

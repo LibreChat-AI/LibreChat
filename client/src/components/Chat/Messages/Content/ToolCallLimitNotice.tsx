@@ -82,10 +82,10 @@ export default function ToolCallLimitNotice({ message }: { message: TMessage }) 
         render={
           <Button
             type="button"
-            variant="ghost"
+            variant="quiet"
             size="icon-xs"
             aria-label={localize('com_ui_tool_call_limit_dismiss')}
-            className="text-text-secondary absolute top-1.5 right-1.5 focus-visible:ring-offset-0 focus-visible:ring-inset"
+            className="absolute top-1.5 right-1.5 focus-visible:ring-offset-0 focus-visible:ring-inset"
             onClick={() => setDismissed(true)}
           >
             <X className="h-4 w-4" aria-hidden="true" />

@@ -43,7 +43,6 @@ export const DisablePhase: React.FC<DisablePhaseProps> = ({ onDisable, isDisabli
             onChange={setToken}
             maxLength={6}
             pattern={REGEXP_ONLY_DIGITS}
-            className="gap-2"
           >
             <>
               <InputOTPGroup>
@@ -65,7 +64,7 @@ export const DisablePhase: React.FC<DisablePhaseProps> = ({ onDisable, isDisabli
         variant="destructive"
         onClick={() => onDisable(token, useBackup)}
         disabled={isDisabling || !(useBackup ? isBackupCode(token) : token.length === 6)}
-        className="w-full rounded-xl px-6 py-3 transition-all disabled:opacity-50"
+        className="w-full rounded-xl px-6 py-3 transition-all"
       >
         {isDisabling && <Spinner className="mr-2" />}
         {isDisabling ? localize('com_ui_disabling') : localize('com_ui_2fa_disable')}

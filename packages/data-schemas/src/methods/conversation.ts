@@ -3862,7 +3862,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt codeEnvironmentMode codeWorkspaces',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -3898,6 +3898,12 @@ export function createConversationMethods(
           id: String(lastReturned._id),
         };
         nextCursor = Buffer.from(JSON.stringify(composite)).toString('base64');
+      }
+
+      /* Stamped by the replica that selected the decision, so a row from one that predates it
+         is told apart from an ordinary chat, which carries no decision either. */
+      for (const convo of convos) {
+        convo.codeDecisionListed = true;
       }
 
       if (sharedIds != null) {

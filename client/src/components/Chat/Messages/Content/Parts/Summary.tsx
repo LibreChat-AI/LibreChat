@@ -82,7 +82,7 @@ const SummaryButton = memo(
           aria-expanded={isExpanded}
           aria-controls={contentId}
           className={cn(
-            'group/button h-auto flex-1 justify-start gap-0 rounded-lg p-0 leading-[18px] font-normal',
+            'group/button flex-1 gap-0 rounded-lg leading-[18px] font-normal',
             fontSize,
           )}
         >
@@ -103,19 +103,16 @@ const SummaryButton = memo(
         </Button>
         {content && showCopyButton && (
           <Button
-            variant="ghost"
-            size="icon"
+            variant="message-action"
             onClick={onCopy}
             aria-label={
               isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_summary')
             }
             className={cn(
-              'text-text-secondary-alt size-auto p-1.5',
               isExpanded
                 ? 'opacity-0 group-focus-within/summary-container:opacity-100 group-hover/summary-container:opacity-100'
                 : 'opacity-0',
-              'hover:bg-surface-hover hover:text-text-primary',
-              'focus-visible:ring-text-primary focus-visible:opacity-100 focus-visible:ring-2',
+              'focus-visible:opacity-100',
             )}
           >
             <span className="sr-only">

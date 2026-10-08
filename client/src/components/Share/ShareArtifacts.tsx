@@ -150,9 +150,7 @@ export function ShareArtifactsContainer({
         >
           {mainContent}
         </ResizablePanel>
-        {showDockedPanel && (
-          <ResizableHandleAlt withHandle className="bg-border-medium text-text-primary" />
-        )}
+        {showDockedPanel && <ResizableHandleAlt withHandle className="text-text-primary" />}
         {showDockedPanel && (
           <ResizablePanel
             defaultSize={`${normalizedArtifactSize}`}

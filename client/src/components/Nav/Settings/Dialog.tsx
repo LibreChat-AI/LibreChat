@@ -100,11 +100,11 @@ export default function SettingsDialog({ open, onOpenChange }: TDialogProps) {
                   </h2>
                 )}
                 <Button
-                  variant="ghost"
+                  variant="quiet"
                   size="icon"
                   onClick={() => onOpenChange(false)}
                   aria-label={localize('com_ui_close_settings')}
-                  className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus:ring-border-xheavy h-auto w-auto rounded-lg p-1 transition-colors focus:ring-2"
+                  className="focus:ring-border-xheavy h-auto w-auto p-1 focus:ring-2"
                 >
                   <X className="h-5 w-5" aria-hidden="true" />
                 </Button>

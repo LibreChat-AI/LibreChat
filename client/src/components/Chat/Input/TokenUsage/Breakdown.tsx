@@ -414,13 +414,13 @@ export default function Breakdown({
                     <HoverCardTrigger asChild>
                       <Button
                         type="button"
-                        variant="ghost"
+                        variant="quiet"
                         size="icon"
                         aria-label={localize('com_ui_context_insights')}
                         aria-expanded={insightsOpen}
                         aria-controls={insightsOpen ? insightsId : undefined}
                         data-testid="context-insights-toggle"
-                        className="text-text-secondary size-6"
+                        className="size-6"
                         onFocus={() => setInsightsOpen(true)}
                         onBlur={() => setInsightsOpen(false)}
                         onClick={() => setInsightsOpen(true)}
@@ -737,7 +737,7 @@ export default function Breakdown({
             {langfuseSessionUrl && (
               <>
                 <div className="border-border-light border-t" role="separator" />
-                <Button asChild variant="link" className="h-auto w-full justify-between p-0">
+                <Button asChild variant="link" size="bare" className="w-full justify-between">
                   <a href={langfuseSessionUrl} target="_blank" rel="noopener noreferrer">
                     <span>{localize('com_ui_langfuse_view_session')}</span>
                     <ExternalLink className="size-4 shrink-0" aria-hidden="true" />

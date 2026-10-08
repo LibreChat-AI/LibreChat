@@ -1118,7 +1118,7 @@ describe('agent pull request config', () => {
   const parse = (pullRequests?: unknown) =>
     configSchema.safeParse({ version: '1.0', endpoints: { agents: { pullRequests } } });
 
-  it('is off by default and absent when not configured', () => {
+  it('is absent when not configured, and has no switch of its own until one is set', () => {
     const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
     expect(absent.endpoints?.agents?.pullRequests).toBeUndefined();
     const empty = configSchema.parse({
@@ -1126,7 +1126,6 @@ describe('agent pull request config', () => {
       endpoints: { agents: { pullRequests: {} } },
     });
     expect(empty.endpoints?.agents?.pullRequests).toEqual({
-      enabled: false,
       cacheTtlSeconds: 30,
       requestTimeoutSeconds: 10,
       lookupTimeoutSeconds: 30,
@@ -1151,13 +1150,19 @@ describe('agent pull request config', () => {
     expect(parse(enabled).success).toBe(true);
   });
 
-  it('requires a token reference when enabled', () => {
-    expect(parse({ ...enabled, token: undefined }).success).toBe(false);
+  it("needs no token reference, so the deployment's own GitHub token can be used", () => {
+    expect(parse({ ...enabled, token: undefined }).success).toBe(true);
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
   });
 
-  it('requires at least one allowed repository when enabled, so a worker cannot name its own', () => {
-    expect(parse({ ...enabled, allowedRepositories: undefined }).success).toBe(false);
-    expect(parse({ ...enabled, allowedRepositories: [] }).success).toBe(false);
+  it('accepts the opt-in to every repository, and nothing but a boolean for it', () => {
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
+    expect(parse({ allowAllRepositories: false }).success).toBe(true);
+    expect(parse({ allowAllRepositories: 'yes' }).success).toBe(false);
+  });
+
+  it('can be switched off explicitly', () => {
+    expect(parse({ enabled: false }).success).toBe(true);
   });
 
   it.each(['LibreChat-AI/*', 'o/r', 'My.Org/my_repo-2'])('accepts the repository %s', (repo) => {

@@ -131,7 +131,7 @@ const PromptName: React.FC<Props> = ({ name, isLoading = false, isError = false,
           onKeyDown={handleKeyDown}
           onBlur={saveName}
           disabled={isLoading}
-          className="text-text-primary focus:border-border-medium h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent pr-0 pl-2 text-base font-semibold disabled:opacity-60"
+          className="text-text-primary focus:border-border-medium h-8 min-w-0 flex-1 rounded-md border-transparent pr-0 pl-2 text-base font-semibold disabled:opacity-60"
           aria-label={localize('com_ui_name')}
         />
       ) : (

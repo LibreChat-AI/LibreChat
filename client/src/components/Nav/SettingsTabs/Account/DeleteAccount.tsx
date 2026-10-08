@@ -70,7 +70,7 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
           <OGDialogTrigger asChild>
             <Button
               aria-labelledby="delete-account-label"
-              variant="destructive"
+              variant="destructive-soft"
               onClick={() => setDialogOpen(true)}
               disabled={disabled}
             >
@@ -113,7 +113,6 @@ const DeleteAccount = ({ disabled = false }: { title?: string; disabled?: boolea
                       onChange={setOtpToken}
                       maxLength={6}
                       pattern={REGEXP_ONLY_DIGITS}
-                      className="gap-2"
                     >
                       <>
                         <InputOTPGroup>

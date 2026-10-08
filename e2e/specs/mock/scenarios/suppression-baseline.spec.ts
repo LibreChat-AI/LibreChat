@@ -163,8 +163,15 @@ test.describe('the recorded design-rule backlog', () => {
 
     const baseline = readBaseline();
     const recorded = Object.keys(baseline);
-    const linted = recorded.find((path) => path.startsWith('client/src/a11y/')) ?? recorded[0];
-    const directory = linted.slice(0, linted.lastIndexOf('/'));
+    const directoryOf = (path: string): string => path.slice(0, path.lastIndexOf('/'));
+    /** The prune lints the whole directory against a baseline holding only the
+     *  fixture, so the directory must record exactly one file. */
+    const linted =
+      recorded.find(
+        (path) =>
+          recorded.filter((other) => other.startsWith(`${directoryOf(path)}/`)).length === 1,
+      ) ?? recorded[0];
+    const directory = directoryOf(linted);
     const outside = recorded.find((path) => !path.startsWith(`${directory}/`));
     if (!outside) {
       throw new Error('the baseline records only one directory; pick another fixture');

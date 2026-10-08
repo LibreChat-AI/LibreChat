@@ -97,10 +97,10 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               />
               <Button
                 ref={showCodeButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
-                className="text-text-secondary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
+                className="focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
                 onClick={handleToggleCode}
               >
                 <MorphIcon icon={showCode ? ChevronUp : ChevronDown} className="h-4 w-4" />
@@ -110,10 +110,10 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               </Button>
               <Button
                 ref={copyButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={localize('com_ui_copy_code')}
-                className="text-text-secondary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
+                className="focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
                 <MorphIcon icon={isCopied ? Check : Copy} size="1.125rem" />

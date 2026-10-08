@@ -112,7 +112,7 @@ const RevokeKeysButton = ({
       <OGDialog open={open} onOpenChange={setOpen}>
         <OGDialogTrigger asChild>
           <Button
-            variant="destructive"
+            variant="destructive-soft"
             className="flex items-center justify-center duration-200"
             onClick={() => setOpen(true)}
             disabled={disabled}

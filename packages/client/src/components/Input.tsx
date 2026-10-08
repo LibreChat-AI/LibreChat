@@ -1,19 +1,25 @@
 import * as React from 'react';
+import { fieldControl, fieldEmbedded, fieldFlush, fieldInvalid } from './Field';
 import { floatingField } from './floating';
-import { fieldControl } from './Field';
 import { cn } from '~/utils';
 import './Field.css';
 
 /** `title` edits a heading in place, so the field takes the heading's type scale. `inline` shares
  *  a row with icon Buttons, so it takes their height role and the row stays one height when a
  *  theme sizes fields and buttons apart. `floating` is the sign-in form field whose label rests
- *  inside it and lifts on focus. */
-const INPUT_VARIANTS: Record<'default' | 'inline' | 'title' | 'title-sm' | 'floating', string> = {
+ *  inside it and lifts on focus. `flush` draws no border or ring because the surrounding frame owns
+ *  the indicator, and `embedded` fills a list or popover row edge to edge. */
+export const INPUT_VARIANTS: Record<
+  'default' | 'inline' | 'title' | 'title-sm' | 'floating' | 'flush' | 'embedded',
+  string
+> = {
   default: '',
   inline: 'h-theme-button',
   title: 'h-theme-field-lg text-2xl font-semibold tracking-tight',
   'title-sm': 'text-base font-semibold tracking-tight',
   floating: floatingField,
+  flush: fieldFlush,
+  embedded: fieldEmbedded,
 };
 
 export type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
@@ -29,6 +35,7 @@ const Input: React.ForwardRefExoticComponent<InputProps & React.RefAttributes<HT
           className={cn(
             fieldControl,
             'ring-offset-surface-primary',
+            fieldInvalid,
             INPUT_VARIANTS[variant],
             colorTransition && 'transition-colors',
             className ?? '',

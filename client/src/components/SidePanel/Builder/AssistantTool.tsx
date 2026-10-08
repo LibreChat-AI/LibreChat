@@ -65,15 +65,12 @@ export default function AssistantTool({
           {currentTool.icon && (
             <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full">
               <div
-                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-center bg-no-repeat"
-                style={{ backgroundImage: `url(${currentTool.icon})`, backgroundSize: 'cover' }}
+                className="bg-surface-tertiary flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-(image:--tool-icon) bg-cover bg-center bg-no-repeat"
+                style={{ '--tool-icon': `url(${currentTool.icon})` } as React.CSSProperties}
               />
             </div>
           )}
-          <div
-            className="h-9 grow px-3 py-2"
-            style={{ textOverflow: 'ellipsis', wordBreak: 'break-all', overflow: 'hidden' }}
-          >
+          <div className="h-9 grow overflow-hidden px-3 py-2 break-all text-ellipsis">
             {currentTool.name}
           </div>
         </div>

@@ -203,7 +203,7 @@ const DraggablePinnedRow = ({
   return (
     <div
       ref={ref}
-      style={{ opacity: isDragging ? 0 : 1 }}
+      className={isDragging ? 'opacity-0' : undefined}
       data-handler-id={handlerId}
       onKeyDown={handleKeyDown}
     >

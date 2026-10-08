@@ -1493,6 +1493,25 @@ describe('Conversation Operations', () => {
       },
     );
 
+    it('lists the code decision, so a row can tell a code conversation from an ordinary one', async () => {
+      const conversationId = uuidv4();
+      const plainId = uuidv4();
+      const codeWorkspaces = [mac];
+      await saveConvo(
+        { userId },
+        { conversationId, codeEnvironmentMode: 'attached', codeWorkspaces },
+      );
+      await saveConvo({ userId }, { conversationId: plainId });
+      const { conversations } = await getConvosByCursor(userId);
+      expect(conversations.find((row) => row.conversationId === conversationId)).toEqual(
+        expect.objectContaining({ codeEnvironmentMode: 'attached', codeWorkspaces }),
+      );
+      expect(conversations.find((row) => row.conversationId === plainId)).not.toHaveProperty(
+        'codeEnvironmentMode',
+      );
+      expect(conversations.every((row) => row.codeDecisionListed === true)).toBe(true);
+    });
+
     it('preserves explicit agent ownership through save, reload and a stale ordinary save', async () => {
       const conversationId = uuidv4();
       const codeWorkspaces = [{ ...mac, agentIds: ['primary', 'reviewer'] }];

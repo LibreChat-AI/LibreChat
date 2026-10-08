@@ -17,6 +17,7 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
+import { isCodeConversation } from '~/components/Chat/PullRequest/code';
 import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
@@ -81,6 +82,10 @@ function Conversation({
   const showPullRequest =
     startupConfig?.pullRequestsEnabled === true &&
     startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
+    /* A row the listing replica stamped carries its code decision, so only code conversations
+       ask. One without the stamp (an older replica, a row inserted from the cache) cannot be
+       told apart from an ordinary chat and keeps asking, as before. */
+    (conversation.codeDecisionListed !== true || isCodeConversation(conversation)) &&
     !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);
@@ -429,7 +434,7 @@ function Conversation({
                   'bg-status-info pointer-events-none absolute -right-0.5 -bottom-0.5 size-2 rounded-full ring-2',
                   isActiveConvo || isPopoverActive
                     ? 'ring-surface-nav-selected'
-                    : 'ring-surface-primary-alt group-hover:ring-surface-nav-hover',
+                    : 'ring-surface-sidebar group-hover:ring-surface-nav-hover',
                 )}
               />
             )}

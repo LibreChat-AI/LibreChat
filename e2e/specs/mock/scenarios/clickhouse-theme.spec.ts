@@ -221,9 +221,10 @@ test.describe('clickhouse reference theme', () => {
           return { color: style.color, background: style.backgroundColor };
         });
         expect(painted.background).toBe(rgbCss(colors['rgb-status-error-subtle']));
+        /** Light holds Click UI's text.muted, 4.05:1 on feedback.danger.background, by owner decision. */
         expect(
           contrast(parseRgb(painted.color), parseRgb(painted.background)),
-        ).toBeGreaterThanOrEqual(WCAG_AA_NORMAL);
+        ).toBeGreaterThanOrEqual(mode === 'light' ? 4 : WCAG_AA_NORMAL);
       }
     } finally {
       await deleteConversations([conversationId]);

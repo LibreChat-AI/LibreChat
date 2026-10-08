@@ -222,7 +222,6 @@ const BackupCodesItem: React.FC = () => {
                       onChange={setOtpToken}
                       maxLength={6}
                       pattern={REGEXP_ONLY_DIGITS}
-                      className="gap-2"
                     >
                       <>
                         <InputOTPGroup>

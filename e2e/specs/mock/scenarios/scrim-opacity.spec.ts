@@ -112,13 +112,13 @@ const CASES: Array<{ title: string; mode: Mode; definition?: { name: string }; e
     },
     {
       title:
-        'the ClickHouse dark theme dims at Click UI scrim opacity without lifting the page @scenario:scrim-opacity-clickhouse-dark',
+        'the ClickHouse dark theme dims at Click UI scrim opacity and gray @scenario:scrim-opacity-clickhouse-dark',
       mode: 'dark',
       definition: clickHouseTheme,
       expected: {
-        dialog: 'rgba(0, 0, 0, 0.75)',
-        alert: 'rgba(0, 0, 0, 0.75)',
-        modal: 'rgba(0, 0, 0, 0.75)',
+        dialog: 'rgba(96, 96, 96, 0.75)',
+        alert: 'rgba(96, 96, 96, 0.75)',
+        modal: 'rgba(96, 96, 96, 0.75)',
       },
     },
     {

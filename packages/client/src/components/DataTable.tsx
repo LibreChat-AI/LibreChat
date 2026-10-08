@@ -105,12 +105,16 @@ const TableRowComponent = <TData, TValue>({
       ref={measureRef}
       data-index={index}
       data-state={row.getIsSelected() ? 'selected' : undefined}
-      className="motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out"
-      style={{
-        animationDelay: `${index * 20}ms`,
-        transform: `translateY(${isSearching ? '4px' : '0'})`,
-        opacity: isSearching ? 0.5 : 1,
-      }}
+      className={cn(
+        'motion-safe:animate-fadeIn border-border-light hover:bg-surface-secondary border-b transition-all duration-300 ease-out [animation-delay:var(--row-delay)]',
+        isSearching && 'opacity-50',
+      )}
+      style={
+        {
+          '--row-delay': `${index * 20}ms`,
+          transform: `translateY(${isSearching ? '4px' : '0'})`,
+        } as React.CSSProperties
+      }
     >
       {row.getVisibleCells().map((cell) => {
         if (cell.column.id === 'select') {

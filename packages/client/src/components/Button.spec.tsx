@@ -10,8 +10,16 @@ jest.mock('react-i18next', () => ({
 }));
 
 describe('Button', () => {
-  it('paints a destructive button solid and tints it only when the theme asks', () => {
+  it('keeps a confirming destructive button solid in every theme', () => {
     const destructive = cn(buttonVariants({ variant: 'destructive' }));
+
+    expect(destructive).toContain('bg-surface-destructive');
+    expect(destructive).toContain('text-text-on-status');
+    expect(destructive).not.toContain('theme-destructive-soft:');
+  });
+
+  it('paints an inline destructive button solid and tints it only when the theme asks', () => {
+    const destructive = cn(buttonVariants({ variant: 'destructive-soft' }));
 
     expect(destructive).toContain('bg-surface-destructive');
     expect(destructive).toContain('text-text-on-status');
@@ -30,6 +38,22 @@ describe('Button', () => {
     expect(quiet).toContain('hover:text-text-primary');
     expect(quiet).toContain('hover:bg-surface-hover');
     expect(ghost).not.toContain('text-text-secondary');
+  });
+
+  it('marks the current nav destination with aria-pressed and the theme navigation roles', () => {
+    const nav = cn(buttonVariants({ variant: 'nav', size: 'icon' }));
+    expect(nav).toContain('text-text-secondary');
+    expect(nav).toContain('hover:bg-surface-nav-hover');
+    expect(nav).toContain('aria-pressed:bg-surface-nav-selected');
+    expect(nav).toContain('aria-pressed:text-text-primary');
+    expect(nav).toContain('size-theme-button');
+  });
+
+  it('presses the message action to the pressed fill like ghost and keeps the carousel arrows on the fixed surface', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain(
+      'hover:active:bg-surface-pressed',
+    );
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('bg-surface-pressed');
   });
 
   it('offers the message, link, carousel and toolbar roles as variants', () => {
@@ -52,6 +76,16 @@ describe('Button', () => {
     expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('px-4');
     expect(cn(buttonVariants({ variant: 'toolbar' }))).toContain('py-1');
     expect(cn(buttonVariants({ variant: 'toolbar' }))).not.toContain('py-2');
+  });
+
+  it('gives a floating control a surface only when its chrome outline is gone', () => {
+    const floating = cn(buttonVariants({ variant: 'floating', size: 'icon-theme' }));
+
+    expect(floating).toContain('border-border-chrome');
+    expect(floating).toContain('bg-surface-chat/90');
+    expect(floating).toContain('theme-chrome-quiet:bg-surface-chat');
+    expect(floating).toContain('theme-chrome-quiet:shadow-md');
+    expect(floating).toContain('theme-chrome-quiet:hover:active:bg-surface-pressed');
   });
 
   it('outlines a toggle in the control border', () => {
