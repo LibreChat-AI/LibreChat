@@ -114,7 +114,7 @@
     "e2e:report": "npx playwright show-report e2e/playwright-report",
     "lint:fix": "npm run build:client-package && eslint . --fix --pass-on-unpruned-suppressions",
     "lint": "npm run build:client-package && eslint . --pass-on-unpruned-suppressions",
-    "lint:design:record": "npm run build:client-package && eslint --no-warn-ignored --suppress-rule shadcn/no-restyle --suppress-rule shadcn/no-raw-colors --suppress-rule shadcn/no-arbitrary-values --suppress-rule shadcn/no-inline-styles --suppress-rule shadcn/require-static-classes --suppress-rule shadcn/no-unknown-classes client/src packages/client/src",
+    "lint:design:record": "npm run build:client-package && eslint --no-warn-ignored --suppress-rule shadcn/no-restyle --suppress-rule shadcn/no-raw-colors --suppress-rule shadcn/no-arbitrary-values --suppress-rule shadcn/no-inline-styles --suppress-rule shadcn/require-static-classes --suppress-rule shadcn/no-unknown-classes --suppress-rule design/disabled-recipe client/src packages/client/src",
     "lint:design:suppress": "(npm run --silent lint:design:record || node -e \"\") && npm run lint:design:prune",
     "lint:design:prune": "npm run build:client-package && eslint --no-warn-ignored --prune-suppressions client/src packages/client/src",
     "sort-imports": "node scripts/sort-imports.mts",

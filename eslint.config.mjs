@@ -14,6 +14,7 @@ import react from 'eslint-plugin-react';
 import jest from 'eslint-plugin-jest';
 import globals from 'globals';
 import js from '@eslint/js';
+import design from './scripts/eslint/design.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -199,7 +200,7 @@ export default [
   // name those extensions too: the rules have to see them.
   {
     files: ['client/src/**/*.{ts,tsx,js,jsx}', 'packages/client/src/**/*.{ts,tsx,js,jsx}'],
-    plugins: { shadcn },
+    plugins: { shadcn, design },
     settings: {
       shadcn: {
         ui: '@librechat/client',
@@ -265,6 +266,9 @@ export default [
         },
       ],
       'shadcn/require-static-classes': 'error',
+      // A disabled control that fades through `opacity-*` also has to compose a shared disabled
+      // recipe, or a theme with `disabledStyle: fill` cannot paint it (scripts/eslint/design.mjs).
+      'design/disabled-recipe': 'error',
       // Now answerable: the rule asks the installed Tailwind whether a class generates CSS, and
       // the app is on v4. Classes declared in a stylesheet Tailwind reads are recognized on their
       // own; these are the ones it cannot see, plain selectors in files loaded separately
@@ -322,6 +326,18 @@ export default [
           ],
         },
       ],
+    },
+  },
+  {
+    // A spec asserts the class strings a control renders; it composes nothing a theme paints.
+    files: [
+      'client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+      'packages/client/src/**/*.{spec,test}.{ts,tsx,js,jsx}',
+      'packages/client/src/**/__tests__/**/*.{ts,tsx,js,jsx}',
+    ],
+    rules: {
+      'design/disabled-recipe': 'off',
     },
   },
   {
