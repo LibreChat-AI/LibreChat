@@ -69,6 +69,19 @@ describe('host-side file edit limits', () => {
   });
 });
 
+describe('stream keepalive interval', () => {
+  it('defaults to 25 seconds and accepts 0 to disable', () => {
+    expect(agentsEndpointSchema.parse({}).streamKeepaliveIntervalMs).toBe(25_000);
+    expect(
+      agentsEndpointSchema.parse({ streamKeepaliveIntervalMs: 0 }).streamKeepaliveIntervalMs,
+    ).toBe(0);
+  });
+
+  it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
+    expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [

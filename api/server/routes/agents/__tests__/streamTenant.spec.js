@@ -17,6 +17,8 @@ const mockGenerationJobManager = {
 const mockCaptureAgentCheckpointGeneration = jest.fn();
 const mockDeleteAgentCheckpoint = jest.fn();
 const mockSaveMessage = jest.fn();
+const mockGetAppConfig = jest.fn().mockResolvedValue({});
+let mockConfigMiddleware = (_req, _res, next) => next();
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
@@ -53,8 +55,13 @@ jest.mock('~/server/middleware', () => ({
   },
   moderateText: (req, res, next) => next(),
   messageIpLimiter: (req, res, next) => next(),
-  configMiddleware: (req, res, next) => next(),
+  configMiddleware: (req, res, next) => mockConfigMiddleware(req, res, next),
   messageUserLimiter: (req, res, next) => next(),
+}));
+
+jest.mock('~/server/services/Config', () => ({
+  ...jest.requireActual('~/server/services/Config'),
+  getAppConfig: (...args) => mockGetAppConfig(...args),
 }));
 
 jest.mock('~/server/routes/agents/chat', () => require('express').Router());
@@ -426,6 +433,33 @@ describe('SSE stream tenant isolation', () => {
         expect(res.text.startsWith(':\n\n')).toBe(true);
       } finally {
         jest.useRealTimers();
+      }
+    });
+
+    it('looks up the job while the app config is still loading', async () => {
+      let releaseConfig;
+      const configGate = new Promise((resolve) => {
+        releaseConfig = resolve;
+      });
+      mockConfigMiddleware = (_req, _res, next) => {
+        configGate.then(() => next());
+      };
+      mockGetAppConfig.mockImplementation(() => configGate.then(() => ({})));
+      mockGenerationJobManager.getJob.mockResolvedValue(null);
+
+      try {
+        const pending = request(app)
+          .get('/agents/chat/stream/stream-123')
+          .then((res) => res);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(mockGenerationJobManager.getJob).toHaveBeenCalledWith('stream-123');
+        releaseConfig();
+        await pending;
+      } finally {
+        releaseConfig();
+        mockConfigMiddleware = (_req, _res, next) => next();
+        mockGetAppConfig.mockResolvedValue({});
       }
     });
 

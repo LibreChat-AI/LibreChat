@@ -1,7 +1,12 @@
 import { EventEmitter } from 'events';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
 import type { SseKeepaliveResponse } from '../keepalive';
-import { SSE_KEEPALIVE_FRAME, resolveStreamKeepaliveMs, startSseKeepalive } from '../keepalive';
+import {
+  SSE_KEEPALIVE_FRAME,
+  startSseKeepalive,
+  loadStreamKeepaliveMs,
+  resolveStreamKeepaliveMs,
+} from '../keepalive';
 
 class FakeResponse extends EventEmitter implements SseKeepaliveResponse {
   writableEnded = false;
@@ -81,5 +86,31 @@ describe('resolveStreamKeepaliveMs', () => {
   it('honors a configured interval, including 0 to disable', () => {
     expect(resolveStreamKeepaliveMs({ streamKeepaliveIntervalMs: 10_000 })).toBe(10_000);
     expect(resolveStreamKeepaliveMs({ streamKeepaliveIntervalMs: 0 })).toBe(0);
+  });
+});
+
+describe('loadStreamKeepaliveMs', () => {
+  it('reuses a config already on the request without loading', async () => {
+    const load = jest.fn();
+    const config = { endpoints: { agents: { streamKeepaliveIntervalMs: 5_000 } } };
+
+    await expect(loadStreamKeepaliveMs(config, load)).resolves.toBe(5_000);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('loads the config when the request has none', async () => {
+    const load = jest
+      .fn()
+      .mockResolvedValue({ endpoints: { agents: { streamKeepaliveIntervalMs: 0 } } });
+
+    await expect(loadStreamKeepaliveMs(undefined, load)).resolves.toBe(0);
+  });
+
+  it('falls back to the default when loading fails', async () => {
+    const load = jest.fn().mockRejectedValue(new Error('config unavailable'));
+
+    await expect(loadStreamKeepaliveMs(undefined, load)).resolves.toBe(
+      DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS,
+    );
   });
 });
