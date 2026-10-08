@@ -54,8 +54,9 @@ const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
 const TRIPLET = new RegExp(
   `^\\s*${BARE_TRIPLET}\\s*$|var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)`,
+  'i',
 );
-const TRIPLET_FALLBACK = new RegExp(`^var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)$`);
+const TRIPLET_FALLBACK = new RegExp(`^var\\(\\s*--[\\w-]+\\s*,\\s*${BARE_TRIPLET}\\s*\\)$`, 'i');
 const NAMED = new RegExp(`(?<![\\w.-])(?:${NAMED_COLORS.join('|')})(?![\\w.-])`, 'gi');
 /** Properties whose values are identifiers or names, where a colour keyword is not a colour. */
 const NON_COLOR_PROPERTY =

@@ -200,5 +200,8 @@ test('reads percentage channels and triplets inside a var() fallback', () => {
     'var(--configured, 255 0 0)',
   ]);
   assert.deepEqual(literals('a { --brand: 255, 0, 0; }'), ['255, 0, 0']);
+  assert.deepEqual(literals('a { --brand: VAR(--configured, 255 0 0); }'), [
+    'VAR(--configured, 255 0 0)',
+  ]);
   assert.deepEqual(literals('a { --offset: 0 1px 2px; --size: 1.5rem 2rem 3rem; }'), []);
 });
