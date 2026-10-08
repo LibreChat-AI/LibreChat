@@ -306,12 +306,12 @@ html {
   --theme-dialog-title-size: var(--theme-text-lg, 1.125rem);
   --theme-dialog-title-leading: 1;
   --theme-dialog-title-font-weight: 600;
-  --theme-dialog-title-font-family: var(--theme-display-font-family, Inter, sans-serif);
+  --theme-dialog-title-font-family: var(--theme-display-font-family, Inter, Vazirmatn, sans-serif);
   --theme-scrim-opacity: 0.8;
   --theme-alert-scrim-opacity: 0.9;
   --theme-modal-scrim-opacity: 0.65;
-  --theme-font-family: Inter, sans-serif;
-  --theme-display-font-family: Inter, sans-serif;
+  --theme-font-family: Inter, Vazirmatn, sans-serif;
+  --theme-display-font-family: Inter, Vazirmatn, sans-serif;
   --theme-text-xs: 0.75rem;
   --theme-text-xs-leading: calc(1 / 0.75);
   --theme-text-sm: 0.875rem;

@@ -64,6 +64,22 @@ describe('SplitText', () => {
     }
   });
 
+  it.each([
+    ['a joining script', 'سلام روح‌الله'],
+    ['a right-to-left name in a left-to-right greeting', 'Good evening, דוד כהן?'],
+    ['a left-to-right name in a Persian greeting', 'عصر بخیر، John?'],
+  ])('keeps text with %s in one run so it shapes and reorders', (_case, text) => {
+    const { container } = render(<SplitText text={text} />);
+    const visible = container.querySelectorAll('p > span[aria-hidden="true"]');
+
+    expect(visible).toHaveLength(1);
+    expect(visible[0]).toHaveTextContent(text, { normalizeWhitespace: false });
+    const runs = visible[0].querySelectorAll('span');
+    expect(runs).toHaveLength(1);
+    expect(runs[0].textContent).toBe(text);
+    expect(container.querySelector('.sr-only')).toHaveTextContent(text);
+  });
+
   it('reports new wrapping after scale changes without changing the text', () => {
     jest.useFakeTimers();
     const observerSpy = jest

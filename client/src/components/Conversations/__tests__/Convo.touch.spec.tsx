@@ -56,6 +56,7 @@ jest.mock('~/utils', () => ({
   logger: { error: jest.fn() },
   isConversationUnseen: () => false,
   hasRealTitle: (title: string) => !!title && title !== 'New Chat',
+  getDisplayTitle: jest.requireActual('~/utils/documentTitle').getDisplayTitle,
 }));
 
 jest.mock('../ConvoOptions', () => ({

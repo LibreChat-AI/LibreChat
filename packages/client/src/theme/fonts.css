@@ -2,7 +2,8 @@
  * The font faces the stock theme and the bundled themes name, and the single source for them.
  *
  * `tokens.css` imports this file, so the app and a consumer of `@librechat/client/theme.css` load
- * the same files: Inter for `font-sans` and `font-theme-ui`, Roboto Mono for `font-mono`, and
+ * the same files: Inter for `font-sans` and `font-theme-ui` with Vazirmatn behind it for
+ * Arabic script, Roboto Mono for `font-mono`, and
  * Inconsolata, which the ClickHouse theme opts into. Each `url()` names the file by its package
  * export (`@librechat/client/fonts/*`) rather than by a relative path, and the host's bundler
  * resolves and emits it. A relative path would be read against the wrong file: Vite inlines this
@@ -63,6 +64,47 @@
   font-weight: 600;
   src: url('@librechat/client/fonts/Inter-BoldItalic.woff2') format('woff2');
   size-adjust: 94%;
+}
+
+/*
+ * Vazirmatn covers the Arabic script that Inter lacks. The stock families list it after Inter,
+ * so Latin keeps Inter while Persian, Arabic and Urdu text gets one designed face instead of
+ * whatever the operating system falls back to. The `unicode-range` matches the Arabic subset
+ * these files were cut to, so a page without Arabic-script text never fetches them. Each weight
+ * mirrors Inter's mapping above (500 renders the semibold file, 600 the bold one) so mixed text
+ * keeps one visual weight.
+ */
+@font-face {
+  font-display: swap;
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 400;
+  src: url('@librechat/client/fonts/vazirmatn-arabic-400-normal.woff2') format('woff2');
+  unicode-range:
+    U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E,
+    U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 500;
+  src: url('@librechat/client/fonts/vazirmatn-arabic-600-normal.woff2') format('woff2');
+  unicode-range:
+    U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E,
+    U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC;
+}
+
+@font-face {
+  font-display: swap;
+  font-family: Vazirmatn;
+  font-style: normal;
+  font-weight: 600;
+  src: url('@librechat/client/fonts/vazirmatn-arabic-700-normal.woff2') format('woff2');
+  unicode-range:
+    U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E,
+    U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC;
 }
 
 @font-face {

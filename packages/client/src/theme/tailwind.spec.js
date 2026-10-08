@@ -413,7 +413,7 @@ describe('radius, font and shadow scales', () => {
     expect(defaultAppearance.radius2xl).toBe(tailwindDefault('--radius-2xl'));
     expect(defaultAppearance.radius3xl).toBe(tailwindDefault('--radius-3xl'));
 
-    expect(defaultAppearance.fontFamily).toBe('Inter, sans-serif');
+    expect(defaultAppearance.fontFamily).toBe('Inter, Vazirmatn, sans-serif');
     expect(defaultAppearance.monoFontFamily).toBe(
       "'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, 'Cascadia Mono', 'Liberation Mono', Consolas, monospace",
     );

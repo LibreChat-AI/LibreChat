@@ -3,7 +3,7 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        'theme-ui': ['var(--theme-font-family, Inter, sans-serif)'],
+        'theme-ui': ['var(--theme-font-family, Inter, Vazirmatn, sans-serif)'],
         /** A dialog title's family, the display family unless a theme names its own. */
         'theme-dialog-title': [
           'var(--theme-dialog-title-font-family, var(--theme-display-font-family, inherit))',

@@ -207,9 +207,11 @@ export default function useTextarea({
           ? getEntityName({ name: entityName, isAgent, localize })
           : getSender(conversation as TEndpointOption);
 
-      return `${localize('com_endpoint_message_new', {
-        0: sender ? sender : localize('com_endpoint_ai'),
-      })}`;
+      /* A placeholder cannot hold `<bdi>`, so first-strong isolate marks keep a name in another
+         script (`Message GPT-4o (mini)` inside Persian copy) in its own reading order. */
+      return localize('com_endpoint_message_new', {
+        0: `⁨${sender ? sender : localize('com_endpoint_ai')}⁩`,
+      });
     };
 
     const placeholderText = getPlaceholderText();

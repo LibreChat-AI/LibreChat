@@ -48,6 +48,7 @@ jest.mock('~/utils', () => ({
   setDocumentTitle: jest.fn(),
   isConversationUnseen: () => false,
   hasRealTitle: (title: string) => !!title && title !== 'New Chat',
+  getDisplayTitle: jest.requireActual('~/utils/documentTitle').getDisplayTitle,
 }));
 jest.mock('../ConvoOptions', () => ({ ConvoOptions: () => <div data-testid="convo-options" /> }));
 jest.mock('../ConversationEndpointIcon', () => ({

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { TOptions } from 'i18next';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import { cn } from '~/utils';
+import { cn, getDisplayTitle } from '~/utils';
 
 interface ConvoLinkProps {
   isActiveConvo: boolean;
@@ -56,7 +56,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
   const [isOverflowing, setIsOverflowing] = useState(false);
   const titleRef = useRef<HTMLSpanElement>(null);
   const textRef = useRef<HTMLSpanElement>(null);
-  const displayTitle = title || localize('com_ui_untitled');
+  const displayTitle = getDisplayTitle(title, localize);
 
   useEffect(() => {
     const viewport = titleRef.current;
@@ -134,7 +134,7 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
     <button
       type="button"
       className={cn(
-        'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 self-stretch overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+        'focus-visible:ring-text-primary flex w-full min-w-0 grow cursor-pointer items-center gap-2 self-stretch overflow-hidden rounded-lg px-2 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset rtl:text-right',
         isActiveConvo || isPopoverActive ? 'bg-surface-nav-selected' : '',
       )}
       aria-current={isActiveConvo ? 'page' : undefined}
@@ -143,21 +143,26 @@ const ConvoLink: React.FC<ConvoLinkProps> = ({
       aria-label={
         (isSharedBadgeVisible
           ? localize('com_ui_conversation_label_shared', {
-              title: title || localize('com_ui_untitled'),
+              title: displayTitle,
             })
           : localize('com_ui_conversation_label', {
-              title: title || localize('com_ui_untitled'),
+              title: displayTitle,
             })) +
         (isGenerating ? `, ${localize('com_ui_generating')}` : '') +
         (isUnseen && !isGenerating ? `, ${localize('com_ui_unread')}` : '')
       }
     >
       {children}
+      {/* The title takes its own direction, so a title in another script keeps its reading order,
+          fades and scrolls toward its own end, and still sits on the interface's side of the row:
+          the button sets a physical `left`/`right`, which the title inherits unchanged, since
+          `start` would resolve against the title's own direction. */}
       <span
         ref={titleRef}
+        dir="auto"
         className={cn(
           isUnseen && !isGenerating && 'font-semibold',
-          'min-w-0 flex-1 overflow-hidden [mask-size:100%_100%] [mask-position:left] [mask-repeat:no-repeat] [text-align:start] whitespace-nowrap [transition-property:mask-size] [transition-duration:0ms] [transition-timing-function:linear] [--convo-title-fade-width:24px] [--convo-title-reveal-duration:800ms] [&:dir(rtl)]:[mask-position:right]',
+          'min-w-0 flex-1 overflow-hidden [mask-size:100%_100%] [mask-position:left] [mask-repeat:no-repeat] whitespace-nowrap [transition-property:mask-size] [transition-duration:0ms] [transition-timing-function:linear] [--convo-title-fade-width:24px] [--convo-title-reveal-duration:800ms] [&:dir(rtl)]:[mask-position:right]',
           isOverflowing &&
             '[mask-image:linear-gradient(to_right,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)] [&:dir(rtl)]:[mask-image:linear-gradient(to_left,currentColor_calc(100%_-_var(--convo-title-fade-width)),transparent)]',
           'data-[title-revealed=true]:[mask-size:calc(100%_+_var(--convo-title-fade-width))_100%] data-[title-revealed=true]:[transition-duration:var(--convo-title-reveal-duration)]',

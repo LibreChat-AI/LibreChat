@@ -1,4 +1,5 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
+import type { LocalizeFunction } from '~/common';
 
 export const CHAT_TITLE_IN_TAB_KEY = 'chatTitleInTab';
 export const DEFAULT_APP_TITLE = 'LibreChat';
@@ -8,6 +9,17 @@ export const getDocumentTitleRevision = (): number => documentTitleRevision;
 
 export const hasRealTitle = (title?: string | null): title is string =>
   title != null && title !== '' && title !== 'New Chat';
+
+/**
+ * The title to show for a conversation. `New Chat` is the stored placeholder for a chat that has
+ * not been titled yet, not text the user wrote, so it reads in the interface language.
+ */
+export const getDisplayTitle = (title: string | null | undefined, localize: LocalizeFunction) => {
+  if (title === 'New Chat') {
+    return localize('com_ui_new_chat');
+  }
+  return hasRealTitle(title) ? title : localize('com_ui_untitled');
+};
 
 const getAppTitle = (): string => {
   try {

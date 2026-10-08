@@ -1,6 +1,8 @@
 import { LocalStorageKeys } from 'librechat-data-provider';
+import type { LocalizeFunction } from '~/common';
 import {
   hasRealTitle,
+  getDisplayTitle,
   setDocumentTitle,
   CHAT_TITLE_IN_TAB_KEY,
   isChatTitleInTabEnabled,
@@ -75,5 +77,23 @@ describe('document title', () => {
     localStorage.setItem(CHAT_TITLE_IN_TAB_KEY, 'not-json');
 
     expect(isChatTitleInTabEnabled()).toBe(true);
+  });
+});
+
+describe('getDisplayTitle', () => {
+  const localize = ((key: string) => `t:${key}`) as LocalizeFunction;
+
+  it('keeps a title the chat was given', () => {
+    expect(getDisplayTitle('گزارش فروش', localize)).toBe('گزارش فروش');
+  });
+
+  it('reads the stored New Chat placeholder in the interface language', () => {
+    expect(getDisplayTitle('New Chat', localize)).toBe('t:com_ui_new_chat');
+  });
+
+  it('labels a missing title as untitled', () => {
+    expect(getDisplayTitle('', localize)).toBe('t:com_ui_untitled');
+    expect(getDisplayTitle(null, localize)).toBe('t:com_ui_untitled');
+    expect(getDisplayTitle(undefined, localize)).toBe('t:com_ui_untitled');
   });
 });

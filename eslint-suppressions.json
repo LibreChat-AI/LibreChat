@@ -1678,7 +1678,7 @@
   },
   "packages/client/src/components/SplitText.tsx": {
     "shadcn/no-inline-styles": {
-      "count": 7
+      "count": 5
     }
   },
   "packages/client/src/components/Toast.tsx": {
