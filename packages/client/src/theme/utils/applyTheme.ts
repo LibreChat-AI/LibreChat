@@ -62,6 +62,11 @@ function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]>
     variables.push(['--shimmer-base', colors['rgb-text-primary']]);
   }
 
+  /** The dark page was `surface-primary-alt` before it had a role, as in `resolveTheme`. */
+  if (colors['rgb-page-canvas'] === undefined && colors['rgb-surface-primary-alt'] !== undefined) {
+    variables.push(['--page-canvas', colors['rgb-surface-primary-alt']]);
+  }
+
   if (colors['rgb-text-muted'] === undefined && colors['rgb-text-tertiary'] !== undefined) {
     variables.push(['--text-muted', colors['rgb-text-tertiary']]);
   }

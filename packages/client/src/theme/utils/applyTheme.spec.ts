@@ -328,6 +328,16 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--shimmer-base')).toBe('90 80 70');
   });
 
+  it('carries a legacy theme without a page canvas onto its alternate surface', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary-alt': '12 13 14' }, root);
+    expect(root.style.getPropertyValue('--page-canvas')).toBe('12 13 14');
+
+    applyTheme({ 'rgb-surface-primary-alt': '12 13 14', 'rgb-page-canvas': '1 2 3' }, root);
+    expect(root.style.getPropertyValue('--page-canvas')).toBe('1 2 3');
+  });
+
   it('carries a legacy theme without muted text onto its tertiary text color', () => {
     const root = document.documentElement;
 
