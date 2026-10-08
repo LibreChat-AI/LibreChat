@@ -336,6 +336,27 @@ const getFileSignature = (
 const getFileSizeLimit = ({ fileSizeLimit }: EndpointFileConfig): number | null =>
   fileSizeLimit != null && fileSizeLimit > 0 ? fileSizeLimit : null;
 
+/** The allowlist a file's MIME type is checked against: the endpoint's list, or the text/OCR/STT
+ * routes when the upload targets a specific tool resource. */
+const getMimeTypesToCheck = ({
+  supportedMimeTypes,
+  fileConfig,
+  toolResource,
+}: {
+  supportedMimeTypes: RegexLike[];
+  fileConfig: FileConfig | null;
+  toolResource?: string;
+}): RegexLike[] => {
+  if (toolResource === EToolResources.context) {
+    return [
+      ...(fileConfig?.text?.supportedMimeTypes || []),
+      ...(fileConfig?.ocr?.supportedMimeTypes || []),
+      ...(fileConfig?.stt?.supportedMimeTypes || []),
+    ];
+  }
+  return supportedMimeTypes;
+};
+
 export const validateFileSizes = ({
   files,
   fileList,
@@ -383,7 +404,7 @@ export const validateFileLimit = ({
   return true;
 };
 
-export type UploadSkipReason = 'duplicate' | 'fileSize';
+export type UploadSkipReason = 'duplicate' | 'fileSize' | 'unsupportedType';
 
 export type SkippedUpload = {
   /** Position in the `fileList` handed to `partitionUploads`, so callers can map back to their own parallel arrays */
@@ -400,22 +421,33 @@ export type UploadPartition = {
 /**
  * Splits a selection into the files that may be uploaded and the ones that cannot, so a single
  * offender no longer rejects everything picked alongside it. Duplicates are matched against files
- * already attached and against earlier entries in the same selection. Only per-file rules belong
- * here: `totalSizeLimit` is a property of the batch as a whole, so callers still run
- * `validateFileSizes` over whatever survives.
+ * already attached and against earlier entries in the same selection. Unsupported types are a
+ * per-file verdict too: they drop out here under the `unsupportedType` reason instead of failing
+ * the whole batch in `validateFiles`. Only per-file rules belong here: `totalSizeLimit` is a
+ * property of the batch as a whole, so callers still run `validateFileSizes` over whatever
+ * survives.
  */
 export const partitionUploads = ({
   files,
   fileList,
   endpointFileConfig,
+  fileConfig = null,
+  toolResource,
   skipSizeValidation = false,
 }: {
   fileList: File[];
   files: Map<string, ExtendedFile>;
   endpointFileConfig: EndpointFileConfig;
+  fileConfig?: FileConfig | null;
+  toolResource?: string;
   skipSizeValidation?: boolean;
 }): UploadPartition => {
   const fileSizeLimit = skipSizeValidation ? null : getFileSizeLimit(endpointFileConfig);
+  const mimeTypesToCheck = getMimeTypesToCheck({
+    supportedMimeTypes: endpointFileConfig.supportedMimeTypes,
+    fileConfig,
+    toolResource,
+  });
   const keptIndices: number[] = [];
   const skipped: SkippedUpload[] = [];
 
@@ -438,6 +470,12 @@ export const partitionUploads = ({
       continue;
     }
     signatures.add(signature);
+
+    const fileType = inferMimeType(file.name, file.type);
+    if (!fileType || !checkType(fileType, mimeTypesToCheck)) {
+      skipped.push({ index: i, file, reason: 'unsupportedType' });
+      continue;
+    }
 
     if (fileSizeLimit != null && file.size >= fileSizeLimit) {
       skipped.push({ index: i, file, reason: 'fileSize' });
@@ -539,14 +577,11 @@ export const validateFiles = ({
      * endpoint allowlist is the same ceiling the server enforces in `filterFile`, so
      * accepting extraction-capable types beyond it only turns a preflight message into
      * a failed request. */
-    let mimeTypesToCheck = supportedMimeTypes;
-    if (toolResource === EToolResources.context) {
-      mimeTypesToCheck = [
-        ...(fileConfig?.text?.supportedMimeTypes || []),
-        ...(fileConfig?.ocr?.supportedMimeTypes || []),
-        ...(fileConfig?.stt?.supportedMimeTypes || []),
-      ];
-    }
+    const mimeTypesToCheck = getMimeTypesToCheck({
+      supportedMimeTypes,
+      fileConfig,
+      toolResource,
+    });
 
     if (!checkType(originalFile.type, mimeTypesToCheck)) {
       setError(`Unsupported file type: ${originalFile.type}`);
