@@ -446,6 +446,62 @@ describe('PullRequestRowMark', () => {
     expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
   });
 
+  it('does not open the card while the row is dragged with a button held', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    fireEvent.mouseDown(title, { buttons: 1 });
+    fireEvent.mouseMove(title, {
+      screenX: 300,
+      screenY: 300,
+      movementX: 3,
+      movementY: 3,
+      buttons: 1,
+    });
+    fireEvent.mouseMove(title, {
+      screenX: 303,
+      screenY: 303,
+      movementX: 3,
+      movementY: 3,
+      buttons: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('does not open the card when the list scrolls before the hover delay ends', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    fireEvent.scroll(document.body);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('closes a card the row opened once the list scrolls the row away', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    await screen.findByTestId('pull-request-card');
+    fireEvent.scroll(document.body);
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('keeps the card open when its own content scrolls', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    const card = await screen.findByTestId('pull-request-card');
+    fireEvent.scroll(card);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.getByTestId('pull-request-card')).toBeInTheDocument();
+  });
+
   it('returns focus to the icon when a card opened from the row is dismissed', async () => {
     /* jsdom has no layout, and Ariakit only restores focus to an element it can see. */
     const rects = jest
