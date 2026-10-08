@@ -140,6 +140,12 @@ describe('Conversation row pull request', () => {
     expect(mockMarkProps[0]).toMatchObject({ conversationId: 'convo-1', selected: true });
   });
 
+  it('hands the mark its own row, so hovering anywhere on the row can open the card', () => {
+    renderRow();
+    const rowRef = mockMarkProps[0].rowRef as { current: HTMLElement | null };
+    expect(rowRef.current).toBe(screen.getByTestId('convo-item'));
+  });
+
   it('reserves no space around the mark, since an absent mark must leave the row unchanged', () => {
     renderRow();
     const wrapper = screen.getByTestId('convo-pull-request').parentElement as HTMLElement;

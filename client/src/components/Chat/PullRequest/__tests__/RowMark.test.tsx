@@ -65,17 +65,23 @@ const movePointerOver = (element: HTMLElement) => {
   });
 };
 
-const renderMark = (props: Partial<React.ComponentProps<typeof PullRequestRowMark>> = {}) => {
+const renderMark = (
+  props: Partial<React.ComponentProps<typeof PullRequestRowMark>> = {},
+  withRow = false,
+) => {
+  const rowRef = React.createRef<HTMLDivElement>();
   const rowClick = jest.fn();
   const rowKey = jest.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <div data-testid="row" onClick={rowClick} onKeyDown={rowKey}>
+      <div data-testid="row" ref={rowRef} onClick={rowClick} onKeyDown={rowKey}>
+        <span data-testid="row-title">{String(1)}</span>
         <PullRequestRowMark
           conversationId="convo-1"
           labelId="pr-label"
           selected={false}
+          rowRef={withRow ? rowRef : undefined}
           {...props}
         />
       </div>
@@ -371,6 +377,47 @@ describe('PullRequestRowMark', () => {
     fireEvent.mouseLeave(mark);
     fireEvent.mouseMove(document.body, { screenX: 900, screenY: 900, movementX: 7, movementY: 7 });
     await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('opens the card when the pointer rests anywhere on the row, not only on the icon', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    movePointerOver(screen.getByTestId('row-title'));
+    expect(await screen.findByTestId('pull-request-card')).toHaveTextContent(pr.title);
+  });
+
+  it('does not open the card from the row when the row is not handed to the mark', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark();
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    movePointerOver(screen.getByTestId('row-title'));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
+  });
+
+  it('closes the card when the pointer leaves the row', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    const title = screen.getByTestId('row-title');
+    movePointerOver(title);
+    movePointerOver(title);
+    await screen.findByTestId('pull-request-card');
+    fireEvent.mouseLeave(screen.getByTestId('row'));
+    fireEvent.mouseMove(document.body, { screenX: 900, screenY: 900, movementX: 7, movementY: 7 });
+    await waitFor(() => expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument());
+  });
+
+  it('does not open the card from a row the pointer has not moved over', async () => {
+    mockGetMany.mockResolvedValue(answer('convo-1', pr));
+    renderMark({}, true);
+    await screen.findByTestId('convo-pull-request');
+    movePointerOver(screen.getByTestId('row-title'));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(screen.queryByTestId('pull-request-card')).not.toBeInTheDocument();
   });
 
   it('does not open the row when the card is clicked', async () => {

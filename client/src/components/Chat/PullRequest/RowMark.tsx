@@ -2,11 +2,13 @@ import { memo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { Button } from '@librechat/client';
 import { TriangleAlert } from 'lucide-react';
+import type { RefObject } from 'react';
 import type React from 'react';
 import { useRowPullRequestQuery } from '~/data-provider/PullRequest';
 import { TONE_DOT_CLASS, presentPullRequest } from './status';
 import PullRequestPanel, { panelClass } from './Panel';
 import { summarizePullRequest } from './summary';
+import useRowHover from './useRowHover';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
 import { cn } from '~/utils';
@@ -28,6 +30,7 @@ function PullRequestRowMark({
   labelId,
   selected,
   onDescribed,
+  rowRef,
 }: {
   conversationId: string;
   /** The id the row lists in `aria-describedby`, so a screen reader hears what the colors say. */
@@ -35,6 +38,8 @@ function PullRequestRowMark({
   selected: boolean;
   /** Tells the row whether `labelId` is in the page, so it never points at text that is not. */
   onDescribed?: (described: boolean) => void;
+  /** The row the mark sits in. Resting the pointer anywhere on it opens the card, not just on the icon. */
+  rowRef?: RefObject<HTMLElement | null>;
 }) {
   const localize = useLocalize();
   const store = Ariakit.useHovercardStore({
@@ -46,6 +51,8 @@ function PullRequestRowMark({
   const { data, isError, refetch } = useRowPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
   const described = pullRequest != null || isError;
+
+  useRowHover(store, rowRef, described);
 
   useEffect(() => {
     onDescribed?.(described);
@@ -62,6 +69,7 @@ function PullRequestRowMark({
           render={<Ariakit.Button />}
           aria-label={failed}
           aria-expanded={open}
+          showOnHover={rowRef == null}
           data-testid="convo-pull-request-failed"
           onFocus={() => store.show()}
           onClick={(event: React.MouseEvent) => {
@@ -114,6 +122,7 @@ function PullRequestRowMark({
         render={<Ariakit.Button />}
         aria-label={summary}
         aria-expanded={open}
+        showOnHover={rowRef == null}
         data-testid="convo-pull-request"
         onFocus={() => store.show()}
         onClick={(event: React.MouseEvent) => {
