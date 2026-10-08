@@ -49,10 +49,11 @@ describe('Button', () => {
     expect(nav).toContain('size-theme-button');
   });
 
-  it('presses the message action and carousel arrows to the pressed fill like ghost', () => {
-    for (const variant of ['message-action', 'carousel-nav'] as const) {
-      expect(cn(buttonVariants({ variant }))).toContain('hover:active:bg-surface-pressed');
-    }
+  it('presses the message action to the pressed fill like ghost and keeps the carousel arrows on the fixed surface', () => {
+    expect(cn(buttonVariants({ variant: 'message-action' }))).toContain(
+      'hover:active:bg-surface-pressed',
+    );
+    expect(cn(buttonVariants({ variant: 'carousel-nav' }))).not.toContain('bg-surface-pressed');
   });
 
   it('offers the message, link, carousel and toolbar roles as variants', () => {

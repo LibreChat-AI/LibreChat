@@ -171,7 +171,11 @@ for (const theme of THEMES) {
         expect(embedded['background-color']).toBe(
           await probeStyle(page, 'bg-surface-tertiary-alt', 'background-color'),
         );
-        const metrics = FIELD_PROPS.filter((name) => name !== 'background-color');
+        const metrics = [
+          ...FIELD_PROPS.filter((name) => name !== 'background-color'),
+          'height',
+          'width',
+        ];
         expect(await styleOf(page, '#embedded', metrics)).toEqual(
           await styleOf(page, '#legacy', metrics),
         );
@@ -212,9 +216,10 @@ for (const theme of THEMES) {
       const framed = await styleOf(
         page,
         '#framed',
-        ['border-top-color', 'box-shadow', 'color'],
+        ['border-top-color', 'box-shadow', 'color', 'outline-style'],
         true,
       );
+      expect(framed['outline-style']).toBe('none');
       expect(framed['border-top-color']).toBe(
         await probeStyle(page, 'border-border-medium', 'border-top-color'),
       );
@@ -253,8 +258,15 @@ for (const theme of THEMES) {
         document.documentElement.setAttribute('data-input-modality', 'pointer'),
       );
       for (const id of ['bad', 'tbad']) {
-        const focused = await styleOf(page, `#${id}`, ['border-top-color'], true);
+        const focused = await styleOf(
+          page,
+          `#${id}`,
+          ['border-top-color', 'box-shadow', 'outline-style'],
+          true,
+        );
         expect(focused['border-top-color']).toBe(destructive);
+        expect(focused['box-shadow']).toBe('none');
+        expect(focused['outline-style']).toBe('none');
       }
       const okFocused = await styleOf(page, '#ok', ['border-top-color'], true);
       expect(okFocused['border-top-color']).not.toBe(destructive);

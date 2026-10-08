@@ -8,17 +8,23 @@
    reset. The style is read from the `--theme-field-focus-style` property of the
    nearest themed root, so a field under a ring root nested in a border root is
    reset again, and a browser without style queries keeps the default reset. A field marked
-   `aria-invalid` keeps its destructive edge through both resets. */
-html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus,
-html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-visible {
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
+   `aria-invalid` keeps its destructive edge through both border resets but still
+   loses the ring and outline on pointer focus. */
+html[data-input-modality='pointer'] .lc-field:focus,
+html[data-input-modality='pointer'] .lc-field:focus-visible {
   box-shadow: none;
   outline: none;
 }
 
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus,
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-visible {
+  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
+}
+
 @container style(--theme-field-focus-style: border) {
   html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):is(:root *):focus,
-  html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):is(:root *):focus-visible {
+  html[data-input-modality='pointer']
+    .lc-field:not([aria-invalid='true']):is(:root *):focus-visible {
     border-color: rgb(var(--border-field-focus, var(--focus-control)));
   }
 }
@@ -50,4 +56,13 @@ html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-v
   -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
   background-clip: content-box;
   -webkit-box-shadow: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
+}
+
+/* The framed editor (`lc-framed`) draws its own ring, so the app's global focus outline for
+   non-`.lc-field` textareas would add a second indicator outside it. `:root` lifts this above
+   that rule's weight; forced colors keep the outline as the only indicator. */
+@media not (forced-colors: active) {
+  html:root textarea.lc-framed:focus-visible {
+    outline: none !important;
+  }
 }

@@ -9,8 +9,17 @@ import { Input } from './Input';
 import { cn } from '~/utils';
 
 const FLUSH = ['border-0', 'focus-visible:ring-0'];
-const EMBEDDED = ['bg-surface-tertiary-alt', 'border-0', 'p-2', 'rounded-none', 'text-sm'];
+const EMBEDDED = [
+  'bg-surface-tertiary-alt',
+  'h-auto',
+  'w-full',
+  'border-0',
+  'p-2',
+  'rounded-none',
+  'text-sm',
+];
 const FRAMED = [
+  'lc-framed',
   'rounded-xl',
   'border',
   'border-border-medium',

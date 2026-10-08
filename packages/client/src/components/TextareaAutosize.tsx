@@ -16,7 +16,7 @@ import { cn } from '~/utils';
 
 /** A rounded editor box of its own, such as a prompt or message editor. */
 const framed =
-  'rounded-xl border border-border-medium bg-transparent text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-focus-control';
+  'lc-framed rounded-xl border border-border-medium bg-transparent text-text-primary placeholder:text-text-secondary focus-visible:ring-2 focus-visible:ring-focus-control';
 
 /** The control is bare by default and the caller draws it. `framed` is the bordered, rounded
  *  editor box, `flush` draws no border or ring because the surrounding frame owns the indicator,

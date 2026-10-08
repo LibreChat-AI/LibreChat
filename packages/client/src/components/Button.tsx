@@ -122,7 +122,7 @@ const buttonVariantRecipe = cva(
           'h-auto justify-start gap-2 rounded-none p-0 font-normal text-text-secondary hover:bg-transparent hover:text-text-primary focus-visible:ring-offset-0',
         /** A previous or next arrow floating over a carousel's content, on the fixed surface. */
         'carousel-nav':
-          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:active:bg-surface-pressed hover:shadow-xl',
+          'rounded-xl bg-surface-fixed p-2 text-text-fixed shadow-lg hover:bg-surface-fixed-hover hover:shadow-xl',
         /** A compact text action in a toolbar, quiet until hovered. */
         toolbar:
           'rounded-sm bg-transparent px-2 py-1 text-xs font-normal text-text-secondary hover:bg-surface-hover',
