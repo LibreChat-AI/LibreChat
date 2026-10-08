@@ -23,7 +23,8 @@ export const fieldFlush: string =
   'border-0 focus-visible:ring-0 theme-field-border:focus-visible:ring-0';
 
 /** A field marked `aria-invalid` draws its border in the destructive role, over the caller's border colour. */
-export const fieldInvalid: string = 'aria-invalid:border-border-destructive';
+export const fieldInvalid: string =
+  'aria-invalid:border-border-destructive theme-field-border:focus:aria-invalid:border-border-destructive';
 
 /** A field set into a list or popover edge to edge, filling its row and leaving the frame to the host. */
 export const fieldEmbedded: string = 'bg-surface-tertiary-alt border-0 p-2 rounded-none text-sm';

@@ -206,7 +206,12 @@ for (const theme of THEMES) {
       expect(await styleOf(page, '#framed', props, true)).toEqual(
         await styleOf(page, '#legacy', props, true),
       );
-      const framed = await styleOf(page, '#framed', ['border-top-color', 'box-shadow', 'color']);
+      const framed = await styleOf(
+        page,
+        '#framed',
+        ['border-top-color', 'box-shadow', 'color'],
+        true,
+      );
       expect(framed['border-top-color']).toBe(
         await probeStyle(page, 'border-border-medium', 'border-top-color'),
       );
@@ -306,7 +311,8 @@ for (const theme of THEMES) {
       const chip = await page.evaluate(
         () => getComputedStyle(document.querySelector('label[for="secret"]')!).backgroundColor,
       );
-      const expectedRole = theme === 'clickhouse' ? 'bg-field-fill' : 'bg-surface-primary';
+      const expectedRole =
+        theme === 'clickhouse' ? 'theme-field-fill:bg-field-fill' : 'bg-surface-primary';
       expect(chip).toBe(await probeStyle(page, expectedRole, 'background-color'));
     });
   });

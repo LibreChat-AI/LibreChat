@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { TextareaAutosize } from './TextareaAutosize';
 import { SecretInput } from './SecretInput';
 import { floatingLabel } from './floating';
+import { fieldInvalid } from './Field';
 import { Textarea } from './Textarea';
 import { Input } from './Input';
 import { cn } from '~/utils';
@@ -76,7 +77,7 @@ describe('field variants', () => {
   it('TextareaAutosize adds nothing by default', () => {
     render(<TextareaAutosize aria-label="draft" className="resize-none" />);
     const field = screen.getByLabelText('draft');
-    expect(field.className).toBe(cn('aria-invalid:border-border-destructive', 'resize-none'));
+    expect(field.className).toBe(cn(fieldInvalid, 'resize-none'));
   });
 
   it('TextareaAutosize framed carries the bordered editor box exactly', () => {
