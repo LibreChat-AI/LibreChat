@@ -30,8 +30,11 @@ test.describe('agent search clear button', () => {
     });
 
     expect(await readInk(clear)).toBe(probe.secondary);
-    await clear.hover();
-    await expect.poll(() => readInk(clear)).toBe(probe.primary);
+    const hasHover = await page.evaluate(() => matchMedia('(hover: hover)').matches);
+    if (hasHover) {
+      await clear.hover();
+      await expect.poll(() => readInk(clear)).toBe(probe.primary);
+    }
 
     await clear.click();
     await expect(search).toHaveValue('');
