@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "LibreChat Assistant",
+  "version": "1.0.0",
+  "description": "Enhances LibreChat by providing context from your browser tabs.",
+  "permissions": [
+    "storage",
+    "cookies",
+    "sidePanel",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://REPLACE_ME.com/",
+    "<all_urls>"
+  ],
+  "_comment": "IMPORTANT: Replace 'REPLACE_ME.com' with your actual LibreChat domain in host_permissions and content_scripts matches before loading this extension. Also update LIBRECHAT_URL in background.js with the same domain.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://REPLACE_ME.com/*"
+      ],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "LibreChat Assistant"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["Readability.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
