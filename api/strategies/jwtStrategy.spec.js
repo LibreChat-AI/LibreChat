@@ -23,6 +23,7 @@ jest.mock('@librechat/api', () => ({
   AGENT_TRIGGER_SCOPE: 'agent_trigger',
   isTokenRetired: jest.requireActual('@librechat/api').isTokenRetired,
   createJwtExtractor: jest.fn(() => 'mock-configured-extractor'),
+  resolveJwtAuthHeader: jest.requireActual('@librechat/api').resolveJwtAuthHeader,
   continueAfterBearerRetirement: jest.requireActual('@librechat/api').continueAfterBearerRetirement,
 }));
 
@@ -367,15 +368,22 @@ describe('jwtStrategy token extraction', () => {
     }
   });
 
-  it('builds the extractor from JWT_AUTH_HEADER with Authorization as the fallback', () => {
-    process.env.JWT_AUTH_HEADER = 'X-Original-Authorization';
-    jwtLogin();
+  it('builds the extractor from the yaml header, ahead of JWT_AUTH_HEADER', () => {
+    process.env.JWT_AUTH_HEADER = 'x-env-authorization';
+    jwtLogin({ sessionToken: { header: 'X-Original-Authorization' } });
 
     expect(createJwtExtractor).toHaveBeenCalledWith('X-Original-Authorization', 'mock-extractor');
     expect(capturedStrategyOptions.jwtFromRequest).toBe('mock-configured-extractor');
   });
 
-  it('passes an unset value through, leaving the decision to the extractor', () => {
+  it('builds the extractor from JWT_AUTH_HEADER when yaml leaves it unset', () => {
+    process.env.JWT_AUTH_HEADER = 'X-Original-Authorization';
+    jwtLogin({});
+
+    expect(createJwtExtractor).toHaveBeenCalledWith('X-Original-Authorization', 'mock-extractor');
+  });
+
+  it('passes no header when neither source sets one, leaving Authorization alone', () => {
     delete process.env.JWT_AUTH_HEADER;
     jwtLogin();
 
