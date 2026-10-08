@@ -1,3 +1,4 @@
+import type { BannerVariant } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
 export interface IBanner extends Document {
@@ -7,6 +8,7 @@ export interface IBanner extends Document {
   displayTo?: Date;
   type: 'banner' | 'popup';
   isPublic: boolean;
+  variant?: BannerVariant;
   persistable: boolean;
   tenantId?: string;
 }
