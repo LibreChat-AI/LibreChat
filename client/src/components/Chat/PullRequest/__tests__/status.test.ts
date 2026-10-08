@@ -54,15 +54,21 @@ describe('presentPullRequest', () => {
     });
   });
 
-  it.each([
-    ['merged', 'merged', 'com_ui_pr_state_merged'],
-    ['closed', 'closed', 'com_ui_pr_state_closed'],
-  ] as const)('shows a %s pull request with its own icon', (state, icon, stateKey) => {
-    expect(presentPullRequest(make({ state, mergeable: 'unknown' }))).toMatchObject({
-      icon,
+  it('shows a closed pull request with its own icon', () => {
+    expect(presentPullRequest(make({ state: 'closed', mergeable: 'unknown' }))).toMatchObject({
+      icon: 'closed',
       iconTone: 'neutral',
-      stateKey,
+      stateKey: 'com_ui_pr_state_closed',
       stateTone: 'neutral',
+    });
+  });
+
+  it('shows a merged pull request with the merged icon in the purple tone', () => {
+    expect(presentPullRequest(make({ state: 'merged', mergeable: 'unknown' }))).toMatchObject({
+      icon: 'merged',
+      iconTone: 'merged',
+      stateKey: 'com_ui_pr_state_merged',
+      stateTone: 'merged',
     });
   });
 

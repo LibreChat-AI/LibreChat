@@ -26,7 +26,7 @@ function PullRequestCard({
 
   return (
     <div className="flex flex-col gap-3 p-3" data-testid="pull-request-card">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2.25">
         <PullRequestIcon icon={view.icon} tone={view.iconTone} className="size-4 shrink-0" />
         <span className="text-text-primary text-sm font-medium">
           {localize('com_ui_pr_label', { 0: pullRequest.number })}
