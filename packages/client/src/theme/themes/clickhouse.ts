@@ -177,7 +177,7 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-button-neutral-border': '230 231 233', // #e6e7e9 (button.basic.color.secondary.stroke.default)
   'rgb-button-neutral-text': '22 21 23', // #161517 (text.default, matching text-primary)
   'rgb-button-neutral-hover': '230 231 233', // #e6e7e9 (matching surface-hover)
-  'rgb-link-inline': '29 100 236', // #1d64ec (palette.info.500, matching link)
+  'rgb-link-inline': '67 126 239', // #437eef (text.link.default, matching link)
   'rgb-toast-edge': '67 90 111', // #435a6f (no Click UI counterpart; the stock role)
   'rgb-stroke-ink': '0 0 0', // #000000 at 10% (no Click UI counterpart; the stock role)
   'rgb-file-document': '16 78 198', // #104ec6 (palette.info.600)

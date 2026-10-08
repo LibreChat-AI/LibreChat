@@ -181,7 +181,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-select-edge': 'click.field.color.stroke.default',
     'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
     'rgb-button-neutral-text': 'global.color.text.default',
-    'rgb-link-inline': 'palette.info.500',
+    'rgb-link-inline': 'global.color.text.link.default',
     'rgb-file-document': 'palette.info.600',
     'rgb-file-sheet': 'palette.success.700',
     'rgb-file-code': 'palette.warning.600',
