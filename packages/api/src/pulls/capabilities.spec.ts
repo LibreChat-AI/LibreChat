@@ -14,6 +14,7 @@ describe('resolvePullRequestCapabilities', () => {
       pullRequestsEnabled: true,
       pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION,
       pullRequestsMaxConcurrentLookups: 4,
+      pullRequestsCodeScoped: true,
     });
   });
 
@@ -35,6 +36,7 @@ describe('resolvePullRequestCapabilities', () => {
     expect(capabilities).toEqual({ pullRequestsEnabled: false });
     expect(capabilities).not.toHaveProperty('pullRequestsBatchVersion');
     expect(capabilities).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
+    expect(capabilities).not.toHaveProperty('pullRequestsCodeScoped');
   });
 
   it('is on by default once a token exists and a scope is set, with no enabled switch', () => {

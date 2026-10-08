@@ -5,9 +5,13 @@ import { render, screen } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 
 const mockStartup: {
-  current: { pullRequestsEnabled?: boolean; pullRequestsBatchVersion?: number };
+  current: {
+    pullRequestsEnabled?: boolean;
+    pullRequestsBatchVersion?: number;
+    pullRequestsCodeScoped?: boolean;
+  };
 } = {
-  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 },
+  current: { pullRequestsEnabled: true, pullRequestsBatchVersion: 1, pullRequestsCodeScoped: true },
 };
 const mockMarkProps: Array<Record<string, unknown>> = [];
 /** What the mock mark reports to the row, as the real one does once it has text to show. */
@@ -109,7 +113,11 @@ describe('Conversation row pull request', () => {
   beforeEach(() => {
     mockMarkProps.length = 0;
     mockMarkState.described = true;
-    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
+    mockStartup.current = {
+      pullRequestsEnabled: true,
+      pullRequestsBatchVersion: 1,
+      pullRequestsCodeScoped: true,
+    };
   });
 
   it("keeps the title the conversation's own and puts the pull request beside it, outside the row button", () => {
@@ -182,6 +190,12 @@ describe('Conversation row pull request', () => {
     expect(screen.queryByTestId('convo-pull-request')).not.toBeInTheDocument();
     expect(mockMarkProps).toHaveLength(0);
     expect(rowButton().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('keeps asking for every row on a server that does not list the code decision', () => {
+    mockStartup.current = { pullRequestsEnabled: true, pullRequestsBatchVersion: 1 };
+    renderRow({ convo: ordinary });
+    expect(screen.getByTestId('convo-pull-request')).toBeInTheDocument();
   });
 
   it('leaves the mark out while the chat runs, so the ring is the only status', () => {

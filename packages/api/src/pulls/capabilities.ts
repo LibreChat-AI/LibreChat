@@ -10,6 +10,8 @@ export type PullRequestCapabilities = {
   /** The lookups one batch runs at once, so a client that falls back to the single route can
    *  keep to the same limit while a replica without the batch route is still serving it. */
   pullRequestsMaxConcurrentLookups?: number;
+  /** The conversation list carries each row's code decision, so rows can be scoped to code chats. */
+  pullRequestsCodeScoped?: true;
 };
 
 /**
@@ -29,6 +31,7 @@ export function resolvePullRequestCapabilities(
       ? {
           pullRequestsBatchVersion: PULL_REQUEST_BATCH_VERSION,
           pullRequestsMaxConcurrentLookups: agents?.pullRequests?.maxConcurrentLookups ?? 4,
+          pullRequestsCodeScoped: true as const,
         }
       : {}),
   };

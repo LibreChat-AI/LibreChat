@@ -17,8 +17,8 @@ import {
   useUpdateConversationMutation,
 } from '~/data-provider';
 import { cn, logger, setDocumentTitle, isConversationUnseen, hasRealTitle } from '~/utils';
-import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { isCodeConversation } from '~/components/Chat/PullRequest/code';
+import PullRequestRowMark from '~/components/Chat/PullRequest/RowMark';
 import { useNavigateToConvo, useLocalize, useShiftKey } from '~/hooks';
 import ConversationEndpointIcon from './ConversationEndpointIcon';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
@@ -82,7 +82,9 @@ function Conversation({
   const showPullRequest =
     startupConfig?.pullRequestsEnabled === true &&
     startupConfig.pullRequestsBatchVersion === PULL_REQUEST_BATCH_VERSION &&
-    isCodeConversation(conversation) &&
+    /* Rows of a server that lists no code decision cannot be told apart, so they all ask, as
+       before; once it lists them, only code conversations can have a pull request. */
+    (startupConfig.pullRequestsCodeScoped !== true || isCodeConversation(conversation)) &&
     !isGenerating;
   const projectBadgeProjectId = showProjectBadge ? conversation.chatProjectId : undefined;
   const isUnseen = isConversationUnseen(conversation);

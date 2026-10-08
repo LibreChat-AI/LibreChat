@@ -29,4 +29,28 @@ describe('conversation list memoization of the shared badge', () => {
 
     expect(areConversationListItemFieldsEqual(first, second)).toBe(true);
   });
+
+  it('treats a workspace detach as a re-render, since the row decides its pull request mark from it', () => {
+    const attached = {
+      ...baseConversation,
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
+    } as TConversation;
+    const detached = {
+      ...baseConversation,
+      codeEnvironmentMode: 'without_attached',
+    } as TConversation;
+
+    expect(areConversationListItemFieldsEqual(attached, detached)).toBe(false);
+  });
+
+  it('treats a newly attached workspace as a re-render', () => {
+    const attached = {
+      ...baseConversation,
+      codeEnvironmentMode: 'attached',
+      codeWorkspaces: [{ environmentId: 'env', workspaceId: 'ws' }],
+    } as TConversation;
+
+    expect(areConversationListItemFieldsEqual(baseConversation, attached)).toBe(false);
+  });
 });

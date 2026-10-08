@@ -45,7 +45,11 @@ export function areConversationListItemFieldsEqual(
     prevConversation.lastResponseAt === nextConversation.lastResponseAt &&
     prevConversation.lastResponseIsManual === nextConversation.lastResponseIsManual &&
     prevConversation.isMarkedUnread === nextConversation.isMarkedUnread &&
-    prevConversation.lastSeenAt === nextConversation.lastSeenAt
+    prevConversation.lastSeenAt === nextConversation.lastSeenAt &&
+    /* Attaching or detaching a workspace changes nothing else on the row, but it decides whether
+       the row asks for a pull request, so it has to reach the render. */
+    prevConversation.codeEnvironmentMode === nextConversation.codeEnvironmentMode &&
+    prevConversation.codeWorkspaces?.length === nextConversation.codeWorkspaces?.length
   );
 }
 

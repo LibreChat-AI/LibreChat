@@ -706,9 +706,11 @@ describe('GET /api/config', () => {
           if (expected) {
             expect(response.body.pullRequestsBatchVersion).toBe(1);
             expect(response.body.pullRequestsMaxConcurrentLookups).toBe(4);
+            expect(response.body.pullRequestsCodeScoped).toBe(true);
           } else {
             expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
             expect(response.body).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
+            expect(response.body).not.toHaveProperty('pullRequestsCodeScoped');
           }
         },
       );
