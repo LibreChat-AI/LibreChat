@@ -216,6 +216,14 @@ describe('ExpandedPanel', () => {
       expect(idle).toHaveAttribute('aria-pressed', 'true');
       expect(active).toHaveAttribute('aria-pressed', 'false');
     });
+
+    it('hovers the sidebar toggle and new chat link in the navigation role', () => {
+      renderPanel({ expanded: true });
+
+      expect(screen.getByTestId('close-sidebar-button')).toHaveClass('hover:bg-surface-nav-hover');
+      expect(screen.getByTestId('new-chat-button')).toHaveClass('hover:bg-surface-nav-hover');
+      expect(screen.getByTestId('new-chat-button')).not.toHaveClass('hover:bg-surface-hover');
+    });
   });
 
   describe('NewChatButton panel switch', () => {
