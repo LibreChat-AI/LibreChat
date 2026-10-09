@@ -16,7 +16,7 @@ const otherUserId = new mongoose.Types.ObjectId().toString();
 const key = { userId, conversationId: 'convo-1' };
 const limits = { maxRounds: 3, maxMinutes: 60 };
 const maxBots = 3;
-const head = (n: number) => String(n).repeat(40).slice(0, 40);
+const head = (n: number) => (n === 1 ? 'a' : String(n)).repeat(40).slice(0, 40);
 const pullOne = { repository: 'acme/one', pullNumber: 1 };
 const pullTwo = { repository: 'acme/one', pullNumber: 2 };
 const otherRepository = { repository: 'acme/two', pullNumber: 2 };
@@ -191,6 +191,18 @@ describe('enablePRAutomation', () => {
     expect((await claim(1)).ok).toBe(true);
   });
 
+  test('applies a narrower trust level passed with a rebind of a running record', async () => {
+    await enableWith({ ...key, binding: pullOne, trust: 'anyone' });
+    const rebound = await enableWith({ ...key, binding: otherRepository, trust: 'approvedBots' });
+    expect(rebound.trust).toBe('approvedBots');
+  });
+
+  test('applies a trust level passed with a rebind to another pull request', async () => {
+    await enableWith({ ...key, binding: pullOne, trust: 'anyone' });
+    const rebound = await enableWith({ ...key, binding: pullTwo, trust: 'collaborators' });
+    expect(rebound.trust).toBe('collaborators');
+  });
+
   test('keeps records of different users apart', async () => {
     await enable();
     expect(await methods.getPRAutomation({ ...key, userId: otherUserId })).toBeNull();
@@ -363,21 +375,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
   });
 
   /** Runs `during` right after the enable's first write, before it checks again. */
-  const interleaveEnable = (during: () => Promise<unknown>) => {
-    const original = PRAutomation.updateOne.bind(PRAutomation);
-    return jest.spyOn(PRAutomation, 'updateOne').mockImplementationOnce(((
-      ...args: Parameters<typeof PRAutomation.updateOne>
-    ) => {
-      const query = original(...args);
-      const then = query.then.bind(query);
-      query.then = ((resolve, reject) =>
-        then(async (value) => {
-          await during();
-          return value;
-        }).then(resolve, reject)) as typeof query.then;
-      return query;
-    }) as typeof PRAutomation.updateOne);
-  };
+  const interleaveEnable = (during: () => Promise<unknown>) => interleave(during);
 
   test('rejects an enable once account deletion started mid-write', async () => {
     const spy = interleaveEnable(startAccountDeletionNow);
@@ -423,6 +421,23 @@ describe('enabling for a conversation or owner that no longer exists', () => {
       spy.mockRestore();
     }
     expect((await methods.getPRAutomation(key))?.pullNumber).toBe(2);
+  });
+
+  test('restores the enable that landed between the crossing enable writes, not an older one', async () => {
+    await enable(pullOne);
+    /** A newer enable lands after the crossing enable's first write and before its rebind,
+     * then account deletion starts before the crossing enable checks again. */
+    const spy = interleave(async () => {
+      await enable(otherRepository);
+      await startAccountDeletionNow();
+    });
+    try {
+      await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    } finally {
+      spy.mockRestore();
+    }
+    await cancelAccountDeletion();
+    expect(await methods.getPRAutomation(key)).toMatchObject(otherRepository);
   });
 
   test('keeps a record the crossing enable did not change', async () => {
@@ -749,6 +764,19 @@ describe('claimPRAutomationRound', () => {
       }),
     ).rejects.toThrow(RangeError);
     expect((await methods.getPRAutomation(key))?.claimedHeads).toEqual([]);
+  });
+
+  test('treats a head in upper case as the head it already claimed', async () => {
+    await enable();
+    await claim(1);
+    await toWaiting();
+    const upper = await methods.claimPRAutomationRound({
+      ...key,
+      ...limits,
+      binding: { ...pullOne, epoch: await currentEpoch() },
+      headSha: 'A'.repeat(40),
+    });
+    expect(upper).toEqual({ ok: false, error: { code: 'stale_head' } });
   });
 
   test('accepts a SHA-256 head', async () => {
@@ -1153,6 +1181,12 @@ describe('approved bots', () => {
     await enable(otherRepository);
     await enable(pullOne);
     expect(await methods.addPRAutomationBot(key, { id: 7 }, maxBots, stale)).toEqual(mismatch);
+  });
+
+  test('refuses a bot id that is not a whole number', async () => {
+    await enable();
+    await expect(addBot(7.5)).rejects.toThrow();
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([]);
   });
 
   test('adds a bot by numeric id', async () => {

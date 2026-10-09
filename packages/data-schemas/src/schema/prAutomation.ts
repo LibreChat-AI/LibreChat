@@ -8,7 +8,15 @@ import type { IPRAutomationDocument } from '~/types/prAutomation';
 
 const trustedBotSchema = new Schema(
   {
-    id: { type: Number, required: true, min: 1 },
+    id: {
+      type: Number,
+      required: true,
+      min: 1,
+      validate: {
+        validator: Number.isSafeInteger,
+        message: 'A bot account id is a positive whole number',
+      },
+    },
     login: { type: String, maxlength: 128 },
   },
   { _id: false },

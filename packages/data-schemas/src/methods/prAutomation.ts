@@ -7,8 +7,8 @@ import {
 import type { PRAutomationTrustLevel } from 'librechat-data-provider';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationState } from 'librechat-data-provider';
+import type { PipelineStage } from 'mongoose';
 import type * as t from '~/types/prAutomation';
-import { activeExpirationFilter } from '~/utils/retention';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { createIndexesWithRetry } from '~/utils/retry';
 
@@ -35,6 +35,55 @@ const runReset = (epoch: string, fields: Record<string, unknown> = {}) => ({
 });
 /** GitHub compares `owner/name` without case, so records store and match the lower case form. */
 const canonicalRepository = (repository: string) => repository.toLowerCase();
+const LINK_FIELDS = [
+  'conversationId',
+  'user',
+  'expiredAt',
+  'subagentThread.rootConversationId',
+  'subagentThread.parentConversationId',
+];
+
+/**
+ * One aggregation that reads a conversation and up to `MAX_SUBAGENT_DEPTH` ancestors, one
+ * `$lookup` per generation, so a liveness check is one round trip at any depth. `$graphLookup`
+ * would be shorter but Amazon DocumentDB rejects it. Each lookup is served by the unique
+ * `{ conversationId, user, tenantId }` index; ownership and retention are judged on the result.
+ */
+function lineagePipeline({ userId, conversationId }: t.PRAutomationKey): PipelineStage[] {
+  const stages: PipelineStage[] = [
+    { $match: { user: userId, conversationId } },
+    { $limit: 1 },
+    {
+      $project: {
+        _id: 0,
+        l0: Object.fromEntries(LINK_FIELDS.map((field) => [field, `$${field}`])),
+      },
+    },
+  ];
+  for (let level = 1; level <= MAX_SUBAGENT_DEPTH; level++) {
+    const as = `l${level}`;
+    stages.push(
+      {
+        $lookup: {
+          from: 'conversations',
+          localField: `l${level - 1}.subagentThread.parentConversationId`,
+          foreignField: 'conversationId',
+          as,
+        },
+      },
+      { $unwind: { path: `$${as}`, preserveNullAndEmptyArrays: true } },
+    );
+  }
+  const keep: Record<string, 1> = {};
+  for (let level = 0; level <= MAX_SUBAGENT_DEPTH; level++) {
+    for (const field of LINK_FIELDS) {
+      keep[`l${level}.${field}`] = 1;
+    }
+  }
+  stages.push({ $project: { _id: 0, ...keep } });
+  return stages;
+}
+
 const isGone = (liveness: Liveness): liveness is Gone =>
   liveness === 'conversation_gone' || liveness === 'owner_gone';
 
@@ -101,10 +150,10 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * deletion has started (the same durable marker agent triggers use), and the conversation
    * and every conversation that controls it still exist and are inside their retention. A
    * subagent thread is controlled by every ancestor up to its root, and a deletion removes
-   * one generation before it discovers the next, so the whole parent chain is checked. One
-   * `$graphLookup` follows the chain through active conversations only, so it stops at the
-   * first missing or expired ancestor and reaches the root only when every link is live. The
-   * walk is bounded by `MAX_SUBAGENT_DEPTH`; a longer chain fails closed.
+   * one generation before it discovers the next, so the whole parent chain is checked, read in
+   * one aggregation. The chain is live only when every link belongs to the owner, is inside
+   * its retention and the walk ends at the recorded root. The walk is bounded by
+   * `MAX_SUBAGENT_DEPTH`; a longer chain fails closed.
    * Deletions do not fence the record; enable and claim ask this on both sides of their write
    * instead.
    */
@@ -113,38 +162,17 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       return 'owner_inactive';
     }
     const Conversation = mongoose.models.Conversation;
-    const active = activeExpirationFilter();
-    const scope = { user: key.userId, ...active };
-    type Lineage = {
-      subagentThread?: { rootConversationId: string };
-      ancestors: { conversationId: string }[];
+    type Link = {
+      conversationId: string;
+      user: string;
+      expiredAt?: Date | null;
+      subagentThread?: { rootConversationId?: string; parentConversationId?: string };
     };
-    const [owner, lineage] = await Promise.all([
+    const [owner, rows] = await Promise.all([
       mongoose.models.User.findById(key.userId)
         .select('agentTriggerDeletionStartedAt')
         .lean<{ agentTriggerDeletionStartedAt?: Date }>(),
-      Conversation.aggregate<Lineage>([
-        { $match: { ...scope, conversationId: key.conversationId } },
-        { $limit: 1 },
-        {
-          $graphLookup: {
-            from: 'conversations',
-            startWith: '$subagentThread.parentConversationId',
-            connectFromField: 'subagentThread.parentConversationId',
-            connectToField: 'conversationId',
-            as: 'ancestors',
-            maxDepth: MAX_SUBAGENT_DEPTH - 1,
-            restrictSearchWithMatch: scope,
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            'subagentThread.rootConversationId': 1,
-            'ancestors.conversationId': 1,
-          },
-        },
-      ]),
+      Conversation.aggregate<Record<string, Link | undefined>>(lineagePipeline(key)),
     ]);
     if (owner == null) {
       return 'owner_gone';
@@ -152,16 +180,33 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (owner.agentTriggerDeletionStartedAt != null) {
       return 'owner_inactive';
     }
-    const [conversation] = lineage;
+    /** Links of other users never count: a lookup by `conversationId` is not scoped by owner. */
+    const now = Date.now();
+    const links = new Map<string, Link>();
+    for (const row of rows) {
+      for (const link of Object.values(row)) {
+        const active = link?.expiredAt == null || new Date(link.expiredAt).getTime() > now;
+        if (link != null && String(link.user) === key.userId && active) {
+          links.set(link.conversationId, link);
+        }
+      }
+    }
+    const conversation = links.get(key.conversationId);
     if (conversation == null) {
       return 'conversation_gone';
     }
-    const root = conversation.subagentThread?.rootConversationId;
-    if (root == null) {
-      return 'live';
+    let current: Link | undefined = conversation;
+    for (let hops = 0; current?.subagentThread?.parentConversationId != null; hops++) {
+      if (hops >= MAX_SUBAGENT_DEPTH) {
+        return 'conversation_gone';
+      }
+      current = links.get(current.subagentThread.parentConversationId);
     }
-    const reachedRoot = conversation.ancestors.some((ancestor) => ancestor.conversationId === root);
-    return reachedRoot ? 'live' : 'conversation_gone';
+    const root = conversation.subagentThread?.rootConversationId;
+    if (current == null || (root != null && current.conversationId !== root)) {
+      return 'conversation_gone';
+    }
+    return 'live';
   }
 
   /** A missing owner reads as inactive to callers; the distinction only decides removal. */
@@ -236,14 +281,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const filter = keyFilter(key);
     /**
      * Every write of this attempt stamps the same new epoch, so the record carries it only when
-     * this attempt changed it. A crossed deletion undoes exactly that, and nothing a later
-     * enable wrote.
+     * this attempt changed it. Each write returns the record as it was just before that write,
+     * atomically with it, and the last one this attempt did not already own is what a crossed
+     * deletion restores: a later enable that landed between this attempt's read and write is
+     * kept, and nothing a later enable wrote afterwards is reverted.
      */
     const attempt = randomUUID();
     const reset = (fields: Record<string, unknown>) => runReset(attempt, fields);
-    const previous = await PRAutomation.findOne(filter).lean<t.IPRAutomation>();
     const options = { runValidators: true };
-    await PRAutomation.updateOne(
+    let undo: { previous: t.IPRAutomation | null } | undefined;
+    const write = async (condition: Record<string, unknown>, update: Record<string, unknown>) => {
+      const before = await PRAutomation.findOneAndUpdate({ ...filter, ...condition }, update, {
+        ...options,
+        new: false,
+      }).lean<t.IPRAutomation>();
+      if (before != null && before.epoch !== attempt) {
+        undo = { previous: before };
+      }
+    };
+    const existing = await PRAutomation.findOneAndUpdate(
       filter,
       {
         $setOnInsert: {
@@ -257,38 +313,30 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           ...binding,
         },
       },
-      { upsert: true, ...options },
-    );
+      { upsert: true, new: false, ...options },
+    ).lean<t.IPRAutomation>();
+    if (existing == null) {
+      undo = { previous: null };
+    }
+    /** A trust level passed with the request applies to every write that starts a run. */
     const revive = trust != null ? { trust } : {};
     if (binding == null) {
-      await PRAutomation.updateOne({ ...filter, ...RESTARTABLE }, reset(revive), options);
+      await write(RESTARTABLE, reset(revive));
     } else {
       const { repository } = binding;
       const otherRepository = { repository: { $ne: repository } };
-      await PRAutomation.updateOne(
-        { ...filter, ...RESTARTABLE, ...otherRepository },
+      await write(
+        { ...RESTARTABLE, ...otherRepository },
         reset({ ...revive, ...binding, trustedBots: [] }),
-        options,
       );
-      await PRAutomation.updateOne(
-        { ...filter, ...RESTARTABLE, repository },
+      await write({ ...RESTARTABLE, repository }, reset({ ...revive, ...binding }));
+      await write(
+        { state: { $ne: 'stopped' }, ...otherRepository },
+        reset({ ...revive, ...binding, trustedBots: [] }),
+      );
+      await write(
+        { state: { $ne: 'stopped' }, repository, pullNumber: { $ne: binding.pullNumber } },
         reset({ ...revive, ...binding }),
-        options,
-      );
-      await PRAutomation.updateOne(
-        { ...filter, state: { $ne: 'stopped' }, ...otherRepository },
-        reset({ ...binding, trustedBots: [] }),
-        options,
-      );
-      await PRAutomation.updateOne(
-        {
-          ...filter,
-          state: { $ne: 'stopped' },
-          repository,
-          pullNumber: { $ne: binding.pullNumber },
-        },
-        reset({ ...binding }),
-        options,
       );
     }
     const after = await checkLiveness(key);
@@ -297,7 +345,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       return { ok: false, error: { code: goneCode(after) } };
     }
     if (after !== 'live') {
-      await undoEnable({ ...filter, epoch: attempt }, previous);
+      if (undo != null) {
+        await undoEnable({ ...filter, epoch: attempt }, undo.previous);
+      }
       return { ok: false, error: { code: after } };
     }
     const record = await getPRAutomation(key);
@@ -308,10 +358,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   }
 
   /**
-   * Puts the record back as this enable found it when an account deletion started during the
-   * write, which can still be cancelled. `guard` names the epoch only this attempt wrote, so
-   * an attempt that changed nothing, or a record a later enable already replaced, is left
-   * alone.
+   * Puts the record back as this enable's own write found it when an account deletion started
+   * during the write, which can still be cancelled. `guard` names the epoch only this attempt
+   * wrote, so a record a later enable already replaced is left alone.
    */
   async function undoEnable(
     guard: ReturnType<typeof keyFilter> & { epoch: string },
@@ -349,13 +398,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     binding,
     maxRounds,
     maxMinutes,
-    headSha,
+    headSha: rawHeadSha,
     now = new Date(),
     ...key
   }: t.ClaimPRAutomationRoundParams): Promise<t.ClaimPRAutomationRoundResult> {
-    if (!COMMIT_SHA.test(headSha)) {
+    if (!COMMIT_SHA.test(rawHeadSha)) {
       throw new RangeError('headSha must be a full commit SHA');
     }
+    /** One Git object, one identity: hex case must not let a commit spend two rounds. */
+    const headSha = rawHeadSha.toLowerCase();
     const PRAutomation = mongoose.models.PRAutomation;
     const repository = canonicalRepository(binding.repository);
     const filter = {
