@@ -37,19 +37,19 @@ async function peekSamples(page: Page, finalText: string) {
 }
 
 test.describe('streaming thought peek', () => {
-  test('the peek shows only while pure reasoning streams @scenario:thought-peek-only-while-thinking', async ({
+  test('the peek stays hidden when the Thoughts row is folded @scenario:thought-peek-only-while-thinking', async ({
     page,
   }) => {
     test.setTimeout(180000);
 
-    /** Pure reasoning: the peek sits under the collapsed card. */
+    /** Pure reasoning: the Thoughts row is inside the collapsed card. */
     const reasoning = uniqueLabel();
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
     await selectMockEndpoint(page, ENDPOINT);
     const first = await sendMessage(page, `E2E_SLOW_THINK_REPLY:${reasoning}`);
     expect(first.ok()).toBeTruthy();
     const pure = await peekSamples(page, `E2E slow think reply done ${reasoning}`);
-    expect(pure.visible, 'peek during pure reasoning').toBeGreaterThan(0);
+    expect(pure.visible, 'no peek under a collapsed phase').toBe(0);
     await expect(
       messagesView(page).getByText(`E2E slow think reply done ${reasoning}`),
     ).toBeVisible({ timeout: 60000 });

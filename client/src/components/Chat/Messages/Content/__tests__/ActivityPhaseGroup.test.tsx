@@ -861,6 +861,17 @@ describe('ActivityPhaseGroup open live header', () => {
   });
 });
 
+test('retains a warning when a partial phase has no child rows', () => {
+  render(
+    <ActivityPhaseGroup labelPart={{ ...labelPart, status: 'partial' }} hasContent={false}>
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByTestId('activity-phase-card').querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
 describe('ActivityPhaseGroup streaming thought peek', () => {
   const thought: TMessageContentParts = {
     type: ContentTypes.THINK,

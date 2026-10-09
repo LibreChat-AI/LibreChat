@@ -19,8 +19,8 @@ type MessageRowProps = {
   fullWidth?: boolean;
   isEditing?: boolean;
   /** Marks a host-authored turn with no author to name (background-tool
-   *  wake-ups, external events): it keeps the user's position and bubble shape,
-   *  outlined instead of filled, under this visible heading. */
+   *  wake-ups, external events): it uses the transcript side without a bubble,
+   *  under this visible heading. */
   systemLabel?: string;
   /** A user-side turn written by someone other than the reader — a parent agent
    *  briefing its subagent, a subagent reporting back. It keeps the user's
@@ -28,7 +28,7 @@ type MessageRowProps = {
    *  carries. */
   showAuthor?: boolean;
   /** Outline the user-side bubble instead of filling it: content the host
-   *  delivered rather than words someone typed. Implied by `systemLabel`. */
+   *  delivered rather than words someone typed. */
   outlined?: boolean;
   className?: string;
 };

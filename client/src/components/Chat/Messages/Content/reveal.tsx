@@ -10,7 +10,6 @@ import {
 import { CircleX } from 'lucide-react';
 import { Button } from '@librechat/client';
 import type { TranslationKeys } from '~/hooks';
-import { isSpanFailed } from './outcome';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -115,7 +114,7 @@ export function FailedRevealPill({
   onReveal: () => void;
   className?: string;
 }) {
-  const severe = isSpanFailed(count, total);
+  const severe = count > 0 && count >= total;
   const localize = useLocalize();
   if (count === 0) {
     return null;

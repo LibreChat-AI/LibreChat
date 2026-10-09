@@ -161,6 +161,8 @@ const MessageRender = memo(function MessageRender({
   const subagentWakeup =
     !edit && wakeupDisplay?.kind === 'subagent' ? wakeupDisplay.tasks[0] : undefined;
   const Row = subagentWakeup == null ? MessageRow : WakeupRow;
+  const isUserSide =
+    msg.isCreatedByUser === true && (edit || wakeupDisplay == null || subagentWakeup != null);
 
   return (
     <Row
@@ -189,7 +191,7 @@ const MessageRender = memo(function MessageRender({
           : undefined
       }
       footer={
-        <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+        <SubRow classes={cn(messageFooterClasses, isUserSide && 'justify-end')}>
           {/* The reading holds the column start: it takes over the slot the streaming
               dot vacates, so the retry navigation beside it — whose width the footer
               reserves whether or not hover has revealed it — must never push the
@@ -212,7 +214,7 @@ const MessageRender = memo(function MessageRender({
             siblingCount={siblingCount}
             setSiblingIdx={setSiblingIdx}
             className={cn(
-              msg.isCreatedByUser === true && 'order-last',
+              isUserSide && 'order-last',
               isSubmitting && isLatestMessage && revealOnRowHoverClasses,
             )}
           />

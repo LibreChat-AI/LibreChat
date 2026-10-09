@@ -2,7 +2,7 @@ import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useCont
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
 import { ContentTypes } from 'librechat-data-provider';
-import { Check, CircleX, Lightbulb, ChevronDown } from 'lucide-react';
+import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { CSSProperties, ReactNode } from 'react';
 import type { RailHover } from './rail';
@@ -92,13 +92,18 @@ function schedulePostPaint(callback: () => void): () => void {
  *  rendered without one sits to the left of the rows it replaces — the fold
  *  then moves its own text sideways at the moment the reader is trying to
  *  follow it. */
-function PhaseGlyph({ failed }: { failed: boolean }) {
-  const Icon = failed ? CircleX : Check;
+function PhaseGlyph({ failed, partial = false }: { failed: boolean; partial?: boolean }) {
+  let Icon = Check;
+  let tone = 'text-text-secondary';
+  if (failed) {
+    Icon = CircleX;
+    tone = 'text-status-error';
+  } else if (partial) {
+    Icon = TriangleAlert;
+    tone = 'text-status-warning';
+  }
   return (
-    <span
-      className={cn(ROW_GLYPH_SLOT, failed ? 'text-status-error' : 'text-text-secondary')}
-      aria-hidden="true"
-    >
+    <span className={cn(ROW_GLYPH_SLOT, tone)} aria-hidden="true">
       <Icon size={14} />
     </span>
   );
@@ -790,7 +795,7 @@ export default function ActivityPhaseGroup({
       )}
       data-testid="activity-phase-card"
     >
-      <PhaseGlyph failed={allFailed} />
+      <PhaseGlyph failed={allFailed} partial={!hasContent && labelPart.status === 'partial'} />
       <span
         className="tool-status-text min-w-0 flex-1 truncate text-left font-medium"
         role="status"
@@ -867,7 +872,10 @@ export default function ActivityPhaseGroup({
                   {outcomeParts != null && !allFailed ? (
                     <SpanGlyph parts={outcomeParts} attachments={attachments} />
                   ) : (
-                    <PhaseGlyph failed={allFailed} />
+                    <PhaseGlyph
+                      failed={allFailed}
+                      partial={!hasContent && labelPart.status === 'partial'}
+                    />
                   )}
                 </RailGlyph>
                 <PhaseLabel text={label} animate={smoothStreaming} />

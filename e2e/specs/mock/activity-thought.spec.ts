@@ -15,7 +15,7 @@ async function headerLine(page: Page): Promise<string | null> {
 }
 
 test.describe('live reasoning', () => {
-  test('previews finished sentences and the thought peek, then titles the open card', async ({
+  test('previews finished sentences without exposing a hidden Thoughts preview', async ({
     page,
   }) => {
     test.setTimeout(120000);
@@ -68,7 +68,7 @@ test.describe('live reasoning', () => {
     for (const line of lines) {
       expect(line, `header line "${line}"`).toMatch(/^(Thinking\.\.\.|Thinking…|.+[.!?])$/);
     }
-    expect(peekSeen, 'thought peek under the collapsed card').toBe(true);
+    expect(peekSeen, 'no thought peek without the visible Thoughts header').toBe(false);
 
     await expect(messagesView(page).getByText(finalText)).toBeVisible({ timeout: 60000 });
     /** The settled thought's header sits at the shared row scale. */
