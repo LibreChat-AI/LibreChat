@@ -9,7 +9,7 @@ import { NEW_CHAT_PATH } from '../helpers';
  * the generic hover and active fills paints the rail with them too.
  */
 test.describe.configure({ timeout: 120_000 });
-test.use({ viewport: { width: 1280, height: 800 } });
+test.use({ viewport: { width: 1280, height: 800 }, isMobile: false, hasTouch: false });
 
 type Mode = 'light' | 'dark';
 
