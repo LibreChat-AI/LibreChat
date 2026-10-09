@@ -5,6 +5,7 @@ const { randomState } = require('openid-client');
 const { logger } = require('@librechat/data-schemas');
 const { ErrorTypes } = require('librechat-data-provider');
 const {
+  isEnabled,
   buildOAuthFailureLog,
   createOpenIDCallbackAuthenticator,
   createSetBalanceConfig,
@@ -120,7 +121,8 @@ router.get(
 router.get('/openid', (req, res, next) => {
   return passport.authenticate('openid', {
     session: false,
-    state: randomState(),
+    /** OAuth2-only mode issues and verifies `state` through its strategy's store */
+    ...(isEnabled(process.env.OPENID_USE_OAUTH2) ? {} : { state: randomState() }),
   })(req, res, next);
 });
 
