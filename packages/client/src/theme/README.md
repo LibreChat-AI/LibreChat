@@ -383,8 +383,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
   a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
   `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
-  `controlHeight`, `buttonHeight`, `buttonHeightSm` and `fieldHeight` predate the floor and
-  keep their earlier validation.
+  `buttonHeight` and `buttonHeightSm` predate the floor, so they keep their earlier validation
+  and are floored where they are drawn instead: `h-theme-button`, `h-theme-button-sm` and
+  `size-theme-button` never draw under 24px, so a stored theme naming less still loads.
+  `controlHeight` and `fieldHeight` keep their earlier validation. The exported Dialog's close
+  button takes the same 24px floor around its `iconSizeMd` glyph.
 - `bg-field-fill` / `text-field-text` - A form field's fill and typed value. The
   ink follows `text-primary` and the fill follows `surface-primary` when a theme
   names those and not these. Fields stay clear unless the theme's

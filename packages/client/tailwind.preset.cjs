@@ -20,9 +20,10 @@ module.exports = {
       height: {
         'theme-control': 'var(--theme-control-height, 2.25rem)',
         'theme-switch': 'var(--theme-switch-height, 1.5rem)',
-        /** The Button's default and `sm` heights. */
-        'theme-button': 'var(--theme-button-height, 2.5rem)',
-        'theme-button-sm': 'var(--theme-button-height-sm, 2.25rem)',
+        /** The Button's default and `sm` heights, held at WCAG 2.5.8's 24px target minimum with
+         *  `max()` so a stored theme that names less still loads and draws a reachable control. */
+        'theme-button': 'max(var(--theme-button-height, 2.5rem), 24px)',
+        'theme-button-sm': 'max(var(--theme-button-height-sm, 2.25rem), 24px)',
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-button-lg': 'var(--theme-button-height-lg, 2.75rem)',
         'theme-button-compact': 'var(--theme-button-height-compact, 2rem)',
@@ -64,8 +65,9 @@ module.exports = {
         'theme-compact': 'var(--theme-space-compact, 0.375rem)',
         'theme-normal': 'var(--theme-space-normal, 0.75rem)',
         'theme-control': 'var(--theme-control-height, 2.25rem)',
-        /** Square sizes: icon buttons as wide as their row is tall, the checkbox, and icons. */
-        'theme-button': 'var(--theme-button-height, 2.5rem)',
+        /** Square sizes: icon buttons as wide as their row is tall (never under the 24px target
+         *  floor, like the height they follow), the checkbox, and icons. */
+        'theme-button': 'max(var(--theme-button-height, 2.5rem), 24px)',
         'theme-button-xs': 'var(--theme-button-height-xs, 1.75rem)',
         'theme-icon-button-sm': 'var(--theme-icon-button-size-sm, 2rem)',
         'theme-checkbox': 'var(--theme-checkbox-size, 1rem)',
