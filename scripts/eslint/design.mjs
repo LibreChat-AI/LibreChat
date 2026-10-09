@@ -124,7 +124,7 @@ function variantDims(value) {
      *  distant element, which a recipe for a nearer one cannot restore. */
     const topologies = selecting.map(topologyOf);
     const topology = TOPOLOGY_ORDER.find((candidate) => topologies.includes(candidate));
-    return [{ dim: token, topology, important: isImportant(base) }];
+    return [{ dim: token, topology, important: isImportant(base), variant: true }];
   });
 }
 
@@ -467,6 +467,17 @@ function recipeReader(context) {
    *  `cn(disabled ? 'opacity-50' : '', disabled ? recipe : '')`. */
   const alongside = (sibling, child, start, topology) => {
     if (always(sibling, topology)) return true;
+    /** `cn('disabled:opacity-50', disabled && recipe)`: a recipe the disabled state switches on
+     *  is there whenever a disabled variant can fade the element. */
+    if (
+      topology.variant &&
+      sibling.type === 'LogicalExpression' &&
+      sibling.operator === '&&' &&
+      disabledSense(sibling.left, source, topology.known) === true &&
+      always(sibling.right, topology)
+    ) {
+      return true;
+    }
     const guarded = (node) => node.type === 'LogicalExpression' && node.operator === '&&';
     if (guarded(sibling) && guarded(child)) {
       return (
@@ -558,6 +569,9 @@ function elementImport(element, source) {
     const namespace = definition.node.type === 'ImportNamespaceSpecifier';
     return { component: namespace ? component : undefined, from, declared: true };
   }
+  if (definition.node.type === 'ImportDefaultSpecifier') {
+    return { component, from, declared: true };
+  }
   const imported = definition.node.imported;
   return { component: imported?.name ?? imported?.value, from, declared: true };
 }
@@ -591,6 +605,16 @@ function disabledExpressions(element, source) {
     known.set(source.getText(expression), true);
     if (expression.type === 'UnaryExpression' && expression.operator === '!') {
       known.set(source.getText(expression.argument), false);
+    }
+    /** `disabled={open === false}`: the compared value holds while enabled. */
+    if (expression.type === 'BinaryExpression' && /^[!=]==?$/.test(expression.operator)) {
+      const literal = [expression.left, expression.right].find(
+        (side) => side.type === 'Literal' && typeof side.value === 'boolean',
+      );
+      const other = literal === expression.left ? expression.right : expression.left;
+      if (literal) {
+        known.set(source.getText(other), literal.value !== expression.operator.startsWith('!'));
+      }
     }
   }
   return known;
@@ -665,7 +689,7 @@ const disabledRecipe = {
       const coveredByPrimitive = (need) =>
         !need.important && (need.topology === 'self' || need.topology === 'any');
       if (isPrimitive(element) && dims.every(coveredByPrimitive)) return;
-      const missing = dims.find((need) => !restored(node, list, need));
+      const missing = dims.find((need) => !restored(node, list, { ...need, known }));
       if (!missing) return;
       context.report({ node: reported, messageId: 'missing', data: { dim: missing.dim } });
     };
@@ -690,6 +714,11 @@ const disabledRecipe = {
       if (typeof value !== 'string') return;
       const dim = bareDim(value, 'self');
       if (!dim || (isPrimitive(element) && !dim.important)) return;
+      const spelled = RECIPE_VARIANTS.some(([pattern, recipe]) => {
+        const match = pattern.exec(value);
+        return match && recipe === 'self' && (!dim.important || Boolean(match[1] || match[2]));
+      });
+      if (spelled) return;
       context.report({ node: expression, messageId: 'missing', data: { dim: dim.dim } });
     };
 
