@@ -28,6 +28,18 @@ const PRIMITIVES_DIR = /packages[\\/]client[\\/]src[\\/]components[\\/]([\w.-]+?
 
 /** The file that defines the recipes, where a local binding with a recipe's name is the recipe. */
 const RECIPES_FILE = /packages[\\/]client[\\/]src[\\/]utils[\\/]theme\.ts$/;
+const COMPONENT_LIBRARY = /packages[\\/]client[\\/]src[\\/]/;
+/** The recipes' module and the barrel that re-exports it, for a relative import. */
+const RECIPES_MODULE = /packages[\\/]client[\\/]src[\\/]utils(?:[\\/](?:theme|index))?(?:\.ts)?$/;
+
+/** Whether an import of a recipe's name comes from the module that defines the recipes: the
+ *  package, or inside the component library its `~/utils` alias or a relative path to it. */
+function isRecipeSource(from, filename) {
+  if (from === '@librechat/client') return true;
+  if (!COMPONENT_LIBRARY.test(filename)) return false;
+  if (from === '~/utils' || from === '~/utils/theme') return true;
+  return from.startsWith('.') && RECIPES_MODULE.test(resolve(dirname(filename), from));
+}
 
 /** A variant that selects a disabled control, its group, its peer or a wrapper around it:
  *  `disabled:`, `aria-disabled:`, `data-[state=disabled]:`, `has-[:disabled]:`, `[&:disabled]:`.
@@ -201,7 +213,15 @@ function chosenByDisabled(start, source, known) {
  *  rather than being a props or style object of its own. */
 function isCallArgument(object) {
   let current = object;
-  while (['ObjectExpression', 'Property', 'ArrayExpression'].includes(current.parent?.type)) {
+  while (
+    [
+      'ObjectExpression',
+      'Property',
+      'ArrayExpression',
+      'ConditionalExpression',
+      'LogicalExpression',
+    ].includes(current.parent?.type)
+  ) {
     current = current.parent;
   }
   return current.parent?.type === 'CallExpression' && current.parent.callee !== current;
@@ -254,7 +274,10 @@ function recipeReader(context) {
     const definition = variable.defs[0];
     if (definition?.type === 'ImportBinding') {
       const imported = definition.node.imported;
-      return imported ? RECIPES.get(imported.name ?? imported.value) : undefined;
+      if (!imported || !isRecipeSource(definition.parent.source.value, context.filename)) {
+        return undefined;
+      }
+      return RECIPES.get(imported.name ?? imported.value);
     }
     return inRecipesFile ? RECIPES.get(identifier.name) : undefined;
   };
@@ -263,14 +286,17 @@ function recipeReader(context) {
     typeof value === 'string' &&
     RECIPE_VARIANTS.some(([pattern, recipe]) => covers(recipe, topology) && pattern.test(value));
 
-  /** Every option of some `cva` variant group composes a covering recipe, so whichever one is
-   *  chosen restores the control. */
+  /** Every option of some `cva` variant group composes a covering recipe, and the group has a
+   *  default, so whichever option is chosen, or none, restores the control. */
   const variantsAlways = (config, topology) => {
     const groups = propertyNamed(config, 'variants')?.value;
     if (groups?.type !== 'ObjectExpression') return false;
+    const defaults = propertyNamed(config, 'defaultVariants')?.value;
     return groups.properties.some(
       (group) =>
         group.type === 'Property' &&
+        !group.computed &&
+        propertyNamed(defaults, group.key.name ?? group.key.value) !== undefined &&
         group.value.type === 'ObjectExpression' &&
         group.value.properties.length > 0 &&
         group.value.properties.every(

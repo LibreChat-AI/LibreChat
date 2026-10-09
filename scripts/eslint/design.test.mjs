@@ -18,7 +18,12 @@ const missing = (dim) => ({ messageId: 'missing', data: { dim } });
 tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
   valid: [
     "cn('px-2 disabled:opacity-50', disabledFillClasses)",
-    "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } } })",
+    "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } }, defaultVariants: { tone: 'muted' } })",
+    "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
+    {
+      code: "import { disabledInkClasses } from '../utils'; cn('disabled:opacity-50', disabledInkClasses)",
+      filename: '/repo/packages/client/src/components/Menu.tsx',
+    },
     "cva(cn('rounded disabled:opacity-50', disabledFillClasses), { variants: {} })",
     "cn('has-[:disabled]:opacity-50', disabledWithinFillClasses)",
     "const label = cn('peer-disabled:opacity-70', peerDisabledInkClasses);",
@@ -189,6 +194,19 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cn('group-disabled:opacity-60', disabledFillClasses)",
       errors: [missing('group-disabled:opacity-60')],
+    },
+    {
+      code: "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: disabledFillClasses } } })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "import { disabledFillClasses } from './styles'; cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "import { disabledFillClasses } from '~/utils'; cn('disabled:opacity-50', disabledFillClasses)",
+      filename: '/repo/client/src/components/Row.tsx',
+      errors: [missing('disabled:opacity-50')],
     },
     {
       code: "const disabledFillClasses = 'px-2'; cn('disabled:opacity-50', disabledFillClasses)",
