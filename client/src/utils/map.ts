@@ -1,17 +1,84 @@
 import type * as t from 'librechat-data-provider';
 import type { TPluginMap } from '~/common';
+import { toolArtifactKey } from './artifacts';
 
-/** Maps Attachments by `toolCallId` for quick lookup */
+/**
+ * Identity for a file-backed attachment (one with a `file_id` or a
+ * `filepath`), or `null` for anything else (e.g. web search results), which
+ * is never collapsed. For file-backed attachments this is exactly the
+ * artifact card's key, `toolArtifactKey` (`file_id` → `filepath` →
+ * `filename`), so an id-less file keys by its unique per-session filepath
+ * rather than a display name two different files can share. An attachment
+ * with only a `filename` is not treated as a file here, although
+ * `toolArtifactKey` would still key it by that name.
+ */
+export const fileIdentity = (attachment: t.TAttachment): string | null => {
+  const file = attachment as Partial<t.TFile>;
+  if (file.file_id != null || file.filepath != null) {
+    return toolArtifactKey(file);
+  }
+  return null;
+};
+
+/** `updatedAt ?? createdAt`, parsed to ms; missing or unparseable → 0. */
+const writeTimeMs = (attachment: t.TAttachment): number => {
+  const file = attachment as Partial<t.TFile>;
+  const value = file.updatedAt ?? file.createdAt;
+  if (value == null) {
+    return 0;
+  }
+  const ms = new Date(value as string | number | Date).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+};
+
+/**
+ * Maps Attachments by `toolCallId` for quick lookup. Attachments are assumed
+ * to belong to one message: when the same file repeats — e.g. a tool call
+ * rewrites the file it produced earlier in the message — only the copy with
+ * the newest write time survives (ties keep the higher array index), so a
+ * message never shows the same file twice. Array order isn't chronological
+ * (a background-run harvest can append an older copy after a newer
+ * foreground rewrite), so only entries that will actually be grouped
+ * (non-empty `toolCallId`) compete for survivorship; an unlinked duplicate
+ * is dropped as always but never hides a linked copy. Non-file attachments
+ * (no `file_id`/`filepath`) never collapse.
+ */
 export function mapAttachments(attachments: Array<t.TAttachment | null | undefined>) {
   const attachmentMap: Record<string, t.TAttachment[] | undefined> = {};
 
-  for (const attachment of attachments) {
+  const identities = attachments.map((attachment) =>
+    attachment == null ? null : fileIdentity(attachment),
+  );
+  const survivorByIdentity = new Map<string, { index: number; time: number }>();
+  attachments.forEach((attachment, index) => {
+    if (attachment == null) {
+      return;
+    }
+    const identity = identities[index];
+    if (identity == null || !attachment.toolCallId) {
+      return;
+    }
+    const time = writeTimeMs(attachment);
+    const current = survivorByIdentity.get(identity);
+    if (!current || time > current.time || (time === current.time && index > current.index)) {
+      survivorByIdentity.set(identity, { index, time });
+    }
+  });
+
+  attachments.forEach((attachment, index) => {
     if (attachment === null || attachment === undefined) {
-      continue;
+      return;
+    }
+    const identity = identities[index];
+    if (identity != null) {
+      const survivor = survivorByIdentity.get(identity);
+      if (survivor && survivor.index !== index) {
+        return;
+      }
     }
     const key = attachment.toolCallId || '';
     if (key.length === 0) {
-      continue;
+      return;
     }
 
     if (!attachmentMap[key]) {
@@ -19,7 +86,7 @@ export function mapAttachments(attachments: Array<t.TAttachment | null | undefin
     }
 
     attachmentMap[key]?.push(attachment);
-  }
+  });
 
   return attachmentMap;
 }

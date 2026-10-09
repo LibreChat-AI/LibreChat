@@ -22,6 +22,7 @@ const {
   codeServerHttpAgent,
   codeServerHttpsAgent,
   extractCodeArtifactText,
+  officePreviewFailure,
   extractCodeArtifactRawText,
   extractCodeArtifactInspectionText,
   prepareCodeOutputBufferForInspection,
@@ -433,12 +434,13 @@ const finalizePreview = async ({
   category,
   file_id,
   previewRevision,
+  officePreview,
 }) => {
   let text = null;
   let previewError;
   try {
     text = await withTimeout(
-      extractCodeArtifactText(buffer, leafName, mimeType, category),
+      extractCodeArtifactText(buffer, leafName, mimeType, category, officePreview),
       PREVIEW_FINALIZE_TIMEOUT_MS,
       `Preview extraction exceeded ${PREVIEW_FINALIZE_TIMEOUT_MS}ms`,
     );
@@ -458,7 +460,7 @@ const finalizePreview = async ({
   const failed = text == null;
   const status = failed ? 'failed' : 'ready';
   if (failed && !previewError) {
-    previewError = 'parser-error';
+    previewError = officePreviewFailure(buffer.length, leafName, mimeType, officePreview);
   }
   try {
     /* Conditional update: commit only if `previewRevision` still
