@@ -254,7 +254,7 @@ const SubMenuItem: React.FC<{
       <Menu
         items={subItems}
         menuId={menuId}
-        gutter={20}
+        gutter={14}
         portal={true}
         hideAll={hideSubmenuAndParents}
         style={{ maxHeight: 'min(24rem, var(--popover-available-height, 24rem))' }}
