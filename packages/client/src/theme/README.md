@@ -343,6 +343,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
   user has no image, and its glyph. A theme that sets `rgb-text-primary` but not
   `rgb-avatar-text` inks the glyph in its primary text, as it did before the role.
+  The bundled dark theme inks it white, which clears the 3:1 WCAG 1.4.11 sets for
+  the glyph on the fill where its #ececec primary text does not.
 - `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
   loads or where it is transparent. A theme that sets only its surfaces keeps it
   on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
