@@ -1081,9 +1081,9 @@ function ChatFormWrapper({
   project,
   routePending = false,
   isLandingPage,
-  /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
-   *  true)`) so call sites that predate this prop, mainly tests, keep their
-   *  prior behavior without passing it explicitly. */
+  /** Enter sends unless told otherwise, so call sites that predate this prop,
+   *  mainly tests, keep their prior behavior without passing it explicitly.
+   *  ChatView always passes the user's preference, whose default is false. */
   enterToSend = true,
   /** Same reason, from `atomWithLocalStorage('autoSendText', -1)`. */
   autoSendText = -1,
