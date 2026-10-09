@@ -568,6 +568,20 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
   );
 }
 
+/** The Button heights are drawn inside `max()` to hold the 24px target floor, where a unitless
+ *  `0` is a number and would void the declaration, so it is written as the length it means. */
+const flooredAppearanceKeys: ReadonlyArray<keyof IThemeAppearance> = [
+  'buttonHeight',
+  'buttonHeightSm',
+];
+
+function withFloorableLengths(appearance: IThemeAppearance): IThemeAppearance {
+  return flooredAppearanceKeys.reduce<IThemeAppearance>(
+    (result, key) => (result[key].trim() === '0' ? { ...result, [key]: '0px' } : result),
+    appearance,
+  );
+}
+
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
@@ -869,7 +883,9 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
       ...seriesEightFallback,
       ...verifiedFallback,
     } as Required<IThemeRGB>,
-    appearance: withComposableShadows(withInheritedRoles(mode, definition?.appearance)),
+    appearance: withFloorableLengths(
+      withComposableShadows(withInheritedRoles(mode, definition?.appearance)),
+    ),
     /** Mode last: a mode override is more specific than the theme-wide set. */
     brands: {
       ...defaultBrands,

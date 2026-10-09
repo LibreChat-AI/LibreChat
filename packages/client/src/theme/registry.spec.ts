@@ -943,6 +943,19 @@ describe('theme registry', () => {
     });
   });
 
+  it('writes a zero Button height as a length the 24px floor can compare', () => {
+    const { appearance } = resolveTheme(
+      {
+        version: 1,
+        name: 'zero-buttons',
+        modes: { light: { appearance: { buttonHeight: '0', buttonHeightSm: '0' } } },
+      },
+      'light',
+    );
+
+    expect(appearance).toMatchObject({ buttonHeight: '0px', buttonHeightSm: '0px' });
+  });
+
   it('keeps LibreChat’s button weight and heights by default', () => {
     expect(defaultAppearance).toMatchObject({
       controlFontWeight: '500',

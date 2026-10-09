@@ -115,7 +115,12 @@ test.describe('target floor', () => {
           await controlPanel.click();
           await page.getByRole('menuitemcheckbox', { name: 'Assistant Builder' }).click();
         } else {
-          await page.getByRole('button', { name: 'Assistant Builder' }).first().click();
+          /** The panel choice persists, so the second mode finds the builder already open and a
+           *  click would close it. */
+          const builder = page.getByRole('button', { name: 'Assistant Builder' }).first();
+          if ((await builder.getAttribute('aria-pressed')) !== 'true') {
+            await builder.click();
+          }
         }
         const picker = page.getByTestId('select-dropdown-button').first();
         await expect(picker.getByText(ASSISTANT_NAME, { exact: true })).toBeVisible();
