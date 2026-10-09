@@ -29,6 +29,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cva('', { variants: { size: { sm: 'px-2' } }, compoundVariants: [{ disabled: [true, false], class: 'opacity-50' }] })",
     "import { cn } from '~/utils'; cn('disabled:opacity-50', disabledFillClasses)",
     "const faded = 'opacity-50'; <button className={faded} />",
+    "cn('supports-[selector(:disabled)]:opacity-50 data-[state=disabled-preview]:opacity-50')",
+    "cn('disabled:opacity-[100%] disabled:opacity-[1]')",
+    "import { clsx } from 'clsx'; clsx('disabled:opacity-50', disabledFillClasses)",
+    "<input disabled={busy} className={cn('disabled:opacity-50', busy && disabledFillClasses)} />",
     "const faded = 'opacity-50 theme-disabled:opacity-100'; <button disabled className={faded} />",
     {
       code: 'import Button from \'./Button\'; <Button className="disabled:opacity-80" />',
@@ -301,6 +305,38 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     },
     {
       code: "const cn = (first) => first; cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn(disabled && 'opacity-50 md:opacity-60!', disabledFillClasses)",
+      errors: [missing('md:opacity-60!')],
+    },
+    {
+      code: "import { cn } from './first'; cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "import * as helpers from './first'; helpers.cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: '<div data-disabled className="opacity-50" />',
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('peer-data-[state=disabled]:opacity-50', peerDisabledInkClasses)",
+      errors: [missing('peer-data-[state=disabled]:opacity-50')],
+    },
+    {
+      code: "cn('has-[input[data-disabled]]:opacity-50', disabledWithinFillClasses)",
+      errors: [missing('has-[input[data-disabled]]:opacity-50')],
+    },
+    {
+      code: "cn('disabled:[&_svg]:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:[&_svg]:opacity-50')],
+    },
+    {
+      code: "<input disabled={busy} className={cn('disabled:opacity-50', isDisabled && disabledFillClasses)} />",
       errors: [missing('disabled:opacity-50')],
     },
     {
