@@ -470,6 +470,9 @@ const appearanceValidators = {
   authFieldHeight: isTargetSize,
   authButtonHeight: isTargetSize,
   authControlRadius: isLength,
+  /** The second-factor and reset-success actions' height and corner. */
+  authActionHeight: isTargetSize,
+  authActionRadius: isLength,
   fieldPaddingY: isLength,
   fieldFocusStyle: (value: unknown) => value === 'ring' || value === 'border',
   /** Whether a field stays transparent or paints `field-fill`. */

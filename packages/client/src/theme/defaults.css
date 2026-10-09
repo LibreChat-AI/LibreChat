@@ -294,6 +294,8 @@ html {
   --theme-auth-field-height: 2.75rem;
   --theme-auth-button-height: 3rem;
   --theme-auth-control-radius: var(--theme-radius-2xl, 1rem);
+  --theme-auth-action-height: var(--theme-button-height, 2.5rem);
+  --theme-auth-action-radius: var(--theme-radius-lg, 0.5rem);
   --theme-field-padding-y: 0.5rem;
   --theme-field-focus-style: ring;
   --theme-field-fill-style: transparent;

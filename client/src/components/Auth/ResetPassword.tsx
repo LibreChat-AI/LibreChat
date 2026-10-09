@@ -42,6 +42,8 @@ function ResetPassword() {
               onClick={() => navigate('/login')}
               aria-label={localize('com_auth_sign_in')}
               variant="submit"
+              size="auth-action"
+              shape="auth-action"
             >
               {localize('com_auth_continue')}
             </Button>

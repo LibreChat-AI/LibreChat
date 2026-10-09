@@ -116,6 +116,29 @@ async function expectResetLabelCentered(page: Page) {
   expect(Math.abs(offset)).toBeLessThanOrEqual(2);
 }
 
+/** The second-factor verify button, on the screen a sign-in that needs one lands on. */
+async function twoFactorShape(page: Page) {
+  await page.goto('/login/2fa?tempToken=e2e-shape');
+  const verify = page.getByTestId('login-button');
+  await expect(verify).toBeVisible({ timeout: 20000 });
+  return shapeOf(verify);
+}
+
+/** The continue button a successful reset shows; the reset request itself is answered here. */
+async function resetSuccessShape(page: Page) {
+  await page.route(
+    (url) => url.pathname === '/api/auth/resetPassword',
+    (route) => route.fulfill({ status: 200, json: { message: 'Password reset' } }),
+  );
+  await page.goto('/reset-password?token=e2e-shape&userId=e2e-shape');
+  await page.locator('#password').fill('a-new-password-1');
+  await page.locator('#confirm_password').fill('a-new-password-1');
+  await page.locator('#confirm_password').press('Enter');
+  const proceed = page.getByRole('button', { name: 'Sign in' });
+  await expect(proceed).toBeVisible({ timeout: 20000 });
+  return shapeOf(proceed);
+}
+
 test.describe('sign-in control shape roles', () => {
   test('the stock theme keeps the sign-in field, button and corner it always drew @scenario:sign-in-controls-keep-default-shape', async ({
     page,
@@ -143,5 +166,24 @@ test.describe('sign-in control shape roles', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
     await expectShape(page, { field: 56, button: 40, radius: '0px' });
     await expectResetLabelCentered(page);
+  });
+
+  test('the stock theme keeps the second-factor and reset-success actions at the size they drew @scenario:auth-actions-keep-default-shape', async ({
+    page,
+  }) => {
+    expect(await twoFactorShape(page)).toEqual({ height: 40, radius: '16px' });
+    expect(await resetSuccessShape(page)).toEqual({ height: 40, radius: '8px' });
+  });
+
+  test('a theme that reshapes the sign-in button reshapes the second-factor and reset-success actions @scenario:theme-reshapes-auth-actions', async ({
+    page,
+  }) => {
+    await serveTheme(page, 'clickhouse');
+    expect(await twoFactorShape(page)).toEqual({ height: 32, radius: '4px' });
+    expect(await resetSuccessShape(page)).toEqual({ height: 32, radius: '4px' });
+
+    await serveTheme(page, REFERENCE_THEME);
+    expect(await twoFactorShape(page)).toEqual({ height: 40, radius: '0px' });
+    expect(await resetSuccessShape(page)).toEqual({ height: 40, radius: '0px' });
   });
 });

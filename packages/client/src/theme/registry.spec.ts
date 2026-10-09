@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { IThemeRGB, ThemeDefinition } from './types';
+import type { IThemeAppearance, IThemeRGB, ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
   darkAppearanceDefaults,
@@ -1440,10 +1440,35 @@ describe('theme registry', () => {
       authFieldHeight: '2.75rem',
       authButtonHeight: '3rem',
       authControlRadius: '1rem',
+      authActionHeight: '2.5rem',
+      authActionRadius: '0.5rem',
       checkboxSize: '1rem',
       listMinWidth: '8rem',
       listMaxHeight: '24rem',
     });
+  });
+
+  it('sizes the other sign-in actions from the sign-in pair, then the Button roles they drew', () => {
+    const resolve = (appearance: Partial<IThemeAppearance>) =>
+      resolveTheme({ version: 1, name: 'auth-actions', modes: { light: { appearance } } }, 'light')
+        .appearance;
+
+    expect(resolve({})).toMatchObject({ authActionHeight: '2.5rem', authActionRadius: '0.5rem' });
+    expect(resolve({ buttonHeight: '2.25rem', radiusLg: '3px' })).toMatchObject({
+      authActionHeight: '2.25rem',
+      authActionRadius: '3px',
+    });
+    expect(
+      resolve({
+        buttonHeight: '2.25rem',
+        radiusLg: '3px',
+        authButtonHeight: '2rem',
+        authControlRadius: '0',
+      }),
+    ).toMatchObject({ authActionHeight: '2rem', authActionRadius: '0' });
+    expect(
+      resolve({ authButtonHeight: '2rem', authActionHeight: '3.5rem', authActionRadius: '1px' }),
+    ).toMatchObject({ authActionHeight: '3.5rem', authActionRadius: '1px' });
   });
 
   it("bounds a Select list's width and scroll height", () => {

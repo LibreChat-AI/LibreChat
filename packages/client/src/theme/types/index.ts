@@ -709,6 +709,11 @@ export interface IThemeAppearance {
   authFieldHeight: string;
   authButtonHeight: string;
   authControlRadius: string;
+  /** The height and corner of the other actions in the sign-in flow, the second-factor verify and
+   *  the reset-success continue buttons. They follow `authButtonHeight` and `authControlRadius`
+   *  when a theme names those, then `buttonHeight` and `radiusLg`, which they drew before. */
+  authActionHeight: string;
+  authActionRadius: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';

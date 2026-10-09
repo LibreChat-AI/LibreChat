@@ -97,6 +97,8 @@ const stockAliases: Partial<
   menuPanelRadius: 'radiusXl',
   composerActionRadius: 'roundControlRadius',
   authControlRadius: 'radius2xl',
+  authActionHeight: 'buttonHeight',
+  authActionRadius: 'radiusLg',
 };
 
 /** Color roles split out of a broader one read it in the stylesheet, in both modes, so a

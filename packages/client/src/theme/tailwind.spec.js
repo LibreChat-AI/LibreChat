@@ -179,6 +179,12 @@ describe('LibreChat Tailwind preset', () => {
       ['h-theme-field-lg', '--theme-field-height-lg', defaultAppearance.fieldHeightLg],
       ['h-theme-auth-field', '--theme-auth-field-height', defaultAppearance.authFieldHeight],
       ['h-theme-auth-button', '--theme-auth-button-height', defaultAppearance.authButtonHeight],
+      ['h-theme-auth-action', '--theme-auth-action-height', defaultAppearance.authActionHeight],
+      [
+        'rounded-theme-auth-action',
+        '--theme-auth-action-radius',
+        defaultAppearance.authActionRadius,
+      ],
       [
         'rounded-theme-auth-control',
         '--theme-auth-control-radius',
@@ -304,6 +310,8 @@ describe('LibreChat Tailwind preset', () => {
       menuPanelRadius: 'radiusXl',
       composerActionRadius: 'roundControlRadius',
       authControlRadius: 'radius2xl',
+      authActionHeight: 'buttonHeight',
+      authActionRadius: 'radiusLg',
     };
     Object.entries(themeAppearanceProperties).forEach(([key, property]) => {
       const value = aliases[key]
