@@ -877,19 +877,13 @@ describe('ActivityPhaseGroup streaming thought peek', () => {
     },
   } as unknown as TMessageContentParts;
 
-  test("shows the streaming thought under a collapsed live card, in the cursor's place", () => {
+  test('hides the streaming thought when its Thoughts header is inside a collapsed phase', () => {
     render(
       <ActivityPhaseGroup labelPart={makeLabelPart('')} hasContent liveParts={[thought]} showCursor>
         <div data-testid="phase-content" />
       </ActivityPhaseGroup>,
     );
-    const peek = screen.getByTestId('streaming-thought-peek');
-    expect(peek).toHaveTextContent('Next I check the ordering. Then the tags.');
-    /** Straight from the stream, the thought still carries its opening tag. */
-    expect(peek).not.toHaveTextContent('<think>');
-    expect(screen.queryByTestId('activity-phase-cursor')).toBeNull();
-    /** Under the header, not inside the fold that would unmount it. */
-    expect(screen.getByTestId('activity-phase-panel')).not.toContainElement(peek);
+    expect(screen.queryByTestId('streaming-thought-peek')).not.toBeInTheDocument();
   });
 
   test('gives way to the rows once the card is open', () => {

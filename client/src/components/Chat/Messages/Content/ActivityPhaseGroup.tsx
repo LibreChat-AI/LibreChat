@@ -33,7 +33,7 @@ import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from './rows';
 import { getOutcomeStatus, isSpanFailed, summarizeSpan } from './outcome';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import useThrottledValue from '~/hooks/Messages/useThrottledValue';
-import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
+import { AttachmentGroup } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { MCPAppViews } from '~/components/MCPUIResource';
@@ -754,37 +754,13 @@ export default function ActivityPhaseGroup({
    *  right for the streaming-markdown cursor, wrong here — so `after:!static`
    *  puts that one pseudo-element back in flow for the slot to center; the
    *  `!` is what outranks the dot rule's three-class selector. */
-  /** The thought streaming at the tail of a collapsed live card, shown the
-   *  way an unfolded thought shows it: the trailing sentences in a short
-   *  fading window under the header (#14546). The fold had swallowed that
-   *  peek with the rows, leaving one throttled sentence on the header to
-   *  stand for a paragraph of live reasoning. It takes the cursor's place:
-   *  moving text is its own sign the run is alive. Only a card that is still
-   *  just thinking shows it: once tool calls fold in with the thought, the
-   *  header names the mix and the cursor stands in for the reasoning (#16680). */
-  const streamingThought = useMemo(() => {
-    if (!isLive || isExpanded || liveParts == null) {
-      return '';
-    }
-    const tail = liveParts[liveParts.length - 1];
-    if (tail?.type !== ContentTypes.THINK) {
-      return '';
-    }
-    if (liveParts.some((part) => part?.type === ContentTypes.TOOL_CALL)) {
-      return '';
-    }
-    return typeof tail.think === 'string' ? tail.think : (tail.think?.value ?? '');
-  }, [isLive, isExpanded, liveParts]);
-  const thoughtPeek =
-    streamingThought.trim() !== '' ? <StreamingThoughtPeek text={streamingThought} /> : null;
-  const cursor =
-    showCursor && thoughtPeek == null ? (
-      <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
-        <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
-          <span className="result-thinking block after:!static" />
-        </span>
-      </div>
-    ) : null;
+  const cursor = showCursor ? (
+    <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
+      <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
+        <span className="result-thinking block after:!static" />
+      </span>
+    </div>
+  ) : null;
   /** `AttachmentGroup` drops `web_search` attachments, and the nested segment
    *  renders with `hideAttachments` so its own `WebSearch` row stands down
    *  for this hoist — so without `SearchVerticals` here a phase containing a
@@ -936,7 +912,6 @@ export default function ActivityPhaseGroup({
   return (
     <>
       {group}
-      {thoughtPeek}
       {media}
       {cursor}
     </>
