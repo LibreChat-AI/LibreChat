@@ -1,6 +1,7 @@
 const path = require('path');
 const mongoose = require('mongoose');
 const { v5: uuidv5 } = require('uuid');
+const { BANNER_VARIANTS } = require('librechat-data-provider');
 const { Banner } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { askQuestion, askMultiLineQuestion, silentExit } = require('./helpers');
@@ -23,6 +24,7 @@ const connect = require('./connect');
   let message = '';
   let isPublic = undefined;
   let persistable = undefined;
+  let variant = undefined;
   // If we have the right number of arguments, lets use them
   if (process.argv.length >= 3) {
     displayFrom = process.argv[2];
@@ -30,9 +32,10 @@ const connect = require('./connect');
     message = process.argv[4];
     isPublic = process.argv[5] === undefined ? undefined : process.argv[5] === 'true';
     persistable = process.argv[6] === undefined ? undefined : process.argv[6] === 'true';
+    variant = process.argv[7];
   } else {
     console.orange(
-      'Usage: npm run update-banner <displayFrom(Format: yyyy-mm-ddTHH:MM:SSZ)> <displayTo(Format: yyyy-mm-ddTHH:MM:SSZ)> <message> <isPublic(true/false)> <persistable(true/false)>',
+      `Usage: npm run update-banner <displayFrom(Format: yyyy-mm-ddTHH:MM:SSZ)> <displayTo(Format: yyyy-mm-ddTHH:MM:SSZ)> <message> <isPublic(true/false)> <persistable(true/false)> [variant(${BANNER_VARIANTS.join('/')})]`,
     );
     console.orange('Note: if you do not pass in the arguments, you will be prompted for them.');
     console.purple('--------------------------');
@@ -88,6 +91,16 @@ const connect = require('./connect');
     persistable = persistableInput.toLowerCase() === 'y' ? true : false;
   }
 
+  if (variant === undefined) {
+    variant = await askQuestion(`Variant (${BANNER_VARIANTS.join('/')}, Default: none):`);
+  }
+
+  variant = variant.trim().toLowerCase();
+  if (variant && !BANNER_VARIANTS.includes(variant)) {
+    console.red(`Error: Invalid variant. Use one of: ${BANNER_VARIANTS.join(', ')}.`);
+    silentExit(1);
+  }
+
   // Generate the same bannerId for the same message
   // This allows us to display only messages that haven't been shown yet
   const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // Use an arbitrary namespace UUID
@@ -109,6 +122,7 @@ const connect = require('./connect');
           bannerId,
           isPublic,
           persistable,
+          ...(variant ? { variant } : { $unset: { variant: 1 } }),
         },
         { new: true },
       );
@@ -120,6 +134,7 @@ const connect = require('./connect');
         bannerId,
         isPublic,
         persistable,
+        ...(variant && { variant }),
       });
     }
   } catch (error) {
@@ -141,6 +156,7 @@ const connect = require('./connect');
   console.purple(`Banner: ${message}`);
   console.purple(`isPublic: ${isPublic}`);
   console.purple(`persistable: ${persistable}`);
+  console.purple(`variant: ${variant || 'none'}`);
   silentExit(0);
 })();
 
