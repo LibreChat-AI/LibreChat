@@ -121,6 +121,9 @@
     }
   },
   "client/src/components/Chat/Input/Files/Table/DataTable.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    },
     "shadcn/no-restyle": {
       "count": 13
     }

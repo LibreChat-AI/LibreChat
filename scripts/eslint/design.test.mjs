@@ -29,6 +29,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "const recipe = 'theme-disabled:text-text-disabled theme-disabled:opacity-100';",
     "cn(disabled ? 'opacity-50' : '', disabledFillClasses)",
     "const label = 'disabled';",
+    "cn('not-disabled:opacity-100 opacity-0')",
+    "cn('data-[state=disabled]:opacity-50', utils.disabledInkClasses)",
+    "cva('rounded', { variants: { size: { sm: 'disabled:opacity-50' } }, compoundVariants: [{ class: disabledFillClasses }] })",
+    "cn({ 'disabled:opacity-50': true, [disabledFillClasses]: true })",
   ],
   invalid: [
     {
@@ -73,6 +77,26 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     },
     {
       code: "const styles = { base: 'disabled:opacity-50' }; cn(styles.base, disabledFillClasses);",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn('aria-[disabled=true]:opacity-50')",
+      errors: [missing('aria-[disabled=true]:opacity-50')],
+    },
+    {
+      code: "cn('data-[state=disabled]:opacity-50')",
+      errors: [missing('data-[state=disabled]:opacity-50')],
+    },
+    {
+      code: "cn('[&:disabled]:opacity-40')",
+      errors: [missing('[&:disabled]:opacity-40')],
+    },
+    {
+      code: "const props = { className: 'disabled:opacity-50', disabledFillClasses: false };",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "const props = { className: 'disabled:opacity-50', footer: cn(disabledFillClasses) };",
       errors: [missing('disabled:opacity-50')],
     },
   ],
