@@ -24,8 +24,13 @@ const otherRepository = { repository: 'acme/two', pullNumber: 2 };
 
 const mismatch = { ok: false, error: { code: 'binding_mismatch' } };
 /** Enables and returns the record, for setups that expect the enable to succeed. */
-const enableWith = async (params: Parameters<typeof methods.enablePRAutomation>[0]) => {
-  const result = await methods.enablePRAutomation(params);
+type EnableParams = Parameters<typeof methods.enablePRAutomation>[0];
+/** The widest ceiling, so setups that pass a trust level store it as given. */
+const enableOpen = (
+  params: Omit<EnableParams, 'maxTrust'> & { maxTrust?: EnableParams['maxTrust'] },
+) => methods.enablePRAutomation({ maxTrust: 'anyone', ...params });
+const enableWith = async (params: Parameters<typeof enableOpen>[0]) => {
+  const result = await enableOpen(params);
   if (!result.ok) {
     throw new Error(`enable failed: ${result.error.code}`);
   }
@@ -192,6 +197,27 @@ describe('enablePRAutomation', () => {
     expect((await claim(1)).ok).toBe(true);
   });
 
+  test('creates a record no wider than the administrator ceiling', async () => {
+    const record = await enableWith({
+      ...key,
+      binding: pullOne,
+      trust: 'anyone',
+      maxTrust: 'collaborators',
+    });
+    expect(record.trust).toBe('collaborators');
+  });
+
+  test('rebinds a record no wider than the administrator ceiling', async () => {
+    await enable(pullOne);
+    const rebound = await enableWith({
+      ...key,
+      binding: otherRepository,
+      trust: 'anyone',
+      maxTrust: 'approvedBots',
+    });
+    expect(rebound.trust).toBe('approvedBots');
+  });
+
   test('applies a narrower trust level passed with a rebind of a running record', async () => {
     await enableWith({ ...key, binding: pullOne, trust: 'anyone' });
     const rebound = await enableWith({ ...key, binding: otherRepository, trust: 'approvedBots' });
@@ -204,26 +230,33 @@ describe('enablePRAutomation', () => {
     expect(rebound.trust).toBe('collaborators');
   });
 
+  test('enables for a stored conversation whose id is longer than 256 characters', async () => {
+    const conversationId = 'c'.repeat(300);
+    await seedConversation({ conversationId });
+    const result = await methods.enablePRAutomation({ userId, conversationId, maxTrust: 'anyone' });
+    expect(result.ok).toBe(true);
+  });
+
   test('keeps records of different users apart', async () => {
     await enable();
     expect(await methods.getPRAutomation({ ...key, userId: otherUserId })).toBeNull();
   });
 
   test('clears approved bots when the conversation is bound to a different repository', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     await addBot(101);
     const rebound = await enableWith({ ...key, binding: otherRepository });
     expect(rebound).toMatchObject({ ...otherRepository, trustedBots: [] });
   });
 
   test('refuses a bot approved before any repository was bound', async () => {
-    await methods.enablePRAutomation(key);
+    await enableOpen(key);
     expect(await addBot(101)).toEqual({ ok: false, error: { code: 'binding_mismatch' } });
     expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([]);
   });
 
   test('keeps approved bots when the same repository is bound to another pull request', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     await addBot(101);
     const rebound = await enableWith({ ...key, binding: pullTwo });
     expect(rebound).toMatchObject({ pullNumber: 2, trustedBots: [{ id: 101 }] });
@@ -363,13 +396,13 @@ describe('a deletion that lands while a claim is in flight', () => {
 describe('enabling for a conversation or owner that no longer exists', () => {
   test('does not leave a record behind for a deleted conversation', async () => {
     await mongoose.models.Conversation.deleteMany({});
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     expect(await methods.getPRAutomation(key)).toBeNull();
   });
 
   test('reports that the conversation is gone', async () => {
     await mongoose.models.Conversation.deleteMany({});
-    expect(await methods.enablePRAutomation({ ...key, binding: pullOne })).toEqual({
+    expect(await enableOpen({ ...key, binding: pullOne })).toEqual({
       ok: false,
       error: { code: 'conversation_gone' },
     });
@@ -381,7 +414,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
   test('rejects an enable once account deletion started mid-write', async () => {
     const spy = interleaveEnable(startAccountDeletionNow);
     try {
-      expect(await methods.enablePRAutomation({ ...key, binding: pullOne })).toEqual({
+      expect(await enableOpen({ ...key, binding: pullOne })).toEqual({
         ok: false,
         error: { code: 'owner_inactive' },
       });
@@ -393,7 +426,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
   test('leaves nothing claimable after a cancelled deletion that an enable crossed', async () => {
     const spy = interleaveEnable(startAccountDeletionNow);
     try {
-      await methods.enablePRAutomation({ ...key, binding: pullOne });
+      await enableOpen({ ...key, binding: pullOne });
     } finally {
       spy.mockRestore();
     }
@@ -417,7 +450,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
       );
     });
     try {
-      await methods.enablePRAutomation({ ...key, binding: pullOne });
+      await enableOpen({ ...key, binding: pullOne });
     } finally {
       spy.mockRestore();
     }
@@ -431,7 +464,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
       await startAccountDeletionNow();
     });
     try {
-      await methods.enablePRAutomation({ ...key, binding: pullTwo });
+      await enableOpen({ ...key, binding: pullTwo });
     } finally {
       spy.mockRestore();
     }
@@ -455,7 +488,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     let enableB: Promise<unknown> = Promise.resolve();
     const before: Record<number, () => Promise<void>> = {
       2: async () => {
-        enableB = methods.enablePRAutomation({ ...key, binding: otherRepository });
+        enableB = enableOpen({ ...key, binding: otherRepository });
         await atB;
         await startAccountDeletionNow();
       },
@@ -482,7 +515,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
       return query;
     }) as typeof User.findById);
     try {
-      await methods.enablePRAutomation({ ...key, binding: pullTwo });
+      await enableOpen({ ...key, binding: pullTwo });
       releaseB();
       await enableB;
     } finally {
@@ -490,6 +523,31 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     }
     await cancelAccountDeletion();
     expect(await claim(1, { binding: pullTwo })).not.toMatchObject({ ok: true });
+  });
+
+  test('does not report success when another enable replaced its write before it committed', async () => {
+    await enable(pullOne);
+    /** Another enable's write lands between this enable's second check and its commit. */
+    const original = PRAutomation.updateOne.bind(PRAutomation);
+    const spy = jest
+      .spyOn(PRAutomation, 'updateOne')
+      .mockImplementationOnce(((...args: Parameters<typeof PRAutomation.updateOne>) =>
+        PRAutomation.collection
+          .updateOne(
+            { user: userId, conversationId: key.conversationId },
+            { $set: { epoch: 'other-attempt', pending: 'other-attempt' } },
+          )
+          .then(() => original(...args))) as unknown as typeof PRAutomation.updateOne);
+    try {
+      const result = await methods.enablePRAutomation({
+        ...key,
+        binding: pullTwo,
+        maxTrust: 'anyone',
+      });
+      expect(result.ok).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test('lets the next enable recover a record an interrupted enable left pending', async () => {
@@ -507,7 +565,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     await startRound(1);
     const spy = interleaveEnable(startAccountDeletionNow);
     try {
-      await methods.enablePRAutomation({ ...key, binding: pullOne });
+      await enableOpen({ ...key, binding: pullOne });
     } finally {
       spy.mockRestore();
     }
@@ -516,7 +574,7 @@ describe('enabling for a conversation or owner that no longer exists', () => {
 
   test('does not leave a record behind for an owner that no longer exists', async () => {
     await mongoose.models.User.deleteMany({});
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     expect(await methods.getPRAutomation(key)).toBeNull();
   });
 });
@@ -577,14 +635,14 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
 
   test('rejects a claim for a child once its root was deleted', async () => {
     await seedChild();
-    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await enableOpen({ ...childKey, binding: pullOne });
     await mongoose.models.Conversation.deleteOne({ conversationId: key.conversationId });
     expect(await claimChild()).toEqual({ ok: false, error: { code: 'conversation_gone' } });
   });
 
   test('removes the child record so nothing is left to claim later', async () => {
     await seedChild();
-    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await enableOpen({ ...childKey, binding: pullOne });
     await mongoose.models.Conversation.deleteOne({ conversationId: key.conversationId });
     await claimChild();
     expect(await methods.getPRAutomation(childKey)).toBeNull();
@@ -592,7 +650,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
 
   test('rejects a claim for a child whose root passed its retention date', async () => {
     await seedChild();
-    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await enableOpen({ ...childKey, binding: pullOne });
     await mongoose.models.Conversation.updateOne(
       { conversationId: key.conversationId },
       { $set: { expiredAt: new Date(Date.now() - 60_000) } },
@@ -617,7 +675,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
       },
     });
     const grandKey = { userId, conversationId: 'grandchild-1' };
-    await methods.enablePRAutomation({ ...grandKey, binding: pullOne });
+    await enableOpen({ ...grandKey, binding: pullOne });
     await mongoose.models.Conversation.deleteOne({ conversationId: childKey.conversationId });
     expect(
       await methods.claimPRAutomationRound({
@@ -649,7 +707,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
     await thread('grandchild-1', childKey.conversationId, 2);
     await thread('great-1', 'grandchild-1', 3);
     const greatKey = { userId, conversationId: 'great-1' };
-    await methods.enablePRAutomation({ ...greatKey, binding: pullOne });
+    await enableOpen({ ...greatKey, binding: pullOne });
     await mongoose.models.Conversation.deleteOne({ conversationId: childKey.conversationId });
     expect(
       await methods.claimPRAutomationRound({
@@ -681,7 +739,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
 
   test('accepts a claim for a child while its root is active', async () => {
     await seedChild();
-    await methods.enablePRAutomation({ ...childKey, binding: pullOne });
+    await enableOpen({ ...childKey, binding: pullOne });
     expect((await claimChild()).ok).toBe(true);
   });
 });
@@ -703,7 +761,7 @@ describe('index guarantees', () => {
   test('builds the unique index before the first write when automatic indexing is off', async () => {
     await PRAutomation.collection.dropIndexes();
     const fresh = createPRAutomationMethods(mongoose);
-    await fresh.enablePRAutomation({ ...key, binding: pullOne });
+    await fresh.enablePRAutomation({ ...key, binding: pullOne, maxTrust: 'anyone' });
     const indexes = await PRAutomation.collection.indexes();
     expect(
       indexes.some(
@@ -734,7 +792,7 @@ describe('binding a pull request', () => {
   });
 
   test('starts a fresh run when bound to another pull request in the same repository', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     await startRound(1);
     await toWaiting();
     await startRound(2);
@@ -746,33 +804,33 @@ describe('binding a pull request', () => {
   });
 
   test('lets the new pull request claim a head the old one claimed', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     await startRound(1);
-    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    await enableOpen({ ...key, binding: pullTwo });
     expect((await claim(1, { binding: pullTwo })).ok).toBe(true);
   });
 
   test('does not carry the old pull request round count into the new one', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     for (let round = 1; round <= limits.maxRounds; round++) {
       await startRound(round);
       await toWaiting();
     }
-    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    await enableOpen({ ...key, binding: pullTwo });
     expect((await claim(9, { binding: pullTwo })).ok).toBe(true);
   });
 
   test('ignores a completion from the round of the pull request it replaced', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     const running = await startRound(1);
-    await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    await enableOpen({ ...key, binding: pullTwo });
 
     expect(await settle(1, running.runId)).toBeNull();
     expect((await methods.getPRAutomation(key))?.state).toBe('idle');
   });
 
   test('leaves a run alone when it is bound to the pair it already has', async () => {
-    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    await enableOpen({ ...key, binding: pullOne });
     await startRound(1);
     const again = await enableWith({ ...key, binding: pullOne });
     expect(again).toMatchObject({ state: 'fixing', round: 1 });
@@ -783,9 +841,7 @@ describe('binding a pull request', () => {
     await enable();
     const pairs = [pullOne, otherRepository];
     await Promise.all(
-      Array.from({ length: 24 }, (_, index) =>
-        methods.enablePRAutomation({ ...key, binding: pairs[index % 2] }),
-      ),
+      Array.from({ length: 24 }, (_, index) => enableOpen({ ...key, binding: pairs[index % 2] })),
     );
     const record = await methods.getPRAutomation(key);
     expect(pairs).toContainEqual({
@@ -941,7 +997,7 @@ describe('claimPRAutomationRound', () => {
   });
 
   test('rejects a claim on a record that is bound to no pull request', async () => {
-    await methods.enablePRAutomation(key);
+    await enableOpen(key);
     expect(await claim(1)).toEqual(mismatch);
   });
 
@@ -1220,14 +1276,20 @@ describe('stopPRAutomation', () => {
 describe('setPRAutomationTrust', () => {
   test('changes the trust level', async () => {
     await enable();
-    const updated = await methods.setPRAutomationTrust(key, 'collaborators');
+    const updated = await methods.setPRAutomationTrust(key, 'collaborators', 'anyone');
     expect(updated?.trust).toBe('collaborators');
+  });
+
+  test('stores no level wider than the administrator ceiling', async () => {
+    await enable();
+    const updated = await methods.setPRAutomationTrust(key, 'anyone', 'approvedBots');
+    expect(updated?.trust).toBe('approvedBots');
   });
 
   test('rejects a level outside the enum', async () => {
     await enable();
     await expect(
-      methods.setPRAutomationTrust(key, 'everyone' as unknown as 'anyone'),
+      methods.setPRAutomationTrust(key, 'everyone' as unknown as 'anyone', 'anyone'),
     ).rejects.toThrow();
   });
 });
@@ -1380,7 +1442,7 @@ describe('approved bots', () => {
   test('keeps each conversation allowlist separate', async () => {
     await enable();
     await seedConversation({ conversationId: 'convo-2' });
-    await methods.enablePRAutomation({ userId, conversationId: 'convo-2' });
+    await enableOpen({ userId, conversationId: 'convo-2' });
     await addBot(101);
     const other = await methods.getPRAutomation({ userId, conversationId: 'convo-2' });
     expect(other?.trustedBots).toEqual([]);

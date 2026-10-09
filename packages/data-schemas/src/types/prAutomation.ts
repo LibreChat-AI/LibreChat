@@ -83,10 +83,13 @@ export type PRAutomationEventStopCode = Exclude<PRAutomationStopCode, 'user_stop
 
 export type EnablePRAutomationResult =
   | { ok: true; value: IPRAutomation }
-  | { ok: false; error: { code: 'conversation_gone' | 'owner_inactive' } };
+  /** `conflict`: a concurrent enable replaced this one before it committed; retry. */
+  | { ok: false; error: { code: 'conversation_gone' | 'owner_inactive' | 'conflict' } };
 
 export interface EnablePRAutomationParams extends PRAutomationKey {
   trust?: PRAutomationTrustLevel;
+  /** The administrator ceiling (`prAutomation.maxTrust`); `trust` is clamped to it. */
+  maxTrust: PRAutomationTrustLevel;
   binding?: PRAutomationBinding;
 }
 

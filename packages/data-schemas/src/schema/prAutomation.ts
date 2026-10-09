@@ -34,11 +34,8 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
       type: String,
       index: true,
     },
-    conversationId: {
-      type: String,
-      required: true,
-      maxlength: 256,
-    },
+    /** Unbounded, like the conversation schema it mirrors, so every stored conversation can enable. */
+    conversationId: { type: String, required: true },
     repository: { type: String, maxlength: 256 },
     pullNumber: {
       type: Number,

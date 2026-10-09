@@ -3,6 +3,8 @@ import {
   MAX_SUBAGENT_DEPTH,
   MAX_PR_AUTOMATION_BOTS,
   PR_AUTOMATION_STOP_CODES,
+  PR_AUTOMATION_TRUST_LEVELS,
+  clampPRAutomationTrust,
 } from 'librechat-data-provider';
 import type { PRAutomationTrustLevel } from 'librechat-data-provider';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
@@ -111,6 +113,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   setPRAutomationTrust: (
     key: t.PRAutomationKey,
     trust: PRAutomationTrustLevel,
+    maxTrust: PRAutomationTrustLevel,
   ) => Promise<t.IPRAutomation | null>;
   addPRAutomationBot: (
     key: t.PRAutomationKey,
@@ -240,6 +243,20 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     };
   }
 
+  /**
+   * Clamps a valid level to the administrator ceiling. An unknown level is refused rather than
+   * narrowed, so a malformed request fails loudly instead of being stored as something else.
+   */
+  function boundTrust(
+    trust: PRAutomationTrustLevel,
+    maxTrust: PRAutomationTrustLevel,
+  ): PRAutomationTrustLevel {
+    if (!PR_AUTOMATION_TRUST_LEVELS.includes(trust)) {
+      throw new RangeError('Unknown PR automation trust level');
+    }
+    return clampPRAutomationTrust(trust, maxTrust);
+  }
+
   function assertStopCode(stopCode: PRAutomationStopCode): void {
     if (!PR_AUTOMATION_STOP_CODES.includes(stopCode)) {
       throw new RangeError('A stopped PR automation needs a known stop code');
@@ -271,9 +288,13 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * or owner that is already gone writes nothing. One that passed the first check but lost a
    * race with the deletion and its cleanup removes the record it wrote, so a late enable cannot
    * recreate a record nobody will clean up.
+   *
+   * `maxTrust` is the administrator ceiling, resolved by the caller. A requested trust level
+   * is clamped to it before any write, so no record stores a level the deployment forbids.
    */
   async function enablePRAutomation({
-    trust,
+    trust: requestedTrust,
+    maxTrust,
     binding: requested,
     ...key
   }: t.EnablePRAutomationParams): Promise<t.EnablePRAutomationResult> {
@@ -281,6 +302,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       requested == null
         ? undefined
         : { ...requested, repository: canonicalRepository(requested.repository) };
+    const trust = requestedTrust == null ? undefined : boundTrust(requestedTrust, maxTrust);
     const before = await checkLiveness(key);
     if (before !== 'live') {
       return { ok: false, error: { code: isGone(before) ? goneCode(before) : before } };
@@ -305,12 +327,18 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       runReset(attempt, { ...fields, pending: attempt });
     const options = { runValidators: true };
     let undo: { previous: t.IPRAutomation | null } | undefined;
+    /** Whether any write of this attempt applied; an enable that changed nothing has no commit. */
+    let wrote = false;
     const write = async (condition: Record<string, unknown>, update: Record<string, unknown>) => {
       const before = await PRAutomation.findOneAndUpdate({ ...filter, ...condition }, update, {
         ...options,
         new: false,
       }).lean<t.IPRAutomation>();
-      if (before != null && before.epoch !== attempt) {
+      if (before == null) {
+        return;
+      }
+      wrote = true;
+      if (before.epoch !== attempt) {
         undo = { previous: before };
       }
     };
@@ -325,13 +353,14 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           claimedHeads: [],
           epoch: attempt,
           pending: attempt,
-          trust: trust ?? 'approvedBots',
+          trust: clampPRAutomationTrust(trust, maxTrust),
           ...binding,
         },
       },
       { upsert: true, new: false, ...options },
     ).lean<t.IPRAutomation>();
     if (existing == null) {
+      wrote = true;
       undo = { previous: null };
     }
     /** A trust level passed with the request applies to every write that starts a run. */
@@ -372,7 +401,20 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       }
       return { ok: false, error: { code: after } };
     }
-    await PRAutomation.updateOne({ ...filter, pending: attempt }, { $unset: { pending: '' } });
+    /**
+     * Commits only if this attempt's write is still the record. A later enable that replaced it
+     * decides the outcome instead, so this attempt reports a retryable conflict rather than a
+     * success that a rollback of the later enable could leave unclaimable.
+     */
+    if (wrote) {
+      const committed = await PRAutomation.updateOne(
+        { ...filter, epoch: attempt, pending: attempt },
+        { $unset: { pending: '' } },
+      );
+      if (committed.matchedCount === 0) {
+        return { ok: false, error: { code: 'conflict' } };
+      }
+    }
     const record = await getPRAutomation(key);
     if (record == null) {
       throw new Error('PR automation record missing after enable');
@@ -625,14 +667,16 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     }
   }
 
+  /** `maxTrust` is the administrator ceiling; a wider request is stored as the ceiling. */
   async function setPRAutomationTrust(
     key: t.PRAutomationKey,
     trust: PRAutomationTrustLevel,
+    maxTrust: PRAutomationTrustLevel,
   ): Promise<t.IPRAutomation | null> {
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
       keyFilter(key),
-      { $set: { trust } },
+      { $set: { trust: boundTrust(trust, maxTrust) } },
       { new: true, select: PROJECTION, runValidators: true },
     ).lean<t.IPRAutomation>();
   }
