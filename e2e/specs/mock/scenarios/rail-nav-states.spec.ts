@@ -85,6 +85,35 @@ test.describe('desktop icon rail', () => {
     }
   });
 
+  test('the rail toggle, new chat and marketplace controls hover in the navigation role @scenario:rail-controls-nav-hover', async ({
+    page,
+  }) => {
+    await installThemeBridge(page);
+    const cases: Array<[ThemeChoice, Mode, string]> = [
+      ['clickhouse', 'light', rgb(clickHouseTheme.modes.light?.colors?.['rgb-surface-nav-hover'])],
+      ['clickhouse', 'dark', rgb(clickHouseTheme.modes.dark?.colors?.['rgb-surface-nav-hover'])],
+      ['default', 'light', 'rgb(227, 227, 227)'],
+      ['default', 'dark', 'rgb(47, 47, 47)'],
+    ];
+    for (const [theme, mode, hover] of cases) {
+      const { idle } = await openRail(page, theme, mode);
+      await idle.hover();
+      await expect.poll(() => fill(idle)).toBe(hover);
+
+      for (const testId of [
+        'close-sidebar-button',
+        'new-chat-button',
+        'nav-agents-marketplace-button',
+      ]) {
+        const control = page.getByTestId(testId).filter({ visible: true }).first();
+        await expect(control).toBeVisible();
+        await control.hover();
+        await expect.poll(() => fill(control)).toBe(hover);
+      }
+      await page.mouse.move(640, 400);
+    }
+  });
+
   test('the default theme keeps the rail selected and hovered fills @scenario:rail-nav-default-unchanged', async ({
     page,
   }) => {

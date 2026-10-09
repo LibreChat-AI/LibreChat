@@ -42,7 +42,7 @@ const NewChatButton = memo(function NewChatButton({
           data-testid="new-chat-button"
           aria-label={localize('com_ui_new_chat')}
           aria-keyshortcuts={ariaKey}
-          className="hover:bg-surface-hover flex h-9 w-9 items-center justify-center rounded-lg transition-colors"
+          className="hover:bg-surface-nav-hover flex h-9 w-9 items-center justify-center rounded-lg transition-colors"
           onClick={handleNewChatClick}
         >
           <SquarePen className="text-text-primary h-5 w-5" />
@@ -156,7 +156,7 @@ function ExpandedPanel({
             id={expanded ? CLOSE_SIDEBAR_ID : undefined}
             data-testid={expanded ? 'close-sidebar-button' : 'open-sidebar-button'}
             size="icon"
-            variant="ghost"
+            variant="nav"
             aria-label={localize(toggleLabel)}
             aria-expanded={expanded}
             aria-keyshortcuts={toggleSidebarAriaKey}
