@@ -1,5 +1,4 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -30,6 +29,7 @@ import {
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
@@ -42,7 +42,6 @@ import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
 import SearchVerticals from './verticals';
-import store from '~/store';
 
 interface ToolCallGroupProps {
   parts: PartWithIndex[];
@@ -318,7 +317,7 @@ export default function ToolCallGroup({
     return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
   }, [toolMetadata, localize, mcpServerNames]);
 
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useMessagePartsHost().useAutoExpandTools();
   /** A labeled activity block is summarized by its header, so it collapses
    *  even at a single tool call — agent runs are full of one-call batches,
    *  and leaving those expanded defeats the grouping. */

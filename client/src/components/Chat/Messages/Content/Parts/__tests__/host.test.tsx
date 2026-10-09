@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, renderHook, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type {
   MessagePartArtifactPanel,
@@ -8,6 +8,7 @@ import type {
 } from '~/hooks/Chat/contract';
 import type { Artifact, PtcTrace } from '~/common';
 import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import { SoleToolContext, useToolAutoExpand } from '../../disclosure';
 import ToolArtifactCard from '../ToolArtifactCard';
 import PtcToolTrace from '../PtcToolTrace';
 import TextPart from '../Text';
@@ -38,6 +39,7 @@ function createHost(overrides: Partial<MessagePartsHost> = {}): MessagePartsHost
     useMessage: () => message,
     useFontSize: () => 'text-base',
     useShowThinking: () => false,
+    useAutoExpandTools: () => false,
     useUserTextPreferences: () => ({
       usernameDisplay: false,
       enableUserMsgMarkdown: false,
@@ -170,5 +172,26 @@ describe('message parts host', () => {
       </MessagePartsHostProvider>,
     );
     expect(panel.register).toHaveBeenCalledWith(artifact);
+  });
+
+  it('opens tool cards by default from the host preference without an app store', () => {
+    const withHost =
+      (host: MessagePartsHost, sole?: boolean) =>
+      ({ children }: { children: React.ReactNode }) => (
+        <MessagePartsHostProvider host={host}>
+          <SoleToolContext.Provider value={sole}>{children}</SoleToolContext.Provider>
+        </MessagePartsHostProvider>
+      );
+
+    const off = renderHook(() => useToolAutoExpand(), { wrapper: withHost(createHost()) });
+    expect(off.result.current).toBe(false);
+
+    const on = renderHook(() => useToolAutoExpand(), {
+      wrapper: withHost(createHost({ useAutoExpandTools: () => true })),
+    });
+    expect(on.result.current).toBe(true);
+
+    const sole = renderHook(() => useToolAutoExpand(), { wrapper: withHost(createHost(), true) });
+    expect(sole.result.current).toBe(true);
   });
 });
