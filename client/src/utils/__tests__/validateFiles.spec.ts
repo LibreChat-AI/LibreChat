@@ -1,4 +1,4 @@
-import { megabyte, fileConfig as defaultFileConfig } from 'librechat-data-provider';
+import { megabyte, fileConfig as defaultFileConfig, EToolResources } from 'librechat-data-provider';
 import type { EndpointFileConfig, FileConfig } from 'librechat-data-provider';
 import type { ExtendedFile } from '~/common';
 import { validateFiles, validateFileSizes, partitionUploads } from '../files';
@@ -398,6 +398,73 @@ describe('partitionUploads', () => {
     const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
 
     expect(keptIndices).toEqual([0, 1]);
+    expect(skipped).toEqual([]);
+  });
+
+  it('skips an unsupported file and keeps the supported ones picked alongside it', () => {
+    const fileList = [
+      makeSizedFile('photo.png', 'image/png', 1024),
+      makeSizedFile('notes.txt', 'text/plain', 1024),
+      makeSizedFile('setup.exe', 'application/x-msdownload', 1024),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0, 1]);
+    expect(skipped).toEqual([{ index: 2, file: fileList[2], reason: 'unsupported' }]);
+  });
+
+  it('skips every file when none of them has a supported type', () => {
+    const fileList = [
+      makeSizedFile('one.exe', 'application/x-msdownload', 1024),
+      makeSizedFile('two.exe', 'application/x-msdownload', 1024),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([]);
+    expect(skipped.map(({ reason }) => reason)).toEqual(['unsupported', 'unsupported']);
+  });
+
+  it('re-types a file whose type is inferred from its extension and keeps it', () => {
+    const fileList = [makeSizedFile('archive.zip', '', 1024)];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([0]);
+    expect(skipped).toEqual([]);
+    expect(fileList[0].type).toBe('application/zip');
+  });
+
+  it('skips a file whose type cannot be determined without dropping the rest', () => {
+    const fileList = [
+      makeSizedFile('mystery', '', 1024),
+      makeSizedFile('notes.txt', 'text/plain', 1024),
+    ];
+
+    const { keptIndices, skipped } = partitionUploads({ files, fileList, endpointFileConfig });
+
+    expect(keptIndices).toEqual([1]);
+    expect(skipped).toEqual([{ index: 0, file: fileList[0], reason: 'unsupported' }]);
+  });
+
+  it('checks context tool resources against the configured text, OCR, and STT lists', () => {
+    endpointFileConfig = makeEndpointConfig({ supportedMimeTypes: [/^image\/(jpeg|png)$/] });
+    const fileConfig: FileConfig = {
+      endpoints: {},
+      ocr: { supportedMimeTypes: [/^application\/pdf$/] },
+    };
+    const fileList = [makeSizedFile('doc.pdf', 'application/pdf', 1024)];
+
+    const { keptIndices, skipped } = partitionUploads({
+      files,
+      fileList,
+      endpointFileConfig,
+      fileConfig,
+      toolResource: EToolResources.context,
+    });
+
+    expect(keptIndices).toEqual([0]);
     expect(skipped).toEqual([]);
   });
 });
