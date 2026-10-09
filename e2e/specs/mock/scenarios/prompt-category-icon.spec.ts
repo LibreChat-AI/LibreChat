@@ -1,31 +1,42 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import type { ThemeDefinition } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB, ThemeDefinition } from '../../../../packages/client/src/theme/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
+import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
+import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
 import { getAccessToken, requestJson } from '../helpers';
 import { openPanel } from './panels';
 
 /**
- * The prompt category icons that drew in the `series-4` chart slot (idea, travel, aftersales) read
- * the `category-icon` role. The stock palettes keep it on `series-4`; ClickHouse quiets it to its
- * muted text, which clears the 3:1 WCAG 1.4.11 (Non-text Contrast) floor on the panel and on a
- * hovered row, where Click UI's fuchsia did not.
+ * Each prompt category icon reads the `category-icon-N` role for the series slot it drew in. The
+ * stock palettes keep every role on its `series-N`; ClickHouse draws all of them in its muted text,
+ * which clears the 3:1 WCAG 1.4.11 (Non-text Contrast) floor on the panel and on a hovered row,
+ * where several of Click UI's chart colours did not.
  */
-test.describe.configure({ timeout: 90_000 });
+test.describe.configure({ timeout: 120_000 });
 
 type Mode = 'light' | 'dark';
 type CreatedGroup = { group?: { _id: string } };
+type Paint = { color: string; background: string };
 
 const WCAG_NON_TEXT_MIN = 3;
-const STOCK_SERIES_4: Record<Mode, string> = {
-  light: 'rgb(182, 123, 5)',
-  dark: 'rgb(200, 133, 12)',
-};
+/** One category per series slot the icons use. */
+const SLOT_CATEGORIES = [
+  ['1', 'misc'],
+  ['2', 'finance'],
+  ['4', 'idea'],
+  ['5', 'code'],
+  ['6', 'write'],
+  ['7', 'hr'],
+] as const;
+const STOCK: Record<Mode, IThemeRGB> = { light: defaultTheme, dark: darkTheme };
 const CLICKHOUSE_MUTED: Record<Mode, string> = {
   light: 'rgb(105, 110, 121)',
   dark: 'rgb(179, 182, 189)',
 };
+
+const rgbCss = (triplet: string | undefined) => `rgb(${(triplet ?? '').split(' ').join(', ')})`;
 
 async function installTheme(page: Page, mode: Mode, definition: ThemeDefinition | null) {
   await page.addInitScript(
@@ -45,7 +56,7 @@ async function installTheme(page: Page, mode: Mode, definition: ThemeDefinition 
   );
 }
 
-async function createIdeaGroup(page: Page, name: string): Promise<string> {
+async function createGroup(page: Page, name: string, category: string): Promise<string> {
   const token = await getAccessToken(page);
   const body = await requestJson<CreatedGroup>(page, {
     path: '/api/prompts',
@@ -53,7 +64,7 @@ async function createIdeaGroup(page: Page, name: string): Promise<string> {
     method: 'POST',
     body: {
       prompt: { prompt: `Text for ${name}`, type: 'text' },
-      group: { name, category: 'idea' },
+      group: { name, category },
     },
   });
   const id = body.group?._id ?? '';
@@ -61,13 +72,15 @@ async function createIdeaGroup(page: Page, name: string): Promise<string> {
   return id;
 }
 
-async function deleteGroup(page: Page, id: string) {
+async function deleteGroups(page: Page, ids: string[]) {
   const token = await getAccessToken(page);
-  await requestJson<{ message?: string }>(page, {
-    path: `/api/prompts/groups/${encodeURIComponent(id)}`,
-    token,
-    method: 'DELETE',
-  });
+  for (const id of ids) {
+    await requestJson<{ message?: string }>(page, {
+      path: `/api/prompts/groups/${encodeURIComponent(id)}`,
+      token,
+      method: 'DELETE',
+    });
+  }
 }
 
 const channels = (color: string): number[] =>
@@ -87,94 +100,112 @@ function contrast(foreground: string, background: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-/** Opens the prompts panel on a fresh idea prompt and reads its icon over the row at rest and, with
- *  a pointer, on hover; the row's own fill is transparent at rest, so the first opaque ancestor is
- *  the panel. */
-async function categoryIconPaint(page: Page, mode: Mode, definition: ThemeDefinition | null) {
+/**
+ * Opens the prompts panel on one fresh prompt per slot and reads each icon over its row at rest
+ * and, with a pointer, on hover. A row's own fill is transparent at rest, so the first opaque
+ * ancestor is the panel.
+ */
+async function categoryIconPaints(page: Page, mode: Mode, definition: ThemeDefinition | null) {
   await installTheme(page, mode, definition);
   await page.goto('/c/new', { timeout: 15000 });
-  const name = `Category icon ${randomUUID().slice(0, 8)}`;
-  const id = await createIdeaGroup(page, name);
+  const prefix = `Category icon ${randomUUID().slice(0, 8)}`;
+  const ids: string[] = [];
   try {
+    for (const [slot, category] of SLOT_CATEGORIES) {
+      ids.push(await createGroup(page, `${prefix} ${slot}`, category));
+    }
     await page.goto('/c/new', { timeout: 15000 });
     await openPanel(page, 'prompts', 'Prompts');
-    await page.locator('#prompts-panel').getByRole('search').getByRole('textbox').fill(name);
-    const row = page
-      .locator('#prompts-panel')
-      .getByRole('button', { name: new RegExp(`^${name} prompt`) })
-      .locator('..');
-    await expect(row).toBeVisible({ timeout: 20000 });
-    const icon = row.locator('svg').first();
-    const read = () =>
-      icon.evaluate((node) => {
-        let element: Element | null = node.parentElement;
-        let background = 'rgba(0, 0, 0, 0)';
-        while (element) {
-          const fill = getComputedStyle(element).backgroundColor;
-          if (!/rgba\(.*,\s*0\)$/.test(fill) && fill !== 'transparent') {
-            background = fill;
-            break;
-          }
-          element = element.parentElement;
-        }
-        return { color: getComputedStyle(node).color, background };
-      });
-    const rest = await read();
-    /** A touch screen has no hover state to paint, so only a pointer reads the hovered row. */
+    await page.locator('#prompts-panel').getByRole('search').getByRole('textbox').fill(prefix);
     const canHover = await page.evaluate(() => matchMedia('(hover: hover)').matches);
-    let hover: typeof rest | null = null;
-    if (canHover) {
-      await page.mouse.move(0, 0);
-      await row.hover();
-      await expect.poll(async () => (await read()).background).not.toBe(rest.background);
-      hover = await read();
+
+    const paints: Array<{ slot: string; rest: Paint; hover: Paint | null }> = [];
+    for (const [slot] of SLOT_CATEGORIES) {
+      const row = page
+        .locator('#prompts-panel')
+        .getByRole('button', { name: new RegExp(`^${prefix} ${slot} prompt`) })
+        .locator('..');
+      await expect(row).toBeVisible({ timeout: 20000 });
+      const icon = row.locator('svg').first();
+      const read = (): Promise<Paint> =>
+        icon.evaluate((node) => {
+          let element: Element | null = node.parentElement;
+          let background = 'rgba(0, 0, 0, 0)';
+          while (element) {
+            const fill = getComputedStyle(element).backgroundColor;
+            if (!/rgba\(.*,\s*0\)$/.test(fill) && fill !== 'transparent') {
+              background = fill;
+              break;
+            }
+            element = element.parentElement;
+          }
+          return { color: getComputedStyle(node).color, background };
+        });
+      const rest = await read();
+      let hover: Paint | null = null;
+      if (canHover) {
+        await page.mouse.move(0, 0);
+        await row.hover();
+        await expect.poll(async () => (await read()).background).not.toBe(rest.background);
+        hover = await read();
+      }
+      paints.push({ slot, rest, hover });
     }
-    await test.info().attach(`category-icon-${definition?.name ?? 'stock'}-${mode}`, {
-      body: await row.screenshot(),
+    await test.info().attach(`category-icons-${definition?.name ?? 'stock'}-${mode}`, {
+      body: await page.locator('#prompts-panel').screenshot(),
       contentType: 'image/png',
     });
-    return { rest, hover };
+    return paints;
   } finally {
-    await deleteGroup(page, id);
+    await deleteGroups(page, ids);
   }
 }
 
 async function expectStock(page: Page, mode: Mode) {
-  const { rest } = await categoryIconPaint(page, mode, null);
+  const paints = await categoryIconPaints(page, mode, null);
 
-  expect(rest.color).toBe(STOCK_SERIES_4[mode]);
+  expect(paints.map(({ slot, rest }) => [slot, rest.color])).toEqual(
+    SLOT_CATEGORIES.map(([slot]) => [slot, rgbCss(STOCK[mode][`rgb-series-${slot}`])]),
+  );
 }
 
 async function expectClickHouse(page: Page, mode: Mode) {
-  const { rest, hover } = await categoryIconPaint(page, mode, clickHouseTheme);
+  const paints = await categoryIconPaints(page, mode, clickHouseTheme);
 
-  expect(rest.color).toBe(CLICKHOUSE_MUTED[mode]);
-  expect(contrast(rest.color, rest.background)).toBeGreaterThanOrEqual(WCAG_NON_TEXT_MIN);
-  if (hover) {
-    expect(contrast(hover.color, hover.background)).toBeGreaterThanOrEqual(WCAG_NON_TEXT_MIN);
-  }
+  const failures = paints.flatMap(({ slot, rest, hover }) =>
+    [rest, hover].flatMap((paint) => {
+      if (!paint) {
+        return [];
+      }
+      const ratio = contrast(paint.color, paint.background);
+      return paint.color !== CLICKHOUSE_MUTED[mode] || ratio < WCAG_NON_TEXT_MIN
+        ? [`slot ${slot}: ${paint.color} on ${paint.background} at ${ratio.toFixed(2)}:1`]
+        : [];
+    }),
+  );
+  expect(failures).toEqual([]);
 }
 
-test.describe('prompt category icon role', () => {
-  test('stock light keeps the idea icon on series-4 @scenario:prompt-category-icon-stock-light', async ({
+test.describe('prompt category icon roles', () => {
+  test('stock light keeps every category icon on its series slot @scenario:prompt-category-icon-stock-light', async ({
     page,
   }) => {
     await expectStock(page, 'light');
   });
 
-  test('stock dark keeps the idea icon on series-4 @scenario:prompt-category-icon-stock-dark', async ({
+  test('stock dark keeps every category icon on its series slot @scenario:prompt-category-icon-stock-dark', async ({
     page,
   }) => {
     await expectStock(page, 'dark');
   });
 
-  test('ClickHouse light quiets the idea icon to 3:1 or more @scenario:prompt-category-icon-clickhouse-light', async ({
+  test('ClickHouse light draws every category icon muted at 3:1 or more @scenario:prompt-category-icon-clickhouse-light', async ({
     page,
   }) => {
     await expectClickHouse(page, 'light');
   });
 
-  test('ClickHouse dark quiets the idea icon to 3:1 or more @scenario:prompt-category-icon-clickhouse-dark', async ({
+  test('ClickHouse dark draws every category icon muted at 3:1 or more @scenario:prompt-category-icon-clickhouse-dark', async ({
     page,
   }) => {
     await expectClickHouse(page, 'dark');

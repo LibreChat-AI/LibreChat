@@ -177,7 +177,12 @@ export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, ke
   ['rgb-text-tooltip', 'rgb-text-primary'],
   ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
   ['rgb-alert-error-border', 'rgb-status-error-border'],
-  ['rgb-category-icon', 'rgb-series-4'],
+  ['rgb-category-icon-1', 'rgb-series-1'],
+  ['rgb-category-icon-2', 'rgb-series-2'],
+  ['rgb-category-icon-4', 'rgb-series-4'],
+  ['rgb-category-icon-5', 'rgb-series-5'],
+  ['rgb-category-icon-6', 'rgb-series-6'],
+  ['rgb-category-icon-7', 'rgb-series-7'],
 ];
 
 /** A theme that repaints a source role keeps the tooltip, the error alert and the category icons on

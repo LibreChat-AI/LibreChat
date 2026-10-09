@@ -644,12 +644,12 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
   });
 
-  it('keeps the category icons on the series slot a theme repainted, unless it names them', () => {
+  it('keeps the category icons on the series slots a theme repainted, unless it names them', () => {
     const inherited = resolveTheme(
       {
         version: 1,
         name: 'legacy-series',
-        modes: { light: { colors: { 'rgb-series-4': '4 5 6' } } },
+        modes: { light: { colors: { 'rgb-series-2': '1 2 3', 'rgb-series-4': '4 5 6' } } },
       },
       'light',
     );
@@ -657,13 +657,14 @@ describe('theme registry', () => {
       {
         version: 1,
         name: 'explicit-category-icon',
-        modes: { light: { colors: { 'rgb-series-4': '4 5 6', 'rgb-category-icon': '7 8 9' } } },
+        modes: { light: { colors: { 'rgb-series-4': '4 5 6', 'rgb-category-icon-4': '7 8 9' } } },
       },
       'light',
     );
 
-    expect(inherited.colors['rgb-category-icon']).toBe('4 5 6');
-    expect(explicit.colors['rgb-category-icon']).toBe('7 8 9');
+    expect(inherited.colors['rgb-category-icon-2']).toBe('1 2 3');
+    expect(inherited.colors['rgb-category-icon-4']).toBe('4 5 6');
+    expect(explicit.colors['rgb-category-icon-4']).toBe('7 8 9');
     expect(explicit.colors['rgb-series-4']).toBe('4 5 6');
   });
 

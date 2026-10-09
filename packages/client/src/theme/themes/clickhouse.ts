@@ -208,7 +208,12 @@ export const clickHouseLightTheme: IThemeRGB = {
   'rgb-series-6': '187 51 255', // #bb33ff (chart.default.violet)
   'rgb-series-7': '0 203 235', // #00cbeb (chart.default.babyblue)
   'rgb-series-8': '8 155 131', // #089b83 (chart.default.teal)
-  'rgb-category-icon': '105 110 121', // #696e79 (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-1': '105 110 121', // #696e79 (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-2': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-4': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-5': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-6': '105 110 121', // #696e79 (text.muted)
+  'rgb-category-icon-7': '105 110 121', // #696e79 (text.muted)
 
   // Switch
   'rgb-switch-unchecked': '204 207 211', // #cccfd3 (switch.color.background.default)
@@ -400,7 +405,12 @@ export const clickHouseDarkTheme: IThemeRGB = {
   'rgb-series-6': '187 51 255', // #bb33ff (chart.default.violet)
   'rgb-series-7': '0 203 235', // #00cbeb (chart.default.babyblue)
   'rgb-series-8': '109 248 225', // #6df8e1 (chart.default.teal)
-  'rgb-category-icon': '179 182 189', // #b3b6bd (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-1': '179 182 189', // #b3b6bd (text.muted; Click UI draws its icons neutral)
+  'rgb-category-icon-2': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-4': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-5': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-6': '179 182 189', // #b3b6bd (text.muted)
+  'rgb-category-icon-7': '179 182 189', // #b3b6bd (text.muted)
 
   // Switch
   'rgb-switch-unchecked': '96 96 96', // #606060 (switch.color.background.default)

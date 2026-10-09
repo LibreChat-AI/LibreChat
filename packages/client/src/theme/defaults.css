@@ -225,7 +225,12 @@ html {
   --series-6: 126 35 205;
   --series-7: 1 131 1;
   --series-8: 63 81 181;
-  --category-icon: var(--series-4);
+  --category-icon-1: var(--series-1);
+  --category-icon-2: var(--series-2);
+  --category-icon-4: var(--series-4);
+  --category-icon-5: var(--series-5);
+  --category-icon-6: var(--series-6);
+  --category-icon-7: var(--series-7);
 
   /* Code syntax highlighting */
   --syntax-text: var(--gray-800);
@@ -518,7 +523,12 @@ html {
   --series-6: 171 104 254;
   --series-7: 80 167 49;
   --series-8: 120 130 190;
-  --category-icon: var(--series-4);
+  --category-icon-1: var(--series-1);
+  --category-icon-2: var(--series-2);
+  --category-icon-4: var(--series-4);
+  --category-icon-5: var(--series-5);
+  --category-icon-6: var(--series-6);
+  --category-icon-7: var(--series-7);
 
   /* Code syntax highlighting. Comment and meta are the flattened equivalents of
      the 50% and 60% alpha whites this palette used before it was tokenized. */
