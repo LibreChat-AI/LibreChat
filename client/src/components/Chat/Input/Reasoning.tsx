@@ -114,19 +114,16 @@ export function ReasoningControl({
   return (
     <Popover.Root modal>
       <Popover.Trigger asChild>
-        {/* Styled as the composer control it sits beside (the Thinking pill in
-            `Composer/Thinking.tsx`) rather than as a restyled `Button`: the
-            open state keeps it lit while its popover is up, which no `Button`
-            variant expresses. */}
-        <button
-          type="button"
+        {/* `composer-trigger` keeps it lit while its popover is up, through the
+            `aria-expanded` the trigger carries. */}
+        <Button
+          variant="composer-trigger"
           disabled={disabled}
           aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
-          className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-text-primary data-[state=open]:bg-surface-hover data-[state=open]:text-text-primary inline-flex h-8 items-center justify-center gap-1.5 rounded-xl px-2 text-sm font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <ChevronDown className="size-3" aria-hidden="true" />
-        </button>
+        </Button>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
