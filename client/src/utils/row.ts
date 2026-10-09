@@ -26,7 +26,7 @@ export const rowActionClasses = ({
   cn(
     buttonVariants({ variant: 'row-action-reveal', size: 'icon-xs' }),
     open && 'bg-surface-active text-text-primary',
-    (visible || open) && 'opacity-100 [@media(hover:hover)]:opacity-100',
+    (visible || open) && 'opacity-100 no-touch:opacity-100',
   );
 
 /**
@@ -37,16 +37,16 @@ export const rowActionClasses = ({
  * no one can see. A slot that always reserved its width truncated text that had the
  * room to be read, and the ellipsis then said the name was longer than it was.
  *
- * Where a pointer cannot hover there is no reveal to wait for, so the slot keeps its
- * width and the actions stay reachable. Only the collapsed slot clips: once focus is
+ * Where any pointer is coarse there is no reveal a finger can wait for, so the slot keeps
+ * its width and the actions stay reachable, on a 2-in-1 whose trackpad hovers too. Only the collapsed slot clips: once focus is
  * inside, the focused action's ring has to draw past the slot's edge.
  */
 export const rowActionSlotClasses = ({ open = false }: { open?: boolean } = {}): string =>
   cn(
     'flex shrink-0 items-center gap-0.5',
     !open && [
-      '[@media(hover:hover)]:w-0 [@media(hover:hover)]:overflow-hidden',
-      '[@media(hover:hover)]:group-hover:w-auto',
-      '[@media(hover:hover)]:group-focus-within:w-auto [@media(hover:hover)]:group-focus-within:overflow-visible',
+      'no-touch:w-0 no-touch:overflow-hidden',
+      'no-touch:group-hover:w-auto',
+      'no-touch:group-focus-within:w-auto no-touch:group-focus-within:overflow-visible',
     ],
   );
