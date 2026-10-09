@@ -1106,12 +1106,14 @@ export function detectArtifactTypeFromFile(
  * Stable per-file key used for both the artifactsState entry and the
  * `toolArtifactClaim` atom that dedups duplicate cards. Same call shape
  * everywhere so a panel card and a mermaid card for the same file share
- * the same claim. Falls through `file_id` → `filename` → `filepath` to
- * minimise collision risk for any caller that (rarely) lacks `file_id`.
+ * the same claim. Falls through `file_id` → `filepath` → `filename`:
+ * id-less attachments are download fallbacks with a unique per-session
+ * filepath, so keying them by display name would merge genuinely
+ * different files that happen to share a filename.
  */
 export const toolArtifactKey = (
   file: Partial<Pick<TFile, 'file_id' | 'filename' | 'filepath'>>,
-): string => `tool-artifact-${file.file_id ?? file.filename ?? file.filepath ?? 'unknown'}`;
+): string => `tool-artifact-${file.file_id ?? file.filepath ?? file.filename ?? 'unknown'}`;
 
 /**
  * Stable epoch fallback (instead of `Date.now()`) when neither timestamp
