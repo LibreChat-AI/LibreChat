@@ -18,11 +18,15 @@
  *   Run:        npm run sort-imports
  *   Check only: npm run sort-imports:check
  *   Targeted:   node scripts/sort-imports.mts path/to/file.ts [...]
+ *
+ * Long named value and type imports are compacted automatically when references can be
+ * rewritten safely. Check mode enforces the same cleanup without writing.
  */
 
 import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { join, relative, resolve, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compactImports } from './imports/compact.mts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -82,7 +86,7 @@ function extractSpec(raw: string): string | null {
 }
 
 /** Applies the AGENTS.md grouping/length ordering to a run of pure imports. */
-function sortSegment(stmts: Stmt[]): string[] {
+function sortSegment(stmts: Stmt[]): Stmt[] {
   const g1 = stmts
     .filter((s) => !s.isType && !s.isLocal)
     .sort((a, b) => {
@@ -91,23 +95,22 @@ function sortSegment(stmts: Stmt[]): string[] {
       if (aReact !== bReact) return aReact - bReact;
       return a.len - b.len;
     });
-  const g2 = stmts
-    .filter((s) => s.isType && !s.isLocal)
-    .sort((a, b) => b.len - a.len);
-  const g3 = stmts
-    .filter((s) => s.isType && s.isLocal)
-    .sort((a, b) => b.len - a.len);
-  const g4 = stmts
-    .filter((s) => !s.isType && s.isLocal)
-    .sort((a, b) => b.len - a.len);
-  return [...g1, ...g2, ...g3, ...g4].map((s) => s.raw);
+  const g2 = stmts.filter((s) => s.isType && !s.isLocal).sort((a, b) => b.len - a.len);
+  const g3 = stmts.filter((s) => s.isType && s.isLocal).sort((a, b) => b.len - a.len);
+  const g4 = stmts.filter((s) => !s.isType && s.isLocal).sort((a, b) => b.len - a.len);
+  return [...g1, ...g2, ...g3, ...g4];
 }
 
-function sortFileImports(content: string): string | null {
+interface SortedImports {
+  content: string;
+  valueOrderChanged: boolean;
+}
+
+function sortFileImports(content: string): SortedImports {
   const lines = content.split('\n');
 
   if (lines.some((line) => IGNORE_MARKER.test(line))) {
-    return null;
+    return { content, valueOrderChanged: false };
   }
 
   let i = 0;
@@ -119,7 +122,7 @@ function sortFileImports(content: string): string | null {
       t.startsWith('/*') ||
       t.startsWith('*') ||
       t.startsWith('*/') ||
-      t.startsWith('\'use ') ||
+      t.startsWith("'use ") ||
       t.startsWith('"use ')
     ) {
       i++;
@@ -137,10 +140,17 @@ function sortFileImports(content: string): string | null {
   const originalRaws: string[] = [];
   let segment: Stmt[] = [];
   let importEnd = i;
+  let valueOrderChanged = false;
 
   const flushSegment = (): void => {
     if (segment.length === 0) return;
-    emitted.push(...sortSegment(segment));
+    const sorted = sortSegment(segment);
+    const originalValues = segment.filter((statement) => !statement.isType);
+    const sortedValues = sorted.filter((statement) => !statement.isType);
+    valueOrderChanged ||= sortedValues.some(
+      (statement, index) => statement !== originalValues[index],
+    );
+    emitted.push(...sorted.map((statement) => statement.raw));
     segment = [];
   };
 
@@ -181,14 +191,14 @@ function sortFileImports(content: string): string | null {
   }
   flushSegment();
 
-  if (originalRaws.length < 2) return null;
-  if (originalRaws.join('\n') === emitted.join('\n')) return null;
+  if (originalRaws.length < 2 || originalRaws.join('\n') === emitted.join('\n')) {
+    return { content, valueOrderChanged: false };
+  }
 
-  return [
-    ...lines.slice(0, importStart),
-    ...emitted,
-    ...lines.slice(importEnd),
-  ].join('\n');
+  return {
+    content: [...lines.slice(0, importStart), ...emitted, ...lines.slice(importEnd)].join('\n'),
+    valueOrderChanged,
+  };
 }
 
 /** Recursively yields absolute paths of every source file under `dir`. */
@@ -229,15 +239,29 @@ async function collectFiles(): Promise<string[]> {
   return files;
 }
 
+const { printWidth } = JSON.parse(await readFile(resolve(ROOT, '.prettierrc'), 'utf8')) as {
+  printWidth: number;
+};
+
 let changed = 0;
 let total = 0;
 
 for (const filePath of await collectFiles()) {
   const rel = relative(ROOT, filePath);
   const content = await readFile(filePath, 'utf8');
-  const result = sortFileImports(content);
+  const sorted = sortFileImports(content).content;
+  let result = sorted;
+  if (!content.split('\n').some((line) => IGNORE_MARKER.test(line))) {
+    const compacted = compactImports(sorted, filePath, printWidth);
+    if (compacted !== sorted) {
+      const cleaned = sortFileImports(compacted);
+      result = cleaned.valueOrderChanged
+        ? sortFileImports(compactImports(sorted, filePath, printWidth, false)).content
+        : cleaned.content;
+    }
+  }
   total++;
-  if (result === null) continue;
+  if (result === content) continue;
   changed++;
   if (CHECK) {
     console.log(`  ✗ ${rel}`);
@@ -248,10 +272,10 @@ for (const filePath of await collectFiles()) {
 }
 
 if (CHECK && changed) {
-  console.log(`\n${changed}/${total} files need sorting. Run: npm run sort-imports`);
+  console.log(`\n${changed}/${total} files need cleanup. Run: npm run sort-imports -- <files>`);
   process.exit(1);
 } else if (changed) {
-  console.log(`\nSorted ${changed}/${total} files.`);
+  console.log(`\nCleaned ${changed}/${total} files.`);
 } else {
-  console.log(`All ${total} files already sorted.`);
+  console.log(`All ${total} files already clean.`);
 }
