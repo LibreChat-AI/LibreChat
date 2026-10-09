@@ -219,7 +219,7 @@ export default function MemoryEditDialog({
                 onBlur={() => setTouched((prev) => ({ ...prev, value: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_value')}
-                className="border-border-light text-text-primary focus-visible:ring-border-heavy max-h-[45vh] min-h-[11.25rem] w-full resize-y py-2 focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50"
+                className="text-text-primary max-h-[45vh] min-h-[11.25rem] w-full resize-y py-2 disabled:cursor-not-allowed disabled:opacity-50"
                 rows={8}
                 disabled={!hasUpdateAccess}
                 aria-invalid={showValueError && valueError != null}

@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint, sendMessage } from '../helpers';
 import { openAgentBuilder } from '../agents.helpers';
 import { themeValue } from './style.helpers';
 
@@ -235,4 +236,96 @@ test.describe('form control outline', () => {
     expect(await themeValue(page, '--border-control')).toBe('70 90 110');
     expect((await outlineAgainstSurface(page)).border).toBe('rgb(70, 90, 110)');
   });
+
+  /** Each tag is written out whole: the runner finds a scenario by its literal tag. */
+  const BOOKMARK: Array<{ title: string; appearance: Appearance; definition?: unknown }> = [
+    {
+      appearance: 'light',
+      title:
+        'a bookmark description takes the control outline and ring in stock light @scenario:bookmark-field-takes-control-roles-light',
+    },
+    {
+      appearance: 'dark',
+      title:
+        'a bookmark description takes the control outline and ring in stock dark @scenario:bookmark-field-takes-control-roles-dark',
+    },
+    {
+      appearance: 'light',
+      definition: clickHouseTheme,
+      title:
+        'a bookmark description takes the control outline and ring in ClickHouse light @scenario:bookmark-field-takes-control-roles-clickhouse-light',
+    },
+    {
+      appearance: 'dark',
+      definition: clickHouseTheme,
+      title:
+        'a bookmark description takes the control outline and ring in ClickHouse dark @scenario:bookmark-field-takes-control-roles-clickhouse-dark',
+    },
+  ];
+
+  for (const { title, appearance, definition } of BOOKMARK) {
+    test(title, async ({ page }) => {
+      await installAppearance(page, appearance, definition);
+      await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+      await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+      expect((await sendMessage(page, 'hello bookmark field')).ok()).toBeTruthy();
+      await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
+      const menu = page.locator('#bookmark-menu-button');
+      await expect(menu).toBeVisible({ timeout: 15000 });
+      await menu.click();
+      await page.getByRole('menuitem', { name: 'New Bookmark' }).click();
+
+      const dialog = page.getByRole('dialog');
+      const field = dialog.getByRole('textbox', { name: 'Description' });
+      await dialog.getByRole('textbox', { name: 'Title' }).click();
+
+      const toRgb = (channels: string) => `rgb(${channels.split(/\s+/).join(', ')})`;
+      const control = toRgb(await themeValue(page, '--border-control'));
+      /** `border-field-focus` follows `focus-control` unless the theme names it, and a theme
+       *  that focuses fields by their edge (ClickHouse) also swaps the border to it. */
+      const focus = toRgb(await themeValue(page, '--border-field-focus'));
+      const edgeFocus =
+        (await page.locator('html').getAttribute('data-theme-field-focus')) === 'border';
+      /** The ring colour is read from the utility's own custom property: the dark stylesheet's
+       *  outline rule outranks any outline utility, and the box shadow composes the ring. */
+      const paint = () =>
+        field.evaluate((node) => {
+          const style = getComputedStyle(node);
+          const channels = style.getPropertyValue('--tw-ring-color').match(/\d+/g) ?? [];
+          let surface = getComputedStyle(document.body).backgroundColor;
+          for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
+            const background = getComputedStyle(el).backgroundColor;
+            if (background !== 'rgba(0, 0, 0, 0)' && background !== 'transparent') {
+              surface = background;
+              break;
+            }
+          }
+          return {
+            border: style.borderTopColor,
+            ring: `rgb(${channels.slice(0, 3).join(', ')})`,
+            shadow: style.boxShadow !== 'none',
+            surface,
+          };
+        });
+
+      const resting = await paint();
+      await page.keyboard.press('Tab');
+      await expect(field).toBeFocused();
+      const focused = await paint();
+
+      expect({
+        resting: resting.border,
+        border: focused.border,
+        ring: focused.ring,
+        shadow: focused.shadow,
+        ringClears: contrast(parseRgb(focused.ring), parseRgb(focused.surface)) >= WCAG_NON_TEXT,
+      }).toEqual({
+        resting: control,
+        border: edgeFocus ? focus : control,
+        ring: focus,
+        shadow: true,
+        ringClears: true,
+      });
+    });
+  }
 });
