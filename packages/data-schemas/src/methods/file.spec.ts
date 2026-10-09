@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { EToolResources, FileContext } from 'librechat-data-provider';
+import type { TextDerivation } from 'librechat-data-provider';
 import type { IChatProject, IMongoFile } from '~/types';
 import { _resetStrictCache } from '~/models/plugins/tenantIsolation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
@@ -1923,6 +1924,249 @@ describe('File Methods', () => {
         text: 'Updated canonical file contents.',
       });
       expect(changedContent?.updatedAt?.getTime()).toBeGreaterThan(contentUpdatedAt.getTime());
+    });
+  });
+
+  describe('saveFileTextDerivation', () => {
+    const deferred: TextDerivation = { outcome: 'deferred', at: 1_000 };
+    const complete: TextDerivation = {
+      outcome: 'complete',
+      extractor: 'document_parser',
+      at: 2_000,
+    };
+    const failed: TextDerivation = {
+      outcome: 'failed',
+      extractor: 'document_parser',
+      reason: 'parser',
+      at: 3_000,
+    };
+    const codeEnvRef = {
+      kind: 'user' as const,
+      id: 'user-1',
+      storage_session_id: 'session-1',
+      file_id: 'code-file-1',
+      executionProfile: 'default' as const,
+    };
+
+    const seedFile = async (
+      overrides: Partial<IMongoFile> = {},
+    ): Promise<{ file_id: string; user: string }> => {
+      const file_id = uuidv4();
+      const user = overrides.user ?? new mongoose.Types.ObjectId();
+      await fileMethods.createFile({
+        file_id,
+        filename: 'workbook.xlsx',
+        filepath: '/uploads/workbook.xlsx',
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        bytes: 2048,
+        context: FileContext.message_attachment,
+        llmDeliveryPath: 'none',
+        metadata: {
+          destinationChosen: false,
+          routingMimeType: 'application/vnd.ms-excel',
+          codeEnvRefs: { default: codeEnvRef },
+          textDerivation: deferred,
+        },
+        ...overrides,
+        user,
+      });
+      return { file_id, user: user.toString() };
+    };
+
+    it('round-trips the marker through createFile on the strict metadata path', async () => {
+      const { file_id } = await seedFile();
+
+      const stored = await fileMethods.findFileById(file_id);
+
+      expect(stored?.metadata?.textDerivation).toEqual(deferred);
+      expect(stored?.metadata?.destinationChosen).toBe(false);
+      expect(stored?.metadata?.routingMimeType).toBe('application/vnd.ms-excel');
+    });
+
+    it('saves derived text and the marker on a deferred record without text', async () => {
+      const { file_id, user } = await seedFile();
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'Region,Total\nNorth,42', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(true);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBe('Region,Total\nNorth,42');
+      expect(stored?.llmDeliveryPath).toBe('none');
+      expect(stored?.metadata).toEqual({
+        destinationChosen: false,
+        routingMimeType: 'application/vnd.ms-excel',
+        codeEnvRefs: { default: codeEnvRef },
+        textDerivation: complete,
+      });
+    });
+
+    it.each([
+      ['empty', ''],
+      ['null', null],
+    ])('applies when the deferred record holds %s text', async (_label, text) => {
+      const { file_id, user } = await seedFile();
+      await File.collection.updateOne({ file_id }, { $set: { text } });
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(true);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBe('derived');
+      expect(stored?.metadata?.textDerivation).toEqual(complete);
+    });
+
+    it('caches derived text on an unmarked record without text', async () => {
+      const { file_id, user } = await seedFile({ metadata: { destinationChosen: false } });
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(true);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBe('derived');
+      expect(stored?.metadata?.textDerivation).toEqual(complete);
+    });
+
+    it.each([
+      ['complete', complete],
+      ['failed', failed],
+    ])('leaves a %s record untouched', async (_label, textDerivation) => {
+      const { file_id, user } = await seedFile({
+        metadata: { destinationChosen: false, textDerivation },
+      });
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(false);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBeUndefined();
+      expect(stored?.metadata?.textDerivation).toEqual(textDerivation);
+    });
+
+    it('leaves a deferred record that already holds text untouched', async () => {
+      const { file_id, user } = await seedFile({ text: 'extracted at upload' });
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(false);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBe('extracted at upload');
+      expect(stored?.metadata?.textDerivation).toEqual(deferred);
+    });
+
+    it('enforces the owner scope', async () => {
+      const { file_id, user } = await seedFile();
+      const otherUser = new mongoose.Types.ObjectId().toString();
+
+      const denied = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user: otherUser },
+      );
+      const unscoped = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user: '' },
+      );
+
+      expect(denied).toBe(false);
+      expect(unscoped).toBe(false);
+      expect((await fileMethods.findFileById(file_id))?.text).toBeUndefined();
+
+      const allowed = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+      expect(allowed).toBe(true);
+    });
+
+    it('enforces the tenant scope', async () => {
+      const { file_id, user } = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        seedFile({ tenantId: 'tenant-a' }),
+      );
+
+      const denied = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user, tenantId: 'tenant-b' },
+      );
+
+      expect(denied).toBe(false);
+      expect((await fileMethods.findFileById(file_id))?.text).toBeUndefined();
+
+      const allowed = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        fileMethods.saveFileTextDerivation(
+          { file_id, text: 'derived', textDerivation: complete },
+          { user, tenantId: 'tenant-a' },
+        ),
+      );
+      expect(allowed).toBe(true);
+      expect((await fileMethods.findFileById(file_id))?.text).toBe('derived');
+    });
+
+    it('keeps the upload TTL, the retention deadline and the content timestamp', async () => {
+      const { file_id, user } = await seedFile();
+      const expiresAt = new Date(Date.now() + 30 * 60_000);
+      const expiredAt = new Date(Date.now() + 30 * 24 * 3_600_000);
+      const updatedAt = new Date('2020-01-01T00:00:00.000Z');
+      await File.collection.updateOne({ file_id }, { $set: { expiresAt, expiredAt, updatedAt } });
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(true);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.expiresAt).toEqual(expiresAt);
+      expect(stored?.expiredAt).toEqual(expiredAt);
+      expect(stored?.updatedAt).toEqual(updatedAt);
+    });
+
+    it('saves a failed marker without text, after which the record takes no text', async () => {
+      const { file_id, user } = await seedFile();
+
+      const saved = await fileMethods.saveFileTextDerivation(
+        { file_id, textDerivation: failed },
+        { user },
+      );
+      const later = await fileMethods.saveFileTextDerivation(
+        { file_id, text: 'derived', textDerivation: complete },
+        { user },
+      );
+
+      expect(saved).toBe(true);
+      expect(later).toBe(false);
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.text).toBeUndefined();
+      expect(stored?.metadata?.textDerivation).toEqual(failed);
+      expect(stored?.metadata?.destinationChosen).toBe(false);
+    });
+
+    it('rejects a marker outside the outcome vocabulary', async () => {
+      const { file_id, user } = await seedFile();
+      const outcome: string = 'abandoned';
+
+      await expect(
+        fileMethods.saveFileTextDerivation(
+          { file_id, textDerivation: { outcome: outcome as TextDerivation['outcome'] } },
+          { user },
+        ),
+      ).rejects.toThrow(/not a valid enum value/);
+
+      const stored = await fileMethods.findFileById(file_id);
+      expect(stored?.metadata?.textDerivation).toEqual(deferred);
     });
   });
 

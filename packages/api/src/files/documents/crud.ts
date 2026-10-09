@@ -7,7 +7,8 @@ import { assertSafeZipSize } from './zipSafety';
 
 type FileParseFn = (file: Express.Multer.File) => Promise<string>;
 
-const DOCUMENT_PARSER_MAX_FILE_SIZE = 15 * megabyte;
+/** The largest file the built-in document parser accepts, checked before it reads anything. */
+export const DOCUMENT_PARSER_MAX_FILE_SIZE: number = 15 * megabyte;
 const ODT_MAX_DECOMPRESSED_SIZE = 50 * megabyte;
 
 /**

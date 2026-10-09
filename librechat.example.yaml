@@ -1390,6 +1390,12 @@ endpoints:
 #   # Existing files without extracted text are not backfilled. Paused runs retain encoded text
 #   # and conservatively count referenced fallback text against current limits on resume.
 #   textFallbackWithoutTools: false
+#   # "automatic" lets a turn that loads Run Code or File Search choose each attachment's reader:
+#   # spreadsheets go to Run Code, documents to the provider within its limits, then text, File
+#   # Search and Run Code. Without a file tool, and under "classic" (default), routing is unchanged.
+#   # Explicit destinations and defaultLLMDeliveryPath still win. Set back to classic before a
+#   # downgrade; deferred workbooks stay readable only by Run Code on older versions.
+#   llmDeliveryPolicy: classic
 #   fileContextSizeLimit: 128  # Maximum aggregate model-bound attachment size in one agent turn (MB)
 #   fileContextCharLimit: 1000000  # Maximum aggregate extracted-text characters in one agent turn
 #   endpoints:

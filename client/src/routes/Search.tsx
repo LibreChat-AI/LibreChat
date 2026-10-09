@@ -3,6 +3,7 @@ import { useAtomValue } from 'jotai';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { Search as SearchIcon, SearchX } from 'lucide-react';
+import { hydrateMessageFile } from 'librechat-data-provider';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
 import { EmptyState, Spinner, useRemScale, useToastContext } from '@librechat/client';
 import type { Index, ListRowProps } from 'react-virtualized';
@@ -119,7 +120,7 @@ export default function Search() {
           }
           return {
             ...message,
-            files: message.files.map((file) => fileMap[file.file_id ?? ''] ?? file),
+            files: message.files.map((file) => hydrateMessageFile(file, fileMap)),
           };
         }),
       ) ?? [],

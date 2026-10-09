@@ -11,6 +11,7 @@ import type {
   CodeFileCommitData,
   RunArtifactRunScope,
   PublishRunArtifactInput,
+  FileTextDerivationUpdate,
 } from '~/types/file';
 import type { IChatProjectDocument } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -354,6 +355,10 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     user?: string;
     tenantId?: string | null;
   }) => Promise<IMongoFile | null>;
+  saveFileTextDerivation: (
+    update: FileTextDerivationUpdate,
+    scope: { user: string; tenantId?: string | null },
+  ) => Promise<boolean>;
   deleteFile: (file_id: string) => Promise<IMongoFile | null>;
   deleteFiles: (file_ids: string[], user?: string) => Promise<{ deletedCount?: number }>;
   deleteFileByFilter: (filter: FilterQuery<IMongoFile>) => Promise<IMongoFile | null>;
@@ -1251,6 +1256,50 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
+   * Saves text derived at turn time onto a record whose upload deferred extraction. It applies
+   * only while the record is still marked `deferred` and holds no text, so a record that was
+   * never deferred, or one another derivation already settled, is left as it is. The text comes
+   * from the unchanged original, so the upload TTL, the retention deadline and the content
+   * timestamp all stay where they are.
+   *
+   * @param update - The file, the derived text when there is any, and the marker to record
+   * @param scope - Owner scope; a mismatch leaves the record unchanged
+   * @returns Whether a record was updated
+   */
+  async function saveFileTextDerivation(
+    update: FileTextDerivationUpdate,
+    scope: { user: string; tenantId?: string | null },
+  ): Promise<boolean> {
+    if (!scope.user) {
+      return false;
+    }
+    const File = mongoose.models.File as Model<IMongoFile>;
+    const { file_id, text, textDerivation } = update;
+    /* A deferred record, or an unmarked one, takes a derivation while it stores no text. */
+    const filter = withOwnerScope(
+      {
+        file_id,
+        $and: [
+          {
+            $or: [
+              { 'metadata.textDerivation.outcome': 'deferred' },
+              { 'metadata.textDerivation': { $exists: false } },
+            ],
+          },
+          { $or: [{ text: { $exists: false } }, { text: null }, { text: '' }] },
+        ],
+      },
+      { userId: scope.user, tenantId: scope.tenantId },
+    );
+    const result = await File.updateOne(
+      filter,
+      { $set: { ...(text != null && { text }), 'metadata.textDerivation': textDerivation } },
+      { timestamps: false, runValidators: true },
+    );
+    return result.modifiedCount > 0;
+  }
+
+  /**
    * Removes deleted file ids from the owner's Chat Projects so a project never
    * keeps a dangling reference, bumping the revision of every project it changes.
    */
@@ -1570,6 +1619,7 @@ export function createFileMethods(mongoose: typeof import('mongoose')): {
     updateFileCodeEnvRef,
     addFileEmbeddedEntity,
     updateFileUsage,
+    saveFileTextDerivation,
     deleteFile,
     deleteFiles,
     deleteFileByFilter,

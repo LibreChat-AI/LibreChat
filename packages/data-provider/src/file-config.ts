@@ -638,6 +638,22 @@ export const defaultLLMDeliveryPathSchema = z.object({
 export type TDefaultLLMDeliveryPathConfig = z.infer<typeof defaultLLMDeliveryPathSchema>;
 type TDeliveryPathOverrides = NonNullable<TDefaultLLMDeliveryPathConfig['overrides']>;
 
+export const LLMDeliveryPolicy = z.enum(['classic', 'automatic']);
+export type TLLMDeliveryPolicy = z.infer<typeof LLMDeliveryPolicy>;
+
+/**
+ * How unified attachments are read for an endpoint. The compatibility default lives only here,
+ * because zod defaults never reach the merged runtime config; `legacyFileUploadUX` keeps its
+ * chooser semantics by forcing `classic`.
+ */
+export function resolveLLMDeliveryPolicy(
+  config?: Pick<EndpointFileConfig, 'llmDeliveryPolicy' | 'legacyFileUploadUX'> | null,
+): TLLMDeliveryPolicy {
+  return config?.llmDeliveryPolicy === 'automatic' && config.legacyFileUploadUX !== true
+    ? 'automatic'
+    : 'classic';
+}
+
 export const endpointFileConfigSchema = z.object({
   disabled: z.boolean().optional(),
   fileLimit: z.number().min(0).optional(),
@@ -647,6 +663,7 @@ export const endpointFileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
+  llmDeliveryPolicy: LLMDeliveryPolicy.optional(),
 });
 
 const skillFileConfigSchema = z.object({
@@ -690,6 +707,7 @@ export const fileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
+  llmDeliveryPolicy: LLMDeliveryPolicy.optional(),
 });
 
 export type TFileConfig = z.infer<typeof fileConfigSchema>;
@@ -1046,6 +1064,7 @@ function mergeWithDefault(
     legacyFileUploadUX: endpointConfig.legacyFileUploadUX ?? defaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       endpointConfig.textFallbackWithoutTools ?? defaultConfig.textFallbackWithoutTools,
+    llmDeliveryPolicy: endpointConfig.llmDeliveryPolicy ?? defaultConfig.llmDeliveryPolicy,
   };
 }
 
@@ -1138,6 +1157,7 @@ export function getEndpointFileConfig(params: {
     legacyFileUploadUX: mergedFileConfig.legacyFileUploadUX ?? baseDefaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       mergedFileConfig.textFallbackWithoutTools ?? baseDefaultConfig.textFallbackWithoutTools,
+    llmDeliveryPolicy: mergedFileConfig.llmDeliveryPolicy ?? baseDefaultConfig.llmDeliveryPolicy,
   };
   const userDefaultConfig = mergedFileConfig.endpoints.default;
   const defaultConfig = userDefaultConfig
@@ -1278,6 +1298,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     mergedConfig.textFallbackWithoutTools = dynamic.textFallbackWithoutTools;
   }
 
+  if (dynamic.llmDeliveryPolicy !== undefined) {
+    mergedConfig.llmDeliveryPolicy = dynamic.llmDeliveryPolicy;
+  }
+
   if (dynamic.serverFileSizeLimit !== undefined) {
     mergedConfig.serverFileSizeLimit = mbToBytes(dynamic.serverFileSizeLimit);
   }
@@ -1403,6 +1427,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
 
     if (dynamicEndpoint.textFallbackWithoutTools !== undefined) {
       mergedEndpoint.textFallbackWithoutTools = dynamicEndpoint.textFallbackWithoutTools;
+    }
+
+    if (dynamicEndpoint.llmDeliveryPolicy !== undefined) {
+      mergedEndpoint.llmDeliveryPolicy = dynamicEndpoint.llmDeliveryPolicy;
     }
   }
 

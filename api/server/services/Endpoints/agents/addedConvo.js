@@ -70,6 +70,8 @@ const loadAddedAgent = (params) =>
  *   Resolver for the added agent's own `instructionsPrompt` link, forwarded verbatim.
  * @param {boolean} [params.recordLinkedPromptUsage] - Forwarded to `initializeAgent`;
  *   defaults to `true` there when omitted.
+ * @param {import('@librechat/api').FileTextDeriver} [params.deriveText]
+ * @param {import('@librechat/api').TextDerivationPersister} [params.persistDerivation]
  * @param {AbortSignal} [params.signal] - Owning run cancellation signal.
  * @returns {Promise<{userMCPAuthMap: Object|undefined}>} The updated userMCPAuthMap
  */
@@ -104,6 +106,8 @@ const processAddedConvo = async ({
   toolIntentsAvailable,
   statefulSessionsAvailable,
   memoryAvailable,
+  deriveText,
+  persistDerivation,
   signal,
 }) => {
   const addedConvo = endpointOption.addedConvo;
@@ -210,6 +214,8 @@ const processAddedConvo = async ({
         memoryAvailable,
         skillStates,
         defaultActiveOnShare,
+        deriveText,
+        persistDerivation,
         signal,
       },
       {

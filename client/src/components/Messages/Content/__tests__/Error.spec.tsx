@@ -212,6 +212,18 @@ describe('Error — reader-facing provider and fallback copy', () => {
   });
 
   it.each([
+    '{"code":"file_search_preparation_failed"}',
+    'File Search could not prepare the attached files. Try sending the message again.\n' +
+      '{"code":"file_search_preparation_failed"}',
+  ])('localizes a search preparation failure from the existing error boundary: %s', (payload) => {
+    renderError(payload, providerMessage);
+
+    expect(screen.getByText(catalog.com_error_file_search_preparation_failed)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('{');
+    expectReadable();
+  });
+
+  it.each([
     ['MODEL_NOT_FOUND', 'com_error_model_not_found'],
     ['MODEL_RATE_LIMIT', 'com_error_model_rate_limit'],
   ])('replaces LangChain %s attribution with localized guidance', (code, key) => {

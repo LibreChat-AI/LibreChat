@@ -1,4 +1,22 @@
-import type { TDefaultLLMDeliveryPath, TDefaultLLMDeliveryPathConfig } from './file-config';
+import type {
+  ReaderKind,
+  ReaderSkip,
+  SkipReason,
+  FileReading,
+  ClassicReason,
+  ReadingReason,
+  TextDerivation,
+  BuiltInTextPlan,
+  CodeEligibility,
+  ReadingCategory,
+  ReadingEvidence,
+  TurnReadingInputs,
+} from './reading';
+import type {
+  TLLMDeliveryPolicy,
+  TDefaultLLMDeliveryPath,
+  TDefaultLLMDeliveryPathConfig,
+} from './file-config';
 import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { CodeEnvReferenceSet } from './codeEnvRef';
 import type { TEndpoint } from './config';
@@ -6,7 +24,9 @@ import {
   retrievalMimeTypes,
   isExplicitMimeConfig,
   isBedrockDocumentType,
+  documentParserMimeTypes,
   codeInterpreterMimeTypes,
+  resolveLLMDeliveryPolicy,
   fileConfig as baseFileConfig,
 } from './file-config';
 import {
@@ -16,9 +36,18 @@ import {
   isMediaSupportedProvider,
   isDocumentSupportedProvider,
 } from './schemas';
+import {
+  READER_PATH,
+  AFTER_FAILURE,
+  READING_ORDER,
+  isTextOnlyRecord,
+  isOriginalBacked,
+  categorizeForReading,
+} from './reading';
 import { normalizeEndpointName } from './utils';
 import { EToolResources } from './types/tools';
 import { getCodeEnvRefs } from './codeEnvRef';
+import { FileContext } from './types/files';
 
 /**
  * The native provider a custom endpoint declares, when it declares one. A custom endpoint
@@ -144,18 +173,26 @@ export function hasTextExtractionPath(mimeType: string): boolean {
 }
 
 /**
- * Resolves the default file path destination for a given mime type.
- * Resolution chain: endpoint overrides -> endpoint fallback -> global overrides -> global fallback -> system defaults.
+ * The built-in extractor that can turn a stored type into text, or null when none can. Only
+ * built-in readers count, so text for a file meant for a tool never costs a RAG or OCR call.
  */
-export function resolveDefaultLLMDeliveryPath(
+export function selectBuiltInTextPlan(mimeType: string): BuiltInTextPlan | null {
+  if (documentParserMimeTypes.some((pattern) => pattern.test(mimeType))) {
+    return 'document_parser';
+  }
+  return isNativelyReadableText(mimeType) ? 'native_text' : null;
+}
+
+/**
+ * The route an explicit endpoint or global `defaultLLMDeliveryPath` assigns a type, or undefined
+ * when neither names it: endpoint overrides, endpoint fallback, global overrides, then global
+ * fallback, with an exact type ahead of its wildcard at each level.
+ */
+export function matchConfiguredDeliveryPath(
   mimeType: string,
   endpointConfig?: TDefaultLLMDeliveryPathConfig,
   globalConfig?: TDefaultLLMDeliveryPathConfig,
-  endpoint?: string,
-  useResponsesApi?: boolean,
-  sttConfigured?: boolean,
-  supportedMimeTypes?: RegexLike[],
-): TDefaultLLMDeliveryPath {
+): TDefaultLLMDeliveryPath | undefined {
   const wildcard = mimeType.split('/')[0] + '/*';
 
   if (endpointConfig?.overrides) {
@@ -184,6 +221,28 @@ export function resolveDefaultLLMDeliveryPath(
     return globalConfig.fallback;
   }
 
+  return undefined;
+}
+
+/**
+ * Resolves the default file path destination for a given mime type.
+ * Resolution chain: endpoint overrides -> endpoint fallback -> global overrides -> global fallback -> system defaults.
+ */
+export function resolveDefaultLLMDeliveryPath(
+  mimeType: string,
+  endpointConfig?: TDefaultLLMDeliveryPathConfig,
+  globalConfig?: TDefaultLLMDeliveryPathConfig,
+  endpoint?: string,
+  useResponsesApi?: boolean,
+  sttConfigured?: boolean,
+  supportedMimeTypes?: RegexLike[],
+): TDefaultLLMDeliveryPath {
+  const configured = matchConfiguredDeliveryPath(mimeType, endpointConfig, globalConfig);
+  if (configured != null) {
+    return configured;
+  }
+
+  const wildcard = mimeType.split('/')[0] + '/*';
   const systemDefault = (SYSTEM_LLM_DELIVERY_DEFAULTS.overrides[mimeType] ??
     SYSTEM_LLM_DELIVERY_DEFAULTS.overrides[wildcard] ??
     SYSTEM_LLM_DELIVERY_DEFAULTS.fallback) as TDefaultLLMDeliveryPath;
@@ -249,20 +308,8 @@ export function resolveDefaultLLMDeliveryPath(
   return systemDefault;
 }
 
-/**
- * Delivery path for an upload that named no tool resource. The legacy chooser makes the
- * destination explicit, so nothing is inferred there.
- */
-export function resolveDefaultUploadLLMDeliveryPath({
-  mimeType,
-  endpointConfig,
-  fileConfig,
-  endpoint,
-  endpointProvider,
-  useResponsesApi,
-  sttConfigured,
-}: {
-  mimeType: string;
+/** The endpoint a delivery route is resolved against, at upload or on a turn. */
+export interface DeliveryRouteInputs {
   endpointConfig?: EndpointFileConfig;
   fileConfig?: FileConfig;
   endpoint?: string;
@@ -271,10 +318,24 @@ export function resolveDefaultUploadLLMDeliveryPath({
   endpointProvider?: string | null;
   useResponsesApi?: boolean;
   sttConfigured?: boolean;
-}): TDefaultLLMDeliveryPath {
-  if (endpointConfig?.legacyFileUploadUX === true) {
-    return 'provider';
-  }
+}
+
+/**
+ * The configured or capability-gated route for a type on an endpoint, without the legacy
+ * chooser. Where no configured route names the type, this is the system default the endpoint's
+ * encoders can actually deliver.
+ */
+export function resolveSystemDeliveryPath(
+  mimeType: string,
+  {
+    endpointConfig,
+    fileConfig,
+    endpoint,
+    endpointProvider,
+    useResponsesApi,
+    sttConfigured,
+  }: DeliveryRouteInputs,
+): TDefaultLLMDeliveryPath {
   /* The media opt-in exists for OpenAI-format parts, so an endpoint known to run as
    * something else — a custom endpoint declaring `provider: anthropic` — keeps the
    * capability gate it had, where audio still reaches transcription. */
@@ -290,6 +351,20 @@ export function resolveDefaultUploadLLMDeliveryPath({
   );
 }
 
+/**
+ * Delivery path for an upload that named no tool resource. The legacy chooser makes the
+ * destination explicit, so nothing is inferred there.
+ */
+export function resolveDefaultUploadLLMDeliveryPath({
+  mimeType,
+  ...routing
+}: DeliveryRouteInputs & { mimeType: string }): TDefaultLLMDeliveryPath {
+  if (routing.endpointConfig?.legacyFileUploadUX === true) {
+    return 'provider';
+  }
+  return resolveSystemDeliveryPath(mimeType, routing);
+}
+
 /** Delivery path for an upload, honoring an explicitly chosen tool resource. */
 export function resolveUploadLLMDeliveryPath({
   toolResource,
@@ -300,15 +375,9 @@ export function resolveUploadLLMDeliveryPath({
   useResponsesApi,
   endpointProvider,
   sttConfigured,
-}: {
+}: DeliveryRouteInputs & {
   toolResource?: string | null;
   mimeType: string;
-  endpointConfig?: EndpointFileConfig;
-  fileConfig?: FileConfig;
-  endpoint?: string;
-  endpointProvider?: string | null;
-  useResponsesApi?: boolean;
-  sttConfigured?: boolean;
 }): TDefaultLLMDeliveryPath {
   if (toolResource === EToolResources.context || toolResource === EToolResources.ocr) {
     return 'text';
@@ -362,6 +431,15 @@ const matchesMimeList = (mimeType: string, patterns: RegExp[]): boolean =>
 export interface TurnFileConsumers {
   executeCode: boolean;
   fileSearch: boolean;
+}
+
+/**
+ * Whether a file tool is loaded for the turn. The automatic policy decides readers only then;
+ * without Run Code or File Search every attachment keeps its classic route, so a deployment
+ * that enables the policy sees no change in conversations that attach no tool.
+ */
+export function hasFileToolConsumer(consumers?: TurnFileConsumers | null): boolean {
+  return consumers?.executeCode === true || consumers?.fileSearch === true;
 }
 
 /**
@@ -419,11 +497,17 @@ export interface TurnDeliveryRouting {
   endpointProvider?: string;
   useResponsesApi?: boolean;
   sttConfigured: boolean;
+  /** This turn's reading evidence for the automatic policy; absent where the host supplies none. */
+  reading?: TurnReadingInputs;
 }
 
 /** The fields of an attachment record that decide its delivery on a turn. */
 export interface TurnDeliveryFile {
+  file_id?: string;
   type?: string;
+  bytes?: number;
+  source?: string | null;
+  context?: string | null;
   text?: string | null;
   /** Stored as an upload-time inference, so any string may be read back. */
   llmDeliveryPath?: string | null;
@@ -436,6 +520,7 @@ export interface TurnDeliveryFile {
         destinationChosen?: boolean;
         /** Vector namespaces holding this file, written as each embedding succeeds. */
         embeddedEntities?: string[];
+        textDerivation?: TextDerivation;
       } & CodeEnvReferenceSet)
     | null;
 }
@@ -449,7 +534,7 @@ export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
 }
 
 /**
- * Delivery path for one attachment on one agent's turn.
+ * Classic delivery path for one attachment on one agent's turn.
  *
  * A record predating routing and a destination the user chose keep what they stored. An
  * inferred route re-resolves against the endpoint handling the turn. A `none` route leaves
@@ -464,7 +549,7 @@ export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
  * that never received the file. Run Code is judged by the tool set: see
  * {@link hasTurnFileConsumer}.
  */
-export function resolveTurnLLMDeliveryPath(
+export function resolveClassicTurnLLMDeliveryPath(
   routing: Partial<TurnDeliveryRouting> | undefined,
   file: TurnDeliveryFile,
   consumers?: TurnFileConsumers,
@@ -473,8 +558,7 @@ export function resolveTurnLLMDeliveryPath(
     return isLLMDeliveryPath(file.llmDeliveryPath) ? file.llmDeliveryPath : undefined;
   }
   const { endpointConfig } = routing;
-  /* Conversion changes the stored type, so use the type routing originally saw. */
-  const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
+  const mimeType = getRoutingMimeType(file);
   const path = resolveUploadLLMDeliveryPath({ mimeType, ...routing });
   const hasFallbackText = typeof file.text === 'string' && file.text.length > 0;
   if (
@@ -487,6 +571,498 @@ export function resolveTurnLLMDeliveryPath(
     return 'text';
   }
   return path;
+}
+
+/**
+ * Delivery path for one attachment on one agent's turn: the name every turn reader resolves.
+ *
+ * Returns the path of {@link decideFileReading}. Under classic routing a record the automatic
+ * policy never marked gets exactly the classic path from that decision, so it is returned from
+ * {@link resolveClassicTurnLLMDeliveryPath} directly, without classifying the file.
+ */
+export function resolveTurnLLMDeliveryPath(
+  routing: Partial<TurnDeliveryRouting> | undefined,
+  file: TurnDeliveryFile,
+  consumers?: TurnFileConsumers,
+): TDefaultLLMDeliveryPath | undefined {
+  if (
+    resolveLLMDeliveryPolicy(routing?.endpointConfig) !== 'automatic' &&
+    file.metadata?.textDerivation == null
+  ) {
+    return resolveClassicTurnLLMDeliveryPath(routing, file, consumers);
+  }
+  return decideFileReading({ routing, file, consumers }).path;
+}
+
+/**
+ * Whether Run Code can read this record on this turn. Depends only on consumers and the record:
+ * an enabled Run Code with no sandbox copy yet is eligible, since its first call uploads it.
+ */
+export function judgeCodeEligibility(
+  file: TurnDeliveryFile,
+  consumers?: TurnFileConsumers,
+): CodeEligibility {
+  if (consumers?.executeCode !== true) {
+    return 'no_run_code';
+  }
+  if (isTextOnlyRecord(file)) {
+    return 'text_only_record';
+  }
+  /* The sandbox receives the stored bytes, so compatibility is judged on the stored type. */
+  if (!canToolResourceConsume(EToolResources.execute_code, file.type ?? '')) {
+    return 'incompatible';
+  }
+  if (!isOriginalBacked(file)) {
+    return 'unstreamable';
+  }
+  if (
+    file.metadata?.destinationChosen === true &&
+    !hasToolResourceProvisioning(file, EToolResources.execute_code)
+  ) {
+    return 'declined';
+  }
+  return 'eligible';
+}
+
+export interface FileReadingInput {
+  routing: Partial<TurnDeliveryRouting> | undefined;
+  file: TurnDeliveryFile;
+  consumers?: TurnFileConsumers;
+}
+
+type ReaderVerdict = 'ok' | 'needs_text' | SkipReason;
+
+type ReadingBase = Pick<FileReading, 'classicPath' | 'category' | 'code' | 'automatic'>;
+
+interface ReadingWalk {
+  routing: Partial<TurnDeliveryRouting>;
+  file: TurnDeliveryFile;
+  consumers: TurnFileConsumers;
+  mimeType: string;
+  category: ReadingCategory;
+  code: CodeEligibility;
+  evidence: ReadingEvidence;
+}
+
+const SEARCH_ONLY: TurnFileConsumers = { executeCode: false, fileSearch: true };
+
+const SELECTED_REASON: Readonly<Record<ReaderKind, ReadingReason>> = {
+  code: 'code_selected',
+  provider: 'native_supported',
+  text: 'text_fits',
+  search: 'search_selected',
+};
+
+const hasStoredText = (file: TurnDeliveryFile): boolean =>
+  typeof file.text === 'string' && file.text.length > 0;
+
+/** Whether text can be derived from the retained original on this request. */
+function canDeriveText(
+  routing: Partial<TurnDeliveryRouting> | undefined,
+  file: TurnDeliveryFile,
+  evidence: ReadingEvidence,
+): boolean {
+  return (
+    routing?.reading?.canDerive === true &&
+    isOriginalBacked(file) &&
+    file.metadata?.textDerivation?.outcome !== 'failed' &&
+    evidence.textFailed !== true &&
+    selectBuiltInTextPlan(file.type ?? '') != null
+  );
+}
+
+function judgeProvider({ mimeType, routing, evidence }: ReadingWalk): ReaderVerdict {
+  if (
+    resolveSystemDeliveryPath(mimeType, routing) !== 'provider' ||
+    evidence.native === 'unsupported'
+  ) {
+    return 'native_unsupported';
+  }
+  if (evidence.rejected === 'capacity') {
+    return 'native_capacity';
+  }
+  if (evidence.rejected === 'unsupported') {
+    return 'native_unsupported';
+  }
+  if (evidence.rejected === 'integrity') {
+    return 'native_rejected';
+  }
+  if (evidence.native === 'capacity') {
+    return 'native_capacity';
+  }
+  return evidence.overflow === true ? 'aggregate_overflow' : 'ok';
+}
+
+function judgeText({ routing, file, evidence }: ReadingWalk): ReaderVerdict {
+  if (!hasStoredText(file)) {
+    return canDeriveText(routing, file, evidence) ? 'needs_text' : 'text_unavailable';
+  }
+  if (evidence.text === 'exceeds') {
+    return 'text_exceeds';
+  }
+  return evidence.overflow === true ? 'aggregate_overflow' : 'ok';
+}
+
+function judgeSearch({ consumers, file, evidence }: ReadingWalk): ReaderVerdict {
+  const reachable =
+    consumers.fileSearch &&
+    canToolResourceConsume(EToolResources.file_search, file.type ?? '') &&
+    isOriginalBacked(file) &&
+    evidence.search !== 'unreachable';
+  return reachable ? 'ok' : 'search_unavailable';
+}
+
+const READER_JUDGES: Readonly<Record<ReaderKind, (walk: ReadingWalk) => ReaderVerdict>> = {
+  code: ({ code }) => (code === 'eligible' ? 'ok' : 'code_unavailable'),
+  provider: judgeProvider,
+  text: judgeText,
+  search: judgeSearch,
+};
+
+/** Skip reasons naming a limit the file hit, most significant first. */
+const LIMIT_SKIPS: readonly SkipReason[] = [
+  'native_capacity',
+  'native_rejected',
+  'aggregate_overflow',
+  'text_exceeds',
+];
+
+/**
+ * The skip that best explains a reading. A limit the file hit outranks a reader that is merely
+ * missing, and among missing readers the first the walk judged wins, so the category's preferred
+ * reader names the reason. The provider not taking the type, true of most documents, explains a
+ * reading only when nothing else does.
+ */
+function significantSkip(skipped: readonly ReaderSkip[]): SkipReason | undefined {
+  const limit = LIMIT_SKIPS.find((reason) => skipped.some((skip) => skip.reason === reason));
+  if (limit != null) {
+    return limit;
+  }
+  return (skipped.find(({ reason }) => reason !== 'native_unsupported') ?? skipped[0])?.reason;
+}
+
+function selectedReason(
+  reader: ReaderKind,
+  category: ReadingCategory,
+  skipped: readonly ReaderSkip[],
+): ReadingReason {
+  const skip = significantSkip(skipped);
+  if (skip != null) {
+    return skip;
+  }
+  return reader === 'code' && category === 'tabular' ? 'code_preferred' : SELECTED_REASON[reader];
+}
+
+/**
+ * Judges each reader of the category in order and returns the first that can read the file. A
+ * failure may redirect the rest of the walk, and every reader is judged at most once, so the walk
+ * ends after at most one judgment per reader.
+ */
+function walkReaders(walk: ReadingWalk, base: ReadingBase): FileReading {
+  const skipped: ReaderSkip[] = [];
+  const tried = new Set<ReaderKind>();
+  let queue = READING_ORDER[walk.category];
+  for (let i = 0; i < queue.length; i++) {
+    const reader = queue[i];
+    if (tried.has(reader)) {
+      continue;
+    }
+    tried.add(reader);
+    const verdict = READER_JUDGES[reader](walk);
+    if (verdict === 'ok' || verdict === 'needs_text') {
+      return {
+        ...base,
+        skipped,
+        path: READER_PATH[reader],
+        reader,
+        reason: selectedReason(reader, walk.category, skipped),
+        needsText: verdict === 'needs_text',
+      };
+    }
+    skipped.push({ reader, reason: verdict });
+    const next = AFTER_FAILURE[walk.category][verdict];
+    if (next != null) {
+      queue = next;
+      i = -1;
+    }
+  }
+  return {
+    ...base,
+    skipped,
+    path: 'none',
+    reader: 'unavailable',
+    reason: significantSkip(skipped) ?? 'no_reader',
+    needsText: false,
+  };
+}
+
+/** The reader a classic route amounts to, for diagnostics only. */
+function classicReader(
+  path: TDefaultLLMDeliveryPath | undefined,
+  code: CodeEligibility,
+  mimeType: string,
+  file: TurnDeliveryFile,
+  consumers?: TurnFileConsumers,
+): FileReading['reader'] {
+  if (path == null) {
+    return 'unresolved';
+  }
+  if (path !== 'none') {
+    return path;
+  }
+  if (code === 'eligible') {
+    return 'code';
+  }
+  return consumers?.fileSearch === true && hasTurnFileConsumer(mimeType, SEARCH_ONLY, file)
+    ? 'search'
+    : 'unavailable';
+}
+
+/**
+ * The classic route, except for a record the automatic policy marked and left without text: its
+ * classic `text` route either derives that text first or, when it cannot, delivers nothing rather
+ * than an empty text part.
+ */
+function classicReading(
+  base: ReadingBase,
+  { routing, file, consumers }: FileReadingInput,
+  mimeType: string,
+  reason: ClassicReason,
+): FileReading {
+  const reading = { ...base, skipped: [], reason, needsText: false };
+  const derivation = file.metadata?.textDerivation;
+  if (base.classicPath !== 'text' || derivation == null || hasStoredText(file)) {
+    const reader = classicReader(base.classicPath, base.code, mimeType, file, consumers);
+    return { ...reading, path: base.classicPath, reader };
+  }
+  const evidence = routing?.reading?.judge(file) ?? {};
+  if (derivation.outcome === 'deferred' && canDeriveText(routing, file, evidence)) {
+    return { ...reading, path: 'text', reader: 'text', needsText: true };
+  }
+  return {
+    ...reading,
+    path: 'none',
+    reader: classicReader('none', base.code, mimeType, file, consumers),
+  };
+}
+
+/** The endpoint file configuration the eligibility gate reads. */
+type ReadingConfig = Pick<DeliveryRouteInputs, 'endpointConfig' | 'fileConfig'>;
+
+/** The type routing saw at upload; conversion rewrites the stored type. */
+export function getRoutingMimeType(file: TurnDeliveryFile): string {
+  return file.metadata?.routingMimeType ?? file.type ?? '';
+}
+
+/**
+ * Eligibility gates the record and the endpoint's file configuration decide alone: the first that
+ * keeps the file on its classic route, or null when none does.
+ */
+function recordGateReason(
+  config: ReadingConfig,
+  file: TurnDeliveryFile,
+  mimeType: string,
+): ClassicReason | null {
+  if (file.llmDeliveryPath == null) {
+    return 'legacy_record';
+  }
+  if (resolveLLMDeliveryPolicy(config.endpointConfig) !== 'automatic') {
+    return 'classic_policy';
+  }
+  if (file.metadata?.destinationChosen === true) {
+    return 'explicit_destination';
+  }
+  if (file.metadata?.destinationChosen !== false) {
+    return 'unmarked_record';
+  }
+  if (file.context !== FileContext.message_attachment) {
+    return 'not_message_attachment';
+  }
+  if (isTextOnlyRecord(file)) {
+    return 'text_only_record';
+  }
+  const configured = matchConfiguredDeliveryPath(
+    mimeType,
+    config.endpointConfig?.defaultLLMDeliveryPath,
+    config.fileConfig?.defaultLLMDeliveryPath,
+  );
+  return configured != null ? 'configured_route' : null;
+}
+
+/**
+ * Whether the automatic policy reads this record once the turn's consumers are known: every
+ * eligibility gate of {@link decideFileReading} except the consumer one. The endpoint filter asks
+ * this before consumers exist, so it agrees with the decision on every file the decision judges.
+ */
+export function isAutomaticReadingRecord(
+  config: ReadingConfig | undefined,
+  file: TurnDeliveryFile,
+): boolean {
+  const mimeType = getRoutingMimeType(file);
+  return (
+    config != null &&
+    recordGateReason(config, file, mimeType) == null &&
+    categorizeForReading(mimeType) !== 'media'
+  );
+}
+
+type EligibleReading = Pick<ReadingWalk, 'routing' | 'consumers' | 'category'>;
+
+/** The eligibility gate in precedence order: why a file keeps its classic route, or what the walk reads. */
+function gateFileReading(
+  { routing, file, consumers }: FileReadingInput,
+  mimeType: string,
+  category: ReadingCategory | 'media',
+): ClassicReason | EligibleReading {
+  if (routing == null) {
+    return 'legacy_record';
+  }
+  const recordReason = recordGateReason(routing, file, mimeType);
+  if (recordReason != null) {
+    return recordReason;
+  }
+  if (consumers == null) {
+    return 'consumers_unknown';
+  }
+  if (!hasFileToolConsumer(consumers)) {
+    return 'no_file_tools';
+  }
+  if (category === 'media') {
+    return 'media_category';
+  }
+  return { routing, consumers, category };
+}
+
+/**
+ * How one attachment is read on one agent's turn. Classic routing answers unless every
+ * eligibility gate passes; then the category's readers are judged in order against the turn's
+ * consumers and evidence. The returned path always stays inside the stored vocabulary.
+ */
+export function decideFileReading(input: FileReadingInput): FileReading {
+  const { routing, file, consumers } = input;
+  const mimeType = getRoutingMimeType(file);
+  const category = categorizeForReading(mimeType);
+  const base: ReadingBase = {
+    classicPath: resolveClassicTurnLLMDeliveryPath(routing, file, consumers),
+    category,
+    code: judgeCodeEligibility(file, consumers),
+    automatic: false,
+  };
+  const gate = gateFileReading(input, mimeType, category);
+  if (typeof gate === 'string') {
+    return classicReading(base, input, mimeType, gate);
+  }
+  const evidence = gate.routing.reading?.judge(file) ?? {};
+  return walkReaders(
+    { ...gate, file, mimeType, code: base.code, evidence },
+    { ...base, automatic: true },
+  );
+}
+
+export interface UploadReadingInput extends DeliveryRouteInputs {
+  toolResource?: string | null;
+  mimeType: string;
+  isMessageAttachment: boolean;
+  /**
+   * The upload preflight would defer an extracted-text fail-close only for the context route, so
+   * that route's extraction is the inspection and a failed extraction must reject the upload.
+   */
+  extractionRequiredForInspection: boolean;
+  /** Undefined until the caller resolves it; asked for only when the decision needs it. */
+  codePossible?: boolean;
+}
+
+export type UploadReadingReason =
+  | 'explicit_destination'
+  | 'classic_policy'
+  | 'agent_resource'
+  | 'configured_route'
+  | 'automatic_default'
+  | 'inspection_requires_text'
+  | 'code_unavailable'
+  | 'code_preferred';
+
+export interface UploadReading {
+  path: TDefaultLLMDeliveryPath;
+  policy: TLLMDeliveryPolicy;
+  category: ReadingCategory | 'media';
+  reason: UploadReadingReason;
+  /** Run Code will read the file, so nothing is extracted at upload. */
+  codePreferred: boolean;
+  /** Resolve `codePossible`, then decide again. */
+  needsCodeAvailability: boolean;
+  /**
+   * An extraction failure keeps the original, marked failed, instead of rejecting the upload.
+   * Never set where an inspection policy relies on that extraction.
+   */
+  keepOriginalOnExtractionFailure: boolean;
+  /** Write `textDerivation: { outcome: 'deferred' }`, since a built-in extractor can derive text later. */
+  deferredMarker: boolean;
+}
+
+/**
+ * How an upload is read, decided before any extraction. Under the automatic policy a tabular
+ * message attachment is left to Run Code when code is possible at upload, and other message
+ * attachments outside the media rows keep their original when extraction fails, unless an
+ * inspection policy relies on that extraction; everything else stays classic.
+ */
+export function decideUploadReading(input: UploadReadingInput): UploadReading {
+  const path = resolveUploadLLMDeliveryPath(input);
+  const policy = resolveLLMDeliveryPolicy(input.endpointConfig);
+  const category = categorizeForReading(input.mimeType);
+  const classic = (
+    reason: UploadReadingReason,
+    keepOriginalOnExtractionFailure = false,
+  ): UploadReading => ({
+    path,
+    policy,
+    category,
+    reason,
+    codePreferred: false,
+    needsCodeAvailability: false,
+    keepOriginalOnExtractionFailure,
+    deferredMarker: false,
+  });
+
+  if (input.toolResource != null) {
+    return classic('explicit_destination');
+  }
+  if (policy !== 'automatic') {
+    return classic('classic_policy');
+  }
+  if (!input.isMessageAttachment) {
+    return classic('agent_resource');
+  }
+  const configured = matchConfiguredDeliveryPath(
+    input.mimeType,
+    input.endpointConfig?.defaultLLMDeliveryPath,
+    input.fileConfig?.defaultLLMDeliveryPath,
+  );
+  if (configured != null) {
+    return classic('configured_route');
+  }
+  const keepOriginal = category !== 'media' && !input.extractionRequiredForInspection;
+  if (
+    category !== 'tabular' ||
+    !canToolResourceConsume(EToolResources.execute_code, input.mimeType)
+  ) {
+    return classic('automatic_default', keepOriginal);
+  }
+  if (input.extractionRequiredForInspection) {
+    return classic('inspection_requires_text');
+  }
+  if (input.codePossible === undefined) {
+    return { ...classic('automatic_default', keepOriginal), needsCodeAvailability: true };
+  }
+  if (!input.codePossible) {
+    return classic('code_unavailable', keepOriginal);
+  }
+  return {
+    ...classic('code_preferred'),
+    path: 'none',
+    codePreferred: true,
+    deferredMarker: selectBuiltInTextPlan(input.mimeType) != null,
+  };
 }
 
 /** Why an upload cannot be accepted, when nothing would be able to read it. */

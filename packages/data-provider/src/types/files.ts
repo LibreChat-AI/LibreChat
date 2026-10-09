@@ -1,5 +1,6 @@
-import type { TDefaultLLMDeliveryPathConfig } from '../file-config';
+import type { TDefaultLLMDeliveryPathConfig, TLLMDeliveryPolicy } from '../file-config';
 import type { CodeEnvRef, CodeEnvRefMap } from '../codeEnvRef';
+import type { TextDerivation } from '../reading';
 import { EToolResources } from './tools';
 
 export enum FileSources {
@@ -55,6 +56,9 @@ export type EndpointFileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** How unified attachments are read. Absent means `classic`; read it through
+   *  `resolveLLMDeliveryPolicy`, which also lets `legacyFileUploadUX` force `classic`. */
+  llmDeliveryPolicy?: TLLMDeliveryPolicy;
 };
 
 export type FileConfig = {
@@ -96,6 +100,9 @@ export type FileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** How unified attachments are read. Absent means `classic`; read it through
+   *  `resolveLLMDeliveryPolicy`, which also lets `legacyFileUploadUX` force `classic`. */
+  llmDeliveryPolicy?: TLLMDeliveryPolicy;
 };
 
 export type FileConfigInput = {
@@ -132,6 +139,9 @@ export type FileConfigInput = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** How unified attachments are read. Absent means `classic`; read it through
+   *  `resolveLLMDeliveryPolicy`, which also lets `legacyFileUploadUX` force `classic`. */
+  llmDeliveryPolicy?: TLLMDeliveryPolicy;
 };
 
 /** The immutable origin of a file explicitly published from an agent execution. */
@@ -215,6 +225,8 @@ export type TFile = {
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    /** How the text a reader may need was obtained; written only under the automatic policy. */
+    textDerivation?: TextDerivation;
   };
   llmDeliveryPath?: 'provider' | 'text' | 'none';
   createdAt?: string | Date;

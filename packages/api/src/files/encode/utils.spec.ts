@@ -1,12 +1,16 @@
 import { Readable } from 'node:stream';
 import { Providers } from '@librechat/agents';
-import { audioMimeTypes } from 'librechat-data-provider';
+import { mbToBytes, audioMimeTypes, fileConfig as baseFileConfig } from 'librechat-data-provider';
+import type { TFileConfig } from 'librechat-data-provider';
+import type { FileSizeLimitParams } from './utils';
 import type { ServerRequest } from '~/types';
 import {
-  AttachmentObjectNotFoundError,
   getAudioFormat,
   getFileStream,
+  getConfiguredFileSizeLimit,
+  AttachmentObjectNotFoundError,
   isConfiguredProviderMediaType,
+  resolveConfiguredFileSizeLimit,
 } from './utils';
 
 const file = {
@@ -197,4 +201,67 @@ describe('getAudioFormat', () => {
       expect(getAudioFormat(mimeType, 'recording')).toBeDefined();
     }
   });
+});
+
+describe('resolveConfiguredFileSizeLimit', () => {
+  const inheritedLimit = baseFileConfig.endpoints.default.fileSizeLimit;
+
+  /** `getConfiguredFileSizeLimit` and its resolver agree for every fileConfig shape. */
+  const parityCases: Array<
+    [string, TFileConfig | undefined, FileSizeLimitParams, number | undefined]
+  > = [
+    ['no fileConfig', undefined, { provider: Providers.OPENAI }, undefined],
+    [
+      'an empty fileConfig, which inherits the 512 MB default',
+      {},
+      { provider: Providers.ANTHROPIC },
+      mbToBytes(512),
+    ],
+    [
+      'an explicit provider limit',
+      { endpoints: { [Providers.GOOGLE]: { fileSizeLimit: 25 } } },
+      { provider: Providers.GOOGLE },
+      mbToBytes(25),
+    ],
+    [
+      'an endpoint name shadowing the provider',
+      {
+        endpoints: { [Providers.OPENAI]: { fileSizeLimit: 15 }, MyGateway: { fileSizeLimit: 3 } },
+      },
+      { provider: Providers.OPENAI, endpoint: 'MyGateway' },
+      mbToBytes(3),
+    ],
+    [
+      'an endpoint name with no entry, which does not fall back to the provider entry',
+      { endpoints: { [Providers.OPENAI]: { fileSizeLimit: 15 } } },
+      { provider: Providers.OPENAI, endpoint: 'Unlisted' },
+      inheritedLimit,
+    ],
+    [
+      'a configured default',
+      { endpoints: { default: { fileSizeLimit: 7 } } },
+      { provider: Providers.BEDROCK },
+      mbToBytes(7),
+    ],
+    [
+      'a configured default for a provider with a built-in entry',
+      { endpoints: { default: { fileSizeLimit: 7 } } },
+      { provider: Providers.ANTHROPIC },
+      inheritedLimit,
+    ],
+    [
+      'a configured 0',
+      { endpoints: { [Providers.OPENAI]: { fileSizeLimit: 0 } } },
+      { provider: Providers.OPENAI },
+      0,
+    ],
+  ];
+
+  it.each(parityCases)(
+    'resolves %s like getConfiguredFileSizeLimit',
+    (_label, config, params, expected) => {
+      expect(resolveConfiguredFileSizeLimit(config, params)).toBe(expected);
+      expect(getConfiguredFileSizeLimit(reqWith(config), params)).toBe(expected);
+    },
+  );
 });

@@ -99,6 +99,10 @@ mcpServers:
 #   'provider', so that test's CSV still reaches the model.
 # - Mock Provider B uses the unified single button with spreadsheet/csv routed
 #   to llmDeliveryPath 'none' (unified-upload.spec.ts).
+# - Mock Auto Provider and Mock Auto Small Provider select the automatic reading
+#   policy with no route overrides (automatic-upload.spec.ts). Auto Small's 1 MB
+#   fileSizeLimit is the hard limit for new uploads there and the native size
+#   limit for PDFs uploaded elsewhere.
 fileConfig:
   endpoints:
     'Mock Run Files':
@@ -117,6 +121,11 @@ fileConfig:
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'none'
           # Routed to the provider: still delivered to the model AND shown in chat.
           'text/markdown': 'provider'
+    'Mock Auto Provider':
+      llmDeliveryPolicy: automatic
+    'Mock Auto Small Provider':
+      llmDeliveryPolicy: automatic
+      fileSizeLimit: 1
 
 endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
@@ -222,6 +231,28 @@ endpoints:
       titleConvo: false
       modelDisplayLabel: 'Mock Provider B'
 
+    # The automatic reading policy (see fileConfig above). Not mirrored by a model
+    # spec, so each stays a plain endpoint → model option in the selector.
+    - name: 'Mock Auto Provider'
+      apiKey: 'e2e-mock-key-auto'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-auto-model'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Auto Provider'
+
+    - name: 'Mock Auto Small Provider'
+      apiKey: 'e2e-mock-key-auto-small'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-auto-small-model'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Auto Small Provider'
+
     # No model spec mirrors this endpoint's label, so it stays unambiguous in the
     # selector and gives e2e tests a real ephemeral endpoint → model option.
     - name: 'Mock Provider C'
@@ -299,6 +330,8 @@ modelSpecs:
     - 'Mock Provider D'
     - 'Mock Provider E'
     - 'Mock Provider F'
+    - 'Mock Auto Provider'
+    - 'Mock Auto Small Provider'
     - 'agents'
   list:
     - name: 'e2e-mock-provider-a'

@@ -120,6 +120,21 @@ describe('processAddedConvo', () => {
     );
   });
 
+  it.each([
+    ['present', { deriveText: jest.fn(), persistDerivation: jest.fn() }],
+    ['absent', { deriveText: undefined, persistDerivation: undefined }],
+  ])(
+    'shares the request text deriver and persister with the parallel agent as supplied (%s)',
+    async (_label, derivation) => {
+      await processAddedConvo(baseParams(derivation));
+
+      expect(mockInitializeAgent).toHaveBeenCalledWith(
+        expect.objectContaining(derivation),
+        expect.anything(),
+      );
+    },
+  );
+
   /** The added convo re-hydrates the same conversation's prior-turn files, so a
    *  denied `FILE_SEARCH` grant has to travel with it — otherwise the parallel
    *  agent primes the search files the primary just skipped. `undefined` stays

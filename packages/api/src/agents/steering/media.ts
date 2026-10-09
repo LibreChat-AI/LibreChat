@@ -1,9 +1,10 @@
 import { logger } from '@librechat/data-schemas';
 import { formatMessage } from '@librechat/agents';
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, decideFileReading, resolveLLMDeliveryPolicy } from 'librechat-data-provider';
 import type { TFile, TurnFileConsumers } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { SteerQueueItem } from '~/stream/interfaces/IJobStore';
+import type { TurnReadingAgent } from '~/files/reading';
 import type { SteerFileFetcher } from './request';
 import type { SteerMediaResult } from './runtime';
 import type { SteerRequestUser } from './refs';
@@ -16,6 +17,14 @@ import { prependFileContext } from '../client';
 export interface SteerMediaClient {
   /** The turn's view of stored records, which every check and encode below must share. */
   resolveTurnAttachments(files: IMongoFile[], consumers?: TurnFileConsumers): IMongoFile[];
+  /**
+   * The same view after deriving the text its reading needs, when the host can derive it; the
+   * steer then checks and encodes the copies carrying that text.
+   */
+  prepareTurnAttachments?(
+    files: IMongoFile[],
+    consumers?: TurnFileConsumers,
+  ): Promise<IMongoFile[]>;
   addFileContextToMessage(
     message: Record<string, unknown>,
     files: IMongoFile[],
@@ -26,7 +35,21 @@ export interface SteerMediaClient {
     files: IMongoFile[],
     consumers?: TurnFileConsumers,
   ): Promise<IMongoFile[] | undefined>;
+  processMessageAttachments?(
+    message: Record<string, unknown>,
+    files: IMongoFile[],
+    consumers?: TurnFileConsumers,
+  ): Promise<IMongoFile[] | undefined>;
+  /**
+   * The host's running agent. `resolveTurnAttachments` applies its `deliveryRouting`, so the
+   * steer judges its files by the same routing, with Run Code as a reader exactly when the
+   * agent's final `fileConsumers` loaded it.
+   */
+  readonly options?: { readonly agent?: SteerReadingAgent | null };
 }
+
+/** The fields of the running agent a steer reads its files by. */
+export type SteerReadingAgent = Pick<TurnReadingAgent, 'deliveryRouting' | 'fileConsumers'>;
 
 interface PseudoMessage {
   messageId: string;
@@ -67,6 +90,44 @@ function mergeSteerModelText(text: string, quotes?: string[] | null): string {
   return normalized != null ? mergeQuotedText(text, normalized) : text;
 }
 
+const codeHoldNote = (filename: string): string =>
+  `"${filename}" is attached; Run Code can open it starting with your next message.`;
+
+function appendCodeHoldNotes(text: string, heldFilenames: readonly string[]): string {
+  if (heldFilenames.length === 0) {
+    return text;
+  }
+  const notes = heldFilenames.map(codeHoldNote).join('\n');
+  return text.length > 0 ? `${text}\n\n${notes}` : notes;
+}
+
+/**
+ * How a mid-run steer reads its files. Its files arrived after resource priming, so no loaded
+ * tool can reach them before a new turn provisions them. Classic routing therefore judges them
+ * with no reader and delivers the opted-in text fallback; the automatic policy keeps a file Run
+ * Code reads for the next message and says so in the steer text.
+ */
+function resolveSteerReading(
+  client: SteerMediaClient,
+  docs: IMongoFile[],
+): { fileConsumers: TurnFileConsumers; heldFilenames: string[] } {
+  const agent = client.options?.agent;
+  const routing = agent?.deliveryRouting;
+  if (resolveLLMDeliveryPolicy(routing?.endpointConfig) !== 'automatic') {
+    return { fileConsumers: { executeCode: false, fileSearch: false }, heldFilenames: [] };
+  }
+  const fileConsumers: TurnFileConsumers = {
+    executeCode: agent?.fileConsumers?.executeCode === true,
+    fileSearch: false,
+  };
+  const heldFilenames = docs.flatMap((file) =>
+    decideFileReading({ routing, file, consumers: fileConsumers }).reader === 'code'
+      ? [file.filename]
+      : [],
+  );
+  return { fileConsumers, heldFilenames };
+}
+
 /**
  * Encodes authorized file docs for one steer and assembles the multimodal
  * content array, reusing the exact pipeline regular user turns go through:
@@ -83,6 +144,7 @@ async function encodeSteerContent({
   steerId,
   fileDocs,
   fileConsumers,
+  heldFilenames = [],
 }: {
   client: SteerMediaClient;
   text: string;
@@ -90,11 +152,21 @@ async function encodeSteerContent({
   steerId: string;
   fileDocs: IMongoFile[];
   fileConsumers?: TurnFileConsumers;
+  /** Files kept for Run Code on the next message, each noted after the steer body. */
+  heldFilenames?: readonly string[];
 }): Promise<SteerMediaResult> {
-  const modelText = mergeSteerModelText(text, quotes);
   const pseudo: PseudoMessage = { messageId: `steer:${steerId}` };
-  await client.addFileContextToMessage(pseudo, fileDocs, fileConsumers);
-  const validated = await client.processAttachments(pseudo, fileDocs, fileConsumers);
+  let validated: IMongoFile[] | undefined;
+  if (client.processMessageAttachments != null) {
+    validated = await client.processMessageAttachments(pseudo, fileDocs, fileConsumers);
+  } else {
+    await client.addFileContextToMessage(pseudo, fileDocs, fileConsumers);
+    validated = await client.processAttachments(pseudo, fileDocs, fileConsumers);
+  }
+  const settledFiles = validated ?? fileDocs;
+  const finalHeldFilenames =
+    fileConsumers == null ? heldFilenames : resolveSteerReading(client, settledFiles).heldFilenames;
+  const modelText = appendCodeHoldNotes(mergeSteerModelText(text, quotes), finalHeldFilenames);
   const formatted = formatMessage({
     message: {
       role: 'user',
@@ -148,13 +220,10 @@ export async function buildSteerMedia({
     return undefined;
   }
   const docsById = new Map(rawDocs.map((file) => [file.file_id, file]));
-  /* These files arrived after resource priming. A loaded tool is not evidence that
-   * it can access them; use the opted-in text fallback until a new turn provisions them. */
-  const fileConsumers: TurnFileConsumers = { executeCode: false, fileSearch: false };
-  const fileDocs = client.resolveTurnAttachments(
-    ids.map((id) => docsById.get(id)).filter((doc): doc is IMongoFile => doc != null),
-    fileConsumers,
-  );
+  const docs = ids.map((id) => docsById.get(id)).filter((doc): doc is IMongoFile => doc != null);
+  const { fileConsumers, heldFilenames } = resolveSteerReading(client, docs);
+  const fileDocs = await (client.prepareTurnAttachments?.(docs, fileConsumers) ??
+    client.resolveTurnAttachments(docs, fileConsumers));
   assertFilesAllowed?.(fileDocs);
   return encodeSteerContent({
     client,
@@ -163,6 +232,7 @@ export async function buildSteerMedia({
     steerId: item.steerId,
     fileDocs,
     fileConsumers,
+    heldFilenames,
   });
 }
 

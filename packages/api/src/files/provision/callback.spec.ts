@@ -1,14 +1,20 @@
 import { Constants } from '@librechat/agents';
+import { logger } from '@librechat/data-schemas';
 import { EToolResources, FileContext } from 'librechat-data-provider';
 import type { TFile } from 'librechat-data-provider';
+import type { SearchPreparationState } from '../reading/turn';
 import type { ProvisionState } from '~/agents/resources';
+import type { ReadingAgent } from '../reading/inventory';
 import type { ProvisionToolContext } from './callback';
 import type { CodeFileAgent } from '../code/queued';
 import type { ServerRequest } from '~/types';
+import { collectInventoryEntries, prepareAgentFileContext } from '../reading/inventory';
+import { FileSearchPreparationError, createProvisionFilesCallback } from './callback';
+import { buildTurnReadingContext, getTurnReadingContext } from '../reading/turn';
 import { mergeCodeFilesIntoContext } from '~/agents/codeFilesSession';
+import { resolveTurnDeliveryRouting } from '~/agents/files/delivery';
 import { prepareQueuedCodeFileContext } from '../code/queued';
 import { createSubagentCodeRouting } from '~/code/targets';
-import { createProvisionFilesCallback } from './callback';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), warn: jest.fn(), debug: jest.fn(), info: jest.fn() },
@@ -44,6 +50,49 @@ function state(
     agentScopedFileIds: new Set(agentScopedFileIds),
   };
 }
+
+function searchAgent(
+  files: TFile[],
+  id = 'agent-a',
+  scopedFileIds: string[] = [],
+): CodeFileAgent & ReadingAgent {
+  const routing = resolveTurnDeliveryRouting({
+    agent: { provider: 'openAI', endpoint: 'openAI' },
+    config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+  });
+  const preparation = new Map<string, SearchPreparationState>();
+  const provisionState = { ...state([], files, scopedFileIds), searchPreparation: preparation };
+  const context = buildTurnReadingContext({
+    routing,
+    provider: 'openAI',
+    fileTokenLimit: 1000,
+    configuredFileSizeLimit: 1024 * 1024,
+    countTokens: (text) => text.length,
+  });
+  context?.setSearchEvidence({
+    queued: files.map(({ file_id }) => file_id),
+    registered: [],
+    preparation,
+  });
+  routing.reading = context;
+  return {
+    id,
+    deliveryRouting: routing,
+    provisionState,
+    fileConsumers: { executeCode: false, fileSearch: true },
+    currentRequestAttachments: files,
+  };
+}
+
+const searchFile = (overrides: Partial<TFile> = {}): TFile =>
+  makeFile({
+    filename: 'manual.pdf',
+    type: 'application/pdf',
+    bytes: 3_000_000,
+    llmDeliveryPath: 'none',
+    metadata: { destinationChosen: false },
+    ...overrides,
+  });
 
 function buildHarness({
   contexts,
@@ -876,18 +925,24 @@ describe('createProvisionFilesCallback', () => {
 
   it('preserves cancellation raised during vector provisioning', async () => {
     const controller = new AbortController();
+    const pending = searchFile();
+    const agent = searchAgent([pending]);
     const vectorImpl = jest.fn(async () => {
       controller.abort();
       controller.signal.throwIfAborted();
     });
     const { provisionFiles } = buildHarness({
-      contexts: [['agent-a', { provisionState: state([], [makeFile()]) }]],
+      contexts: [[agent.id, agent]],
       vectorImpl,
     });
 
     await expect(
       provisionFiles(['file_search'], 'agent-a', controller.signal),
     ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(agent.provisionState?.vectorDBFiles).toEqual([pending]);
+    expect(getTurnReadingContext(agent.deliveryRouting)?.searchState(pending.file_id)).toBe(
+      'failed',
+    );
   });
 
   it('preserves a homogeneous Code API rate-limit failure from lazy provisioning', async () => {
@@ -952,6 +1007,29 @@ describe('createProvisionFilesCallback', () => {
       file_id: shared.file_id,
       entityId: 'user-1',
     });
+  });
+
+  it('embeds a pending search attachment once, leaving nothing for the next batch', async () => {
+    const pending = makeFile({
+      file_id: 'manual-pdf',
+      filename: 'manual.pdf',
+      filepath: '/uploads/manual.pdf',
+      type: 'application/pdf',
+      bytes: 3_000_000,
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false },
+    });
+    const { provisionFiles, provisionToVectorDB, agentToolContexts } = buildHarness({
+      contexts: [['agent-a', { provisionState: state([], [pending]) }]],
+    });
+
+    await provisionFiles(['file_search'], 'agent-a');
+
+    expect(provisionToVectorDB).toHaveBeenCalledWith(expect.objectContaining({ file: pending }));
+    expect(pending.embedded).toBe(true);
+    expect(agentToolContexts.get('agent-a')?.provisionState?.vectorDBFiles).toEqual([]);
+    await provisionFiles(['file_search'], 'agent-a');
+    expect(provisionToVectorDB).toHaveBeenCalledTimes(1);
   });
 
   it('retries a failed upload on a later tool call instead of replaying the rejection', async () => {
@@ -1053,7 +1131,7 @@ describe('createProvisionFilesCallback', () => {
     });
 
     await expect(provisionFiles(['file_search'], 'agent-a')).rejects.toThrow(
-      /aborting tool execution rather than searching without them/,
+      FileSearchPreparationError,
     );
     expect(agentToolContexts.get('agent-a')?.provisionState?.vectorDBFiles).toHaveLength(1);
   });
@@ -1068,9 +1146,148 @@ describe('createProvisionFilesCallback', () => {
     });
 
     await expect(provisionFiles(['file_search'], 'agent-a')).rejects.toThrow(
-      /aborting tool execution rather than searching without them/,
+      FileSearchPreparationError,
     );
     expect(agentToolContexts.get('agent-a')?.provisionState?.vectorDBFiles).toHaveLength(1);
+  });
+
+  it('retains failed search readiness until a declined embedding succeeds on retry', async () => {
+    const pending = searchFile({ text: 'complete cached text that was not sent' });
+    const agent = searchAgent([pending]);
+    const context = getTurnReadingContext(agent.deliveryRouting);
+    let release: () => void = () => undefined;
+    const retry = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const vectorImpl = jest
+      .fn()
+      .mockResolvedValueOnce({ embedded: false, fileUpdate: null })
+      .mockImplementationOnce(async () => {
+        await retry;
+        return { embedded: true, fileUpdate: { file_id: pending.file_id, embedded: true } };
+      });
+    const { provisionFiles } = buildHarness({ contexts: [[agent.id, agent]], vectorImpl });
+    const query = jest.fn();
+
+    await expect(provisionFiles(['file_search'], agent.id).then(query)).rejects.toMatchObject({
+      code: 'file_search_preparation_failed',
+    });
+    expect(query).not.toHaveBeenCalled();
+    expect(agent.provisionState?.vectorDBFiles).toEqual([pending]);
+    expect(context?.searchState(pending.file_id)).toBe('failed');
+
+    const secondAttempt = provisionFiles(['file_search'], agent.id).then(query);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(vectorImpl).toHaveBeenCalledTimes(2);
+    expect(context?.searchState(pending.file_id)).toBe('failed');
+    expect(query).not.toHaveBeenCalled();
+    release();
+    await secondAttempt;
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(agent.provisionState?.vectorDBFiles).toEqual([]);
+    expect(context?.searchState(pending.file_id)).toBe('ready');
+  });
+
+  it('keeps partial indexing successes and retries only failed files', async () => {
+    const first = searchFile({ file_id: 'first', filename: 'first.pdf' });
+    const second = searchFile({ file_id: 'second', filename: 'second.pdf' });
+    const agent = searchAgent([first, second]);
+    let failed = false;
+    const vectorImpl = jest.fn(async ({ file }: { file: TFile }) => {
+      if (file.file_id === second.file_id && !failed) {
+        failed = true;
+        throw new Error('temporary indexing outage');
+      }
+      return { embedded: true, fileUpdate: { file_id: file.file_id, embedded: true } };
+    });
+    const { provisionFiles } = buildHarness({ contexts: [[agent.id, agent]], vectorImpl });
+    await expect(provisionFiles(['file_search'], agent.id)).rejects.toThrow(
+      FileSearchPreparationError,
+    );
+    expect(agent.provisionState?.vectorDBFiles).toEqual([second]);
+    expect(getTurnReadingContext(agent.deliveryRouting)?.searchState(first.file_id)).toBe('ready');
+    expect(getTurnReadingContext(agent.deliveryRouting)?.searchState(second.file_id)).toBe(
+      'failed',
+    );
+
+    await provisionFiles(['file_search'], agent.id);
+    expect(
+      vectorImpl.mock.calls.filter(([args]) => args.file.file_id === first.file_id),
+    ).toHaveLength(1);
+    expect(
+      vectorImpl.mock.calls.filter(([args]) => args.file.file_id === second.file_id),
+    ).toHaveLength(2);
+    expect(agent.provisionState?.vectorDBFiles).toEqual([]);
+    expect(agent.tool_resources?.file_search?.files?.map((file) => file?.file_id)).toEqual([
+      first.file_id,
+      second.file_id,
+    ]);
+  });
+
+  it('keeps failed readiness scoped to the namespace that failed', async () => {
+    const first = searchFile();
+    const second = searchFile();
+    const agentA = searchAgent([first], 'agent-a', [first.file_id]);
+    const agentB = searchAgent([second], 'agent-b', [second.file_id]);
+    const vectorImpl = jest.fn(async ({ file, entity_id }: { file: TFile; entity_id: string }) => {
+      if (entity_id === agentA.id) {
+        return { embedded: false, fileUpdate: null };
+      }
+      return { embedded: true, fileUpdate: { file_id: file.file_id, embedded: true } };
+    });
+    const { provisionFiles, addEmbeddedEntity } = buildHarness({
+      contexts: [
+        [agentA.id, agentA],
+        [agentB.id, agentB],
+      ],
+      vectorImpl,
+    });
+    await expect(provisionFiles(['file_search'], agentA.id)).rejects.toThrow(
+      FileSearchPreparationError,
+    );
+    await provisionFiles(['file_search'], agentB.id);
+
+    expect(vectorImpl).toHaveBeenCalledTimes(2);
+    expect(getTurnReadingContext(agentA.deliveryRouting)?.searchState(first.file_id)).toBe(
+      'failed',
+    );
+    expect(getTurnReadingContext(agentB.deliveryRouting)?.searchState(second.file_id)).toBe(
+      'ready',
+    );
+    expect(addEmbeddedEntity).toHaveBeenCalledWith({
+      file_id: second.file_id,
+      entityId: agentB.id,
+    });
+    expect(agentB.tool_resources?.file_search?.file_ids).toEqual([second.file_id]);
+    expect(agentA.provisionState?.vectorDBFiles).toEqual([first]);
+  });
+
+  it('sanitizes operational failures at the preparation boundary', async () => {
+    const pending = searchFile();
+    const agent = searchAgent([pending]);
+    const secret = 'submitted-secret Bearer private-credential';
+    const vectorImpl = jest.fn().mockRejectedValue(
+      Object.assign(new Error(secret), {
+        response: { status: 503, data: secret },
+        config: { headers: { Authorization: secret } },
+      }),
+    );
+    const { provisionFiles } = buildHarness({ contexts: [[agent.id, agent]], vectorImpl });
+    await expect(provisionFiles(['file_search'], agent.id)).rejects.toMatchObject({
+      code: 'file_search_preparation_failed',
+      message:
+        'File Search could not prepare the attached files. Try sending the message again.\n' +
+        '{"code":"file_search_preparation_failed"}',
+    });
+    expect(logger.error).toHaveBeenLastCalledWith(
+      expect.stringContaining(`file ${pending.file_id}`),
+      { type: 'Error', status: 503 },
+    );
+    prepareAgentFileContext(agent, [agent], 'user-1', false);
+    expect(JSON.stringify(agent.dynamicToolContextMap)).toContain('could not prepare it');
+    expect(JSON.stringify(agent.dynamicToolContextMap)).not.toContain(secret);
+    expect(JSON.stringify(collectInventoryEntries(agent))).not.toContain(secret);
+    expect(agent.provisionState?.searchPreparation?.get(pending.file_id)).toBe('failed');
   });
 
   it('ignores tool batches that need neither code nor search', async () => {

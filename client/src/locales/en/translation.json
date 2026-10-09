@@ -639,6 +639,7 @@
   "com_error_file_upload_limit": "You have reached the upload limit of {{0}} files per {{1}}.",
   "com_error_files_dupe": "Duplicate file detected.",
   "com_error_files_empty": "Empty files are not allowed.",
+  "com_error_file_search_preparation_failed": "File Search couldn't prepare the attached files. Send this message again to retry.",
   "com_error_files_process": "An error occurred while processing the file.",
   "com_error_files_skipped_dupe": "Skipped duplicate file(s): {{0}}",
   "com_error_files_skipped_size": "Skipped file(s) over the {{0}} MB size limit: {{1}}",

@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { expect } from '@playwright/test';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -10,6 +12,10 @@ export const MOCK_REPLY_TEXT = 'E2E mock reply';
 export const MOCK_ENDPOINTS = [
   { label: 'Mock Provider A', model: 'mock-model-a' },
   { label: 'Mock Provider B', model: 'mock-model-b' },
+  /** Automatic reading policy, no route overrides (automatic-upload.spec.ts). */
+  { label: 'Mock Auto Provider', model: 'mock-auto-model' },
+  /** Automatic reading policy with a 1 MB per-file limit. */
+  { label: 'Mock Auto Small Provider', model: 'mock-auto-small-model' },
 ] as const;
 
 export type MockEndpoint = { label: string; model: string };
@@ -406,10 +412,22 @@ export type CodeProvisionRecord = {
   id: string;
   storage_session_id: string;
   fileId: string;
+  bytes: number;
+  /** Hex digest of the bytes the code server received. */
+  sha256: string;
 };
 
-export type RagEmbedRecord = { file_id: string; filename: string; entity_id: string };
-export type RagQueryRecord = { file_id: string; query: string };
+/** One exec the fake code server ran: the files it mounted, and the one an analysis token read. */
+export type CodeExecRecord = {
+  lang: string;
+  fileCount: number;
+  files: Array<{ id: string; name: string }>;
+  analyzedFileId?: string;
+};
+
+/** `seq` orders embeds and queries against each other across both logs. */
+export type RagEmbedRecord = { seq: number; file_id: string; filename: string; entity_id: string };
+export type RagQueryRecord = { seq: number; file_id: string; query: string };
 
 /** Every `/query` the fake RAG service received from file_search. */
 export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
@@ -419,13 +437,23 @@ export async function getRagQueries(page: Page): Promise<RagQueryRecord[]> {
   return body.queries;
 }
 
-/** Files the fake code server received via /upload (proof they reached the code env). */
-export async function getCodeProvisionedUploads(page: Page): Promise<CodeProvisionRecord[]> {
+/** The fake code server's record of what it received and ran since the last reset. */
+async function getCodeDebug(page: Page): Promise<{
+  uploads: CodeProvisionRecord[];
+  execs: CodeExecRecord[];
+}> {
   const response = await page.request.get(`${CODE_API_BASE}/__debug/uploads`);
   expect(response.ok(), 'fake code server /__debug/uploads should respond').toBeTruthy();
-  const body = (await response.json()) as { uploads: CodeProvisionRecord[] };
-  return body.uploads;
+  return response.json();
 }
+
+/** Files the fake code server received via /upload (proof they reached the code env). */
+export const getCodeProvisionedUploads = async (page: Page): Promise<CodeProvisionRecord[]> =>
+  (await getCodeDebug(page)).uploads;
+
+/** Every exec the fake code server ran since the last reset. */
+export const getCodeExecs = async (page: Page): Promise<CodeExecRecord[]> =>
+  (await getCodeDebug(page)).execs;
 
 /** Files the fake RAG server embedded via /embed (proof they reached the vector DB). */
 export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
@@ -437,10 +465,78 @@ export async function getRagEmbedded(page: Page): Promise<RagEmbedRecord[]> {
 
 /** Clear both fake servers' recorded provisioning (call at test start for isolation). */
 export async function resetProvisioning(page: Page): Promise<void> {
-  await Promise.all([
+  const [code, rag] = await Promise.all([
     page.request.post(`${CODE_API_BASE}/__debug/reset`),
     page.request.post(`${RAG_API_BASE}/__debug/reset`),
   ]);
+  expect(code.ok(), 'fake code server /__debug/reset should succeed').toBeTruthy();
+  expect(rag.ok(), 'fake RAG server /__debug/reset should succeed').toBeTruthy();
+}
+
+/**
+ * Where the in-process fake model writes the prompts of its most recent runs
+ * (e2e/setup/fake-model.js). It has no HTTP surface, so the file is its debug endpoint.
+ */
+export const MODEL_REQUEST_LOG_PATH =
+  process.env.E2E_MODEL_REQUEST_LOG ??
+  path.resolve(__dirname, '../../.generated/last-request.json');
+
+/** One model invocation as the provider would have received it. */
+export type ModelRequestRecord = {
+  /** The system instructions, including the queued code files and the file inventory. */
+  systemText: string;
+  /** Every message's readable text, system first; inline file data is left out. */
+  promptText: string;
+  /** File names of the document and file parts sent to the model. */
+  documentFiles: string[];
+};
+
+/** One run of the fake model, keyed by the user text that started it. */
+export type ModelRunRecord = {
+  sequence: number;
+  conversationId: string | null;
+  userText: string;
+  invocations: ModelRequestRecord[];
+};
+
+function readModelRuns(): ModelRunRecord[] {
+  try {
+    const log = JSON.parse(fs.readFileSync(MODEL_REQUEST_LOG_PATH, 'utf8')) as {
+      runs?: ModelRunRecord[];
+    };
+    return log.runs ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The latest fake-model run whose user text contains `label`, once it has recorded at least
+ * `minInvocations` model requests.
+ */
+export async function getModelRun(
+  label: string,
+  { minInvocations = 1, timeout = 15_000 }: { minInvocations?: number; timeout?: number } = {},
+): Promise<ModelRunRecord> {
+  let match: ModelRunRecord | undefined;
+  await expect
+    .poll(
+      () => {
+        match = readModelRuns()
+          .filter((run) => run.userText.includes(label))
+          .pop();
+        return match?.invocations.length ?? 0;
+      },
+      {
+        timeout,
+        message: `the fake model should record ${minInvocations} request(s) for "${label}"`,
+      },
+    )
+    .toBeGreaterThanOrEqual(minInvocations);
+  if (!match) {
+    throw new Error(`No fake-model request was recorded for "${label}"`);
+  }
+  return match;
 }
 
 /** Shape of a file record as returned by POST /api/files and GET /api/files. */
@@ -453,7 +549,14 @@ export type UploadedFile = {
   metadata?: { codeEnvRef?: { storage_session_id?: string; file_id?: string } };
 };
 
-export type AttachFile = { name: string; mimeType: string; content: string };
+/** A file to attach: inline text, or a fixture read from disk under the given name. */
+export type AttachFile =
+  | { name: string; mimeType: string; content: string }
+  | { name: string; mimeType: string; path: string };
+
+/** The bytes the browser receives for an attach helper's file. */
+export const attachFileBuffer = (file: AttachFile): Buffer =>
+  'path' in file ? fs.readFileSync(file.path) : Buffer.from(file.content, 'utf8');
 
 /** Unique, filesystem-safe name so tests never collide on accumulated fake-server state. */
 export const uniqueName = (prefix: string) =>
@@ -482,8 +585,59 @@ export async function uploadViaUnifiedButton(page: Page, file: AttachFile) {
   await fileChooser.setFiles({
     name: file.name,
     mimeType: file.mimeType,
-    buffer: Buffer.from(file.content, 'utf8'),
+    buffer: attachFileBuffer(file),
   });
+  /* The palette lists the new record while it closes, which would duplicate the chip's name. */
+  await expect(palette).toBeHidden();
+  return uploadResponse;
+}
+
+/** A DataTransfer in the page holding one file, as a native drag or a file paste carries it. */
+function createFileTransfer(page: Page, file: AttachFile) {
+  return page.evaluateHandle(
+    ({ name, mimeType, base64 }) => {
+      const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], name, { type: mimeType }));
+      return transfer;
+    },
+    { name: file.name, mimeType: file.mimeType, base64: attachFileBuffer(file).toString('base64') },
+  );
+}
+
+/** Drop a file onto the composer with the event sequence a native file drag produces. */
+export async function uploadViaDrop(page: Page, file: AttachFile) {
+  const input = page.getByRole('textbox', { name: 'Message input' });
+  await expect(input).toBeVisible();
+  const dataTransfer = await createFileTransfer(page, file);
+  const uploadResponse = waitForUpload(page);
+  await input.dispatchEvent('dragenter', { dataTransfer });
+  await input.dispatchEvent('dragover', { dataTransfer });
+  await input.dispatchEvent('drop', { dataTransfer });
+  return uploadResponse;
+}
+
+/** Whether the browser exposes files on a synthetic paste event, which file paste needs. */
+export function supportsFilePaste(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['probe'], 'probe.txt', { type: 'text/plain' }));
+    const event = new ClipboardEvent('paste', { clipboardData: transfer });
+    return event.clipboardData?.files.length === 1;
+  });
+}
+
+/** Paste a file into the composer as the clipboard delivers a copied file. */
+export async function uploadViaPaste(page: Page, file: AttachFile) {
+  const input = page.getByRole('textbox', { name: 'Message input' });
+  await input.click();
+  const clipboardData = await createFileTransfer(page, file);
+  const uploadResponse = waitForUpload(page);
+  await input.evaluate((element, transfer) => {
+    element.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }),
+    );
+  }, clipboardData);
   return uploadResponse;
 }
 
@@ -525,7 +679,7 @@ export async function uploadViaLegacyOption(page: Page, optionName: string, file
   await fileChooser.setFiles({
     name: file.name,
     mimeType: file.mimeType,
-    buffer: Buffer.from(file.content, 'utf8'),
+    buffer: attachFileBuffer(file),
   });
   return uploadResponse;
 }

@@ -405,6 +405,51 @@ describe('processTextWithTokenLimit', () => {
     });
   });
 
+  describe('with a known token count', () => {
+    it('uses the known count instead of counting text under the limit', async () => {
+      const tokenCountFn = jest.fn((text: string): number => Math.ceil(text.length / 4));
+      const text = createTextOfLength(40);
+
+      const result = await processTextWithTokenLimit({
+        text,
+        tokenLimit: 100,
+        tokenCountFn,
+        knownTokenCount: 10,
+      });
+
+      expect(result).toEqual({ text, tokenCount: 10, wasTruncated: false });
+      expect(tokenCountFn).not.toHaveBeenCalled();
+    });
+
+    it('truncates from the known count without counting the full text again', async () => {
+      const tokenCountFn = jest.fn((text: string): number => Math.ceil(text.length / 4));
+      const text = createTextOfLength(4000);
+      const counted = await processTextWithTokenLimit({ text, tokenLimit: 100, tokenCountFn });
+      tokenCountFn.mockClear();
+
+      const result = await processTextWithTokenLimit({
+        text,
+        tokenLimit: 100,
+        tokenCountFn,
+        knownTokenCount: 1000,
+      });
+
+      expect(result).toEqual(counted);
+      expect(result.wasTruncated).toBe(true);
+      expect(tokenCountFn).not.toHaveBeenCalledWith(text);
+    });
+
+    it('counts the text when no known count is supplied', async () => {
+      const tokenCountFn = jest.fn((text: string): number => Math.ceil(text.length / 4));
+      const text = createTextOfLength(40);
+
+      await processTextWithTokenLimit({ text, tokenLimit: 100, tokenCountFn });
+
+      expect(tokenCountFn).toHaveBeenCalledTimes(1);
+      expect(tokenCountFn).toHaveBeenCalledWith(text);
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle empty text', async () => {
       const { tokenCountFn } = createMockTokenCounter();
