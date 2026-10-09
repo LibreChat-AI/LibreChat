@@ -8,6 +8,7 @@ import {
   earlierReplyCopy,
   paintedOpacity,
   projectRow,
+  replyTimestamp,
   seedReplyChat,
 } from './reveal.helpers';
 
@@ -34,7 +35,7 @@ test('a mouse desktop reveals message actions on hover and keyboard focus @scena
     const reply = page.getByText(REPLY_TEXT, { exact: true }).first();
     await expect(reply).toBeVisible({ timeout: 20000 });
     const copy = earlierReplyCopy(page);
-    const timestamp = page.locator('.message-render .message-timestamp').first();
+    const timestamp = replyTimestamp(page);
     await expect(copy).toBeAttached();
     await expect(timestamp).toBeAttached();
 

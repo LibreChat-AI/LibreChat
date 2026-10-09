@@ -10,6 +10,7 @@ import {
   hitAtCenter,
   paintedOpacity,
   projectRow,
+  replyTimestamp,
   seedReplyChat,
 } from './reveal.helpers';
 
@@ -74,7 +75,7 @@ test('a 2-in-1 shows message actions and the timestamp without hover @scenario:t
     expect(await paintedOpacity(copy)).toBe(1);
     expect(await hitAtCenter(copy)).toBe(true);
 
-    const timestamp = page.locator('.message-render .message-timestamp').first();
+    const timestamp = replyTimestamp(page);
     await expect(timestamp).toBeAttached();
     expect(await paintedOpacity(timestamp)).toBe(1);
   } finally {

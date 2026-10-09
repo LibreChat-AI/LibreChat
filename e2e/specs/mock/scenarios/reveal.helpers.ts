@@ -56,6 +56,15 @@ export async function seedReplyChat(title: string): Promise<string> {
 export const earlierReplyCopy = (page: Page): Locator =>
   page.getByTestId('copy-response-button').first();
 
+/** The timestamp in the earlier reply's own row, which its hover reveals. */
+export const replyTimestamp = (page: Page): Locator =>
+  page
+    .locator('.message-render')
+    .filter({ hasText: REPLY_TEXT })
+    .first()
+    .locator('.message-timestamp')
+    .first();
+
 export async function deleteChat(conversationId: string): Promise<void> {
   await deleteConversations([conversationId]);
 }
