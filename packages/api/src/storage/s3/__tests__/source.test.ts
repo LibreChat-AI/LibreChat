@@ -136,4 +136,22 @@ describe('S3 with stored file links', () => {
       expect(isNotFound(new Error('AccessDenied'))).toBe(false);
     });
   });
+  describe('s3Relinker', () => {
+    it('converts presigned URLs to LibreChat links, using the stored key when present', () => {
+      const { s3Relinker } = modules.source;
+      expect(s3Relinker.toStored(signedUrl())).toBe(storedLink());
+      expect(s3Relinker.toStored(signedUrl(), key)).toBe(storedLink());
+      expect(s3Relinker.toStored(storedLink())).toBeNull();
+      expect(s3Relinker.toStored('https://example.com/avatar.png')).toBeNull();
+    });
+
+    it('signs a new presigned URL for a LibreChat link when the proxy is off', async () => {
+      process.env.STORAGE_PROXY_FILES = 'false';
+      const { s3Relinker } = modules.source;
+      await expect(s3Relinker.toStorage(storedLink())).resolves.toBe(
+        'https://bucket.s3.amazonaws.com/key?signed=true',
+      );
+      await expect(s3Relinker.toStorage(signedUrl())).resolves.toBeNull();
+    });
+  });
 });

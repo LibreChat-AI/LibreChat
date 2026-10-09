@@ -156,6 +156,9 @@
     "migrate:code-file-duplicates:dry-run": "node config/migrate-code-file-duplicates.js --dry-run",
     "migrate:code-file-duplicates": "node config/migrate-code-file-duplicates.js",
     "migrate:code-file-duplicates:batch": "node config/migrate-code-file-duplicates.js --batch-size=50",
+    "migrate:stored-file-links:dry-run": "node config/migrate-stored-file-links.js --dry-run",
+    "migrate:stored-file-links": "node config/migrate-stored-file-links.js",
+    "migrate:stored-file-links:revert": "node config/migrate-stored-file-links.js --revert",
     "lighthouse": "npm run e2e:prepare && npm run lighthouse:run",
     "lighthouse:run": "playwright test --config=e2e/playwright.config.lighthouse.ts",
     "lighthouse:regression": "cross-env LIGHTHOUSE_REGRESSION=serial-reads npm run lighthouse:run"

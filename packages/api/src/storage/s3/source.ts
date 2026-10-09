@@ -1,10 +1,13 @@
+import { FileSources } from 'librechat-data-provider';
 import { GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import type { Readable } from 'stream';
 import type { StoredFileSource } from '~/storage/proxy';
+import type { Relinker } from '~/storage/proxy/relink';
+import { getKeyFromStoredFileURL, getStoredFileURL } from '~/storage/proxy/link';
+import { parseS3Key, getS3URL, extractKeyFromS3Url } from './crud';
 import { AVATAR_BASE_PATH } from '~/storage/constants';
 import { initializeS3 } from '~/cdn/s3';
 import { s3Config } from './s3Config';
-import { parseS3Key } from './crud';
 
 /** Serves S3 objects through LibreChat's stored-file route. */
 export const s3FileSource: StoredFileSource = {
@@ -31,5 +34,26 @@ export const s3FileSource: StoredFileSource = {
       $metadata?: { httpStatusCode?: number };
     };
     return name === 'NoSuchKey' || name === 'NotFound' || $metadata?.httpStatusCode === 404;
+  },
+};
+
+/**
+ * Converts S3 links for `migrate:stored-file-links`. S3 links are always presigned,
+ * so a presigned URL identifies one even on a record without a source (an avatar).
+ * `toStorage` signs a new URL, so it needs `STORAGE_PROXY_FILES` off.
+ */
+export const s3Relinker: Relinker = {
+  source: FileSources.s3,
+  toStored(link, storageKey) {
+    if (!link.includes('X-Amz-Signature')) {
+      return null;
+    }
+    const key = storageKey || extractKeyFromS3Url(link);
+    return key && parseS3Key(key) ? getStoredFileURL(FileSources.s3, key) : null;
+  },
+  async toStorage(link) {
+    const key = getKeyFromStoredFileURL(link, FileSources.s3);
+    const parsed = key ? parseS3Key(key) : null;
+    return parsed ? getS3URL(parsed) : null;
   },
 };

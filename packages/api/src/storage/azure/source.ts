@@ -1,6 +1,7 @@
 import { FileSources } from 'librechat-data-provider';
 import type { Readable } from 'stream';
 import type { StoredFileSource } from '~/storage/proxy';
+import type { Relinker } from '~/storage/proxy/relink';
 import {
   getStoredFileURL,
   getKeyFromStoredFileURL,
@@ -65,3 +66,40 @@ export const azureFileSource: StoredFileSource = {
     return statusCode === 404 || code === 'BlobNotFound';
   },
 };
+
+function splitQuery(link: string): [string, string] {
+  const index = link.search(/[?#]/);
+  return index === -1 ? [link, ''] : [link.slice(0, index), link.slice(index)];
+}
+
+/**
+ * Converts Azure links for `migrate:stored-file-links`, for blobs under
+ * `containerURL` (the configured container's URL). A link's query, such as an
+ * avatar's `?manual=`, is kept.
+ */
+export function createAzureRelinker(containerURL: string): Relinker {
+  const prefix = `${containerURL.replace(/\/$/, '')}/`;
+  return {
+    source: FileSources.azure_blob,
+    toStored(link) {
+      if (!link.startsWith(prefix)) {
+        return null;
+      }
+      const [path, query] = splitQuery(link.slice(prefix.length));
+      try {
+        const blobPath = path.split('/').map(decodeURIComponent).join('/');
+        return blobPath ? `${getStoredFileURL(FileSources.azure_blob, blobPath)}${query}` : null;
+      } catch {
+        return null;
+      }
+    },
+    async toStorage(link) {
+      const blobPath = getAzureBlobPath(link);
+      if (blobPath == null) {
+        return null;
+      }
+      const [, query] = splitQuery(link);
+      return `${prefix}${blobPath.split('/').map(encodeURIComponent).join('/')}${query}`;
+    },
+  };
+}
