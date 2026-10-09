@@ -18,9 +18,9 @@ const RECIPES = new Map([
 /** The full-opacity override every recipe carries, so a class list that spells one out also
  *  counts; another `theme-disabled:` utility alone still leaves the control faded. */
 const RECIPE_VARIANTS = [
-  [/(?:^|\s)theme-disabled:!?opacity-100(?=\s|$)/, 'self'],
-  [/(?:^|\s)theme-disabled-within:!?opacity-100(?=\s|$)/, 'within'],
-  [/(?:^|\s)peer-theme-disabled:!?opacity-100(?=\s|$)/, 'peer'],
+  [/(?:^|\s)theme-disabled:!?opacity-100!?(?=\s|$)/, 'self'],
+  [/(?:^|\s)theme-disabled-within:!?opacity-100!?(?=\s|$)/, 'within'],
+  [/(?:^|\s)peer-theme-disabled:!?opacity-100!?(?=\s|$)/, 'peer'],
 ];
 
 /** Where the shared primitives live, for a relative import inside the component library. */
@@ -96,8 +96,9 @@ function splitVariants(token) {
   return { variants: parts.slice(0, -1), base: parts[parts.length - 1] };
 }
 
-/** An opacity that fades: `opacity-100` keeps the control opaque, so it is not a dim. */
-const isOpacity = (base) => /^!?opacity-(?!100$)/.test(base);
+/** An opacity that fades: `opacity-100` (or `opacity-100!`) keeps the control opaque, so it is
+ *  not a dim. */
+const isOpacity = (base) => /^!?opacity-(?!100!?$)/.test(base);
 
 /** Every utility in `value` that dims a disabled control through a variant, with the element
  *  it fades. */
@@ -183,6 +184,41 @@ const PASSING = new Set([
  *  `isDisabled && 'opacity-50'`, `{ 'opacity-50': disabled }` in a class map, or a map that is
  *  itself chosen (`disabled && { 'opacity-50': true }`). A string the condition picks for the
  *  enabled state (`disabled ? '' : 'opacity-50'`) is not a disabled dim. */
+const isDisabledName = (name) =>
+  typeof name === 'string' && /disabled/i.test(name) && !/(?:not|non)_?disabled/i.test(name);
+
+const keyName = (property) =>
+  property.computed ? undefined : (property.key.name ?? String(property.key.value));
+
+/** The sense of a `cva` option chosen by a boolean `disabled` variant: the `true` option of a
+ *  `disabled` group in `variants`, or the class of a `compoundVariants` entry that sets
+ *  `disabled: true`. */
+function cvaDisabledSense(property) {
+  const name = keyName(property);
+  const owner = property.parent;
+  const group = owner?.parent;
+  if (
+    (name === 'true' || name === 'false') &&
+    group?.type === 'Property' &&
+    group.value === owner &&
+    isDisabledName(keyName(group)) &&
+    keyName(group.parent?.parent ?? {}) === 'variants'
+  ) {
+    return name === 'true';
+  }
+  if (name === 'class' || name === 'className') {
+    const flag = owner.properties.find(
+      (entry) =>
+        entry.type === 'Property' &&
+        isDisabledName(keyName(entry)) &&
+        entry.value.type === 'Literal' &&
+        typeof entry.value.value === 'boolean',
+    );
+    return flag ? flag.value.value : undefined;
+  }
+  return undefined;
+}
+
 function chosenByDisabled(start, source, known) {
   let node = start;
   while (
@@ -199,6 +235,13 @@ function chosenByDisabled(start, source, known) {
   }
   if (parent?.type === 'LogicalExpression' && parent.right === node && parent.operator === '&&') {
     return disabledSense(parent.left, source, known) === true;
+  }
+  if (
+    parent?.type === 'Property' &&
+    parent.value === node &&
+    parent.parent?.type === 'ObjectExpression'
+  ) {
+    return cvaDisabledSense(parent) === true;
   }
   if (parent?.type === 'Property' && parent.key === node) {
     const sense = disabledSense(parent.value, source, known);
@@ -378,6 +421,19 @@ function recipeReader(context) {
   /** The parts of `parent` emitted whenever `child` is: the other arguments of a class call,
    *  the other entries of an array or template, the base of a `cva` around a variant, and class
    *  map entries switched on by the same condition. A condition's other branch is not. */
+  /** A sibling that always emits a covering recipe, or one guarded by the same condition as the
+   *  dim's own entry: `cn(disabled && 'opacity-50', disabled && disabledFillClasses)`. */
+  const alongside = (sibling, child, topology) => {
+    if (always(sibling, topology)) return true;
+    const guarded = (node) => node.type === 'LogicalExpression' && node.operator === '&&';
+    return (
+      guarded(sibling) &&
+      guarded(child) &&
+      source.getText(sibling.left) === source.getText(child.left) &&
+      always(sibling.right, topology)
+    );
+  };
+
   const companions = (parent, child, topology) => {
     switch (parent.type) {
       case 'CallExpression': {
@@ -389,12 +445,12 @@ function recipeReader(context) {
             : base !== undefined && always(base, topology);
         }
         return parent.arguments.some(
-          (argument) => argument !== child && always(argument, topology),
+          (argument) => argument !== child && alongside(argument, child, topology),
         );
       }
       case 'ArrayExpression':
         return parent.elements.some(
-          (element) => element && element !== child && always(element, topology),
+          (element) => element && element !== child && alongside(element, child, topology),
         );
       case 'TemplateLiteral':
         return always(parent, topology);

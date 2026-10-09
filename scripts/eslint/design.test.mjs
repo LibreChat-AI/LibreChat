@@ -20,6 +20,11 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn('px-2 disabled:opacity-50', disabledFillClasses)",
     "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } }, defaultVariants: { tone: 'muted' } })",
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
+    "cn(disabled && 'opacity-50', disabled && disabledFillClasses)",
+    "cn('disabled:opacity-50 theme-disabled:opacity-100!')",
+    "cn('disabled:opacity-100!')",
+    "cva(disabledFillClasses, { variants: { disabled: { true: 'opacity-50', false: '' } } })",
+    "cva('', { variants: { disabled: { true: '', false: 'opacity-50' } } })",
     "import * as client from '@librechat/client'; cn('disabled:opacity-50', client.disabledFillClasses)",
     {
       code: "import { disabledInkClasses } from '../utils'; cn('disabled:opacity-50', disabledInkClasses)",
@@ -175,6 +180,22 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cva('rounded', { variants: { size: { sm: 'disabled:opacity-50' } }, compoundVariants: [{ class: disabledFillClasses }] })",
       errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cva('', { variants: { disabled: { true: 'opacity-50', false: '' } } })",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cva('', { variants: { size: { sm: 'px-2' } }, compoundVariants: [{ disabled: true, class: 'opacity-40' }] })",
+      errors: [missing('opacity-40')],
+    },
+    {
+      code: "cn(disabled && 'opacity-50', active && disabledFillClasses)",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-60!')",
+      errors: [missing('disabled:opacity-60!')],
     },
     {
       code: "cn(disabled && { 'opacity-50': true })",
