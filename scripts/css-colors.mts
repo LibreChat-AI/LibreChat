@@ -44,11 +44,19 @@ const NAMED_COLORS =
   );
 
 const HEX = /#[0-9a-fA-F]{3,8}(?![\w-])/g;
-const FUNCTION =
-  /(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*var\(\s*--[\w-]+\s*,\s*[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp)\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))/gi;
+const MATH_FUNCTIONS =
+  'calc|min|max|clamp|abs|sign|round|mod|rem|sin|cos|tan|asin|acos|atan2?|pow|sqrt|hypot|log|exp';
+const FUNCTION = new RegExp(
+  String.raw`(?<![\w-])(?:(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*var\(\s*--[\w-]+\s*,\s*[\d.+-]|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(\s*(?:[\d.+-]|none\b|(?:${MATH_FUNCTIONS})\(|(?:var\([^)]*\)\s*,?\s*)+[\d.+-])|color\(\s*(?!from\b)[a-z0-9-]+\s+(?:(?:var\([^)]*\)\s*,?\s*)*[\d.+-]|none\b))`,
+  'gi',
+);
 const RELATIVE_COLOR = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*from\s+/gi;
 const CHANNEL_KEYWORD = /(?<![\w-])(?:[rgbhslwcaxyz]|alpha)(?![\w-])/i;
-const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
+const NUMBER = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
+const MATH_OPERANDS = '[\\d.%+*/,\\s-]';
+/** A math function over numbers alone (`calc(255)`, `min(100%, 50% * 2)`): no `var()`, no unit, so it is still a fixed channel. */
+const MATH_CHANNEL = `(?:${MATH_FUNCTIONS})\\((?:${MATH_OPERANDS}|(?:${MATH_FUNCTIONS})?\\(${MATH_OPERANDS}*\\))*\\)`;
+const CHANNEL = `(?:${NUMBER}|${MATH_CHANNEL})`;
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
 const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
