@@ -58,8 +58,11 @@ async function playbackRate(page: Page, theme: ThemeChoice, mode: Mode): Promise
   return input;
 }
 
+/** The variant's root: the nearest ancestor carrying the `rc-input-number` class token itself. */
 const wrapperOf = (input: Locator) =>
-  input.locator('xpath=ancestor::div[contains(@class, "rc-input-number")][1]');
+  input.locator(
+    'xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " rc-input-number ")][1]',
+  );
 
 const backgroundOf = (target: Locator) =>
   target.evaluate((node) => getComputedStyle(node).backgroundColor);
