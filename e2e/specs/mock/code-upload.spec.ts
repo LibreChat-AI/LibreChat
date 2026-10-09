@@ -42,9 +42,13 @@ const TURN2_MARKER_NEEDLE = 'turn1-proof-42';
 const uniqueName = (prefix: string) => `${prefix} ${Date.now()}-${Math.floor(Math.random() * 1e4)}`;
 const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Select a model' }).first();
 
+/** Restores the Enter opt-in from global setup, since the send helpers press Enter. */
 async function startFresh(page: Page) {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
-  await page.evaluate(() => localStorage.clear());
+  await page.evaluate(() => {
+    localStorage.clear();
+    localStorage.setItem('enterToSend', 'true');
+  });
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
 }
 
