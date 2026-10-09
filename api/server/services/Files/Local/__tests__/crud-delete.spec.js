@@ -67,4 +67,19 @@ describe('deleteLocalFile failure reporting', () => {
     await expect(deleteLocalFile(req, file)).rejects.toThrow('permission denied');
     expect(fs.existsSync(path.join(tmpBase, 'uploads', userId, 'locked.txt'))).toBe(true);
   });
+
+  it('deletes image files stored under /images/<userId>/ with POSIX path separators', async () => {
+    const filename = 'avatar.png';
+    const imageDir = path.join(tmpBase, 'public', 'images', userId);
+    fs.mkdirSync(imageDir, { recursive: true });
+    const absolutePath = path.join(imageDir, filename);
+    fs.writeFileSync(absolutePath, 'img');
+
+    // Stored paths always use forward slashes (path.posix.join). On Windows, splitting on
+    // path.sep used to leave subfolder undefined and crash isValidPath (#16309).
+    await expect(
+      deleteLocalFile(req, { file_id: 'img-1', filepath: `/images/${userId}/${filename}` }),
+    ).resolves.toBeUndefined();
+    expect(fs.existsSync(absolutePath)).toBe(false);
+  });
 });
