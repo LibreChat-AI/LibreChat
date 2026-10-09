@@ -29,6 +29,10 @@ module.exports = {
         /** A form field's height, and the large `title` field's. */
         'theme-field': 'var(--theme-field-height, 2.5rem)',
         'theme-field-lg': 'var(--theme-field-height-lg, 3rem)',
+        /** The sign-in form's floating-label field and submit button. */
+        'theme-auth-field': 'var(--theme-auth-field-height, 2.75rem)',
+        'theme-auth-button': 'var(--theme-auth-button-height, 3rem)',
+        'theme-auth-action': 'var(--theme-auth-action-height, 2.5rem)',
         /** WCAG 2.5.8's 24px target minimum, fixed so a theme can draw controls larger, never
          *  smaller. */
         'theme-target': '24px',
@@ -55,6 +59,12 @@ module.exports = {
         /** The tallest a Select's list draws before it scrolls. */
         'theme-list': 'var(--theme-list-max-height, 24rem)',
       },
+      inset: {
+        /** Where a sign-in label rests in its field: centered 2px low, as on the stock 44px field,
+         *  and never past the field's bottom edge at the 24px minimum height. Read on the label, so
+         *  `lh` is the label's own line. */
+        'theme-auth-label-rest': 'min(calc(50% - 0.5lh + 2px), calc(100% - 1lh))',
+      },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
         'theme-switch':
@@ -72,6 +82,11 @@ module.exports = {
         'theme-icon': 'var(--theme-icon-size, 1rem)',
         'theme-icon-md': 'var(--theme-icon-size-md, 1.25rem)',
         'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
+        /** A square control inside the sign-in field, 4px off its edges, never under the 24px
+         *  target and never over the stock 2.25rem the field's end padding reserves: the password
+         *  field's reveal and copy buttons. */
+        'theme-auth-field-action':
+          'clamp(24px, calc(var(--theme-auth-field-height, 2.75rem) - 0.5rem), 2.25rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */
         'theme-button-x': 'var(--theme-button-padding-x, 1rem)',
@@ -139,6 +154,8 @@ module.exports = {
         'theme-popover': 'var(--theme-popover-radius, 1rem)',
         'theme-menu-panel': 'var(--theme-menu-panel-radius, 0.75rem)',
         'theme-composer-action': 'var(--theme-composer-action-radius, 9999px)',
+        'theme-auth-control': 'var(--theme-auth-control-radius, 1rem)',
+        'theme-auth-action': 'var(--theme-auth-action-radius, 0.5rem)',
         'theme-surface-lg': 'var(--theme-large-surface-radius, 1.5rem)',
         'theme-tab': 'var(--theme-tab-radius, 0.185rem)',
       },

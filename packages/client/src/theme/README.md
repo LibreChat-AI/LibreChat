@@ -70,6 +70,15 @@ panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and s
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 
+The sign-in forms' floating-label field reads `authFieldHeight` (2.75rem, `h-theme-auth-field`), their
+submit button `authButtonHeight` (3rem, the Button's `auth` size) and both the corner
+`authControlRadius` (1rem, the Button's `soft` shape), which follows `radius2xl` when a theme names
+that and not this. The flow's other actions, the second-factor verify and the reset-success continue
+buttons, read `authActionHeight` (the Button's `auth-action` size) and `authActionRadius` (its
+`auth-action` shape; the 2FA button keeps `soft`). They follow `authButtonHeight` and
+`authControlRadius` when a theme names those, and otherwise the `buttonHeight` and `radiusLg` they
+drew before (2.5rem and 0.5rem). Every height here rejects a value under 24px.
+
 Most appearance defaults hold in both modes. `darkAppearanceDefaults` lists the ones that differ in
 dark mode, and `defaultAppearanceFor(mode)` returns the full set for a mode: the menu panel's
 `menuShadow` and the tooltip's `tooltipShadow` are heavier on a dark page, as they always were. A

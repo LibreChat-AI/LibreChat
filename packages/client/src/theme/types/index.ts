@@ -704,6 +704,16 @@ export interface IThemeAppearance {
   fieldHeight: string;
   /** The height of the large `title` field. */
   fieldHeightLg: string;
+  /** The sign-in form's floating-label field and submit button heights, and the corner both
+   *  share; the corner follows `radius2xl` when a theme names that and not this. */
+  authFieldHeight: string;
+  authButtonHeight: string;
+  authControlRadius: string;
+  /** The height and corner of the other actions in the sign-in flow, the second-factor verify and
+   *  the reset-success continue buttons. They follow `authButtonHeight` and `authControlRadius`
+   *  when a theme names those, then `buttonHeight` and `radiusLg`, which they drew before. */
+  authActionHeight: string;
+  authActionRadius: string;
   /** The field's vertical padding, which has to leave its line room inside `fieldHeight`. */
   fieldPaddingY: string;
   fieldFocusStyle: 'ring' | 'border';

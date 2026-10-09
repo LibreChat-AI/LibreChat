@@ -258,6 +258,11 @@ export const themeAppearanceProperties: Readonly<
   iconButtonSizeSm: '--theme-icon-button-size-sm',
   fieldHeight: '--theme-field-height',
   fieldHeightLg: '--theme-field-height-lg',
+  authFieldHeight: '--theme-auth-field-height',
+  authButtonHeight: '--theme-auth-button-height',
+  authControlRadius: '--theme-auth-control-radius',
+  authActionHeight: '--theme-auth-action-height',
+  authActionRadius: '--theme-auth-action-radius',
   fieldPaddingY: '--theme-field-padding-y',
   fieldFocusStyle: '--theme-field-focus-style',
   fieldFillStyle: '--theme-field-fill-style',
@@ -364,6 +369,11 @@ export const defaultAppearance: IThemeAppearance = Object.freeze({
   iconButtonSizeSm: '2rem',
   fieldHeight: '2.5rem',
   fieldHeightLg: '3rem',
+  authFieldHeight: '2.75rem',
+  authButtonHeight: '3rem',
+  authControlRadius: '1rem',
+  authActionHeight: '2.5rem',
+  authActionRadius: '0.5rem',
   fieldPaddingY: '0.5rem',
   fieldFocusStyle: 'ring',
   fieldFillStyle: 'transparent',
@@ -596,9 +606,10 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
 /**
  * Roles split out of a broader one, each paired with the role it read before. Headings drew the UI
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
- * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, so a theme that names
+ * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
- * follow one that is itself inherited.
+ * follow one that is itself inherited; the other sign-in actions resolve before the sign-in corner
+ * is derived, so they follow only a corner the theme names and otherwise keep `radiusLg`.
  */
 const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]> = [
   ['displayFontFamily', 'fontFamily'],
@@ -610,6 +621,11 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['popoverRadius', 'radius2xl'],
   ['menuPanelRadius', 'radiusXl'],
   ['composerActionRadius', 'roundControlRadius'],
+  ['authActionRadius', 'authControlRadius'],
+  ['authActionRadius', 'radiusLg'],
+  ['authControlRadius', 'radius2xl'],
+  ['authActionHeight', 'authButtonHeight'],
+  ['authActionHeight', 'buttonHeight'],
 ];
 
 /**

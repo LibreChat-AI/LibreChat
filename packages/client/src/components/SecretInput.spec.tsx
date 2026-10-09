@@ -71,9 +71,13 @@ describe('SecretInput', () => {
     render(<SecretInput id="pw" variant="floating" label="Password" />);
     const field = document.getElementById('pw');
 
-    expect(field).toHaveClass('peer', 'rounded-2xl', 'pr-11');
+    expect(field).toHaveClass('peer', 'rounded-theme-auth-control', 'pr-11');
     expect(field).toHaveAttribute('placeholder', ' ');
     expect(screen.getByText('Password')).toHaveClass('peer-placeholder-shown:top-1/2');
-    expect(screen.getByRole('button', { name: 'Show secret' })).toHaveClass('size-9', 'rounded-xl');
+    expect(screen.getByRole('button', { name: 'Show secret' })).toHaveClass(
+      'size-theme-auth-field-action',
+      'rounded-xl',
+    );
+    expect(screen.getByRole('button', { name: 'Show secret' })).not.toHaveClass('size-7');
   });
 });
