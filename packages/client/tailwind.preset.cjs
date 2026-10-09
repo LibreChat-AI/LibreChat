@@ -75,10 +75,11 @@ module.exports = {
         'theme-icon': 'var(--theme-icon-size, 1rem)',
         'theme-icon-md': 'var(--theme-icon-size-md, 1.25rem)',
         'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
-        /** A square control inside the sign-in field, 4px off its edges and never under the 24px
-         *  target: the password field's reveal and copy buttons. */
+        /** A square control inside the sign-in field, 4px off its edges, never under the 24px
+         *  target and never over the stock 2.25rem the field's end padding reserves: the password
+         *  field's reveal and copy buttons. */
         'theme-auth-field-action':
-          'max(24px, calc(var(--theme-auth-field-height, 2.75rem) - 0.5rem))',
+          'clamp(24px, calc(var(--theme-auth-field-height, 2.75rem) - 0.5rem), 2.25rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */
         'theme-button-x': 'var(--theme-button-padding-x, 1rem)',

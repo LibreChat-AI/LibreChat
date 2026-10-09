@@ -69,7 +69,9 @@ async function expectShape(
   expect(await shapeOf(field)).toEqual({ height: expected.field, radius: expected.radius });
   expect(await shapeOf(password)).toEqual({ height: expected.field, radius: expected.radius });
   expect(await shapeOf(button)).toEqual({ height: expected.button, radius: expected.radius });
-  await expectWithin(page.getByRole('button', { name: /show/i }), password);
+  const reveal = page.getByRole('button', { name: /show/i });
+  await expectWithin(reveal, password);
+  await expectClearOfValue(reveal, password);
   await expectValueFits(field);
 }
 
@@ -84,6 +86,19 @@ async function expectWithin(inner: Locator, outer: Locator) {
   expect(box.y).toBeGreaterThanOrEqual(frame.y);
   expect(box.y + box.height).toBeLessThanOrEqual(frame.y + frame.height);
   expect(box.height).toBeGreaterThanOrEqual(24);
+}
+
+/** The reveal button stays clear of the typed value, inside the end padding the field reserves. */
+async function expectClearOfValue(control: Locator, field: Locator) {
+  const [box, frame, padding] = await Promise.all([
+    control.boundingBox(),
+    field.boundingBox(),
+    field.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight)),
+  ]);
+  if (!box || !frame) {
+    throw new Error('The password field or its reveal button has no box');
+  }
+  expect(box.x).toBeGreaterThanOrEqual(frame.x + frame.width - padding);
 }
 
 /** The reset request form's resting label sits in the middle of the field at any height. */
