@@ -18,7 +18,7 @@ import './InputNumber.css';
 const INPUT_NUMBER_VARIANTS: Record<'default' | 'option', string> = {
   default: '',
   option:
-    'h-auto border-0 border-transparent p-0 pr-1 text-right shadow-none outline-hidden transition-colors hover:bg-surface-hover focus-within:bg-surface-secondary [&_input]:placeholder:text-text-secondary [&_input:focus]:placeholder:text-text-primary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
+    'h-auto border-0 border-transparent p-0 pr-1 text-right shadow-none outline-hidden transition-colors hover:not-focus-within:bg-surface-hover focus-within:bg-surface-secondary [&_input]:placeholder:text-text-secondary [&_input:focus]:placeholder:text-text-primary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
 };
 
 export type InputNumberProps = InputNumberPrimitive.InputNumberProps<ValueType> & {

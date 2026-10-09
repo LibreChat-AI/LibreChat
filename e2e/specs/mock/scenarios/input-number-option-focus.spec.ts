@@ -97,7 +97,7 @@ const CASES: Array<{ name: string; tag: string; theme: ThemeChoice; mode: Mode }
 
 test.describe('InputNumber option variant focus', () => {
   for (const { name, tag, theme, mode } of CASES) {
-    test(`a keyboard-focused option value shows its focused fill and outline in ${name} ${tag}`, async ({
+    test(`a focused option value keeps its focused fill from the keyboard and under the pointer in ${name} ${tag}`, async ({
       page,
     }) => {
       await installThemeBridge(page);
@@ -123,6 +123,15 @@ test.describe('InputNumber option variant focus', () => {
       await page.keyboard.press('Shift+Tab');
       await expect(input).not.toBeFocused();
       await expect.poll(() => backgroundOf(wrapper)).toBe(resting);
+
+      if (!test.info().project.use.isMobile) {
+        const hoverFill = await probeStyle(page, 'bg-surface-hover', 'background-color');
+        await input.hover();
+        await expect.poll(() => backgroundOf(wrapper)).toBe(hoverFill);
+      }
+      await input.click();
+      await expect(input).toBeFocused();
+      await expect.poll(() => backgroundOf(wrapper)).toBe(focusedFill);
     });
   }
 });
