@@ -205,17 +205,19 @@ module.exports = {
       addVariant('touch', '@media (any-pointer: coarse)');
 
       /**
-       * The inverse of `touch`, for hiding something until hover: hover-gating
-       * alone strands the finger user of a 2-in-1, because `(hover: hover)` is
-       * true there — it describes the trackpad — while the touchscreen sits
-       * right next to it. Gating the hidden state on the absence of any coarse
-       * pointer keeps a reveal-on-hover affordance from ever hiding a control
-       * that only a tap can reach.
+       * For hiding something until hover. Hover-gating alone strands the finger
+       * user of a 2-in-1, because `(hover: hover)` is true there (it describes
+       * the trackpad) while the touchscreen sits right next to it, so the hidden
+       * state also needs the absence of any coarse pointer. The absence alone is
+       * not enough either: it matches a pointerless or print context, where no
+       * hover can ever reveal the control again, so both conditions nest.
        *
        * `not all and`, not the Media Queries Level 4 `not (...)`, because
        * lightningcss lowers this for the production build's browser targets.
        */
-      addVariant('no-touch', '@media not all and (any-pointer: coarse)');
+      addVariant('no-touch', {
+        '@media (hover: hover)': { '@media not all and (any-pointer: coarse)': '@slot' },
+      });
     },
   ],
 };
