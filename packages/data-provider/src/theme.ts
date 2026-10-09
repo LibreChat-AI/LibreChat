@@ -171,6 +171,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-series-6',
   'rgb-series-7',
   'rgb-series-8',
+  'rgb-category-icon',
   'rgb-switch-unchecked',
   'rgb-switch-thumb',
   'rgb-table-header-text',

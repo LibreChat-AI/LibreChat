@@ -204,6 +204,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-series-6': '171 104 254', // #ab68fe (violet)
   'rgb-series-7': '80 167 49', // #50a731 (green)
   'rgb-series-8': '120 130 190', // #8082be (indigo)
+  'rgb-category-icon': '200 133 12', // #c8850c (matching series-4)
 
   /** Unchecked switch track. 3.38:1 against the page and the `surface-primary`
    *  thumb, 5.74:1 against the checked `surface-inverted` track. */

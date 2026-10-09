@@ -246,6 +246,9 @@ export interface IThemeRGB {
   'rgb-series-6'?: string;
   'rgb-series-7'?: string;
   'rgb-series-8'?: string;
+  /** The prompt category icons drawn in `rgb-series-4` (idea, travel, aftersales); it follows
+   *  `rgb-series-4` when a theme omits it, so a theme can quiet them without moving the chart slot. */
+  'rgb-category-icon'?: string;
 
   /**
    * Unchecked track of the shared `Switch`. A control state rather than a
@@ -432,6 +435,7 @@ export interface IThemeVariables {
   '--series-6': string;
   '--series-7': string;
   '--series-8': string;
+  '--category-icon': string;
 
   '--switch-unchecked': string;
   '--switch-thumb': string;
@@ -597,6 +601,7 @@ export interface IThemeColors {
   'table-header-text'?: string;
   'table-header-fill'?: string;
   'series-8'?: string;
+  'category-icon'?: string;
   presentation?: string;
 
   // Retained for excluded SidePanel/Agents + SidePanel/Builder (pending migration)

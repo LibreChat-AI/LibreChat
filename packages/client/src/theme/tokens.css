@@ -202,6 +202,8 @@
   --color-series-6: rgb(var(--series-6));
   --color-series-7: rgb(var(--series-7));
   --color-series-8: rgb(var(--series-8));
+  /* Follows the slot it was painted in before its role, for a stylesheet that predates it. */
+  --color-category-icon: rgb(var(--category-icon, var(--series-4)));
 
   /* charts and controls */
   --color-chart-widget-surface: rgb(var(--chart-widget-surface));
