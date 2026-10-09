@@ -13,7 +13,7 @@ import {
   liveTokensFamily,
   subagentUsageFamily,
   pendingSubagentUsageFamily,
-} from '~/store/usage';
+} from '~/components/Chat/Input/TokenUsage/store';
 import { buildIndex, sumTotalUsage, sumBranch, clearIndex } from '~/utils/tokens';
 import useUsageHandler from '~/hooks/SSE/useUsageHandler';
 

@@ -19,8 +19,11 @@ import type {
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ExtendedFile } from '~/common';
+import {
+  activeUsageResponseIdFamily,
+  pendingUsageFamily,
+} from '~/components/Chat/Input/TokenUsage/store';
 import { pendingReasoningOverrideFamily } from '~/components/Chat/Input/Composer/state';
-import { activeUsageResponseIdFamily, pendingUsageFamily } from '~/store/usage';
 import { revealedQueuedTurnFamily } from '~/store/steer';
 import useChatFunctions from '../useChatFunctions';
 import { isPasteSubmitted } from '~/utils';
