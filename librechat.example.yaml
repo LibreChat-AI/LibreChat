@@ -1212,6 +1212,12 @@ endpoints:
         default: ['mistral-tiny', 'mistral-small', 'mistral-medium']
         # Fetch option: Set to true to fetch models from API.
         fetch: true # Defaults to false.
+        # Filter option: serve `default` ∩ fetched instead of replacing `default`
+        # with everything the API returns. Lets several endpoints over one gateway
+        # each offer their own slice of its catalog, in the order declared above.
+        # An endpoint left with no models is withheld from the picker and the
+        # Agent Builder. Requires `fetch: true` to do anything.
+        # filter: true # Defaults to false.
 
       # Optional configurations
 

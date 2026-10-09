@@ -1992,6 +1992,29 @@ describe('configSchema langfuse', () => {
   });
 });
 
+describe('endpointSchema models.filter', () => {
+  const base = {
+    name: 'MyGateway',
+    apiKey: 'gateway-key',
+    baseURL: 'https://gateway.example.com/v1',
+  };
+
+  it('parses filter when declared and leaves it undefined otherwise', () => {
+    const declared = endpointSchema.safeParse({
+      ...base,
+      models: { default: ['claude-sonnet-5'], fetch: true, filter: true },
+    });
+    const undeclared = endpointSchema.safeParse({
+      ...base,
+      models: { default: ['claude-sonnet-5'], fetch: true },
+    });
+
+    expect(declared.success && declared.data.models.filter).toBe(true);
+    expect(undeclared.success).toBe(true);
+    expect(undeclared.success && undeclared.data.models.filter).toBeUndefined();
+  });
+});
+
 describe('interface.traceViewer', () => {
   it('accepts the documented fields and rejects out-of-range limits', () => {
     const parse = (traceViewer: Record<string, unknown>) =>
