@@ -65,6 +65,7 @@ jobs:
               - '!**.md'
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
             # The recorded design-rule backlog is data the lint reads, not code it
             # lints, so a diff that only edits it matches no source file. Its own
@@ -83,6 +84,9 @@ jobs:
               - 'packages/client/tsdown.config.mjs'
               - 'packages/client/tsconfig.json'
               - 'eslint.config.mjs'
+              # The local design rules: a change to what one reports changes
+              # every count it owns.
+              - 'scripts/eslint/**'
               # The plugin is a dependency: a bump changes what the rules
               # classify and a removal takes them with it, and neither touches a
               # source file.
@@ -307,6 +311,7 @@ jobs:
         run: |
           node_modules/.bin/eslint --config eslint.config.mjs \
             api/server/index.js client/src/main.jsx packages/api/src/index.ts
+          node --test scripts/eslint/design.test.mjs
 
       - name: Validate the design-rule suppressions baseline
         id: suppressions
@@ -781,6 +786,7 @@ jobs:
           filters: |
             eslint_config:
               - 'eslint.config.mjs'
+              - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
 
       - name: Set up Node.js 24.16.0

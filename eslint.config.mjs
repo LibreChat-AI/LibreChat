@@ -268,7 +268,10 @@ export default [
       'shadcn/require-static-classes': 'error',
       // A disabled control that fades through `opacity-*` also has to compose a shared disabled
       // recipe, or a theme with `disabledStyle: fill` cannot paint it (scripts/eslint/design.mjs).
-      'design/disabled-recipe': 'error',
+      'design/disabled-recipe': [
+        'error',
+        { primitives: ['Button', 'IconButton', 'Input', 'Textarea', 'Checkbox', 'Switch'] },
+      ],
       // Now answerable: the rule asks the installed Tailwind whether a class generates CSS, and
       // the app is on v4. Classes declared in a stylesheet Tailwind reads are recognized on their
       // own; these are the ones it cannot see, plain selectors in files loaded separately

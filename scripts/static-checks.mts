@@ -221,6 +221,10 @@ const DESIGN_TEST_SOURCE = /\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/;
  *  what every recorded count stands for, without touching a source file. */
 const DESIGN_INPUTS = ['eslint.config.mjs', 'package.json', 'package-lock.json'];
 
+/** The local design rules (`design/*`): a change to one moves what it reports in files the
+ *  diff never touches, as a config change does. */
+const DESIGN_RULES_ROOT = 'scripts/eslint/';
+
 /** Where the rules read component metadata from: the published library and the
  *  app-local path `componentImports` marks as a component source. A change in
  *  either moves what the caller rules report in files the diff never touches. */
@@ -1257,6 +1261,7 @@ async function unusedCapacity(target: string, context: CheckContext): Promise<st
     (file) =>
       file === GATE_SOURCE ||
       DESIGN_INPUTS.includes(file) ||
+      file.startsWith(DESIGN_RULES_ROOT) ||
       DESIGN_METADATA_FILES.includes(file) ||
       (DESIGN_SOURCE.test(file) &&
         !DESIGN_TEST_SOURCE.test(file) &&

@@ -22,7 +22,18 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn('has-[:disabled]:opacity-50', disabledWithinFillClasses)",
     "const label = cn('peer-disabled:opacity-70', peerDisabledInkClasses);",
     '<input className={cn(`disabled:opacity-50 ${size}`, disabledFillClasses)} />',
-    "cn('disabled:opacity-50 theme-disabled:bg-surface-disabled')",
+    "cn('disabled:opacity-50 theme-disabled:bg-surface-disabled theme-disabled:opacity-100')",
+    "cn('disabled:opacity-100')",
+    "cn(!disabled && active && 'opacity-50')",
+    "cn(disabled || active ? 'opacity-50' : '')",
+    {
+      code: '<Button className="disabled:opacity-80" />',
+      options: [{ primitives: ['Button'] }],
+    },
+    {
+      code: "<ui.Checkbox className={cn('disabled:opacity-70', size)} />",
+      options: [{ primitives: ['Checkbox'] }],
+    },
     "cn('hover:opacity-80 focus:opacity-100 opacity-60')",
     "cn(open ? 'opacity-100' : 'opacity-0')",
     "cn({ 'opacity-50': isLoading })",
@@ -86,6 +97,23 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cn(isEnabled ? 'hover:bg-surface-hover' : '', !disabled ? '' : 'opacity-50')",
       errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-50 theme-disabled:bg-surface-disabled')",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn(disabled ? cn('opacity-50') : '')",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn(disabled && active && 'opacity-40')",
+      errors: [missing('opacity-40')],
+    },
+    {
+      code: '<Badge className="disabled:opacity-80" />',
+      options: [{ primitives: ['Button'] }],
+      errors: [missing('disabled:opacity-80')],
     },
     {
       code: "cn('aria-[disabled=true]:opacity-50')",

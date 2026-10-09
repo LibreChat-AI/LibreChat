@@ -11,8 +11,9 @@ const RECIPES = new Set([
   'peerDisabledInkClasses',
 ]);
 
-/** The variant each recipe is written in, so a class list that spells one out also counts. */
-const RECIPE_VARIANT = /(?:^|\s)(?:peer-)?theme-disabled(?:-within)?:/;
+/** The full-opacity override every recipe carries, so a class list that spells one out also
+ *  counts; another `theme-disabled:` utility alone still leaves the control faded. */
+const RECIPE_VARIANT = /(?:^|\s)(?:peer-)?theme-disabled(?:-within)?:!?opacity-100(?=\s|$)/;
 
 /** A variant that selects a disabled control, its group, its peer or a wrapper around it:
  *  `disabled:`, `aria-disabled:`, `data-[state=disabled]:`, `has-[:disabled]:`, `[&:disabled]:`.
@@ -59,7 +60,8 @@ function splitVariants(token) {
   return { variants: parts.slice(0, -1), base: parts[parts.length - 1] };
 }
 
-const isOpacity = (base) => /^!?opacity-/.test(base);
+/** An opacity that fades: `opacity-100` keeps the control opaque, so it is not a dim. */
+const isOpacity = (base) => /^!?opacity-(?!100$)/.test(base);
 
 /** The first utility in `value` that dims a disabled control through a variant. */
 function variantDim(value) {
@@ -76,36 +78,57 @@ const bareDim = (value) =>
     return variants.length === 0 && isOpacity(base);
   });
 
-/** Whether `test` holds while the control is disabled (`true`), while it is enabled (`false`),
- *  or says nothing about it (`undefined`): it has to name `disabled`, and any `!` or comparison
- *  to `false` (or inequality to `true`) flips the sense. */
+/** Whether `test` holds only while the control is disabled (`true`), only while it is enabled
+ *  (`false`), or says nothing certain about it (`undefined`). A `!` or a comparison to `false`
+ *  flips the sense; an `&&` takes the sense of any operand that has one, and anything else that
+ *  is not a plain reference to a `disabled` value is unknown. */
 function disabledSense(test, source) {
-  let node = test;
-  let negated = false;
-  for (;;) {
-    if (node.type === 'UnaryExpression' && node.operator === '!') {
-      negated = !negated;
-      node = node.argument;
-      continue;
-    }
-    if (node.type === 'BinaryExpression' && /^[!=]==?$/.test(node.operator)) {
-      const literal = [node.left, node.right].find((side) => side.type === 'Literal');
-      if (literal && typeof literal.value === 'boolean') {
-        const inequality = node.operator.startsWith('!');
-        if (literal.value === inequality) negated = !negated;
-        node = literal === node.left ? node.right : node.left;
-        continue;
-      }
-    }
-    break;
+  if (test.type === 'UnaryExpression' && test.operator === '!') {
+    const inner = disabledSense(test.argument, source);
+    return inner === undefined ? undefined : !inner;
   }
-  return /disabled/i.test(source.getText(node)) ? !negated : undefined;
+  if (test.type === 'BinaryExpression' && /^[!=]==?$/.test(test.operator)) {
+    const literal = [test.left, test.right].find((side) => side.type === 'Literal');
+    if (!literal || typeof literal.value !== 'boolean') return undefined;
+    const inner = disabledSense(literal === test.left ? test.right : test.left, source);
+    if (inner === undefined) return undefined;
+    const flips = literal.value === test.operator.startsWith('!');
+    return flips ? !inner : inner;
+  }
+  if (test.type === 'LogicalExpression' && test.operator === '&&') {
+    const senses = [disabledSense(test.left, source), disabledSense(test.right, source)];
+    const known = senses.filter((sense) => sense !== undefined);
+    return known.length > 0 && known.every((sense) => sense === known[0]) ? known[0] : undefined;
+  }
+  if (['Identifier', 'MemberExpression', 'ChainExpression'].includes(test.type)) {
+    return /disabled/i.test(source.getText(test)) ? true : undefined;
+  }
+  return undefined;
 }
+
+/** Wrappers a chosen string passes through on its way to the condition that picks it:
+ *  `disabled ? cn('opacity-50') : ''` picks the call, not the string. */
+const PASSING = new Set([
+  'ArrayExpression',
+  'BinaryExpression',
+  'CallExpression',
+  'TSAsExpression',
+  'TSSatisfiesExpression',
+  'TemplateLiteral',
+]);
 
 /** Whether a `disabled` condition chooses the string: `disabled ? 'opacity-50' : ''`,
  *  `isDisabled && 'opacity-50'`, or `{ 'opacity-50': disabled }` in a class map. A string the
  *  condition picks for the enabled state (`disabled ? '' : 'opacity-50'`) is not a disabled dim. */
-function chosenByDisabled(node, source) {
+function chosenByDisabled(start, source) {
+  let node = start;
+  while (
+    node.parent &&
+    PASSING.has(node.parent.type) &&
+    !(node.parent.type === 'CallExpression' && node.parent.callee === node)
+  ) {
+    node = node.parent;
+  }
   const parent = node.parent;
   if (parent?.type === 'ConditionalExpression' && parent.test !== node) {
     const sense = disabledSense(parent.test, source);
@@ -178,6 +201,14 @@ function composesRecipe(root, visitorKeys) {
   return false;
 }
 
+/** The element a JSX `className` lands on, when the class list is that attribute's value. */
+function classNameElement(root) {
+  const attribute = root.parent?.type === 'JSXAttribute' ? root.parent : undefined;
+  if (attribute?.name.name !== 'className') return undefined;
+  const name = attribute.parent.name;
+  return name.type === 'JSXMemberExpression' ? name.property.name : name.name;
+}
+
 /** @type {import('eslint').Rule.RuleModule} */
 const disabledRecipe = {
   meta: {
@@ -186,7 +217,17 @@ const disabledRecipe = {
       description:
         'Require a shared disabled recipe wherever a class list dims a disabled control, so a `disabledStyle: fill` theme can paint it',
     },
-    schema: [],
+    schema: [
+      {
+        type: 'object',
+        properties: {
+          /** Components whose rendered class list already composes a recipe on the element
+           *  that takes `className`, so a caller's dim there is painted over by the recipe. */
+          primitives: { type: 'array', items: { type: 'string' }, uniqueItems: true },
+        },
+        additionalProperties: false,
+      },
+    ],
     messages: {
       missing:
         '`{{dim}}` dims a disabled control without a disabled recipe: compose disabledFillClasses, disabledInkClasses or disabledWithinFillClasses (@librechat/client) into the same class list, so a theme with `disabledStyle: fill` paints it instead of fading it.',
@@ -194,13 +235,16 @@ const disabledRecipe = {
   },
   create(context) {
     const source = context.sourceCode;
+    const primitives = new Set(context.options[0]?.primitives ?? []);
     /** `node` is the string as an expression; a template's text reports on its own part. */
     const check = (node, value, reported = node) => {
       if (typeof value !== 'string' || !value.includes('opacity-')) return;
       const dim =
         variantDim(value) ?? (chosenByDisabled(node, source) ? bareDim(value) : undefined);
       if (!dim) return;
-      if (composesRecipe(classList(node), source.visitorKeys)) return;
+      const list = classList(node);
+      if (primitives.has(classNameElement(list))) return;
+      if (composesRecipe(list, source.visitorKeys)) return;
       context.report({ node: reported, messageId: 'missing', data: { dim } });
     };
     return {
