@@ -768,9 +768,43 @@ export function createUserGroupMethods(
   }
 
   /**
+   * Collect every identifier that may appear in Group.memberIds for a user.
+   * memberIds historically mixes idOnTheSource, ObjectId strings, and emails.
+   */
+  function collectMemberIdsForUser(user: {
+    _id: Types.ObjectId;
+    idOnTheSource?: string;
+    email?: string;
+  }): string[] {
+    const identifiers: string[] = [];
+    const seen = new Set<string>();
+
+    const add = (value?: string | null) => {
+      if (typeof value !== 'string') {
+        return;
+      }
+
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) {
+        return;
+      }
+
+      seen.add(trimmed);
+      identifiers.push(trimmed);
+    };
+
+    add(user._id.toString());
+    add(user.idOnTheSource);
+    add(user.email ? user.email.trim().toLowerCase() : null);
+
+    return identifiers;
+  }
+
+  /**
    * Remove a user from a group
    * Only updates Group.memberIds (one-way relationship)
-   * Note: memberIds stores idOnTheSource values, not ObjectIds
+   * Pulls all known identifiers (_id, idOnTheSource, email) so mixed membership
+   * representations cannot leave the user as a member after a successful remove.
    *
    * @param userId - The user ID
    * @param groupId - The group ID to remove
@@ -787,21 +821,22 @@ export function createUserGroupMethods(
 
     const options = { new: true, ...(session ? { session } : {}) };
 
-    const user = await User.findById(userId, 'idOnTheSource', options).lean<{
+    const user = await User.findById(userId, 'idOnTheSource email', options).lean<{
       idOnTheSource?: string;
+      email?: string;
       _id: Types.ObjectId;
     }>();
     if (!user) {
       throw new Error(`User not found: ${userId}`);
     }
 
-    const userIdOnTheSource = user.idOnTheSource || userId.toString();
+    const memberIds = collectMemberIdsForUser(user);
     const updatedGroup = await Group.findByIdAndUpdate(
       groupId,
-      { $pullAll: { memberIds: [userIdOnTheSource] } },
+      { $pullAll: { memberIds } },
       options,
     ).lean<IGroup>();
-    await runAfterTransaction(session, () => invalidateMemberGroupsCache([userIdOnTheSource]));
+    await runAfterTransaction(session, () => invalidateMemberGroupsCache(memberIds));
 
     return { user: user as IUser, group: updatedGroup };
   }
@@ -1217,12 +1252,25 @@ export function createUserGroupMethods(
 
   /**
    * Removes a user from all groups they belong to.
+   * Resolves the same member keys the write path may have stored
+   * (`idOnTheSource`, ObjectId string, or email) before the user document is deleted.
    * @param userId - The user ID (or ObjectId) of the member to remove
    */
   async function removeUserFromAllGroups(userId: string | Types.ObjectId): Promise<void> {
+    const User = mongoose.models.User as Model<IUser>;
     const Group = mongoose.models.Group as Model<IGroup>;
-    await Group.updateMany({ memberIds: userId }, { $pullAll: { memberIds: [userId] } });
-    await invalidateMemberGroupsCache([userId]);
+    const userIdStr = userId.toString();
+
+    const user = await User.findById(userId, 'idOnTheSource email').lean<{
+      idOnTheSource?: string;
+      email?: string;
+      _id: Types.ObjectId;
+    }>();
+
+    const memberIds = user ? collectMemberIdsForUser(user) : [userIdStr];
+
+    await Group.updateMany({ memberIds: { $in: memberIds } }, { $pullAll: { memberIds } });
+    await invalidateMemberGroupsCache(memberIds);
   }
 
   /**

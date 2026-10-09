@@ -292,6 +292,30 @@ describe('userGroup methods', () => {
       expect(groupC!.memberIds).toContain('other');
     });
 
+    it('removes all matched identifiers across groups', async () => {
+      const user = await createTestUser({
+        email: 'member@example.com',
+        idOnTheSource: 'user-ext-1',
+      });
+      const userId = user._id.toString();
+
+      await Group.create([
+        { name: 'Group A', source: 'local', memberIds: ['user-ext-1', 'other'] },
+        { name: 'Group B', source: 'local', memberIds: ['member@example.com'] },
+        { name: 'Group C', source: 'local', memberIds: [userId, 'other'] },
+      ]);
+
+      await methods.removeUserFromAllGroups(user._id);
+
+      const remaining = await Group.find({
+        memberIds: { $in: ['user-ext-1', 'member@example.com', userId] },
+      });
+      expect(remaining).toHaveLength(0);
+
+      const groupA = await Group.findOne({ name: 'Group A' });
+      expect(groupA!.memberIds).toEqual(['other']);
+    });
+
     it('is a no-op when user is not in any groups', async () => {
       await Group.create({ name: 'Group A', source: 'local', memberIds: ['other'] });
       await expect(
@@ -1123,12 +1147,13 @@ describe('userGroup methods', () => {
       });
 
       await cachedMethods.removeUserFromAllGroups(user._id.toString());
-      expect(cache.delete).toHaveBeenCalledTimes(1);
+      expect(cache.delete).toHaveBeenCalledWith('nolock-ext-1');
+      expect(cache.delete).toHaveBeenCalledWith(user._id.toString());
 
-      cache.store.set(user._id.toString(), []);
+      cache.store.set('nolock-ext-1', []);
       await new Promise((resolve) => setTimeout(resolve, 700));
 
-      expect(cache.store.has(user._id.toString())).toBe(false);
+      expect(cache.store.has('nolock-ext-1')).toBe(false);
     });
 
     it('takes over the build when the lock frees without a cache fill', async () => {
