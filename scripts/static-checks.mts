@@ -1197,7 +1197,9 @@ async function suppressionProblems(target: string, known: Set<string>): Promise<
     }
     for (const [rule, entry] of Object.entries(rules)) {
       if (!known.has(rule)) {
-        problems.push(`${where}: ${rule} is not a rule @shadcn/lint or the design plugin defines`);
+        problems.push(
+          `${where}: ${rule} is not a rule @shadcn/lint defines, nor one the design plugin does`,
+        );
       }
       const count = typeof entry === 'object' && entry !== null ? entry.count : undefined;
       if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
