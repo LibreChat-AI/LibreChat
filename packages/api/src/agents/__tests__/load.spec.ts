@@ -8,6 +8,7 @@ import type {
   AgentModelParameters,
   TEphemeralAgent,
   TConversation,
+  TEndpointsConfig,
 } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadAgentParams, LoadAgentDeps } from '../load';
@@ -818,7 +819,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { subagents: { enabled: true, allowSelf: true, agent_ids: [] } },
         } as unknown as TConversation,
@@ -843,7 +844,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { subagents: { enabled: true, allowSelf: true, agent_ids: [] } },
         } as unknown as TConversation,
@@ -873,7 +874,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { mcp: ['overlay'] },
         } as unknown as TConversation,
@@ -904,7 +905,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-skills-on',
                   label: 'Added Skills On',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: true,
                 },
               ],
@@ -912,7 +913,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-skills-on',
         } as unknown as TConversation,
@@ -938,7 +939,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-scoped-skills',
                   label: 'Added Scoped Skills',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: ['finance-analyst', 'brand-writer'],
                 },
               ],
@@ -946,7 +947,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-scoped-skills',
         } as unknown as TConversation,
@@ -974,7 +975,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-self-spawn',
                   label: 'Added Self Spawn',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   subagents,
                 },
               ],
@@ -982,7 +983,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-self-spawn',
         } as unknown as TConversation,
@@ -1010,7 +1011,7 @@ describe('loadAgent', () => {
                 {
                   name: 'mirrored-scoped-skills',
                   label: 'Mirrored Scoped Skills',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   skills: ['brand-writer'],
                   subagents,
                 },
@@ -1019,7 +1020,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'mirrored-scoped-skills',
         } as unknown as TConversation,
@@ -1048,7 +1049,7 @@ describe('loadAgent', () => {
                 {
                   name: 'added-asks',
                   label: 'Added Asks',
-                  preset: { endpoint: 'openai', model: 'gpt-4' },
+                  preset: { endpoint: 'openAI', model: 'gpt-4' },
                   askUserQuestion: true,
                 },
               ],
@@ -1056,7 +1057,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           spec: 'added-asks',
         } as unknown as TConversation,
@@ -1079,7 +1080,7 @@ describe('loadAgent', () => {
           },
         },
         conversation: {
-          endpoint: 'openai',
+          endpoint: 'openAI',
           model: 'gpt-4',
           ephemeralAgent: { ask_user_question: true },
         } as unknown as TConversation,
@@ -1088,6 +1089,244 @@ describe('loadAgent', () => {
     );
 
     expect(result?.tools).toContain('ask_user_question');
+  });
+
+  describe('added ephemeral model parameters', () => {
+    const appConfig: Record<string, unknown> = {
+      config: {},
+      fileStrategy: FileSources.local,
+      imageOutputType: 'png',
+    };
+
+    const responsesConvo = {
+      endpoint: 'openAI',
+      model: 'gpt-5.6-luna',
+      useResponsesApi: true,
+      reasoning_effort: 'high',
+      temperature: 0.4,
+      promptPrefix: 'Be brief',
+      conversationId: 'convo-1',
+      ephemeralAgent: { web_search: false },
+    } as unknown as TConversation;
+
+    test('keeps provider parameters when mirroring an ephemeral primary', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig },
+          conversation: responsesConvo,
+          primaryAgent: {
+            id: Constants.EPHEMERAL_AGENT_ID as string,
+            tools: [],
+          } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.instructions).toBe('Be brief');
+      expect(result?.model_parameters).toEqual({
+        useResponsesApi: true,
+        reasoning_effort: 'high',
+        temperature: 0.4,
+      });
+    });
+
+    test('keeps provider parameters without an ephemeral primary', async () => {
+      const result = await loadAddedAgent(
+        { req: { user: { id: 'user123' }, config: appConfig }, conversation: responsesConvo },
+        deps,
+      );
+
+      expect(result?.model).toBe('gpt-5.6-luna');
+      expect(result?.model_parameters).toEqual({
+        useResponsesApi: true,
+        reasoning_effort: 'high',
+        temperature: 0.4,
+      });
+    });
+
+    test("builds from the added conversation, not the primary's request body", async () => {
+      const primaryBody = {
+        promptPrefix: 'Primary instructions',
+        ephemeralAgent: { web_search: true, mcp: ['primary-server'] },
+      };
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, body: primaryBody },
+          conversation: {
+            endpoint: 'openAI',
+            model: 'gpt-5.6-luna',
+            ephemeralAgent: { execute_code: true },
+          } as unknown as TConversation,
+        } as Parameters<typeof loadAddedAgent>[0],
+        deps,
+      );
+
+      expect(result?.id).toMatch(/____1$/);
+      expect(result?.instructions).toBeUndefined();
+      expect(result?.tools).toEqual(['execute_code']);
+      expect(primaryBody.ephemeralAgent.mcp).toEqual(['primary-server']);
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+    });
+
+    test('reuses ephemeral primary tools without resolving MCP servers', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig },
+          conversation: {
+            ...responsesConvo,
+            ephemeralAgent: { mcp: ['added-server'] },
+          } as unknown as TConversation,
+          primaryAgent: {
+            id: Constants.EPHEMERAL_AGENT_ID as string,
+            tools: ['web_search'],
+          } as unknown as LibreChatAgent,
+        },
+        deps,
+      );
+
+      expect(result?.tools).toEqual(['web_search']);
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+      expect(mockGetAccessibleMCPServers).not.toHaveBeenCalled();
+    });
+
+    test('applies an enforced model spec preset over request parameters', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: {
+            user: { id: 'user123' },
+            config: {
+              ...appConfig,
+              modelSpecs: {
+                enforce: true,
+                list: [
+                  {
+                    name: 'luna',
+                    label: 'Luna',
+                    preset: {
+                      endpoint: 'openAI',
+                      model: 'gpt-5.6-luna',
+                      useResponsesApi: true,
+                      promptPrefix: 'Spec instructions',
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          conversation: {
+            endpoint: 'openAI',
+            model: 'gpt-5.6-luna',
+            spec: 'luna',
+            useResponsesApi: false,
+            temperature: 0.9,
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.instructions).toBe('Spec instructions');
+      expect(result?.model_parameters).toEqual({ useResponsesApi: true });
+    });
+
+    test("parses custom endpoints with the request's endpoints config", async () => {
+      const endpointsConfig = {
+        Claude: { customParams: { defaultParamsEndpoint: 'anthropic' } },
+      } as unknown as TEndpointsConfig;
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig },
+          conversation: {
+            endpoint: 'Claude',
+            endpointType: 'custom',
+            model: 'claude-sonnet',
+            thinking: true,
+            thinkingBudget: 4000,
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
+    });
+
+    test('fills a missing custom endpointType from the request endpoints config', async () => {
+      const endpointsConfig = {
+        Claude: { type: 'custom', customParams: { defaultParamsEndpoint: 'anthropic' } },
+      } as unknown as TEndpointsConfig;
+
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig },
+          conversation: {
+            endpoint: 'Claude',
+            model: 'claude-sonnet',
+            thinking: true,
+            thinkingBudget: 4000,
+          } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result?.provider).toBe('Claude');
+      expect(result?.model_parameters).toMatchObject({ thinking: true, thinkingBudget: 4000 });
+    });
+
+    test('refuses an endpoint no schema or endpoints config serves', async () => {
+      const result = await loadAddedAgent(
+        {
+          req: { user: { id: 'user123' }, config: appConfig, endpointsConfig: {} },
+          conversation: { endpoint: 'openai', model: 'gpt-4' } as unknown as TConversation,
+        },
+        deps,
+      );
+
+      expect(result).toBeNull();
+      expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+    });
+
+    describe('model spec rules', () => {
+      const lunaSpec = {
+        name: 'luna',
+        label: 'Luna',
+        preset: { endpoint: 'anthropic', model: 'claude-sonnet' },
+        executeCode: true,
+        mcpServers: ['spec-server'],
+        subagents: { enabled: true, allowSelf: true, agent_ids: [] },
+      };
+      const loadWithSpecs = (enforce: boolean, spec?: string) =>
+        loadAddedAgent(
+          {
+            req: {
+              user: { id: 'user123' },
+              config: { ...appConfig, modelSpecs: { enforce, list: [lunaSpec] } },
+            },
+            conversation: { ...responsesConvo, spec } as unknown as TConversation,
+          },
+          deps,
+        );
+
+      test.each([
+        ['an enforced config without a spec', true, undefined],
+        ['an enforced config with an unknown spec', true, 'unknown'],
+        ['an enforced spec for another endpoint', true, 'luna'],
+        ['a non-enforced spec for another endpoint', false, 'luna'],
+      ])('refuses %s', async (_case, enforce, spec) => {
+        const result = await loadWithSpecs(enforce, spec);
+
+        expect(result).toBeNull();
+        expect(mockGetMCPServerTools).not.toHaveBeenCalled();
+      });
+
+      test('ignores an unknown spec when specs are not enforced', async () => {
+        const result = await loadWithSpecs(false, 'unknown');
+
+        expect(result?.tools).toEqual([]);
+        expect(result?.subagents).toBeUndefined();
+        expect(result?.model_parameters).toMatchObject({ useResponsesApi: true });
+      });
+    });
   });
 
   test('should handle ephemeral agent with undefined ephemeralAgent in body', async () => {
