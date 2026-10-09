@@ -716,6 +716,10 @@ endpoints:
   #   modelResponseBodyTimeoutMs: 900000
   #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
   #   modelResponseHeadersTimeoutMs: 300000
+  #   # Interval between keepalive comments on a chat stream that is quiet (for example while a
+  #   # long tool runs), so proxies with an idle timeout (Cloudflare 100 s, nginx 60 s) keep it
+  #   # open. Defaults to 25000 ms; 0 disables.
+  #   streamKeepaliveIntervalMs: 25000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
   #   # Maximum provider error characters retained without content protection (0 hides detail).
