@@ -1,6 +1,6 @@
 import { Tools, ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
-import { summarizeSpan } from '../outcome';
+import { getOutcomeStatus, summarizeSpan } from '../outcome';
 
 const bashPart = (
   id: string,
@@ -20,6 +20,20 @@ const bashPart = (
       ...(executor != null && { executor }),
     },
   }) as unknown as TMessageContentParts;
+
+describe('getOutcomeStatus', () => {
+  it('keeps identity glyphs for a span that contains both successful and failed calls', () => {
+    expect(getOutcomeStatus({ failed: 1, cancelled: 0, total: 3 })).toBeUndefined();
+  });
+
+  it('reports failure when every call in the span failed', () => {
+    expect(getOutcomeStatus({ failed: 2, cancelled: 0, total: 2 })).toBe('failed');
+  });
+
+  it('still reports a stop in a span with a mixed outcome', () => {
+    expect(getOutcomeStatus({ failed: 1, cancelled: 1, total: 3 })).toBe('cancelled');
+  });
+});
 
 describe('summarizeSpan command exit status', () => {
   it('counts a bash call that exited non-zero as failed, like its card', () => {

@@ -533,7 +533,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
       </ActivityPhaseGroup>,
     );
 
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/3 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
     expect(screen.getByRole('button', { name: 'com_ui_show_failed_one_of_n' })).toBeInTheDocument();
   });
 
@@ -601,7 +601,7 @@ describe('ActivityPhaseGroup failure fast path', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: LABEL }));
     const pill = screen.getByRole('button', { name: 'com_ui_show_failed_n_of_n' });
-    expect(pill).toHaveTextContent('2/2 failed');
+    expect(pill).toHaveTextContent('com_ui_n_actions_failed');
     fireEvent.click(pill);
     expect(onReveal).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: LABEL })).toHaveAttribute('aria-expanded', 'true');
@@ -613,8 +613,32 @@ describe('ActivityPhaseGroup failure fast path', () => {
         <div />
       </ActivityPhaseGroup>,
     );
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
     expect(screen.getByTestId('live-phase-outcome')).toHaveTextContent('1/2 failed');
+  });
+
+  test('does not tint the title of a partially failed phase', () => {
+    render(
+      <ActivityPhaseGroup
+        labelPart={{ ...labelPart, status: 'partial' }}
+        hasContent
+        spanParts={[okCall, failedCall]}
+      >
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByText(LABEL)).not.toHaveClass('text-text-warning');
+  });
+
+  test('keeps the pill quiet when the phase contains both successful and failed calls', () => {
+    render(
+      <ActivityPhaseGroup labelPart={labelPart} hasContent spanParts={[okCall, failedCall]}>
+        <div />
+      </ActivityPhaseGroup>,
+    );
+    expect(screen.getByTestId('failed-reveal-pill').querySelector('span')).toHaveClass(
+      'text-text-secondary',
+    );
   });
 
   test('a card with no failure shows neither pill nor peek', () => {

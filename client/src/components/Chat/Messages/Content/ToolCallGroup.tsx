@@ -134,7 +134,9 @@ export default function ToolCallGroup({
   );
   const activityLabel = getBatchActivityLabelPart(labelPart?.part);
   const activityLabelText = getActivityLabelText(activityLabel);
-  const activityFailed = activityLabel?.status === 'failed' || activityLabel?.status === 'partial';
+  /** The label's verdict outranks the calls' only when the whole batch failed;
+   *  a partial batch has mixed outcomes, and its failed rows say what went wrong. */
+  const activityFailed = activityLabel?.status === 'failed';
   /** A settled, filled label is itself a completion proof: the PostToolBatch
    *  claim only happens after every output in the batch returned. Without
    *  it, a tool that legitimately returns an empty string reads as
@@ -607,8 +609,9 @@ export default function ToolCallGroup({
     CategoryIcon = MessageCircleQuestion;
   }
   const iconStatus = getOutcomeStatus({
-    failed: activityFailed ? 1 : activitySummary.failedCount,
+    failed: activityFailed ? count : activitySummary.failedCount,
     cancelled: activitySummary.cancelledCount,
+    total: count,
   });
 
   const hasActiveToolCall = useMemo(
@@ -670,10 +673,7 @@ export default function ToolCallGroup({
             )}
           </RailGlyph>
           <span
-            className={cn(
-              'tool-status-text min-w-0 truncate font-medium',
-              activityFailed && 'text-text-warning',
-            )}
+            className="tool-status-text min-w-0 truncate font-medium"
             role="status"
             title={groupLabel}
           >

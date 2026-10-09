@@ -661,6 +661,21 @@ describe('BashCall exit status', () => {
       </RecoilRoot>,
     );
 
+  it('hides timeout executor guidance until details are opened', () => {
+    renderSettled(
+      'stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects.',
+    );
+    expect(screen.queryByText(/Before retrying/)).not.toBeInTheDocument();
+  });
+
+  it('reveals the complete timeout trailer through details', () => {
+    renderSettled(
+      'stdout:\nsleeping\n\n[terminated by SIGKILL][timed out]\nCommand reached timeoutMs: 30000. Before retrying, check for partial side effects.',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_details' }));
+    expect(screen.getByText(/Before retrying/)).toBeInTheDocument();
+  });
+
   it('does not read a trailer the sandbox command printed itself', () => {
     const { container } = renderSettled('stdout:\n[exit code: 1]', false);
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Ran command');

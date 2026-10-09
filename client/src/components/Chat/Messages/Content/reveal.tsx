@@ -7,8 +7,10 @@ import {
   useRef,
   useState,
 } from 'react';
-import { TriangleAlert } from 'lucide-react';
+import { CircleX } from 'lucide-react';
+import { Button } from '@librechat/client';
 import type { TranslationKeys } from '~/hooks';
+import { isSpanFailed } from './outcome';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -113,6 +115,7 @@ export function FailedRevealPill({
   onReveal: () => void;
   className?: string;
 }) {
+  const severe = isSpanFailed(count, total);
   const localize = useLocalize();
   if (count === 0) {
     return null;
@@ -124,19 +127,20 @@ export function FailedRevealPill({
     showFailedKey = 'com_ui_show_failed_one_of_n';
   }
   return (
-    <button
+    <Button
       type="button"
-      className={cn(
-        'bg-status-error-subtle text-status-error inline-flex h-5 shrink-0 items-center gap-1 rounded-full border border-transparent px-2 text-xs leading-none font-semibold',
-        'hover:border-status-error-border focus-visible:border-status-error focus-visible:outline-none',
-        className,
-      )}
+      variant="inline-link"
+      size="xs"
+      className={cn('shrink-0', className)}
       onClick={onReveal}
       aria-label={localize(showFailedKey, { 0: String(count), 1: String(total) })}
+      data-severity={severe ? 'failed' : 'mixed'}
       data-testid="failed-reveal-pill"
     >
-      <TriangleAlert size={12} aria-hidden="true" />
-      {localize('com_ui_n_of_n_actions_failed', { 0: String(count), 1: String(total) })}
-    </button>
+      <CircleX size={12} className="text-status-error" aria-hidden="true" />
+      <span className={severe ? 'text-status-error' : 'text-text-secondary'}>
+        {localize('com_ui_n_actions_failed', { 0: String(count) })}
+      </span>
+    </Button>
   );
 }

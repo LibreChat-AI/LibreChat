@@ -136,6 +136,7 @@ jest.mock('lucide-react', () => ({
   MessageCircleQuestion: () => <span data-testid="question-icon">{'question'}</span>,
   ListChecks: () => <span data-testid="task-check-icon">{'checks'}</span>,
   TriangleAlert: () => <span>{'warning'}</span>,
+  CircleX: () => <span>{'failed'}</span>,
   CircleMinus: () => <span>{'collapse'}</span>,
 }));
 
@@ -1754,11 +1755,51 @@ describe('ToolCallGroup failure fast path', () => {
     expect(onReveal).toHaveBeenCalledTimes(failedParts.length);
   });
 
+  it('keeps the count quiet when the group contains both successful and failed calls', () => {
+    renderGroup(props(jest.fn()));
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-text-secondary');
+  });
+
+  it('keeps the count in the error tone when every call failed', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      parts: [
+        failedParts[1],
+        { part: makePart('c3', 'Error processing tool: gone', 'create_file'), idx: 1 },
+      ],
+    });
+    expect(
+      screen
+        .getByTestId('failed-reveal-pill')
+        .querySelector('span.text-text-secondary, span.text-status-error'),
+    ).toHaveClass('text-status-error');
+  });
+
+  it('does not tint the title of a partially failed labeled group', () => {
+    renderGroup({
+      ...props(jest.fn()),
+      labelPart: {
+        part: {
+          type: ContentTypes.ACTIVITY_LABEL,
+          [ContentTypes.ACTIVITY_LABEL]: 'Created the config files',
+          pending: false,
+          status: 'partial',
+        } as unknown as TMessageContentParts,
+        idx: 2,
+      },
+    });
+    expect(screen.getByText('Created the config files')).not.toHaveClass('text-text-warning');
+  });
+
   it('shows the failure count once, on the pill, when it stands alone', () => {
     renderGroup(props(jest.fn()));
     const header = screen.getByRole('button', { name: /· 1\/2 failed$/ });
     expect(header).not.toHaveTextContent('1/2 failed');
-    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('1/2 failed');
+    expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
   });
 
   it("keeps the count in text inside a phase, where the pill is the phase's", () => {
