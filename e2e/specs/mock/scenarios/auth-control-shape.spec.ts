@@ -116,10 +116,19 @@ async function expectResetLabelCentered(page: Page) {
   expect(Math.abs(offset)).toBeLessThanOrEqual(2);
 }
 
-/** The second-factor verify button, on the screen a sign-in that needs one lands on. */
+/** The second-factor verify button, on the screen a sign-in that needs one lands on; the sign-in
+ *  itself is answered here with a pending second factor. */
 async function twoFactorShape(page: Page) {
-  await page.goto('/login/2fa?tempToken=e2e-shape');
-  const verify = page.getByTestId('login-button');
+  await page.route(
+    (url) => url.pathname === '/api/auth/login',
+    (route) => route.fulfill({ status: 200, json: { twoFAPending: true, tempToken: 'e2e-shape' } }),
+  );
+  await openLogin(page);
+  await page.getByLabel('Email').fill('someone@example.com');
+  await page.getByLabel('Password').fill('a-password-1');
+  await page.getByTestId('login-button').click();
+  await page.waitForURL(/\/login\/2fa/, { timeout: 20000 });
+  const verify = page.getByRole('button', { name: 'Verify' });
   await expect(verify).toBeVisible({ timeout: 20000 });
   return shapeOf(verify);
 }
