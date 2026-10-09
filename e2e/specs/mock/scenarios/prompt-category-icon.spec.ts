@@ -87,8 +87,9 @@ function contrast(foreground: string, background: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-/** Opens the prompts panel on a fresh idea prompt and reads its icon over the row at rest and on
- *  hover; the row's own fill is transparent at rest, so the first opaque ancestor is the panel. */
+/** Opens the prompts panel on a fresh idea prompt and reads its icon over the row at rest and, with
+ *  a pointer, on hover; the row's own fill is transparent at rest, so the first opaque ancestor is
+ *  the panel. */
 async function categoryIconPaint(page: Page, mode: Mode, definition: ThemeDefinition | null) {
   await installTheme(page, mode, definition);
   await page.goto('/c/new', { timeout: 15000 });
@@ -119,10 +120,15 @@ async function categoryIconPaint(page: Page, mode: Mode, definition: ThemeDefini
         return { color: getComputedStyle(node).color, background };
       });
     const rest = await read();
-    await page.mouse.move(0, 0);
-    await row.hover();
-    await expect.poll(async () => (await read()).background).not.toBe(rest.background);
-    const hover = await read();
+    /** A touch screen has no hover state to paint, so only a pointer reads the hovered row. */
+    const canHover = await page.evaluate(() => matchMedia('(hover: hover)').matches);
+    let hover: typeof rest | null = null;
+    if (canHover) {
+      await page.mouse.move(0, 0);
+      await row.hover();
+      await expect.poll(async () => (await read()).background).not.toBe(rest.background);
+      hover = await read();
+    }
     await test.info().attach(`category-icon-${definition?.name ?? 'stock'}-${mode}`, {
       body: await row.screenshot(),
       contentType: 'image/png',
@@ -144,7 +150,9 @@ async function expectClickHouse(page: Page, mode: Mode) {
 
   expect(rest.color).toBe(CLICKHOUSE_MUTED[mode]);
   expect(contrast(rest.color, rest.background)).toBeGreaterThanOrEqual(WCAG_NON_TEXT_MIN);
-  expect(contrast(hover.color, hover.background)).toBeGreaterThanOrEqual(WCAG_NON_TEXT_MIN);
+  if (hover) {
+    expect(contrast(hover.color, hover.background)).toBeGreaterThanOrEqual(WCAG_NON_TEXT_MIN);
+  }
 }
 
 test.describe('prompt category icon role', () => {
