@@ -872,6 +872,25 @@ test('retains a warning when a partial phase has no child rows', () => {
   ).not.toBeNull();
 });
 
+test.each([
+  { type: ContentTypes.THINK, think: 'Remaining reasoning' },
+  { type: ContentTypes.TEXT, text: 'Remaining text' },
+  makeLabelPart('Remaining child summary'),
+])('retains partial status with only a $type row remaining', (part) => {
+  render(
+    <ActivityPhaseGroup
+      labelPart={{ ...labelPart, status: 'partial' }}
+      hasContent
+      spanParts={[part as TMessageContentParts]}
+    >
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByRole('button', { name: LABEL }).querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
 describe('ActivityPhaseGroup streaming thought peek', () => {
   const thought: TMessageContentParts = {
     type: ContentTypes.THINK,
