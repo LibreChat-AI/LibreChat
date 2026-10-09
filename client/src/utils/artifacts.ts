@@ -21,9 +21,7 @@ import { getCodeBlockFilename } from './downloadFile';
 
 const artifactFilename = {
   'application/vnd.react': 'App.tsx',
-  'application/vnd.ant.react': 'App.tsx',
   'text/html': 'index.html',
-  'application/vnd.code-html': 'index.html',
   /* Office preview buckets — the backend produces a complete sanitized
    * `index.html` document (head + body) and ships it via `attachment.text`.
    * The Sandpack `static` template loads it as-is. See
@@ -35,7 +33,6 @@ const artifactFilename = {
    * template always loads `index.html`, so `getSvgFiles` ships a
    * companion HTML shell; the editor/download file stays `index.svg`. */
   'image/svg+xml': 'index.svg',
-  'image/svg': 'index.svg',
   // mermaid and markdown types are handled separately in useArtifactProps.ts
   default: 'index.html',
   // 'css': 'css',
@@ -50,15 +47,12 @@ const artifactTemplate: Record<
   | 'application/vnd.mermaid'
   | 'application/vnd.code'
   | 'text/markdown'
-  | 'text/md'
   | 'text/plain',
   SandpackPredefinedTemplate | undefined
 > = {
   'text/html': 'static',
   'application/vnd.react': 'react-ts',
-  'application/vnd.ant.react': 'react-ts',
   'application/vnd.mermaid': 'react-ts',
-  'application/vnd.code-html': 'static',
   /* CODE bucket reuses the static markdown pipeline — `useArtifactProps`
    * pre-wraps the content in a fenced block and hands it to
    * `getMarkdownFiles`, so the rendered HTML uses the same `marked`
@@ -66,7 +60,6 @@ const artifactTemplate: Record<
    * the panel doesn't pay the sandpack-React boot cost for source files. */
   'application/vnd.code': 'static',
   'text/markdown': 'static',
-  'text/md': 'static',
   'text/plain': 'static',
   /* Office preview buckets ride the same static pipeline — the backend
    * already sanitized the HTML, so we just hand it to Sandpack. */
@@ -74,7 +67,6 @@ const artifactTemplate: Record<
   'application/vnd.librechat.spreadsheet-preview': 'static',
   'application/vnd.librechat.presentation-preview': 'static',
   'image/svg+xml': 'static',
-  'image/svg': 'static',
   default: 'static',
   // 'css': 'css',
   // 'javascript': 'js',
@@ -88,7 +80,7 @@ export function getKey(type: string, language?: string): string {
 }
 
 export function getArtifactFilename(type: string, language?: string): string {
-  const key = getKey(type, language);
+  const key = getKey(normalizeArtifactType(type), language);
   return artifactFilename[key] ?? artifactFilename.default;
 }
 
@@ -138,8 +130,9 @@ export function getArtifactDownloadFilename(
   fileKey: string,
   content = artifact.content,
 ): string {
-  const isCode = artifact.type === TOOL_ARTIFACT_TYPES.CODE;
-  const isMarkdown = artifact.type === TOOL_ARTIFACT_TYPES.MARKDOWN || artifact.type === 'text/md';
+  const type = normalizeArtifactType(artifact.type ?? '');
+  const isCode = type === TOOL_ARTIFACT_TYPES.CODE;
+  const isMarkdown = type === TOOL_ARTIFACT_TYPES.MARKDOWN;
   let fallback = fileKey;
   if (isCode) {
     fallback = getCodeBlockFilename(
@@ -192,13 +185,12 @@ export function getArtifactDownloadFilename(
 }
 
 export function getTemplate(type: string, language?: string): SandpackPredefinedTemplate {
-  const key = getKey(type, language);
+  const key = getKey(normalizeArtifactType(type), language);
   return artifactTemplate[key] ?? (artifactTemplate.default as SandpackPredefinedTemplate);
 }
 
-/** `image/svg` is the alias some callers emit for `image/svg+xml`. */
 export function isSvgArtifactType(type: string): boolean {
-  return type === 'image/svg+xml' || type === 'image/svg';
+  return normalizeArtifactType(type) === 'image/svg+xml';
 }
 
 /**
@@ -292,21 +284,17 @@ const dependenciesMap: Record<
   | 'application/vnd.mermaid'
   | 'application/vnd.code'
   | 'text/markdown'
-  | 'text/md'
   | 'text/plain',
   Record<string, string>
 > = {
   'application/vnd.mermaid': mermaidDependencies,
   'application/vnd.react': standardDependencies,
-  'application/vnd.ant.react': standardDependencies,
   'text/html': standardDependencies,
-  'application/vnd.code-html': standardDependencies,
   /* CODE renders in the static markdown template; no React or other
    * runtime deps. Empty map skips the sandpack `package.json` install
    * step entirely (same as MARKDOWN/PLAIN_TEXT). */
   'application/vnd.code': {},
   'text/markdown': {},
-  'text/md': {},
   'text/plain': {},
   /* Office preview HTML is fully self-contained (CSS-only sheet tabs, no
    * JS), so no Sandpack-side packages are needed. */
@@ -315,12 +303,11 @@ const dependenciesMap: Record<
   'application/vnd.librechat.presentation-preview': {},
   /* SVG preview is a static HTML shell + the source file; no npm deps. */
   'image/svg+xml': {},
-  'image/svg': {},
   default: standardDependencies,
 };
 
 export function getDependencies(type: string): Record<string, string> {
-  return dependenciesMap[type] ?? standardDependencies;
+  return dependenciesMap[normalizeArtifactType(type)] ?? standardDependencies;
 }
 
 export function getProps(type: string): Partial<SandpackProviderProps> {
@@ -493,7 +480,7 @@ export function isPreviewOnlyArtifact(type: string | null | undefined): boolean 
   if (type == null) {
     return false;
   }
-  return PREVIEW_ONLY_ARTIFACT_TYPES.has(type as ToolArtifactType);
+  return PREVIEW_ONLY_ARTIFACT_TYPES.has(normalizeArtifactType(type) as ToolArtifactType);
 }
 
 /**
@@ -501,7 +488,7 @@ export function isPreviewOnlyArtifact(type: string | null | undefined): boolean 
  * They should stay click-to-open and, once opened, expose only the code view.
  */
 export function isCodeOnlyArtifact(type: string | null | undefined): boolean {
-  return type === TOOL_ARTIFACT_TYPES.CODE;
+  return type != null && normalizeArtifactType(type) === TOOL_ARTIFACT_TYPES.CODE;
 }
 
 /**
@@ -557,16 +544,29 @@ type ArtifactFormatKey = Extract<
 >;
 
 /**
- * Legacy and model-authored spellings of the canonical buckets. The
- * markdown `:::artifact` path takes its type straight from the authored
- * attribute, so these arrive alongside the values in
- * `TOOL_ARTIFACT_TYPES`; `artifactTemplate` carries the same aliases.
+ * Every spelling an artifact type arrives in, mapped to its canonical bucket: the
+ * legacy MIME spellings older prompts taught, and the short names a model writes
+ * straight into `:::artifact{type="..."}`. The supported short names are the
+ * rendered buckets a model can author (react, html, markdown, md, mermaid, svg);
+ * anything else passes through unchanged and renders as a generic preview.
  */
 const ARTIFACT_TYPE_ALIASES: Record<string, string> = {
   'application/vnd.ant.react': TOOL_ARTIFACT_TYPES.REACT,
   'application/vnd.code-html': TOOL_ARTIFACT_TYPES.HTML,
   'text/md': TOOL_ARTIFACT_TYPES.MARKDOWN,
+  'image/svg': 'image/svg+xml',
+  react: TOOL_ARTIFACT_TYPES.REACT,
+  html: TOOL_ARTIFACT_TYPES.HTML,
+  markdown: TOOL_ARTIFACT_TYPES.MARKDOWN,
+  md: TOOL_ARTIFACT_TYPES.MARKDOWN,
+  mermaid: TOOL_ARTIFACT_TYPES.MERMAID,
+  svg: 'image/svg+xml',
 };
+
+/** The canonical type for any spelling an artifact arrives in; every type lookup goes through it. */
+export function normalizeArtifactType(type: string): string {
+  return lookupOwn(ARTIFACT_TYPE_ALIASES, type.trim().toLowerCase()) ?? type;
+}
 
 const ARTIFACT_ROW_KINDS: Record<string, ArtifactRowKind> = {
   [TOOL_ARTIFACT_TYPES.HTML]: {
@@ -637,7 +637,7 @@ export function artifactRowKind({
   language?: string | null;
   title?: string | null;
 }): ArtifactRowKind {
-  const resolvedType = (type != null && lookupOwn(ARTIFACT_TYPE_ALIASES, type)) || type;
+  const resolvedType = type != null ? normalizeArtifactType(type) : type;
   if (resolvedType != null) {
     const known = lookupOwn(ARTIFACT_ROW_KINDS, resolvedType);
     if (known != null) {

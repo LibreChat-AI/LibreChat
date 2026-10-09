@@ -14,6 +14,7 @@ import {
   isPreviewOnlyArtifact,
   isSvgArtifactType,
   languageForFilename,
+  normalizeArtifactType,
   TOOL_ARTIFACT_TYPES,
 } from '../artifacts';
 
@@ -1302,5 +1303,60 @@ describe('artifactRowKind', () => {
       fallbackGlyph: 'preview',
     });
     expect(artifactRowKind({})).toMatchObject({ rendersPreview: true });
+  });
+});
+
+describe('normalizeArtifactType', () => {
+  const SVG = 'image/svg+xml';
+  /** Every spelling a model or an older prompt writes, with the bucket it renders in. */
+  const spellings: Array<[string, string]> = [
+    ['react', TOOL_ARTIFACT_TYPES.REACT],
+    ['application/vnd.ant.react', TOOL_ARTIFACT_TYPES.REACT],
+    ['html', TOOL_ARTIFACT_TYPES.HTML],
+    ['application/vnd.code-html', TOOL_ARTIFACT_TYPES.HTML],
+    ['markdown', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['text/md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['mermaid', TOOL_ARTIFACT_TYPES.MERMAID],
+    ['svg', SVG],
+    ['image/svg', SVG],
+  ];
+
+  it.each(spellings)('maps %s to %s', (spelling, canonical) => {
+    expect(normalizeArtifactType(spelling)).toBe(canonical);
+  });
+
+  it('ignores case and surrounding whitespace in an authored spelling', () => {
+    expect(normalizeArtifactType(' React ')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType('HTML')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+  });
+
+  it('leaves canonical and unknown types as written', () => {
+    Object.values(TOOL_ARTIFACT_TYPES).forEach((type) => {
+      expect(normalizeArtifactType(type)).toBe(type);
+    });
+    expect(normalizeArtifactType('code')).toBe('code');
+    expect(normalizeArtifactType('application/x-unheard-of')).toBe('application/x-unheard-of');
+    expect(normalizeArtifactType('constructor')).toBe('constructor');
+  });
+
+  it.each(spellings)(
+    'drives every lookup for %s the way its canonical type does',
+    (spelling, canonical) => {
+      expect(getTemplate(spelling)).toBe(getTemplate(canonical));
+      expect(getArtifactFilename(spelling)).toBe(getArtifactFilename(canonical));
+      expect(getDependencies(spelling)).toEqual(getDependencies(canonical));
+      expect(artifactRowKind({ type: spelling })).toEqual(artifactRowKind({ type: canonical }));
+      expect(isSvgArtifactType(spelling)).toBe(isSvgArtifactType(canonical));
+    },
+  );
+
+  it('sends a short react spelling down the React path', () => {
+    expect(getTemplate('react')).toBe('react-ts');
+    expect(getArtifactFilename('react')).toBe('App.tsx');
+    expect(getDependencies('react')).toEqual(getDependencies(TOOL_ARTIFACT_TYPES.REACT));
+    expect(artifactRowKind({ type: 'react' }).label).toEqual({
+      key: 'com_ui_artifact_format_react',
+    });
   });
 });
