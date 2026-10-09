@@ -207,6 +207,10 @@ describe('LibreChat Tailwind preset', () => {
       expect(css).toContain(`var(${property}, ${fallback})`);
     });
 
+    expect(rule(css, 'max-h-theme-list')).toContain(
+      'var(--radix-select-content-available-height, 100dvh)',
+    );
+
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */
     expect(css).toContain(

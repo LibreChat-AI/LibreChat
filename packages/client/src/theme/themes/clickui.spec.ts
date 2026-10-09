@@ -493,10 +493,10 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
       '0: Click UI draws its select list at var(--radix-popover-trigger-width) (select-popover-content), with no minimum of its own',
   },
   listMaxHeight: {
-    value: '24rem',
-    status: 'mismatch',
+    value: 'none',
+    status: 'match',
     reason:
-      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's; tracked under the not-expressible list",
+      'none: Click UI caps its select list only at var(--radix-popover-content-available-height), the cap the Select list keeps under every value',
   },
   iconButtonSizeSm: {
     value: '1.5rem',
@@ -1404,13 +1404,6 @@ const notExpressible: Record<string, NotExpressible> = {
     reason:
       'the checkbox paints no fill of its own and shows the surface behind it; no role carries checkbox.color.background.default',
     issue: 'https://github.com/berry-13/LibreChat/issues/250',
-  },
-  'Select list height': {
-    decisions: {},
-    appearance: ['listMaxHeight'],
-    reason:
-      "Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so listMaxHeight keeps LibreChat's 24rem",
-    issue: 'https://github.com/berry-13/LibreChat/issues/282',
   },
   'Checkbox corner': {
     decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },

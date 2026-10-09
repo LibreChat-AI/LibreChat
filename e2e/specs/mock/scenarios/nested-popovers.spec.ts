@@ -193,12 +193,41 @@ const REFERENCE_LIST_THEME = {
   },
 } as const;
 
-/** The open list's width floor and scroll cap, as the browser computed them. */
+/** The open list's width floor and scroll cap, as the browser computed them, with the room the
+ *  popper leaves between its trigger and the viewport's edge, and the list's drawn box. */
 async function listBounds(page: Page) {
   return page.getByRole('listbox').evaluate((element) => {
     const style = getComputedStyle(element);
-    return { minWidth: style.minWidth, maxHeight: style.maxHeight };
+    const { top, bottom } = element.getBoundingClientRect();
+    return {
+      minWidth: style.minWidth,
+      maxHeight: style.maxHeight,
+      available: parseFloat(style.getPropertyValue('--radix-select-content-available-height')),
+      top,
+      bottom,
+    };
   });
+}
+
+/** Tall enough that the list's own cap, not the viewport, decides its height. */
+async function useTallWindow(page: Page) {
+  const { width } = page.viewportSize() ?? { width: 1280 };
+  await page.setViewportSize({ width, height: 1100 });
+}
+
+const SHORT_PHONE = { width: 375, height: 480 };
+const SHORT_WINDOW = { width: 1024, height: 420 };
+
+/** In a viewport too short for the list's own cap, the list scrolls inside the room the popper
+ *  leaves rather than running past the viewport's edge. */
+async function expectListFits(page: Page, viewport: { width: number; height: number }) {
+  await page.setViewportSize(viewport);
+  await openWorkspaceSelect(page);
+  const bounds = await listBounds(page);
+  expect(bounds.available).toBeLessThan(384);
+  expect(parseFloat(bounds.maxHeight)).toBeLessThanOrEqual(bounds.available);
+  expect(bounds.top).toBeGreaterThanOrEqual(0);
+  expect(bounds.bottom).toBeLessThanOrEqual(viewport.height);
 }
 
 test.describe('Select list size roles', () => {
@@ -207,17 +236,23 @@ test.describe('Select list size roles', () => {
   }) => {
     await offerStatefulSessions(page);
     await useTheme(page);
+    await useTallWindow(page);
     await openWorkspaceSelect(page);
-    expect(await listBounds(page)).toEqual({ minWidth: '128px', maxHeight: '384px' });
+    const bounds = await listBounds(page);
+    expect(bounds.available).toBeGreaterThan(384);
+    expect(bounds).toMatchObject({ minWidth: '128px', maxHeight: '384px' });
   });
 
-  test('the ClickHouse theme sizes the list by its trigger @scenario:select-list-size-clickhouse', async ({
+  test('the ClickHouse theme sizes the list by its trigger and caps it at the available height @scenario:select-list-size-clickhouse', async ({
     page,
   }) => {
     await offerStatefulSessions(page);
     await useTheme(page, clickHouseTheme);
+    await useTallWindow(page);
     await openWorkspaceSelect(page);
-    expect(await listBounds(page)).toEqual({ minWidth: '0px', maxHeight: '384px' });
+    const bounds = await listBounds(page);
+    expect(bounds.available).toBeGreaterThan(384);
+    expect(bounds).toMatchObject({ minWidth: '0px', maxHeight: `${bounds.available}px` });
   });
 
   test('a theme that sets both list roles resizes the list @scenario:select-list-size-reference', async ({
@@ -225,7 +260,40 @@ test.describe('Select list size roles', () => {
   }) => {
     await offerStatefulSessions(page);
     await useTheme(page, REFERENCE_LIST_THEME);
+    await useTallWindow(page);
     await openWorkspaceSelect(page);
-    expect(await listBounds(page)).toEqual({ minWidth: '192px', maxHeight: '320px' });
+    expect(await listBounds(page)).toMatchObject({ minWidth: '192px', maxHeight: '320px' });
+  });
+
+  test('the default list never grows past a short phone screen @scenario:select-list-fits-short-phone', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await expectListFits(page, SHORT_PHONE);
+  });
+
+  test('the ClickHouse list never grows past a short phone screen @scenario:select-list-fits-short-phone-clickhouse', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, clickHouseTheme);
+    await expectListFits(page, SHORT_PHONE);
+  });
+
+  test('the default list never grows past a small desktop window @scenario:select-list-fits-short-window', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await expectListFits(page, SHORT_WINDOW);
+  });
+
+  test('the ClickHouse list never grows past a small desktop window @scenario:select-list-fits-short-window-clickhouse', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page, clickHouseTheme);
+    await expectListFits(page, SHORT_WINDOW);
   });
 });

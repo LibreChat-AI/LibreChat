@@ -1415,8 +1415,10 @@ describe('theme registry', () => {
 
     expect(issues({ listMinWidth: '0', listMaxHeight: '8rem' })).toEqual([]);
     expect(issues({ listMinWidth: '12rem', listMaxHeight: '640px' })).toEqual([]);
+    expect(issues({ listMaxHeight: 'none' })).toEqual([]);
     [
       { listMinWidth: 'auto' },
+      { listMaxHeight: 'auto' },
       { listMinWidth: '-1rem' },
       { listMaxHeight: '0' },
       { listMaxHeight: '7rem' },
@@ -2260,4 +2262,14 @@ describe('appearance families substitute through the emitted variables', () => {
       expect(themed.get(property)).not.toBe(base.get(property));
     },
   );
+
+  it('writes a `none` list height as the viewport height its available-height cap undercuts', () => {
+    const uncapped = emitted({
+      ...reference,
+      modes: { light: { appearance: { listMaxHeight: 'none' } } },
+    });
+
+    expect(emitted(libreChatTheme).get('--theme-list-max-height')).toBe('24rem');
+    expect(uncapped.get('--theme-list-max-height')).toBe('100dvh');
+  });
 });
