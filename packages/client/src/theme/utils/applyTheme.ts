@@ -1,4 +1,5 @@
 import type { IThemeAppearance, IThemeBrands, IThemeRGB, ResolvedThemeDefinition } from '../types';
+import type { RenamedThemeRGB } from '../registry';
 import {
   controlBorderFallback,
   focusFallbacks,
@@ -11,6 +12,7 @@ import {
   themeAppearanceProperties,
   themeBrandTokens,
   themeColorTokens,
+  withRenamedColors,
 } from '../registry';
 
 const colorProperty = (token: keyof IThemeRGB): `--${string}` => `--${token.slice(4)}`;
@@ -32,7 +34,8 @@ function validateRGB(rgb: string): boolean {
 /** `base` is the bundled palette for the mode being applied. The adapter writes
  *  only the keys a theme names, so a derivation whose source the theme inherits
  *  rather than restates has nothing to read without it. */
-function mapColors(colors: IThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+function mapColors(input: RenamedThemeRGB, base?: IThemeRGB): Array<[string, string]> {
+  const colors = withRenamedColors(input);
   const variables = themeColorTokens.reduce<Array<[string, string]>>((result, token) => {
     const value = colors[token];
     if (value !== undefined) {

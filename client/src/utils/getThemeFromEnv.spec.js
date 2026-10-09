@@ -1,6 +1,18 @@
 import { getThemeFromEnv } from './getThemeFromEnv';
 
 describe('getThemeFromEnv', () => {
+  it('reads a renamed role from its old variable unless the current one is set', () => {
+    expect(getThemeFromEnv({ REACT_APP_THEME_CATEGORY_ICON: '1 2 3' })).toEqual({
+      'rgb-category-icon-4': '1 2 3',
+    });
+    expect(
+      getThemeFromEnv({
+        REACT_APP_THEME_CATEGORY_ICON: '1 2 3',
+        REACT_APP_THEME_CATEGORY_ICON_4: '4 5 6',
+      }),
+    ).toEqual({ 'rgb-category-icon-4': '4 5 6' });
+  });
+
   it('loads link and accent colors', () => {
     expect(
       getThemeFromEnv({

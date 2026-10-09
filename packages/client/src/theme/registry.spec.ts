@@ -688,6 +688,13 @@ describe('theme registry', () => {
     expect(renamed.colors).not.toHaveProperty('rgb-category-icon');
   });
 
+  it('keeps a renamed category icon role through the legacy color adapter', () => {
+    const legacy = { 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+
+    expect(fromLegacyTheme(legacy).modes.light?.colors?.['rgb-category-icon-4']).toBe('7 8 9');
+    expect(fromLegacyTheme(legacy).modes.light?.colors).not.toHaveProperty('rgb-category-icon');
+  });
+
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
     const explicit = resolveTheme(
       {

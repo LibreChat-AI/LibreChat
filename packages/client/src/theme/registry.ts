@@ -538,24 +538,34 @@ function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   ) as Partial<T>;
 }
 
-/** Roles that shipped under another name; a theme that names the old one keeps its value. */
-const renamedColors: ReadonlyArray<readonly [string, keyof IThemeRGB]> = [
+/** Role names a release shipped and a later one renamed. */
+type RenamedColorToken = 'rgb-category-icon';
+
+/** Roles that shipped under another name, each paired with the name it has now. */
+export const renamedColorTokens: ReadonlyArray<readonly [RenamedColorToken, keyof IThemeRGB]> = [
   ['rgb-category-icon', 'rgb-category-icon-4'],
 ];
 
-/** A color token this reader does not know passed validation as a warning; it never reaches the
- *  DOM. A renamed role is carried to its current name first, unless the theme names that too. */
-function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
+/** Colors as a theme written before a rename may carry them. */
+export type RenamedThemeRGB = IThemeRGB & Partial<Record<RenamedColorToken, string>>;
+
+/** Carries a renamed role to its current name, unless the colors name that too, so every reader
+ *  that keeps only known tokens keeps the value. */
+export function withRenamedColors(colors: RenamedThemeRGB): IThemeRGB {
+  const renamed = renamedColorTokens.flatMap(([from, to]) => {
+    const value = colors[from];
+    return value !== undefined && colors[to] === undefined ? [[to, value] as const] : [];
+  });
+  return renamed.length > 0 ? { ...colors, ...Object.fromEntries(renamed) } : colors;
+}
+
+/** A color token this reader does not know passed validation as a warning; it never reaches the DOM. */
+function knownColors(colors?: RenamedThemeRGB): IThemeRGB | undefined {
   if (!colors) {
     return colors;
   }
-  const entries = Object.entries(colors) as Array<[string, string | undefined]>;
-  const renamed = renamedColors.flatMap(([from, to]) => {
-    const value = entries.find(([key]) => key === from)?.[1];
-    return value !== undefined && colors[to] === undefined ? [[to, value] as const] : [];
-  });
   return Object.fromEntries(
-    [...entries, ...renamed].filter(([key]) => colorTokenSet.has(key)),
+    Object.entries(withRenamedColors(colors)).filter(([key]) => colorTokenSet.has(key)),
   ) as IThemeRGB;
 }
 
@@ -896,10 +906,11 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   };
 }
 
-export function fromLegacyTheme(colors: IThemeRGB, name = 'custom'): ThemeDefinition {
+export function fromLegacyTheme(colors: RenamedThemeRGB, name = 'custom'): ThemeDefinition {
   const legacyName = name.trim() || 'custom';
+  const current = withRenamedColors(colors);
   const sanitizedColors = themeColorTokens.reduce<IThemeRGB>((result, token) => {
-    const value = colors[token];
+    const value = current[token];
     if (isThemeRGB(value)) {
       result[token] = value;
     }
