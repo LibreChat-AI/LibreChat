@@ -1,4 +1,4 @@
-import { overheadKey, setModelOverhead, getModelOverhead } from './usage';
+import { overheadKey, setModelOverhead, getModelOverhead } from './store';
 
 describe('model overhead cache', () => {
   it('keys agents by agentId so the resolved reader and raw writer agree', () => {

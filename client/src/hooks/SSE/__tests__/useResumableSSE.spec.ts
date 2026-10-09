@@ -19,7 +19,7 @@ import {
   branchTotalsFamily,
   pendingUsageFamily,
   removeUsageAtoms,
-} from '~/store/usage';
+} from '~/components/Chat/Input/TokenUsage/store';
 import { recoveryDispositionsFamily } from '~/components/Chat/Steering/recovery';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 

@@ -3,8 +3,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useStore, useAtomValue, useSetAtom } from 'jotai';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import type { TMessage, TConversation, TModelTokenomics } from 'librechat-data-provider';
+import type { ContextSnapshot } from '~/components/Chat/Input/TokenUsage/store';
 import type { BranchTotals, BranchUsage } from '~/utils/tokens';
-import type { ContextSnapshot } from '~/store/usage';
 import {
   overheadKey,
   getModelOverhead,
@@ -19,7 +19,7 @@ import {
   branchTotalsFamily,
   contextSnapshotFamily,
   snapshotsByAnchorFamily,
-} from '~/store/usage';
+} from '~/components/Chat/Input/TokenUsage/store';
 import {
   buildIndex,
   upsertEntries,
