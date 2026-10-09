@@ -211,7 +211,18 @@ const createDeleteFileWithSecondaryStorage = ({ source, deleteFile, deletionMeth
     }
 
     await Promise.all(
-      secondaryDeleteMethods.map((secondaryDeleteFile) => secondaryDeleteFile(req, file)),
+      secondaryDeleteMethods.map((secondaryDeleteFile) =>
+        secondaryDeleteFile(req, file).catch((err) => {
+          if (isMissingStorageError(err)) {
+            logger.warn('Secondary file storage was already missing during delete', err);
+            return;
+          }
+          logger.warn(
+            'Secondary file storage delete failed; continuing so the file record can still be removed',
+            err,
+          );
+        }),
+      ),
     );
   };
 };
