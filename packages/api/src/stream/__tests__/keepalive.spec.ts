@@ -1,3 +1,5 @@
+import v8 from 'v8';
+import vm from 'vm';
 import { EventEmitter } from 'events';
 import { logger } from '@librechat/data-schemas';
 import { DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS } from 'librechat-data-provider';
@@ -142,6 +144,15 @@ describe('createStreamKeepaliveLoader', () => {
     );
   });
 
+  it('asks the config service to reject failures so they are logged safely', async () => {
+    const getAppConfig = jest.fn().mockResolvedValue({});
+    const load = createStreamKeepaliveLoader(getAppConfig);
+
+    await load({ user: { id: 'user-1', role: 'USER' } });
+
+    expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
+  });
+
   it('uses a config already on the request', async () => {
     const getAppConfig = jest.fn();
     const load = createStreamKeepaliveLoader(getAppConfig);
@@ -197,6 +208,27 @@ describe('startSseKeepalive with a pending interval', () => {
     jest.advanceTimersByTime(30_000);
 
     expect(res.writes).toEqual([SSE_KEEPALIVE_FRAME]);
+  });
+
+  it('releases a closed response while its interval is still pending', async () => {
+    jest.useRealTimers();
+    v8.setFlagsFromString('--expose-gc');
+    const gc = vm.runInNewContext('gc') as () => void;
+    const pending = new Promise<number>(() => undefined);
+    const attach = (): WeakRef<FakeResponse> => {
+      const res = new FakeResponse();
+      startSseKeepalive(res, pending);
+      res.emit('close');
+      return new WeakRef(res);
+    };
+    const ref = attach();
+
+    for (let i = 0; i < 5 && ref.deref() != null; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+
+    expect(ref.deref()).toBeUndefined();
   });
 
   it('stops when the resolved interval disables the keepalive', async () => {

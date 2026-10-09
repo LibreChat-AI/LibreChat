@@ -58,13 +58,19 @@ export interface StreamKeepaliveRequest {
  * Builds the request-scoped interval reader for the stream route. Only YAML settings are
  * needed here, so the principal's config is read without runtime augmentation: a stream
  * attach or reconnect never pays for code-environment merges or their database reads.
+ * `failClosed` makes the service reject instead of logging and swallowing, so every
+ * failure reaches the sanitized fallback in `loadStreamKeepaliveMs`.
  */
 export function createStreamKeepaliveLoader(
   getAppConfig: (options: GetAppConfigOptions) => Promise<StreamKeepaliveConfig | undefined | null>,
 ): (req: StreamKeepaliveRequest) => Promise<number> {
   return (req) =>
     loadStreamKeepaliveMs(req.config, () =>
-      getAppConfig({ ...getAppConfigOptionsFromUser(req.user), skipRuntimeAugmentation: true }),
+      getAppConfig({
+        ...getAppConfigOptionsFromUser(req.user),
+        skipRuntimeAugmentation: true,
+        failClosed: true,
+      }),
     );
 }
 
@@ -79,6 +85,8 @@ const isClosed = (res: SseKeepaliveResponse): boolean =>
  * The interval may be a promise: the default applies until it resolves, so neither the
  * caller nor the first frame waits on a config read. A late interval counts the time
  * already waited, so switching never pushes the next frame past its deadline. `0` stops it.
+ * Stopping drops the response reference, so a pending interval that never settles cannot
+ * keep a closed response alive.
  */
 export function startSseKeepalive(
   res: SseKeepaliveResponse,
@@ -91,15 +99,15 @@ export function startSseKeepalive(
     typeof intervalMs === 'number' ? intervalMs : DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS;
   let lastFrameAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let stopped = false;
+  let target: SseKeepaliveResponse | null = res;
 
   const stop = (): void => {
-    stopped = true;
+    target = null;
     clearTimeout(timer);
   };
   const schedule = (): void => {
     clearTimeout(timer);
-    if (stopped || !(currentMs > 0)) {
+    if (target == null || !(currentMs > 0)) {
       return;
     }
     const delay = Math.max(0, currentMs - (Date.now() - lastFrameAt));
@@ -107,12 +115,12 @@ export function startSseKeepalive(
     timer.unref?.();
   };
   const beat = (): void => {
-    if (isClosed(res)) {
+    if (target == null || isClosed(target)) {
       stop();
       return;
     }
-    res.write(SSE_KEEPALIVE_FRAME);
-    res.flush?.();
+    target.write(SSE_KEEPALIVE_FRAME);
+    target.flush?.();
     lastFrameAt = Date.now();
     schedule();
   };
