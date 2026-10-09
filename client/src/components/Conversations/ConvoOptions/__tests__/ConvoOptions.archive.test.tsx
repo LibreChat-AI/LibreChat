@@ -66,14 +66,23 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/data-provider', () => ({
   useDuplicateConversationMutation: () => ({ mutate: jest.fn(), isLoading: false }),
   useAssignConversationToProjectMutation: () => ({ mutate: jest.fn(), isLoading: false }),
-  useDeleteConversationMutation: () => ({ mutate: jest.fn(), isLoading: false }),
+  useDeleteConversationMutation: () => {
+    mockMutationHook('delete');
+    return { mutate: jest.fn(), isLoading: false };
+  },
   useGetStartupConfig: () => ({ data: { sharedLinksEnabled: false } }),
   useArchiveConvoMutation: () => {
-    mockMutationHook();
+    mockMutationHook('archive');
     return { mutate: mockArchiveMutate, isLoading: false };
   },
-  usePinConversationMutation: () => ({ mutate: jest.fn(), isLoading: false }),
-  useMarkConversationUnreadMutation: () => ({ mutate: jest.fn(), isLoading: false }),
+  usePinConversationMutation: () => {
+    mockMutationHook('pin');
+    return { mutate: jest.fn(), isLoading: false };
+  },
+  useMarkConversationUnreadMutation: () => {
+    mockMutationHook('markUnread');
+    return { mutate: jest.fn(), isLoading: false };
+  },
 }));
 
 jest.mock('~/hooks', () => ({
@@ -273,12 +282,12 @@ describe('ConvoOptions mount cost', () => {
     const rows = renderRows(null);
 
     act(() => rows.open(4));
-    const callsWhileOpen = mockMutationHook.mock.calls.length;
-    expect(callsWhileOpen).toBeGreaterThan(0);
+    const hooksWhileOpen = new Set(mockMutationHook.mock.calls.map(([name]) => name));
+    expect(hooksWhileOpen).toEqual(new Set(['delete', 'archive', 'pin', 'markUnread']));
 
     mockMutationHook.mockReset();
     act(() => rows.open(null));
     /* Only the row that was opened renders again, and it keeps its actions mounted. */
-    expect(mockMutationHook).toHaveBeenCalledTimes(1);
+    expect(mockMutationHook).toHaveBeenCalledTimes(4);
   });
 });
