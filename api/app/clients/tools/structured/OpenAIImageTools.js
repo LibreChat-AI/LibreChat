@@ -11,6 +11,7 @@ const {
   extractBaseURL,
   getProxyDispatcher,
   applyAxiosProxyConfig,
+  getImageGenClientOptions,
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getFiles } = require('~/models');
@@ -126,16 +127,8 @@ function createOpenAIImageTools(fields = {}) {
       if (!prompt) {
         throw new Error('Missing required field: prompt');
       }
-      const clientConfig = { ...closureConfig };
-      const proxyDispatcher = getProxyDispatcher();
-      if (proxyDispatcher) {
-        clientConfig.fetchOptions = {
-          dispatcher: proxyDispatcher,
-        };
-      }
-
       /** @type {OpenAI} */
-      const openai = new OpenAI(clientConfig);
+      const openai = new OpenAI({ ...closureConfig, ...getImageGenClientOptions() });
       let output_format = imageOutputType;
       if (
         background === 'transparent' &&

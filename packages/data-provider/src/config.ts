@@ -3395,6 +3395,7 @@ export const webSearchSchema = z.object({
   scraperProvider: z.nativeEnum(ScraperProviders).optional(),
   rerankerType: z.nativeEnum(RerankerTypes).optional(),
   scraperTimeout: z.number().int().nonnegative().optional(),
+  rerankerTimeout: z.number().int().nonnegative().optional(),
   safeSearch: z.nativeEnum(SafeSearchTypes).default(SafeSearchTypes.MODERATE),
   firecrawlOptions: z
     .object({

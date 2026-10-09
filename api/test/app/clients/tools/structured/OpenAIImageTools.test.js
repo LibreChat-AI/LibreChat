@@ -27,6 +27,7 @@ jest.mock('@librechat/api', () => ({
   extractBaseURL: jest.fn((url) => url),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  getImageGenClientOptions: jest.requireActual('@librechat/api').getImageGenClientOptions,
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -160,5 +161,62 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
       }),
       expect.any(Object),
     );
+  });
+});
+
+describe('OpenAIImageTools - client timeout and retries', () => {
+  let originalEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    delete process.env.IMAGE_GEN_OAI_TIMEOUT_MS;
+    delete process.env.IMAGE_GEN_OAI_MAX_RETRIES;
+
+    OpenAI.mockImplementation(() => ({
+      images: {
+        generate: jest.fn().mockResolvedValue({
+          data: [{ b64_json: 'base64-encoded-image-data' }],
+        }),
+      },
+    }));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  const createTools = () =>
+    createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' } },
+    });
+
+  it('should pass IMAGE_GEN_OAI_TIMEOUT_MS and IMAGE_GEN_OAI_MAX_RETRIES to the OpenAI client', async () => {
+    process.env.IMAGE_GEN_OAI_TIMEOUT_MS = '1800000';
+    process.env.IMAGE_GEN_OAI_MAX_RETRIES = '0';
+
+    const [imageGenTool] = createTools();
+    await imageGenTool.func({ prompt: 'test prompt' });
+
+    expect(OpenAI).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeout: 1800000,
+        maxRetries: 0,
+        fetchOptions: { dispatcher: expect.anything() },
+      }),
+    );
+  });
+
+  it('should keep the OpenAI client defaults when the env vars are unset', async () => {
+    const [imageGenTool] = createTools();
+    await imageGenTool.func({ prompt: 'test prompt' });
+
+    const [clientConfig] = OpenAI.mock.calls[0];
+    expect(clientConfig).not.toHaveProperty('timeout');
+    expect(clientConfig).not.toHaveProperty('maxRetries');
   });
 });

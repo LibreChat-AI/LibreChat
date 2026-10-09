@@ -1428,6 +1428,8 @@ endpoints:
 #   jinaApiUrl: '${JINA_API_URL}'  # Custom Jina API URL (optional, defaults to https://api.jina.ai/v1/rerank)
 #   # Other rerankers
 #   cohereApiKey: '${COHERE_API_KEY}'
+#   # Rerank request timeout in milliseconds, applied per page (default: 10000)
+#   rerankerTimeout: 10000
 #   # Search providers
 #   serperApiKey: '${SERPER_API_KEY}'
 #   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
