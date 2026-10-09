@@ -1268,7 +1268,7 @@
   },
   "client/src/components/UnifiedSidebar/ExpandedPanel.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 2
     }
   },
   "client/src/components/UnifiedSidebar/Sidebar.tsx": {
