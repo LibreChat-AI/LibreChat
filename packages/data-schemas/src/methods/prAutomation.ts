@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { PR_AUTOMATION_STOP_CODES, MAX_PR_AUTOMATION_BOTS } from 'librechat-data-provider';
+import {
+  MAX_SUBAGENT_DEPTH,
+  MAX_PR_AUTOMATION_BOTS,
+  PR_AUTOMATION_STOP_CODES,
+} from 'librechat-data-provider';
 import type { PRAutomationTrustLevel } from 'librechat-data-provider';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationState } from 'librechat-data-provider';
@@ -12,6 +16,8 @@ const PROJECTION = '-_id -__v';
 const RESTARTABLE = { state: 'stopped' };
 /** Records removed per write, so a cleanup never holds one unbounded `$in`. */
 const DELETE_BATCH = 1000;
+/** A full SHA-1 or SHA-256 commit id; anything else is refused before it is stored. */
+const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
 /**
  * `owner_inactive` is an account deletion in progress, which can still be cancelled, so the
@@ -57,7 +63,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
     maxBots: number,
-    repository: string,
+    fence: t.PRAutomationBotFence,
   ) => Promise<t.PRAutomationBotResult>;
   removePRAutomationBot: (
     key: t.PRAutomationKey,
@@ -92,9 +98,11 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * Whether a round may run for this record right now: the owner exists and no account
    * deletion has started (the same durable marker agent triggers use), and the conversation
    * and every conversation that controls it still exist and are inside their retention. A
-   * subagent thread is controlled by its parent and its root, and a deletion removes the
-   * root before it discovers the descendants. Deletions do not fence the record; enable and
-   * claim ask this on both sides of their write instead.
+   * subagent thread is controlled by every ancestor up to its root, and a deletion removes
+   * one generation before it discovers the next, so the whole parent chain is walked. Depth
+   * is capped by `MAX_SUBAGENT_DEPTH`, which bounds the walk; a longer chain fails closed.
+   * Deletions do not fence the record; enable and claim ask this on both sides of their write
+   * instead.
    */
   async function checkLiveness(key: t.PRAutomationKey): Promise<Liveness> {
     if (!isValidObjectIdString(key.userId)) {
@@ -102,13 +110,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     }
     const Conversation = mongoose.models.Conversation;
     const active = activeExpirationFilter();
+    type Thread = { rootConversationId: string; parentConversationId: string };
+    type Lineage = { conversationId: string; subagentThread?: Thread };
     const [owner, conversation] = await Promise.all([
       mongoose.models.User.findById(key.userId)
         .select('agentTriggerDeletionStartedAt')
         .lean<{ agentTriggerDeletionStartedAt?: Date }>(),
       Conversation.findOne({ user: key.userId, conversationId: key.conversationId, ...active })
-        .select('subagentThread')
-        .lean<{ subagentThread?: { rootConversationId: string; parentConversationId: string } }>(),
+        .select('conversationId subagentThread')
+        .lean<Lineage>(),
     ]);
     if (owner == null) {
       return 'owner_gone';
@@ -119,17 +129,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (conversation == null) {
       return 'conversation_gone';
     }
-    const thread = conversation.subagentThread;
-    if (thread == null) {
-      return 'live';
+    const rootConversationId = conversation.subagentThread?.rootConversationId;
+    let current: Lineage | null = conversation;
+    for (let hops = 0; current?.subagentThread != null; hops++) {
+      if (hops >= MAX_SUBAGENT_DEPTH) {
+        return 'conversation_gone';
+      }
+      current = await Conversation.findOne({
+        user: key.userId,
+        conversationId: current.subagentThread.parentConversationId,
+        ...active,
+      })
+        .select('conversationId subagentThread')
+        .lean<Lineage>();
     }
-    const ancestors = [...new Set([thread.rootConversationId, thread.parentConversationId])];
-    const activeAncestors = await Conversation.countDocuments({
-      user: key.userId,
-      conversationId: { $in: ancestors },
-      ...active,
-    });
-    return activeAncestors === ancestors.length ? 'live' : 'conversation_gone';
+    if (current == null) {
+      return 'conversation_gone';
+    }
+    const reachedRoot = rootConversationId == null || current.conversationId === rootConversationId;
+    return reachedRoot ? 'live' : 'conversation_gone';
   }
 
   /** A missing owner reads as inactive to callers; the distinction only decides removal. */
@@ -199,6 +217,8 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const PRAutomation = mongoose.models.PRAutomation;
     const filter = keyFilter(key);
     const reset = runReset;
+    /** What the record was before this attempt, so a crossed deletion can undo only its write. */
+    const previous = await PRAutomation.findOne(filter).lean<t.IPRAutomation>();
     const options = { runValidators: true };
     await PRAutomation.updateOne(
       filter,
@@ -253,11 +273,38 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       await PRAutomation.deleteOne(filter);
       return { ok: false, error: { code: goneCode(after) } };
     }
+    if (after !== 'live') {
+      await undoEnable(filter, previous);
+      return { ok: false, error: { code: after } };
+    }
     const record = await getPRAutomation(key);
     if (record == null) {
       throw new Error('PR automation record missing after enable');
     }
     return { ok: true, value: record };
+  }
+
+  /**
+   * Puts the record back as this enable found it when an account deletion started during the
+   * write, which can still be cancelled. The undo applies only while the record still carries
+   * the epoch the attempt left, so it never reverts a later enable. An attempt that changed
+   * nothing leaves the epoch as it was and is not touched.
+   */
+  async function undoEnable(
+    filter: ReturnType<typeof keyFilter>,
+    previous: t.IPRAutomation | null,
+  ): Promise<void> {
+    const PRAutomation = mongoose.models.PRAutomation;
+    const written = await PRAutomation.findOne(filter).select('epoch').lean<{ epoch: string }>();
+    if (written == null || written.epoch === previous?.epoch) {
+      return;
+    }
+    const guard = { ...filter, epoch: written.epoch };
+    if (previous == null) {
+      await PRAutomation.deleteOne(guard);
+      return;
+    }
+    await PRAutomation.replaceOne(guard, previous);
   }
 
   async function disablePRAutomation(key: t.PRAutomationKey): Promise<{ removed: boolean }> {
@@ -288,6 +335,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     now = new Date(),
     ...key
   }: t.ClaimPRAutomationRoundParams): Promise<t.ClaimPRAutomationRoundResult> {
+    if (!COMMIT_SHA.test(headSha)) {
+      throw new RangeError('headSha must be a full commit SHA');
+    }
     const PRAutomation = mongoose.models.PRAutomation;
     const filter = { ...keyFilter(key), ...binding };
     const cutoff = new Date(now.getTime() - maxMinutes * 60_000);
@@ -479,15 +529,16 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   /**
    * Idempotent by numeric id. The limit is the configured `maxBots`, resolved by
    * the caller, and cannot exceed the schema ceiling. A login is stored for
-   * display only. The approval names the repository it was authorized against and
-   * applies only while the record is still bound to it, so an approval that
-   * overlaps a rebind cannot add a bot to a repository nobody approved it for.
+   * display only. The approval names the repository and the epoch it was authorized
+   * against and applies only while both are current, so an approval that overlaps a
+   * rebind, including one away and back to the same repository that cleared the list,
+   * cannot add a bot nobody approved for the current binding.
    */
   async function addPRAutomationBot(
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
     maxBots: number,
-    repository: string,
+    { repository, epoch }: t.PRAutomationBotFence,
   ): Promise<t.PRAutomationBotResult> {
     if (!Number.isInteger(maxBots) || maxBots < 1 || maxBots > MAX_PR_AUTOMATION_BOTS) {
       throw new RangeError(`maxBots must be an integer from 1 to ${MAX_PR_AUTOMATION_BOTS}`);
@@ -497,6 +548,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       {
         ...keyFilter(key),
         repository,
+        epoch,
         'trustedBots.id': { $ne: bot.id },
         [`trustedBots.${maxBots - 1}`]: { $exists: false },
       },
@@ -511,7 +563,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (current == null) {
       return { ok: false, error: { code: 'not_found' } };
     }
-    if (current.repository !== repository) {
+    if (current.repository !== repository || current.epoch !== epoch) {
       return { ok: false, error: { code: 'binding_mismatch' } };
     }
     if (current.trustedBots.some((existing) => existing.id === bot.id)) {

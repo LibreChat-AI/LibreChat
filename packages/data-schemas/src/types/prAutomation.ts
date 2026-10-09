@@ -68,6 +68,12 @@ export interface PRAutomationRunFence extends PRAutomationBinding {
   epoch: string;
 }
 
+/** What an approval was authorized against: the bound repository and its run epoch. */
+export interface PRAutomationBotFence {
+  repository: string;
+  epoch: string;
+}
+
 export type PRAutomationEventStopCode = Exclude<PRAutomationStopCode, 'user_stopped'>;
 
 export type EnablePRAutomationResult =

@@ -55,8 +55,11 @@ const toWaiting = () =>
     { user: userId, conversationId: key.conversationId },
     { $set: { state: 'waiting' } },
   );
-const addBot = (id: number, login?: string, limit = maxBots, repository = 'acme/one') =>
-  methods.addPRAutomationBot(key, login == null ? { id } : { id, login }, limit, repository);
+const addBot = async (id: number, login?: string, limit = maxBots, repository = 'acme/one') =>
+  methods.addPRAutomationBot(key, login == null ? { id } : { id, login }, limit, {
+    repository,
+    epoch: (await methods.getPRAutomation(key))?.epoch ?? 'none',
+  });
 const seedConversation = (fields: Record<string, unknown> = {}) =>
   mongoose.models.Conversation.create({
     conversationId: key.conversationId,
@@ -346,6 +349,58 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     });
   });
 
+  /** Runs `during` right after the enable's first write, before it checks again. */
+  const interleaveEnable = (during: () => Promise<unknown>) => {
+    const original = PRAutomation.updateOne.bind(PRAutomation);
+    return jest.spyOn(PRAutomation, 'updateOne').mockImplementationOnce(((
+      ...args: Parameters<typeof PRAutomation.updateOne>
+    ) => {
+      const query = original(...args);
+      const then = query.then.bind(query);
+      query.then = ((resolve, reject) =>
+        then(async (value) => {
+          await during();
+          return value;
+        }).then(resolve, reject)) as typeof query.then;
+      return query;
+    }) as typeof PRAutomation.updateOne);
+  };
+
+  test('rejects an enable once account deletion started mid-write', async () => {
+    const spy = interleaveEnable(startAccountDeletionNow);
+    try {
+      expect(await methods.enablePRAutomation({ ...key, binding: pullOne })).toEqual({
+        ok: false,
+        error: { code: 'owner_inactive' },
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('leaves nothing claimable after a cancelled deletion that an enable crossed', async () => {
+    const spy = interleaveEnable(startAccountDeletionNow);
+    try {
+      await methods.enablePRAutomation({ ...key, binding: pullOne });
+    } finally {
+      spy.mockRestore();
+    }
+    await cancelAccountDeletion();
+    expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_found' } });
+  });
+
+  test('keeps a record the crossing enable did not change', async () => {
+    await enable(pullOne);
+    await startRound(1);
+    const spy = interleaveEnable(startAccountDeletionNow);
+    try {
+      await methods.enablePRAutomation({ ...key, binding: pullOne });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'fixing', round: 1 });
+  });
+
   test('does not leave a record behind for an owner that no longer exists', async () => {
     await mongoose.models.User.deleteMany({});
     await methods.enablePRAutomation({ ...key, binding: pullOne });
@@ -454,6 +509,38 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
     expect(
       await methods.claimPRAutomationRound({
         ...grandKey,
+        ...limits,
+        binding: pullOne,
+        headSha: head(1),
+      }),
+    ).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+  });
+
+  test('rejects a claim for a descendant once an ancestor between its parent and root was deleted', async () => {
+    await seedChild();
+    const thread = (conversationId: string, parentConversationId: string, depth: number) =>
+      mongoose.models.Conversation.create({
+        conversationId,
+        user: userId,
+        endpoint: 'agents',
+        subagentThread: {
+          rootConversationId: key.conversationId,
+          parentConversationId,
+          parentMessageId: `message-${depth}`,
+          parentToolCallId: `call-${depth}`,
+          subagentType: 'agent-child',
+          subagentKind: 'agent',
+          depth,
+        },
+      });
+    await thread('grandchild-1', childKey.conversationId, 2);
+    await thread('great-1', 'grandchild-1', 3);
+    const greatKey = { userId, conversationId: 'great-1' };
+    await methods.enablePRAutomation({ ...greatKey, binding: pullOne });
+    await mongoose.models.Conversation.deleteOne({ conversationId: childKey.conversationId });
+    expect(
+      await methods.claimPRAutomationRound({
+        ...greatKey,
         ...limits,
         binding: pullOne,
         headSha: head(1),
@@ -613,6 +700,30 @@ describe('claimPRAutomationRound', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  test('refuses a head that is not a commit SHA before writing anything', async () => {
+    await enable();
+    await expect(
+      methods.claimPRAutomationRound({
+        ...key,
+        ...limits,
+        binding: pullOne,
+        headSha: 'a'.repeat(65),
+      }),
+    ).rejects.toThrow(RangeError);
+    expect((await methods.getPRAutomation(key))?.claimedHeads).toEqual([]);
+  });
+
+  test('accepts a SHA-256 head', async () => {
+    await enable();
+    const result = await methods.claimPRAutomationRound({
+      ...key,
+      ...limits,
+      binding: pullOne,
+      headSha: 'b'.repeat(64),
+    });
+    expect(result.ok).toBe(true);
   });
 
   test('rejects a claim while a round is already running', async () => {
@@ -970,6 +1081,14 @@ describe('setPRAutomationTrust', () => {
 });
 
 describe('approved bots', () => {
+  test('refuses an approval from before the record was rebound away and back', async () => {
+    await enable(pullOne);
+    const stale = { repository: 'acme/one', epoch: (await methods.getPRAutomation(key))!.epoch };
+    await enable(otherRepository);
+    await enable(pullOne);
+    expect(await methods.addPRAutomationBot(key, { id: 7 }, maxBots, stale)).toEqual(mismatch);
+  });
+
   test('adds a bot by numeric id', async () => {
     await enable();
     expect(await addBot(101, 'review-bot[bot]')).toMatchObject({
