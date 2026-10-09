@@ -297,6 +297,15 @@ function classNameElement(root) {
 
 const isCva = (call) => call.type === 'CallExpression' && call.callee.name === 'cva';
 
+/** The helpers that join their arguments into one class list; another call's result is not
+ *  known to carry what it was given. */
+const CLASS_CALLS = new Set(['cn', 'clsx', 'cx', 'classNames', 'twMerge', 'twJoin', 'cva']);
+const isClassCall = (call) =>
+  call.type === 'CallExpression' &&
+  CLASS_CALLS.has(
+    call.callee.type === 'MemberExpression' ? call.callee.property.name : call.callee.name,
+  );
+
 const propertyNamed = (object, name) =>
   object?.type === 'ObjectExpression'
     ? object.properties.find(
@@ -399,7 +408,7 @@ function recipeReader(context) {
           const [base, config] = node.arguments;
           return (base !== undefined && always(base, topology)) || variantsAlways(config, topology);
         }
-        return node.arguments.some((argument) => always(argument, topology));
+        return isClassCall(node) && node.arguments.some((argument) => always(argument, topology));
       case 'ArrayExpression':
         return node.elements.some((element) => element && always(element, topology));
       case 'ConditionalExpression':
@@ -409,7 +418,9 @@ function recipeReader(context) {
           node.operator !== '&&' && always(node.left, topology) && always(node.right, topology)
         );
       case 'BinaryExpression':
-        return always(node.left, topology) || always(node.right, topology);
+        return (
+          node.operator === '+' && (always(node.left, topology) || always(node.right, topology))
+        );
       case 'ObjectExpression':
         return node.properties.some((property) => mapEntryAlways(property, topology));
       case 'SpreadElement':
@@ -479,7 +490,10 @@ function recipeReader(context) {
       case 'TemplateLiteral':
         return always(parent, topology);
       case 'BinaryExpression':
-        return always(parent.left === child ? parent.right : parent.left, topology);
+        return (
+          parent.operator === '+' &&
+          always(parent.left === child ? parent.right : parent.left, topology)
+        );
       case 'ObjectExpression': {
         if (child.type !== 'Property') return false;
         const condition = source.getText(child.value);

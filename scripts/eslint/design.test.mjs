@@ -22,6 +22,7 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
     "cn(disabled && 'opacity-50', disabled && disabledFillClasses)",
     "cn(disabled ? 'opacity-50' : '', disabled ? disabledFillClasses : '')",
+    "cn('disabled:opacity-50', 'px-2 ' + disabledFillClasses, clsx(disabledInkClasses))",
     "cn('data-[state=not-disabled]:opacity-50 aria-[state=non-disabled]:opacity-40')",
     "cn(disabled ? '' : (active ? 'opacity-50' : ''))",
     "cn('disabled:opacity-50 theme-disabled:opacity-100!')",
@@ -218,6 +219,14 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     },
     {
       code: "cva('disabled:opacity-50', { variants: { tone: { muted: disabledFillClasses } }, defaultVariants: { tone: 'loud' } })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-50', disabledFillClasses === other)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-50', drop(disabledFillClasses))",
       errors: [missing('disabled:opacity-50')],
     },
     {
