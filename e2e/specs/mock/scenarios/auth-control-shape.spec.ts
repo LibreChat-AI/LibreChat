@@ -69,7 +69,36 @@ async function expectShape(
   expect(await shapeOf(field)).toEqual({ height: expected.field, radius: expected.radius });
   expect(await shapeOf(password)).toEqual({ height: expected.field, radius: expected.radius });
   expect(await shapeOf(button)).toEqual({ height: expected.button, radius: expected.radius });
+  await expectWithin(page.getByRole('button', { name: /show/i }), password);
   await expectValueFits(field);
+}
+
+/** A control drawn inside a field, or a label resting in it, stays inside the field's box. */
+async function expectWithin(inner: Locator, outer: Locator) {
+  const [box, frame] = await Promise.all([inner.boundingBox(), outer.boundingBox()]);
+  expect(box).not.toBeNull();
+  expect(frame).not.toBeNull();
+  if (!box || !frame) {
+    return;
+  }
+  expect(box.y).toBeGreaterThanOrEqual(frame.y);
+  expect(box.y + box.height).toBeLessThanOrEqual(frame.y + frame.height);
+  expect(box.height).toBeGreaterThanOrEqual(24);
+}
+
+/** The reset request form's resting label sits in the middle of the field at any height. */
+async function expectResetLabelCentered(page: Page) {
+  await page.goto('/forgot-password');
+  const field = page.getByRole('textbox', { name: /email/i });
+  await expect(field).toBeVisible({ timeout: 20000 });
+  const label = page.locator('label[for="email"]');
+  await expectWithin(label, field);
+  const [box, frame] = await Promise.all([label.boundingBox(), field.boundingBox()]);
+  if (!box || !frame) {
+    throw new Error('The reset request field or its label has no box');
+  }
+  const offset = box.y + box.height / 2 - (frame.y + frame.height / 2);
+  expect(Math.abs(offset)).toBeLessThanOrEqual(2);
 }
 
 test.describe('sign-in control shape roles', () => {
@@ -78,6 +107,7 @@ test.describe('sign-in control shape roles', () => {
   }) => {
     await openLogin(page);
     await expectShape(page, { field: 44, button: 48, radius: '16px' });
+    await expectResetLabelCentered(page);
   });
 
   test('the ClickHouse theme draws the sign-in controls at its own height and corner @scenario:clickhouse-reshapes-sign-in-controls', async ({
@@ -87,6 +117,7 @@ test.describe('sign-in control shape roles', () => {
     await openLogin(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
     await expectShape(page, { field: 32, button: 32, radius: '4px' });
+    await expectResetLabelCentered(page);
   });
 
   test('a theme that names the sign-in roles reshapes the controls without touching the form @scenario:theme-reshapes-sign-in-controls', async ({
@@ -96,5 +127,6 @@ test.describe('sign-in control shape roles', () => {
     await openLogin(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
     await expectShape(page, { field: 56, button: 40, radius: '0px' });
+    await expectResetLabelCentered(page);
   });
 });

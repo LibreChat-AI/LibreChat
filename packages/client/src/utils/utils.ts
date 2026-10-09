@@ -56,6 +56,7 @@ const twMerge = extendTailwindMerge({
             'theme-icon',
             'theme-icon-md',
             'theme-icon-lg',
+            'theme-auth-field-action',
           ],
         },
       ],
