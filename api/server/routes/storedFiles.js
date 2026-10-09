@@ -3,6 +3,7 @@ const { FileSources } = require('librechat-data-provider');
 const {
   isEnabled,
   s3FileSource,
+  azureFileSource,
   getStoredFileURL,
   authenticateViewer,
   createStoredFileHandler,
@@ -37,6 +38,6 @@ const canViewFile = async (viewer, { source, key, ownerId }) => {
 
 module.exports = createStoredFileHandler({
   authenticate: (req) => authenticateViewer(req, cookieAuth),
-  sources: { [FileSources.s3]: s3FileSource },
+  sources: { [FileSources.s3]: s3FileSource, [FileSources.azure_blob]: azureFileSource },
   canViewFile,
 });

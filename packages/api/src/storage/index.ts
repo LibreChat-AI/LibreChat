@@ -1,6 +1,7 @@
 export * from './cloudfront';
 export * from './s3';
 export * from './proxy';
+export * from './azure';
 export * from './types';
 export * from './images';
 export * from './avatar';
