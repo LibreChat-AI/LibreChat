@@ -48,6 +48,9 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(!disabled && 'opacity-50')",
     "cn({ 'opacity-50': disabled === false })",
     "cn('data-[disabled=false]:opacity-50 aria-[disabled=false]:opacity-60')",
+    "cn('[&:not(:disabled)]:opacity-50')",
+    "cn(isNotDisabled && 'opacity-50')",
+    "cn({ 'opacity-50': props.nonDisabled })",
   ],
   invalid: [
     {

@@ -17,11 +17,12 @@ const RECIPE_VARIANT = /(?:^|\s)(?:peer-)?theme-disabled(?:-within)?:!?opacity-1
 
 /** A variant that selects a disabled control, its group, its peer or a wrapper around it:
  *  `disabled:`, `aria-disabled:`, `data-[state=disabled]:`, `has-[:disabled]:`, `[&:disabled]:`.
- *  The recipes' own `theme-disabled`, a negated `not-disabled` and an explicit
- *  `[disabled=false]` select something else. */
+ *  The recipes' own `theme-disabled`, a negated `not-disabled` or `[&:not(:disabled)]` and an
+ *  explicit `[disabled=false]` select something else. */
 const isDisabledVariant = (variant) =>
   /disabled/.test(variant) &&
   !/^(?:(?:group|peer)-)?(?:theme-disabled|not-)/.test(variant) &&
+  !/:not\([^)]*disabled/.test(variant) &&
   !/disabled\s*!?=\s*["']?false\b|disabled\s*!=/.test(variant);
 
 /** Ancestors that keep a class string inside one class list: the expression a recipe is
@@ -101,7 +102,8 @@ function disabledSense(test, source) {
     return known.length > 0 && known.every((sense) => sense === known[0]) ? known[0] : undefined;
   }
   if (['Identifier', 'MemberExpression', 'ChainExpression'].includes(test.type)) {
-    return /disabled/i.test(source.getText(test)) ? true : undefined;
+    const text = source.getText(test);
+    return /disabled/i.test(text) && !/(?:not|non)_?disabled/i.test(text) ? true : undefined;
   }
   return undefined;
 }
