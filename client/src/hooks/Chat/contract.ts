@@ -323,6 +323,9 @@ export type MessagePartsHost = {
   ) => [string | null, Dispatch<SetStateAction<string | null>>];
   /** The artifact panel, scoped to one artifact. */
   useArtifactPanel: (artifactId: string) => MessagePartArtifactPanel;
+  /** Whether the deployment lets inline visuals render (`interface.visuals`); `undefined` until
+   *  the deployment has answered, so a turned-off deployment never runs a page. */
+  useVisualsAllowed: () => boolean | undefined;
   /** Steers sent to a conversation that the server has not confirmed yet. */
   usePendingSteers: (conversationId: string) => PendingSteer[];
   /** Whether a steer in a conversation is being escalated to an interrupt. */

@@ -4,7 +4,9 @@ import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown } from 'mdast-util-math';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { directive } from 'micromark-extension-directive';
+import { VISUAL_DIRECTIVE } from 'librechat-data-provider';
 import { directiveFromMarkdown } from 'mdast-util-directive';
+import { visualParts } from '~/utils/visual';
 
 export type MarkdownBlock = {
   /** Exact source slice for this top-level block. */
@@ -71,6 +73,16 @@ const countWithin = (
     // excluded — the plugin rewrites every textDirective to literal text, so no
     // Artifact renders and no index is consumed.
     counts.artifact += 1;
+    return;
+  }
+  const visual =
+    node.type === 'containerDirective' && node.name === VISUAL_DIRECTIVE ? visualParts(node) : null;
+  if (visual != null) {
+    // visualPlugin renders the html fence as one Visual, which consumes no index,
+    // and moves the children around it out to render as ordinary content.
+    for (const child of [...visual.before, ...visual.after]) {
+      countWithin(child, counts);
+    }
     return;
   }
   if (node.type === 'code') {

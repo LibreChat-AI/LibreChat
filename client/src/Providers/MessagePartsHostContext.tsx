@@ -24,6 +24,7 @@ import {
 import store, { ptcTraceByToolCallId, ptcTraceKey, sandboxStartingByToolCallId } from '~/store';
 import { useMessageContext, useFileMapContext } from '~/Providers';
 import { showThinkingAtom } from '~/store/showThinking';
+import { useGetStartupConfig } from '~/data-provider';
 import { fontSizeAtom } from '~/store/fontSize';
 
 function useAppMessage(): MessagePartMessage {
@@ -108,6 +109,10 @@ export const appMessagePartsHost: MessagePartsHost = {
     ),
   useToolArtifactClaim: (artifactId) => useRecoilState(store.toolArtifactClaim(artifactId)),
   useArtifactPanel: useAppArtifactPanel,
+  useVisualsAllowed: () => {
+    const { data } = useGetStartupConfig();
+    return data == null ? undefined : data.interface?.visuals !== false;
+  },
   usePendingSteers: (conversationId) =>
     useRecoilValue(store.pendingSteersByConvoId(conversationId)),
   useSteerEscalating: (conversationId) => useAtomValue(escalatingSteerFamily(conversationId)),

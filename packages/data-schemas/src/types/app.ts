@@ -16,6 +16,7 @@ import type {
   SummarizationConfig,
   TConversationListConfig,
   TToolCallPreviewsConfig,
+  TVisualsConfig,
   SkillSyncConfig,
   FiltersConfig,
 } from 'librechat-data-provider';
@@ -122,6 +123,8 @@ export interface AppConfig {
   conversationList?: TConversationListConfig;
   /** Bounds for the tool-call previews sent on conversation loads */
   toolCallPreviews?: TToolCallPreviewsConfig;
+  /** Origins inline visuals may load libraries from */
+  visuals?: TVisualsConfig;
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];
   /** Available tools */

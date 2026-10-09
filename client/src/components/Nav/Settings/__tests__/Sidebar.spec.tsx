@@ -23,6 +23,7 @@ const ctx: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  visualsAllowed: true,
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',

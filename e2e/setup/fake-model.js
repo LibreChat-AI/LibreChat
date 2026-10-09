@@ -81,6 +81,8 @@ const MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_MERMAID_ARTIFACT_REPLY';
 const LARGE_MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_LARGE_MERMAID_ARTIFACT_REPLY';
 const HTML_ARTIFACT_REPLY_MARKER = 'E2E_HTML_ARTIFACT_REPLY';
 const TWO_ARTIFACT_REPLY_MARKER = 'E2E_TWO_ARTIFACT_REPLY';
+/** An inline visual whose page reports, in its own text, what its sandbox allowed. */
+const VISUAL_REPLY_MARKER = 'E2E_VISUAL_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
@@ -579,6 +581,52 @@ function replyResponses(text) {
           ':::artifact{identifier="e2e-html" type="text/html" title="E2E HTML Artifact"}',
           '<h1>HTML sandbox fixture</h1>',
           ':::',
+        ].join('\n'),
+      ],
+    };
+  }
+
+  if (text.includes(VISUAL_REPLY_MARKER)) {
+    const bars = [40, 65, 55, 90]
+      .map(
+        (height, index) =>
+          `<div class="bar" style="height:${height}%;background:var(--chart-${index + 1})"></div>`,
+      )
+      .join('');
+    return {
+      responses: [
+        [
+          'Revenue rose in three of four quarters.',
+          '',
+          ':::visual{title="Quarterly revenue"}',
+          '```html',
+          '<!doctype html>',
+          '<html>',
+          '<head><style>',
+          '.bars{display:flex;gap:12px;align-items:flex-end;height:180px}',
+          '.bar{flex:1;border-radius:var(--radius) var(--radius) 0 0}',
+          'p{color:var(--muted-foreground);margin:12px 0 0}',
+          '</style></head>',
+          '<body>',
+          `<div class="bars" role="img" aria-label="Revenue by quarter">${bars}</div>`,
+          '<p id="probe">probing</p>',
+          '<script>',
+          'const results = ["script ran"];',
+          'try { void window.parent.document.title; results.push("parent exposed"); } catch { results.push("parent isolated"); }',
+          'try { void localStorage.length; results.push("storage exposed"); } catch { results.push("storage isolated"); }',
+          'const fg = getComputedStyle(document.documentElement).getPropertyValue("--foreground").trim();',
+          'results.push(fg ? "themed" : "unthemed");',
+          'fetch("/api/config").then(() => "fetch allowed", () => "fetch blocked").then((outcome) => {',
+          '  results.push(outcome);',
+          '  document.getElementById("probe").textContent = results.join(", ");',
+          '});',
+          '</script>',
+          '</body>',
+          '</html>',
+          '```',
+          ':::',
+          '',
+          'The fourth quarter was the strongest.',
         ].join('\n'),
       ],
     };

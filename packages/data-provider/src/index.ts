@@ -20,6 +20,7 @@ export * from './parts';
 export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';
+export * from './visuals';
 /* schema helpers  */
 export * from './parsers';
 /* custom/dynamic configurations  */
@@ -77,6 +78,7 @@ export {
   registerPage,
   apiBaseUrl,
   sharedFileDownload,
+  visualFrame,
   buildLoginRedirectUrl,
 } from './api-endpoints';
 export { default as request } from './request';

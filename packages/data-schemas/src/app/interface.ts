@@ -47,6 +47,7 @@ export async function loadDefaultInterface({
     mascot: interfaceConfig?.mascot ?? defaults.mascot,
     contextUsage: interfaceConfig?.contextUsage ?? defaults.contextUsage,
     artifactUndocking: interfaceConfig?.artifactUndocking ?? defaults.artifactUndocking,
+    visuals: interfaceConfig?.visuals ?? defaults.visuals,
     contextCost: interfaceConfig?.contextCost ?? defaults.contextCost,
     feedback: interfaceConfig?.feedback ?? defaults.feedback,
     currency: interfaceConfig?.currency ?? defaults.currency,

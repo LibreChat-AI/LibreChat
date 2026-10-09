@@ -29,6 +29,16 @@ projects:
 #   outputChars: 512   # characters of each output kept, half from the start and half from the end
 #   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
 
+# Inline visuals (turned on or off with `interface.visuals`) are HTML pages shown in a sandboxed
+# frame. They load scripts, styles, fonts and images only from these https origins; every other
+# request is blocked. Defaults shown.
+# visuals:
+#   sources:
+#     - 'https://cdn.jsdelivr.net'
+#     - 'https://cdnjs.cloudflare.com'
+#     - 'https://unpkg.com'
+#     - 'https://esm.sh'
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central
@@ -262,6 +272,9 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Let assistants draw charts, diagrams and small interactive figures inline in replies.
+  # Each user can turn it off under Settings > Chat. Default: true.
+  visuals: true
   agents:
     use: true
     create: true

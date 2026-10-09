@@ -1886,6 +1886,41 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
 
     expect(result.additional_instructions).toBe('Existing dynamic\n\nArtifact guidance');
   });
+
+  it.each([
+    ['the user setting is on and the deployment allows visuals', true, undefined, true, true],
+    ['the user setting is off', false, undefined, true, false],
+    ['the deployment turned visuals off', true, false, true, false],
+    ['the agent works in the background, like the memory agent', true, undefined, false, false],
+  ])(
+    'appends visuals guidance only when %s',
+    async (_label, requested, allowed, visualsAvailable, expected) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      (req as { body: unknown }).body = { visuals: requested };
+      (req as { config: unknown }).config = {
+        interfaceConfig: allowed === undefined ? {} : { visuals: allowed },
+        visuals: { sources: ['https://cdn.example.com'] },
+      };
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+          visualsAvailable,
+        },
+        db,
+      );
+
+      const instructions = result.additional_instructions ?? '';
+      expect(instructions.includes(':::visual{title=')).toBe(expected);
+      expect(instructions.includes('https://cdn.example.com')).toBe(expected);
+    },
+  );
 });
 
 describe('initializeAgent — attachment scoping', () => {

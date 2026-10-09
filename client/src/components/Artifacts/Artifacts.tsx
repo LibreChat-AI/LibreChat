@@ -17,7 +17,12 @@ import {
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { CSSProperties } from 'react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
-import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
+import {
+  TOOL_ARTIFACT_TYPES,
+  hasSandpackPreview,
+  isCodeOnlyArtifact,
+  isPreviewOnlyArtifact,
+} from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
@@ -546,10 +551,10 @@ export default function Artifacts() {
                 isVisible && !isClosing ? 'translate-x-0 opacity-100' : 'translate-x-2 opacity-0',
               )}
             >
-              {/* Refresh drives the Sandpack preview client; the Mermaid
-                  renderer has no such client and offers its own retry, so the
-                  action would spin over an unchanged diagram. */}
-              {displayedTab === 'preview' && !isMermaidArtifact && (
+              {/* Refresh drives the Sandpack preview client; the panel's own
+                  renderers have no such client and offer their own retry, so
+                  the action would spin over an unchanged preview. */}
+              {displayedTab === 'preview' && hasSandpackPreview(currentArtifact.type) && (
                 <Button
                   size="icon"
                   variant="ghost"

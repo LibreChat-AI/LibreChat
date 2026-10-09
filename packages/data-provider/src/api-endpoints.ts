@@ -312,6 +312,9 @@ export const mcpOAuthBind = (serverName: string) => `${BASE_URL}/api/mcp/${serve
 export const actionOAuthBind = (actionId: string) =>
   `${BASE_URL}/api/actions/${actionId}/oauth/bind`;
 
+/** Same-origin shell an inline visual's document is written into. */
+export const visualFrame = () => `${BASE_URL}/api/visuals/frame`;
+
 export const config = (context?: StartupConfigContext) =>
   `${BASE_URL}/api/config${buildQuery({ context })}`;
 

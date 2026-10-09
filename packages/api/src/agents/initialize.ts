@@ -138,6 +138,7 @@ import { applyBackgroundToolCalls } from './background';
 import { applyTurnDelivery } from './files/delivery';
 import { generateArtifactsPrompt } from '~/prompts';
 import { getProviderConfig } from '~/endpoints';
+import { getVisualsPrompt } from '~/visuals';
 import { primeResources } from './resources';
 
 /**
@@ -1030,6 +1031,9 @@ export interface InitializeAgentParams {
    *  configured, and the user permitted). When true and the agent lists the `memory`
    *  capability, `set_memory` + `delete_memory` are registered for the LLM. */
   memoryAvailable?: boolean;
+  /** Whether this agent answers in the user's conversation, so the user's inline visuals setting
+   *  (`requestBody.visuals`) applies. Background agents such as the memory agent leave it unset. */
+  visualsAvailable?: boolean;
   /** Per-user skill active/inactive overrides for filtering the skill catalog. */
   skillStates?: Record<string, boolean>;
   /** Admin-configured default for shared skills (`true` = shared skills auto-activate). */
@@ -2559,6 +2563,14 @@ export async function initializeAgent(
     });
     appendAdditionalInstructions(agent, artifactsPromptResult);
   }
+
+  appendAdditionalInstructions(
+    agent,
+    getVisualsPrompt({
+      requested: params.visualsAvailable === true && runtime.requestBody.visuals === true,
+      appConfig,
+    }),
+  );
 
   let skillCount = 0;
   /**

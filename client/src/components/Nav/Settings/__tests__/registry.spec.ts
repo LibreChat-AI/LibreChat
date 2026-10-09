@@ -25,6 +25,7 @@ const settingsContext: SettingsContextValue = {
   allowAccountDeletion: true,
   aboutEnabled: false,
   mascotAllowed: true,
+  visualsAllowed: true,
   engineTTS: 'browser',
   langfuseConnectionAccess: false,
   adminPanelURL: '',
@@ -184,6 +185,18 @@ describe('settings registry', () => {
 
     it('hides email changes when administrators disable them', () => {
       expect(emailChangeEntry?.show?.({ ...settingsContext, allowEmailChange: false })).toBe(false);
+    });
+  });
+
+  describe('inline visuals visibility', () => {
+    const entry = registry.find((item) => item.id === 'inlineVisuals');
+
+    it('offers the setting when the deployment allows visuals', () => {
+      expect(entry?.show?.(settingsContext)).toBe(true);
+    });
+
+    it('hides the setting when the deployment turned visuals off', () => {
+      expect(entry?.show?.({ ...settingsContext, visualsAllowed: false })).toBe(false);
     });
   });
 });
