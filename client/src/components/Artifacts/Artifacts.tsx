@@ -17,7 +17,12 @@ import {
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react';
 import type { CSSProperties } from 'react';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
-import { TOOL_ARTIFACT_TYPES, isCodeOnlyArtifact, isPreviewOnlyArtifact } from '~/utils/artifacts';
+import {
+  TOOL_ARTIFACT_TYPES,
+  isCodeOnlyArtifact,
+  isPreviewOnlyArtifact,
+  normalizeArtifactType,
+} from '~/utils/artifacts';
 import { copyWithinDocument, openUndockedWindow, prepareUndockedDocument } from './undockedWindow';
 import { artifactsOpenedArtifactId, artifactsPaneFocusRequest, undockedArtifacts } from './state';
 import { displayFilename } from '~/components/Chat/Messages/Content/Parts/attachmentTypes';
@@ -186,7 +191,8 @@ export default function Artifacts() {
     mermaidExportState != null && mermaidExportState.artifactId === currentArtifact?.id
       ? mermaidExportState.data
       : null;
-  const isMermaidArtifact = currentArtifact?.type === TOOL_ARTIFACT_TYPES.MERMAID;
+  const isMermaidArtifact =
+    normalizeArtifactType(currentArtifact?.type ?? '') === TOOL_ARTIFACT_TYPES.MERMAID;
 
   const closeArtifacts = useCallback(() => {
     if (isMobile) {
