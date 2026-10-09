@@ -776,7 +776,7 @@ describe('live fold parity with the cards it hides', () => {
       expect(header.querySelector('.lucide-file-text')).not.toBeNull();
     });
 
-    it.each([true, false])('puts failure ahead of site identity (fold=%s)', (fold) => {
+    it.each([true, false])('keeps identity for mixed outcomes (fold=%s)', (fold) => {
       const failed = toPart({ name: Tools.web_search, output: 'results', runStepStatus: 'failed' });
       const view = mount(
         [failed, toPart({ name: 'lookup', output: 'ok' }, 't2')],
@@ -784,8 +784,8 @@ describe('live fold parity with the cards it hides', () => {
         fold,
       );
       const header = within(view.container).getAllByRole('button')[0];
-      expect(header.querySelector('.lucide-triangle-alert')).not.toBeNull();
-      expect(sites(header)).toEqual([]);
+      expect(header.querySelector('.lucide-circle-x')).toBeNull();
+      expect(sites(header)).toEqual(['youtube.com', 'cnbc.com']);
     });
 
     it.each([true, false])('puts cancellation ahead of tool identity (fold=%s)', (fold) => {
@@ -807,7 +807,7 @@ describe('live fold parity with the cards it hides', () => {
       );
       const header = screen.getByRole('button', { name: 'Reviewed the work' });
       expect(
-        header.querySelector(status === 'failed' ? '.lucide-triangle-alert' : '.lucide-x'),
+        header.querySelector(status === 'failed' ? '.lucide-circle-x' : '.lucide-x'),
       ).not.toBeNull();
     });
 
@@ -824,7 +824,7 @@ describe('live fold parity with the cards it hides', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Reviewed the work' }));
       const group = screen.getByRole('button', { name: /Ran 2 actions.*1\/2 failed/ });
       expect(group).toHaveAccessibleName(/1\/2 failed/);
-      expect(group.querySelector('.lucide-triangle-alert')).not.toBeNull();
+      expect(group.querySelector('.lucide-circle-x')).toBeNull();
     });
 
     it('shows the sites a search read on the live row, one per domain, with no card mounted', () => {
@@ -874,7 +874,7 @@ describe('live fold parity with the cards it hides', () => {
       const button = screen.getByRole('button', { name: 'Could not reach the site' });
 
       expect(sites(button)).toEqual([]);
-      expect(button.querySelector('.lucide-triangle-alert')).not.toBeNull();
+      expect(button.querySelector('.lucide-circle-x')).not.toBeNull();
     });
   });
 

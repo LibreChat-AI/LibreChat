@@ -109,7 +109,7 @@ export default function MessageRow({
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
   const isSystem = systemLabel != null && systemLabel !== '';
-  const isUserSide = isCreatedByUser || isSystem;
+  const isUserSide = isCreatedByUser && !isSystem;
 
   return (
     <div
@@ -136,7 +136,7 @@ export default function MessageRow({
         )}
       >
         {isSystem && (
-          <h2 className="text-text-secondary mb-1 flex items-center gap-1.5 pr-1.5 text-xs font-medium tracking-wide uppercase select-none">
+          <h2 className="text-text-secondary mb-1 flex items-center gap-1.5 pr-1.5 text-xs font-medium select-none">
             <Zap size={12} aria-hidden="true" />
             {systemLabel}
             <span className="sr-only">

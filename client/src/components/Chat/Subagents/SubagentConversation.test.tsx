@@ -140,8 +140,8 @@ describe('SubagentConversation', () => {
     expect(screen.getAllByTestId('child-face')).toHaveLength(2);
     expect(screen.getByTestId('thinking-cursor')).toHaveAttribute('data-under-header-icon', 'true');
     expect(container.querySelectorAll('.message-render')).toHaveLength(4);
-    expect(container.querySelectorAll('.user-turn')).toHaveLength(2);
-    expect(container.querySelectorAll('.agent-turn')).toHaveLength(2);
+    expect(container.querySelectorAll('.user-turn')).toHaveLength(1);
+    expect(container.querySelectorAll('.agent-turn')).toHaveLength(3);
     expect(container.querySelector('[data-subagent-conversation]')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_prompt')).not.toBeInTheDocument();
     expect(
