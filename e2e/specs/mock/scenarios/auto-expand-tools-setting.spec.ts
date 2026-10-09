@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page, Route } from '@playwright/test';
 import { messagesView } from '../helpers';
+import { openSidebar } from './sidebar';
 
 /**
  * The "Auto-expand tool details" setting reaches the tool cards through the message parts host.
@@ -70,7 +71,8 @@ const outputs = (page: Page): Locator[] =>
   OUTPUTS.map((output) => messagesView(page).locator('pre', { hasText: output }).first());
 
 async function setAutoExpand(page: Page, on: boolean) {
-  await page.getByTestId('nav-user').click();
+  await openSidebar(page);
+  await page.getByTestId('nav-user').filter({ visible: true }).first().click();
   await page.getByRole('menuitem', { name: 'Settings' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible({
