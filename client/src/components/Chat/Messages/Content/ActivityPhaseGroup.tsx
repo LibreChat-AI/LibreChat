@@ -590,7 +590,7 @@ export default function ActivityPhaseGroup({
 
   const partialMarkerFallback =
     labelPart.status === 'partial' &&
-    (!hasContent || toolCount === 0 || isSpanFailed(failedCount, toolCount));
+    (!hasContent || failedCount === 0 || isSpanFailed(failedCount, toolCount));
 
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per

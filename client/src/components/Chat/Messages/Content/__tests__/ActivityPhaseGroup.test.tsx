@@ -917,6 +917,32 @@ test('honors the partial marker when only failed tool rows survive', () => {
   ).not.toBeNull();
 });
 
+test('retains partial status when only successful tool rows survive', () => {
+  const part = {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: {
+      id: 'success',
+      name: 'read_file',
+      args: '{}',
+      output: 'done',
+      progress: 1,
+      runStepStatus: 'completed',
+    },
+  } as TMessageContentParts;
+  render(
+    <ActivityPhaseGroup
+      labelPart={{ ...labelPart, status: 'partial' }}
+      hasContent
+      spanParts={[part]}
+    >
+      <div />
+    </ActivityPhaseGroup>,
+  );
+  expect(
+    screen.getByRole('button', { name: LABEL }).querySelector('.lucide-triangle-alert'),
+  ).not.toBeNull();
+});
+
 describe('ActivityPhaseGroup streaming thought peek', () => {
   const thought: TMessageContentParts = {
     type: ContentTypes.THINK,
