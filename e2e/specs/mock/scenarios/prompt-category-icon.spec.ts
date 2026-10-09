@@ -127,7 +127,7 @@ async function categoryIconPaints(page: Page, mode: Mode, definition: ThemeDefin
         .locator('..');
       await expect(row).toBeVisible({ timeout: 20000 });
       const icon = row.locator('svg').first();
-      const read = (): Promise<Paint> =>
+      const paintOnce = (): Promise<Paint> =>
         icon.evaluate((node) => {
           let element: Element | null = node.parentElement;
           let background = 'rgba(0, 0, 0, 0)';
@@ -141,6 +141,15 @@ async function categoryIconPaints(page: Page, mode: Mode, definition: ThemeDefin
           }
           return { color: getComputedStyle(node).color, background };
         });
+      /** The list can swap a row's node while it settles; a detached node computes no style. */
+      const read = async (): Promise<Paint> => {
+        let paint: Paint = { color: '', background: '' };
+        await expect(async () => {
+          paint = await paintOnce();
+          expect(paint.color).not.toBe('');
+        }).toPass({ timeout: 10000 });
+        return paint;
+      };
       const rest = await read();
       let hover: Paint | null = null;
       if (canHover) {
