@@ -95,6 +95,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   useFontSize: () => useAtomValue(fontSizeAtom),
   useShowThinking: () => useAtomValue(showThinkingAtom),
+  useAutoExpandTools: () => useRecoilValue<boolean>(store.autoExpandTools),
   useUserTextPreferences: useAppUserTextPreferences,
   /* The atom rather than the auth context: AuthContextProvider mirrors the user into it, and the
    * public share route mounts outside that provider. */

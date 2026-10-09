@@ -1,5 +1,4 @@
 import { memo, useCallback, useMemo, useState } from 'react';
-import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
 import type { TranslationKeys } from '~/hooks';
@@ -9,13 +8,13 @@ import SystemEventHeader, {
 } from '~/components/Chat/Messages/ui/SystemEvent';
 import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import BackgroundTaskCard from './BackgroundTaskCard';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import MarkdownLite from './MarkdownLite';
-import store from '~/store';
 
 const SUBAGENT_HEADER_KEYS = {
   completed: 'com_ui_wakeup_subagent_completed',
@@ -109,7 +108,7 @@ const Wakeup = memo(function Wakeup({
   const localize = useLocalize();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
-  const autoExpand = useRecoilValue(store.autoExpandTools);
+  const autoExpand = useMessagePartsHost().useAutoExpandTools();
   const [isExpanded, setIsExpanded] = useState(autoExpand);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);

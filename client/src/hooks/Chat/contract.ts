@@ -302,6 +302,8 @@ export type MessagePartsHost = {
   useFontSize: () => string;
   /** Whether the viewer wants reasoning expanded by default. */
   useShowThinking: () => boolean;
+  /** Whether the viewer wants tool cards and tool groups expanded by default. */
+  useAutoExpandTools: () => boolean;
   /** How the viewer prefers user-authored text to display. */
   useUserTextPreferences: () => MessagePartsUserTextPreferences;
   /** The signed-in user. */
