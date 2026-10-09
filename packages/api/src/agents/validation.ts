@@ -152,13 +152,14 @@ export const graphEdgeSchema: z.ZodObject<
     .transform((v) => (v === '' ? undefined : v)),
 });
 
-/** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent) */
+/** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent, user_toggle) */
 export const toolOptionsSchema: z.ZodObject<
   {
     defer_loading: z.ZodOptional<z.ZodBoolean>;
     allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
     run_in_background: z.ZodOptional<z.ZodBoolean>;
     describe_intent: z.ZodOptional<z.ZodBoolean>;
+    user_toggle: z.ZodOptional<z.ZodEnum<['on', 'off']>>;
     approval_mode: z.ZodOptional<z.ZodEnum<['ask', 'allow', 'chat', 'always']>>;
     approval_revision: z.ZodOptional<z.ZodString>;
   },
@@ -168,6 +169,7 @@ export const toolOptionsSchema: z.ZodObject<
   allowed_callers: z.array(z.enum(['direct', 'code_execution'])).optional(),
   run_in_background: z.boolean().optional(),
   describe_intent: z.boolean().optional(),
+  user_toggle: z.enum(['on', 'off']).optional(),
   approval_mode: z.enum(['ask', 'allow', 'chat', 'always']).optional(),
   approval_revision: z.string().uuid().optional(),
 });
@@ -525,35 +527,7 @@ export const agentBaseSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<
@@ -708,35 +682,7 @@ export const agentCreateSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<
@@ -847,35 +793,7 @@ export const agentUpdateSchema: z.ZodObject<
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     tool_resources: typeof agentToolResourcesSchema;
-    tool_options: z.ZodOptional<
-      z.ZodRecord<
-        z.ZodString,
-        z.ZodObject<
-          {
-            defer_loading: z.ZodOptional<z.ZodBoolean>;
-            allowed_callers: z.ZodOptional<
-              z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>
-            >;
-            run_in_background: z.ZodOptional<z.ZodBoolean>;
-            describe_intent: z.ZodOptional<z.ZodBoolean>;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          },
-          {
-            defer_loading?: boolean | undefined;
-            allowed_callers?: ('direct' | 'code_execution')[] | undefined;
-            run_in_background?: boolean | undefined;
-            describe_intent?: boolean | undefined;
-          }
-        >
-      >
-    >;
+    tool_options: typeof agentToolOptionsSchema;
     subagents: typeof agentSubagentsSchema;
     support_contact: z.ZodOptional<
       z.ZodObject<

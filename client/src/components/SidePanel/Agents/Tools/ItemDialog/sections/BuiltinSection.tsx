@@ -1,12 +1,19 @@
 import { Radio, Checkbox } from '@librechat/client';
 import { useFormContext, useWatch } from 'react-hook-form';
-import { Tools, MemoryScope, ArtifactModes, AgentCapabilities } from 'librechat-data-provider';
+import {
+  Tools,
+  MemoryScope,
+  ArtifactModes,
+  AgentCapabilities,
+  switchableBuiltinTools,
+} from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentForm, ExtendedFile } from '~/common';
 import type { BuiltinId } from '../../items/types';
 import OrchestrationHub from '../../../Advanced/OrchestrationHub';
 import { useVerifyAgentToolAuth } from '~/data-provider';
 import CodeBackground from '../../../Code/Background';
+import UserToggleSelect from '../UserToggleSelect';
 import CodeSettings from '../../../Code/Settings';
 import SearchAction from '../../../Search/Action';
 import FileContext from '../../../FileContext';
@@ -141,6 +148,8 @@ export default function BuiltinSection({
   const artifactsValue = (useWatch({ control, name: AgentCapabilities.artifacts }) ?? '') as string;
   const memoryScope = (useWatch({ control, name: 'memory_scope' }) ?? MemoryScope.user) as string;
 
+  const isSwitchable = (switchableBuiltinTools as readonly string[]).includes(builtinId);
+
   let body: React.ReactNode = null;
 
   if (builtinId === 'subagents' || builtinId === 'handoffs') {
@@ -186,6 +195,9 @@ export default function BuiltinSection({
         <p className="text-text-secondary text-sm leading-relaxed">{localizedDescription}</p>
       )}
       {body}
+      {isSwitchable && (
+        <UserToggleSelect toolOptionKey={builtinId} labelId={`${builtinId}-user-toggle-label`} />
+      )}
     </div>
   );
 }

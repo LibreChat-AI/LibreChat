@@ -12,6 +12,7 @@ import {
   SquareChevronRight,
 } from 'lucide-react';
 import {
+  Tools,
   AuthType,
   Permissions,
   ArtifactModes,
@@ -277,7 +278,13 @@ export default function usePaletteEntries({
       artifacts,
       mcpServerManager,
       searchApiKeyForm,
+      agentToolSwitches,
     } = context;
+    /* A saved agent's chat offers only the built-ins its creator made switchable,
+       and none of the ephemeral-only toggles (skills, memory, artifacts). */
+    const isSwitchable = (tool: Tools) =>
+      agentToolSwitches == null || agentToolSwitches.builtins[tool] != null;
+    const ephemeralOnly = agentToolSwitches == null;
 
     const pushTool = (
       itemId: string,
@@ -304,7 +311,7 @@ export default function usePaletteEntries({
       });
     };
 
-    if (toolsEnabled && canUseWebSearch && webSearchEnabled) {
+    if (toolsEnabled && canUseWebSearch && webSearchEnabled && isSwitchable(Tools.web_search)) {
       /* Same rule the old tools menu used for its gear: only credentials the
          user can actually provide are editable. Toggling opens the key dialog
          on its own while unauthenticated, so this pill is what keeps existing
@@ -335,7 +342,7 @@ export default function usePaletteEntries({
       );
     }
 
-    if (toolsEnabled && canRunCode && codeEnabled) {
+    if (toolsEnabled && canRunCode && codeEnabled && isSwitchable(Tools.execute_code)) {
       pushTool(
         'execute_code',
         localize('com_ui_run_code'),
@@ -347,7 +354,7 @@ export default function usePaletteEntries({
       );
     }
 
-    if (toolsEnabled && canUseFileSearch && fileSearchEnabled) {
+    if (toolsEnabled && canUseFileSearch && fileSearchEnabled && isSwitchable(Tools.file_search)) {
       pushTool(
         'file_search',
         localize('com_assistants_file_search'),
@@ -359,7 +366,7 @@ export default function usePaletteEntries({
       );
     }
 
-    if (toolsEnabled && skillsListable) {
+    if (toolsEnabled && ephemeralOnly && skillsListable) {
       pushTool(
         'skills',
         localize('com_ui_skills'),
@@ -371,7 +378,7 @@ export default function usePaletteEntries({
       );
     }
 
-    if (toolsEnabled && canUseMemory && memoryEnabled) {
+    if (toolsEnabled && ephemeralOnly && canUseMemory && memoryEnabled) {
       pushTool(
         'memory',
         localize('com_ui_memory'),
@@ -383,7 +390,7 @@ export default function usePaletteEntries({
       );
     }
 
-    if (toolsEnabled && artifactsEnabled) {
+    if (toolsEnabled && ephemeralOnly && artifactsEnabled) {
       const stored = artifacts.toggleState;
       const mode = stored == null || stored === false ? '' : String(stored);
       const artifactsOn = mode !== '';
