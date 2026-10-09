@@ -702,6 +702,7 @@ describe('DeploymentTheme cache', () => {
         .execute();
     });
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull();
   });
 
   const runMutation = (key: string, mutationFn: () => Promise<unknown>) =>
@@ -735,6 +736,7 @@ describe('DeploymentTheme cache', () => {
 
     await runMutation(MutationKeys.refreshToken, refresh);
     expect(localStorage.getItem(THEME_CACHE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(THEME_OWNER_KEY)).toBeNull();
   });
 
   it('keeps the cache when the silent refresh restores a session', async () => {
