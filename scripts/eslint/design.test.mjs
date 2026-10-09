@@ -263,6 +263,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
       errors: [missing('opacity-40')],
     },
     {
+      code: "cn('disabled:group-disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:group-disabled:opacity-50')],
+    },
+    {
       code: "cn('disabled:opacity-60!')",
       errors: [missing('disabled:opacity-60!')],
     },

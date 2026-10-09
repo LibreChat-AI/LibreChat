@@ -63,6 +63,8 @@ function topologyOf(variant) {
   return 'self';
 }
 
+const TOPOLOGY_ORDER = ['group', 'peer', 'within', 'self'];
+
 /** Ancestors that keep a class string inside one class list: the expression a recipe is
  *  composed into reaches up through these, and stops at a declaration or an attribute. */
 const COMPOSING = new Set([
@@ -110,10 +112,13 @@ const isImportant = (base) => base.startsWith('!') || base.endsWith('!');
 function variantDims(value) {
   return value.split(/\s+/).flatMap((token) => {
     const { variants, base } = splitVariants(token);
-    const variant = isOpacity(base) ? variants.find(isDisabledVariant) : undefined;
-    return variant
-      ? [{ dim: token, topology: topologyOf(variant), important: isImportant(base) }]
-      : [];
+    const selecting = isOpacity(base) ? variants.filter(isDisabledVariant) : [];
+    if (selecting.length === 0) return [];
+    /** A stacked utility (`disabled:group-disabled:opacity-50`) needs the recipe for its most
+     *  distant element, which a recipe for a nearer one cannot restore. */
+    const topologies = selecting.map(topologyOf);
+    const topology = TOPOLOGY_ORDER.find((candidate) => topologies.includes(candidate));
+    return [{ dim: token, topology, important: isImportant(base) }];
   });
 }
 
