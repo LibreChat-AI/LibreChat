@@ -309,6 +309,9 @@ export const mcpOAuthStatus = (flowId: string) =>
 
 export const mcpOAuthBind = (serverName: string) => `${BASE_URL}/api/mcp/${serverName}/oauth/bind`;
 
+export const mcpElicitationRespond = (flowId: string) =>
+  `${BASE_URL}/api/mcp/elicitation/${encodeURIComponent(flowId)}`;
+
 export const actionOAuthBind = (actionId: string) =>
   `${BASE_URL}/api/actions/${actionId}/oauth/bind`;
 

@@ -38,6 +38,7 @@ describe('MCP client capability profiles', () => {
 
   async function negotiateCapabilities(
     capabilityProfile?: MCPClientCapabilityProfile,
+    elicitation?: boolean,
   ): Promise<ClientCapabilities | undefined> {
     const server = new Server(
       { name: 'capability-test-server', version: '1.0.0' },
@@ -50,7 +51,11 @@ describe('MCP client capability profiles', () => {
 
     const connection = new MCPConnection({
       serverName: 'capability-test-server',
-      serverConfig: { type: 'streamable-http', url: 'http://localhost/mcp' },
+      serverConfig: {
+        type: 'streamable-http',
+        url: 'http://localhost/mcp',
+        ...(elicitation == null ? {} : { elicitation }),
+      },
       useSSRFProtection: false,
       ...(capabilityProfile == null ? {} : { capabilityProfile }),
     });
@@ -89,12 +94,24 @@ describe('MCP client capability profiles', () => {
   it.each([
     ['omitted', undefined],
     ['standard', STANDARD_MCP_CAPABILITY_PROFILE],
-  ] as const)('advertises no extensions for the %s profile', async (_label, profile) => {
-    await expect(negotiateCapabilities(profile)).resolves.toEqual({});
+  ] as const)(
+    'advertises no extensions, only URL elicitation, for the %s profile',
+    async (_label, profile) => {
+      await expect(negotiateCapabilities(profile)).resolves.toEqual({
+        elicitation: { url: {} },
+      });
+    },
+  );
+
+  it('advertises nothing when the server opts out of elicitation', async () => {
+    await expect(negotiateCapabilities(STANDARD_MCP_CAPABILITY_PROFILE, false)).resolves.toEqual(
+      {},
+    );
   });
 
   it('advertises the MCP Apps HTML extension for the apps profile', async () => {
     await expect(negotiateCapabilities(MCP_APPS_CAPABILITY_PROFILE)).resolves.toEqual({
+      elicitation: { url: {} },
       extensions: {
         'io.modelcontextprotocol/ui': {
           mimeTypes: ['text/html;profile=mcp-app'],

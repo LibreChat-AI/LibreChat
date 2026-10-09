@@ -541,7 +541,29 @@ function getReplayStepId(event: t.ServerSentEvent): unknown {
       : undefined;
   }
 
+  /** Elicitation cards dedupe by flow, not step: a re-emitted card for the same
+   *  flowId replaces the pending one in place rather than stacking. */
+  if (event.event === 'on_elicitation') {
+    const elicitation = 'elicitation' in event.data ? event.data.elicitation : undefined;
+    return elicitation != null && typeof elicitation === 'object' && 'flowId' in elicitation
+      ? elicitation.flowId
+      : undefined;
+  }
+
+  if (event.event === 'on_elicitation_resolved') {
+    return 'flowId' in event.data ? event.data.flowId : undefined;
+  }
+
   return undefined;
+}
+
+/** UI-only URL-mode elicitation cards replay so a refresh during a pending
+ *  authorization doesn't lose the card until the flow times out. */
+function isElicitationReplayEvent(event: t.ServerSentEvent): boolean {
+  if (!('event' in event) || !event.data || typeof event.data !== 'object') {
+    return false;
+  }
+  return event.event === 'on_elicitation' || event.event === 'on_elicitation_resolved';
 }
 
 function isToolTimingReplayEvent(event: t.ServerSentEvent): boolean {
@@ -7622,7 +7644,7 @@ class GenerationJobManagerClass {
     if (event.event === UsageEvents.ON_TOKEN_USAGE) {
       return this.trackTokenUsage(streamId, event, expectedCreatedAt);
     }
-    if (isToolTimingReplayEvent(event)) {
+    if (isToolTimingReplayEvent(event) || isElicitationReplayEvent(event)) {
       return this.trackReplayEvent(streamId, event, expectedCreatedAt);
     }
     if (
@@ -7915,7 +7937,11 @@ class GenerationJobManagerClass {
     event: t.ServerSentEvent,
     expectedCreatedAt: number,
   ): Promise<void> {
-    if (!isOAuthReplayEvent(event) && !isToolTimingReplayEvent(event)) {
+    if (
+      !isOAuthReplayEvent(event) &&
+      !isToolTimingReplayEvent(event) &&
+      !isElicitationReplayEvent(event)
+    ) {
       return;
     }
 

@@ -2864,6 +2864,58 @@ describe('useStepHandler', () => {
       consoleSpy.mockRestore();
     });
 
+    it('relocates an elicitation card to the tail when a text delta lands on its slot, keeping the text', () => {
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+      const elicitationPart = {
+        type: ContentTypes.ELICITATION,
+        elicitation: { flowId: 'flow-1', mode: 'url', message: 'Authorize access' },
+      } as unknown as TMessageContentParts;
+      /** Tool-call+elicitation+final-text sequence colliding on the same server
+       *  index: the elicitation card occupies index 1 when the final text delta
+       *  streams into that same slot. */
+      const responseMessage = createResponseMessage({
+        content: [{ type: ContentTypes.TEXT, text: 'Calling tool...' }, elicitationPart],
+      });
+      mockGetMessages.mockReturnValue([responseMessage]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+
+      act(() => {
+        result.current.syncStepMessage(responseMessage);
+      });
+
+      const runStep = createRunStep({ index: 1 });
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler({ event: StepEvents.ON_RUN_STEP, data: runStep }, submission);
+      });
+
+      const textDelta: Agents.MessageDeltaEvent = {
+        id: 'step-1',
+        delta: { content: [{ type: ContentTypes.TEXT, text: 'Final answer' }] },
+      };
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_MESSAGE_DELTA, data: textDelta },
+          submission,
+        );
+      });
+
+      expect(consoleSpy).not.toHaveBeenCalledWith('Content type mismatch', expect.anything());
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1];
+      const updated = lastCall[0][lastCall[0].length - 1] as TMessage;
+      const content = updated.content as Array<{ type?: string; text?: string }>;
+      // Final text is written into the collided slot, not dropped.
+      expect(content[1]).toMatchObject({ type: ContentTypes.TEXT, text: 'Final answer' });
+      // The elicitation card survives, relocated to the tail.
+      expect(content[content.length - 1]).toMatchObject({ type: ContentTypes.ELICITATION });
+      consoleSpy.mockRestore();
+    });
+
     it('drops an answered ask card when the resumed segment streams AROUND its slot', () => {
       /**
        * The first event after a resume re-renders the ask tool_call at ITS OWN
@@ -4875,6 +4927,162 @@ describe('useStepHandler', () => {
       });
 
       expect(getEntries('call_ptc')).toEqual([]);
+    });
+  });
+
+  describe('elicitation events', () => {
+    const flowId = 'user-1:jira:create_issue:nonce-1';
+
+    const elicitationEvent = (overrides: Record<string, unknown> = {}) => ({
+      id: 'step-elicit',
+      runId: 'response-msg-1',
+      elicitation: {
+        flowId,
+        mode: 'url',
+        message: 'Authorize Jira to continue',
+        url: 'https://auth.example.com/authorize',
+      },
+      ...overrides,
+    });
+
+    /** The elicitation branches resolve the response message through
+     *  `messageMap`, which only a prior run step populates. */
+    const seed = (
+      result: { current: { stepHandler: (...args: never[]) => void } },
+      submission: unknown,
+    ) => {
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_RUN_STEP, data: createRunStep() } as never,
+          submission as never,
+        );
+      });
+      mockSetMessages.mockClear();
+    };
+
+    const elicitationParts = () => {
+      const call = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1];
+      const message = call[0][call[0].length - 1] as TMessage;
+      return (message.content ?? []).filter(
+        (part) => part?.type === ContentTypes.ELICITATION,
+      ) as Array<{ type: string; elicitation: Record<string, unknown> }>;
+    };
+
+    it('appends an elicitation card as its own content part', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      seed(result, submission);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_ELICITATION, data: elicitationEvent() } as never,
+          submission,
+        );
+      });
+
+      const parts = elicitationParts();
+      expect(parts).toHaveLength(1);
+      expect(parts[0].elicitation).toMatchObject({ flowId, mode: 'url' });
+    });
+
+    it('dedupes by flowId so a re-emitted card replaces rather than stacks', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      seed(result, submission);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_ELICITATION, data: elicitationEvent() } as never,
+          submission,
+        );
+      });
+      mockGetMessages.mockReturnValue([
+        { ...createResponseMessage(), content: elicitationParts() as never },
+      ]);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_ELICITATION,
+            data: elicitationEvent({
+              elicitation: {
+                flowId,
+                mode: 'url',
+                message: 'Authorize Jira to continue',
+                url: 'https://auth.example.com/authorize?v=2',
+              },
+            }),
+          } as never,
+          submission,
+        );
+      });
+
+      const parts = elicitationParts();
+      expect(parts).toHaveLength(1);
+      expect(parts[0].elicitation.url).toBe('https://auth.example.com/authorize?v=2');
+    });
+
+    it('patches the matching card in place when the flow resolves', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      seed(result, submission);
+
+      act(() => {
+        result.current.stepHandler(
+          { event: StepEvents.ON_ELICITATION, data: elicitationEvent() } as never,
+          submission,
+        );
+      });
+      mockGetMessages.mockReturnValue([
+        { ...createResponseMessage(), content: elicitationParts() as never },
+      ]);
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_ELICITATION_RESOLVED,
+            data: { id: 'step-elicit', runId: 'response-msg-1', flowId, action: 'complete' },
+          } as never,
+          submission,
+        );
+      });
+
+      const parts = elicitationParts();
+      expect(parts).toHaveLength(1);
+      expect(parts[0].elicitation.action).toBe('complete');
+    });
+
+    it('ignores a resolution for a flowId that is not on the message', () => {
+      const withCard = {
+        ...createResponseMessage(),
+        content: [
+          {
+            type: ContentTypes.ELICITATION,
+            elicitation: { flowId, mode: 'url', message: 'Authorize', url: 'https://a.example' },
+          },
+        ] as never,
+      };
+      mockGetMessages.mockReturnValue([withCard]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      mockSetMessages.mockClear();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_ELICITATION_RESOLVED,
+            data: {
+              id: 'step-elicit',
+              runId: 'response-msg-1',
+              flowId: 'user-1:jira:create_issue:other',
+              action: 'complete',
+            },
+          } as never,
+          createSubmission(),
+        );
+      });
+
+      expect(mockSetMessages).not.toHaveBeenCalled();
     });
   });
 });

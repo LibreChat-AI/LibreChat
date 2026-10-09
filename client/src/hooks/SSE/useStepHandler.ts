@@ -84,6 +84,8 @@ type TStepEvent =
   | { event: StepEvents.ON_SUMMARIZE_DELTA; data: Agents.SummarizeDeltaEvent }
   | { event: StepEvents.ON_SUMMARIZE_COMPLETE; data: Agents.SummarizeCompleteEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
+  | { event: StepEvents.ON_ELICITATION; data: Agents.ElicitationEvent }
+  | { event: StepEvents.ON_ELICITATION_RESOLVED; data: Agents.ElicitationResolvedEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
   | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
 
@@ -1039,6 +1041,107 @@ export default function useStepHandler({
           ].find((id) => id && id !== Constants.NEW_CONVO && id !== Constants.PENDING_CONVO);
           if (conversationId) onSubagentIndexChange?.(conversationId);
         }
+      } else if (stepEvent.event === StepEvents.ON_ELICITATION) {
+        const { id: eventStepId, runId: eventRunId, elicitation } = stepEvent.data;
+        const runStep = stepMap.current.get(eventStepId);
+        let responseMessageId = runStep?.runId ?? eventRunId ?? '';
+        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
+          responseMessageId = submission?.initialResponse?.messageId ?? '';
+          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
+        }
+        if (!responseMessageId) {
+          console.warn('No message id found in elicitation event');
+          return;
+        }
+
+        const response = messageMap.current.get(responseMessageId);
+        if (!response) {
+          console.warn('[on_elicitation] No response message found for', responseMessageId);
+          return;
+        }
+
+        const contentPart: Agents.ElicitationContent = {
+          type: ContentTypes.ELICITATION,
+          elicitation,
+        };
+        /** Elicitation content is a standalone card, not an incremental delta onto an
+         *  existing content-typed slot (e.g. the originating tool call) — append it as
+         *  its own part, deduping by flowId so a re-emitted event replaces in place. */
+        const existingContent = (response.content ?? []) as TMessageContentParts[];
+        const updatedContentArr = [
+          ...existingContent.filter(
+            (part) =>
+              part?.type !== ContentTypes.ELICITATION ||
+              part.elicitation?.flowId !== elicitation.flowId,
+          ),
+          contentPart,
+        ];
+        const updatedResponse = { ...response, content: updatedContentArr };
+        messageMap.current.set(responseMessageId, updatedResponse);
+        setMessages(
+          mergeResponseMessage(messages, updatedResponse, responseMessageId, {
+            ensureUserMessage: true,
+          }),
+        );
+      } else if (stepEvent.event === StepEvents.ON_ELICITATION_RESOLVED) {
+        const {
+          id: eventStepId,
+          runId: eventRunId,
+          flowId,
+          action,
+          content: resolvedContent,
+        } = stepEvent.data;
+        const runStep = stepMap.current.get(eventStepId);
+        let responseMessageId = runStep?.runId ?? eventRunId ?? '';
+        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
+          responseMessageId = submission?.initialResponse?.messageId ?? '';
+          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
+        }
+        if (!responseMessageId) {
+          console.warn('No message id found in elicitation resolved event');
+          return;
+        }
+
+        const response = messageMap.current.get(responseMessageId);
+        if (!response) {
+          console.warn(
+            '[on_elicitation_resolved] No response message found for',
+            responseMessageId,
+          );
+          return;
+        }
+
+        /** Locate the ELICITATION part this resolution belongs to by `flowId` (its
+         *  dedupe key, same as the append-in-place logic above) and write the
+         *  resolved `action`/`content` onto it, so the resolved card survives SSE
+         *  replay and re-render. */
+        const existingContent = (response.content ?? []) as TMessageContentParts[];
+        let didResolve = false;
+        const updatedContentArr = existingContent.map((part) => {
+          if (part?.type !== ContentTypes.ELICITATION || part.elicitation?.flowId !== flowId) {
+            return part;
+          }
+          didResolve = true;
+          return {
+            ...part,
+            elicitation: { ...part.elicitation, action, content: resolvedContent },
+          };
+        });
+        if (!didResolve) {
+          console.warn(
+            '[on_elicitation_resolved] No matching elicitation content part for flowId',
+            flowId,
+          );
+          return;
+        }
+
+        const updatedResponse = { ...response, content: updatedContentArr };
+        messageMap.current.set(responseMessageId, updatedResponse);
+        setMessages(
+          mergeResponseMessage(messages, updatedResponse, responseMessageId, {
+            ensureUserMessage: true,
+          }),
+        );
       } else if (stepEvent.event === StepEvents.ON_SUMMARIZE_START) {
         announcePolite({ message: 'summarize_started', isStatus: true });
       } else if (stepEvent.event === StepEvents.ON_SUMMARIZE_DELTA) {
