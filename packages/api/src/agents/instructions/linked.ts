@@ -5,8 +5,8 @@ import type {
   AgentInstructionsPromptSelection,
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
+import type { NativeResolvedPrompt, PromptServiceError } from '~/prompts/types';
 import type { PromptService } from '~/prompts/service';
-import type { ResolvedPrompt } from '~/prompts/types';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { isContentFilterError } from '~/middleware/contentFilter';
 import { inspectPromptContent } from '~/prompts/protection';
@@ -102,7 +102,7 @@ interface CachedLinkedPrompt {
   readonly groupId: string;
   readonly promptId: string;
   readonly prompt: string;
-  readonly type: ResolvedPrompt['type'];
+  readonly type: NativeResolvedPrompt['type'];
 }
 
 class LinkedInstructionsTimeoutError extends Error {
@@ -157,10 +157,26 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
+/**
+ * Agent links stay native only (`allowedSources: ['native']` on every `resolvePrompt`
+ * call in this module). `blocked_content` and `unavailable_selection` map directly, and
+ * `unsupported_source` — returned by that `allowedSources` check when a link's group
+ * has since become a Langfuse group — maps to `unavailable_selection`, the same reason
+ * a missing native selection gets. The remaining source-routing types
+ * (`unsupported_selection`, `source_unavailable`, `source_not_found`,
+ * `unsupported_content`) never reach a native-only caller and map to the generic
+ * `'error'` reason only as a fallback.
+ */
 function mapServiceErrorReason(
-  type: 'invalid_input' | 'blocked_content' | 'unavailable_selection' | 'unsupported',
+  type: PromptServiceError['type'],
 ): LinkedInstructionsUnavailableReason {
-  return type === 'blocked_content' || type === 'unavailable_selection' ? type : 'error';
+  if (type === 'blocked_content' || type === 'unavailable_selection') {
+    return type;
+  }
+  if (type === 'unsupported_source') {
+    return 'unavailable_selection';
+  }
+  return 'error';
 }
 
 /**
@@ -375,16 +391,27 @@ export function createLinkedInstructionsResolver(
       };
     }
 
-    let fetched: ResolvedPrompt;
+    let fetched: NativeResolvedPrompt;
     try {
       const result = await runBounded(
-        promptService.resolvePrompt({ groupId: link.groupId, selection: link.selection, filters }),
+        promptService.resolvePrompt({
+          groupId: link.groupId,
+          selection: link.selection,
+          filters,
+          allowedSources: ['native'],
+        }),
         remainingMs(deadline),
         signal,
       );
       signal?.throwIfAborted();
       if (!result.ok) {
         return { status: 'unavailable', reason: mapServiceErrorReason(result.error.type) };
+      }
+      if (result.value.source !== 'native') {
+        /* allowedSources: ['native'] above means the service only ever resolves
+         * a native group here; this check narrows the type for the compiler
+         * and cannot be reached at runtime. */
+        return { status: 'unavailable', reason: 'error' };
       }
       fetched = result.value;
     } catch (error) {

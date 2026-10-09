@@ -2420,6 +2420,13 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().positive().optional(),
     })
     .optional(),
+  /** Limits GET /prompts/groups/:groupId/resolve; keyed by the authenticated user. */
+  promptResolve: z
+    .object({
+      userMax: z.number().int().positive().optional(),
+      userWindowInMinutes: z.number().positive().optional(),
+    })
+    .optional(),
   fileUploads: z
     .object({
       ipMax: z.number().optional(),

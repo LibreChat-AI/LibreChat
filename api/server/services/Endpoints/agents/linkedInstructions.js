@@ -2,6 +2,7 @@ const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const { createPromptService, createLinkedInstructionsResolver } = require('@librechat/api');
 const { grantPermission } = require('~/server/services/PermissionService');
+const { getAppConfig } = require('~/server/services/Config');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
@@ -12,7 +13,11 @@ const db = require('~/models');
  * `AGENT_LINKED_INSTRUCTIONS` cache namespace (`~/cache/getLogStores.js`).
  */
 const linkedInstructionsResolver = createLinkedInstructionsResolver({
-  promptService: createPromptService({ db, grantPermission }),
+  promptService: createPromptService({
+    db,
+    grantPermission,
+    getAppConfig,
+  }),
   cache: getLogStores(CacheKeys.AGENT_LINKED_INSTRUCTIONS),
   logger,
 });

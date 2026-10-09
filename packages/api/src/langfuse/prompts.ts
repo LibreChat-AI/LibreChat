@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AppConfig } from '@librechat/data-schemas';
 import {
+  isTimeout,
   redirectPolicyFor,
   resolveLangfuseHeaders,
   resolveTenantCredentials,
@@ -145,28 +146,36 @@ function resolveTenantConnection(
   };
 }
 
+export type LangfusePromptMode = 'tenant' | 'env';
+
 /**
- * The connection prompt reads use. A request from a tenant user, or any request
- * in multi-tenant mode (`usesLangfuseMultiTenantRouting`), uses only the
+ * Whether a prompt read uses the tenant's own connection or the deployment's
+ * shared env project. A request from a tenant user, or any request in
+ * multi-tenant mode (`usesLangfuseMultiTenantRouting`), always uses the
  * tenant's stored connection: prompt reads return data, so a tenant must never
  * read the central env project, even while `TENANT_ISOLATION_STRICT` is off.
  * Unlike tracing, this does not require `langfuse.enabled` or fanout.
+ *
+ * This is the one place that decision is made. The connection and the source
+ * identity recorded for a group both derive from it, so they can never pick
+ * different projects for the same request.
  */
+export function resolveLangfusePromptMode(tenantId?: string): LangfusePromptMode {
+  if (tenantId || usesLangfuseMultiTenantRouting()) {
+    return 'tenant';
+  }
+  return hasLangfuseEnvCredentials() ? 'env' : 'tenant';
+}
+
+/** The connection prompt reads use. See `resolveLangfusePromptMode` for the mode decision. */
 export function resolveLangfusePromptConnection(
   appConfig?: AppConfig,
   options?: { tenantId?: string },
 ): LangfusePromptConnection | null {
   const headers = resolveLangfuseHeaders(appConfig?.langfuse?.headers);
-  if (options?.tenantId || usesLangfuseMultiTenantRouting()) {
-    return resolveTenantConnection(appConfig, headers);
-  }
-  return hasLangfuseEnvCredentials()
+  return resolveLangfusePromptMode(options?.tenantId) === 'env'
     ? resolveCentralEnvConnection(headers)
     : resolveTenantConnection(appConfig, headers);
-}
-
-function isTimeout(error: unknown): boolean {
-  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
 }
 
 /** Node's fetch returns a connection to its pool only once the body is consumed or cancelled. */

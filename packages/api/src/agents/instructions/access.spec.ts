@@ -67,7 +67,16 @@ function buildAccess({
   });
   const resolve = jest.fn(async () =>
     resolvePromptOk
-      ? { ok: true as const, value: { groupId, promptId, prompt: 'hi', type: 'text' as const } }
+      ? {
+          ok: true as const,
+          value: {
+            source: 'native' as const,
+            groupId,
+            promptId,
+            prompt: 'hi',
+            type: 'text' as const,
+          },
+        }
       : {
           ok: false as const,
           error: { type: 'unavailable_selection' as const, reason: 'production' as const },
@@ -311,6 +320,29 @@ describe('createInstructionsPromptAccess', () => {
       });
     });
 
+    it('rejects a link to a non-native group (unavailable)', async () => {
+      const resolvePrompt = jest.fn(async () => ({
+        ok: false as const,
+        error: { type: 'unsupported_source' as const, source: 'langfuse' as const },
+      }));
+      const { access, resolve } = buildAccess({
+        visibleGroupIds: new Set([groupId]),
+        resolvePrompt,
+      });
+      const result = await access.validateLinkWrite({ user, previous: null, next: exactLink });
+      expect(result).toEqual({
+        ok: false,
+        status: 400,
+        code: InstructionsPromptErrorCode.UNAVAILABLE,
+      });
+      expect(resolve).toHaveBeenCalledWith({
+        groupId,
+        selection: exactLink.selection,
+        filters: undefined,
+        allowedSources: ['native'],
+      });
+    });
+
     it('accepts a viewable, resolvable new link (happy path)', async () => {
       const { access, resolve } = buildAccess({ visibleGroupIds: new Set([groupId]) });
       const result = await access.validateLinkWrite({ user, previous: null, next: exactLink });
@@ -319,6 +351,7 @@ describe('createInstructionsPromptAccess', () => {
         groupId,
         selection: exactLink.selection,
         filters: undefined,
+        allowedSources: ['native'],
       });
     });
 
@@ -340,6 +373,7 @@ describe('createInstructionsPromptAccess', () => {
         groupId,
         selection: productionLink.selection,
         filters,
+        allowedSources: ['native'],
       });
     });
 

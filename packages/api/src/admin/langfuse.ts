@@ -14,31 +14,31 @@ import type {
   TLangfusePromptGetResponse,
   TLangfusePromptErrorBody,
 } from 'librechat-data-provider';
-import type { AppConfig, IConfig, MessageMethods } from '@librechat/data-schemas';
+import type { IConfig, MessageMethods } from '@librechat/data-schemas';
 import type { Types, ClientSession } from 'mongoose';
 import type { Response } from 'express';
-import type {
-  LangfusePromptConnection,
-  LangfuseTextPromptSelector,
-  LangfusePromptRequestErrorCode,
-} from '~/langfuse/prompts';
+import type { LangfusePromptConnection, LangfuseTextPromptSelector } from '~/langfuse/prompts';
 import type { LangfuseTenantDestination } from '~/langfuse/tenantDestinations';
 import type { ServerRequest } from '~/types/http';
-import {
-  resolveLangfusePromptConnection,
-  listLangfusePrompts,
-  getLangfuseTextPrompt,
-  LangfusePromptRequestError,
-} from '~/langfuse/prompts';
 import {
   isLangfuseConnectionAvailable,
   isLangfusePromptSyncAvailable,
   getLangfusePromptSyncTimeoutMs,
 } from '~/langfuse/policy';
 import {
+  readStoredLangfuse,
+  buildPromptSyncConnection,
+  toLangfusePromptErrorResponse,
+} from '~/langfuse/promptSync';
+import {
   getLangfuseTenantDestinations,
   resolveLangfuseTenantDestination,
 } from '~/langfuse/tenantDestinations';
+import {
+  listLangfusePrompts,
+  getLangfuseTextPrompt,
+  LangfusePromptRequestError,
+} from '~/langfuse/prompts';
 import { redirectPolicyFor, resolveLangfuseHeaders } from '~/langfuse/utils';
 import { decryptConfigSecret, encryptConfigSecretFields } from './secrets';
 import { scopeHeadersToDestination } from '~/langfuse/destinations';
@@ -97,14 +97,6 @@ export interface AdminLangfuseDeps {
 
 function getTenantId(req: ServerRequest): string | undefined {
   return (req.user as { tenantId?: string } | undefined)?.tenantId;
-}
-
-/** Reads from the stored override tree, so this is `TCustomConfig`'s
- *  `DeepPartial` view of the section rather than the standalone
- *  `LangfuseConfig` — record-valued fields carry optional values here. */
-function readStoredLangfuse(config: IConfig | null): TCustomConfig['langfuse'] {
-  const overrides = config?.overrides as Partial<TCustomConfig> | undefined;
-  return overrides?.langfuse;
 }
 
 function buildStatus(config: IConfig | null): TLangfuseConnectionStatus {
@@ -186,13 +178,6 @@ const promptVersionQuerySchema = z.coerce
   .max(Number.MAX_SAFE_INTEGER)
   .optional();
 
-/** HTTP status for a `LangfusePromptRequestError`. A Langfuse `unauthorized`
- *  never maps to 401/403: the LibreChat client treats either as its own
- *  session expiring and reacts by refreshing the token or signing out. */
-function promptRequestErrorStatus(code: LangfusePromptRequestErrorCode): number {
-  return code === 'timeout' ? 504 : 502;
-}
-
 /** Maps a thrown Langfuse prompt request failure to the stable `{ code }`
  *  contract. Never forwards the upstream body, headers or credentials; logs
  *  only the error's own code/status/message, which `prompts.ts` guarantees
@@ -200,11 +185,8 @@ function promptRequestErrorStatus(code: LangfusePromptRequestErrorCode): number 
 function respondToPromptRequestError(res: Response, error: unknown, logPrefix: string): Response {
   if (error instanceof LangfusePromptRequestError) {
     logger.error(logPrefix, error);
-    const body: TLangfusePromptErrorBody =
-      error.code === 'upstream' && error.status != null
-        ? { code: error.code, status: error.status }
-        : { code: error.code };
-    return res.status(promptRequestErrorStatus(error.code)).json(body);
+    const { status, body } = toLangfusePromptErrorResponse(error);
+    return res.status(status).json(body);
   }
 
   logger.error(logPrefix, error);
@@ -429,11 +411,7 @@ export function createAdminLangfuseHandlers(deps: AdminLangfuseDeps): {
     req: ServerRequest,
     stored: TCustomConfig['langfuse'],
   ): LangfusePromptConnection | null {
-    const appConfig = {
-      ...req.config,
-      langfuse: { ...req.config?.langfuse, ...stored },
-    } as AppConfig;
-    return resolveLangfusePromptConnection(appConfig, { tenantId: getTenantId(req) });
+    return buildPromptSyncConnection(req.config, stored, getTenantId(req));
   }
 
   async function getConnection(req: ServerRequest, res: Response): Promise<Response> {

@@ -1287,6 +1287,13 @@ export function getPromptGroup(id: string): Promise<t.TPromptGroup> {
   return request.get(endpoints.getPromptGroup(id));
 }
 
+export function resolvePromptGroup(
+  id: string,
+  version?: number,
+): Promise<t.TResolvedPromptResponse> {
+  return request.get(endpoints.resolvePromptGroup(id, version));
+}
+
 export function createPrompt(payload: t.TCreatePrompt): Promise<t.TCreatePromptResponse> {
   return request.post(endpoints.postPrompt(), payload);
 }

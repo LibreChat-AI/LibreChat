@@ -1344,6 +1344,24 @@ describe('agent event runtime config', () => {
     });
   });
 
+  it('accepts a configured prompt resolve rate limit', () => {
+    const result = configSchema.safeParse({
+      version: '1.0',
+      rateLimits: {
+        promptResolve: { userMax: 30, userWindowInMinutes: 2 },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) {
+      return;
+    }
+    expect(result.data.rateLimits?.promptResolve).toEqual({
+      userMax: 30,
+      userWindowInMinutes: 2,
+    });
+  });
+
   it('does not let removed checkpoint fields control memory-checkpointer validation', () => {
     const result = configSchema.safeParse({
       version: '1.0',

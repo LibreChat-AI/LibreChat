@@ -15,10 +15,12 @@ const {
   canAccessPromptGroupResource,
   canAccessPromptViaGroup,
   promptUsageLimiter,
+  promptResolveLimiter,
   requireJwtAuth,
   configMiddleware,
 } = require('~/server/middleware');
 const { getEffectivePermissions, grantPermission } = require('~/server/services/PermissionService');
+const { getAppConfig } = require('~/server/services/Config');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
 
@@ -28,7 +30,11 @@ const router = express.Router();
 const linkedInstructionsCache = getLogStores(CacheKeys.AGENT_LINKED_INSTRUCTIONS);
 
 const handlers = createPromptHandlers({
-  service: createPromptService({ db, grantPermission }),
+  service: createPromptService({
+    db,
+    grantPermission,
+    getAppConfig,
+  }),
   getPromptGroupAccessContext: db.getPromptGroupAccessContext,
   getEffectivePermissions,
   invalidateLinkedPrompt: (groupId, promptIds) =>
@@ -54,6 +60,13 @@ router.get(
   canAccessPromptGroupResource({ requiredPermission: PermissionBits.VIEW }),
   configMiddleware,
   handlers.getPromptGroup,
+);
+router.get(
+  '/groups/:groupId/resolve',
+  promptResolveLimiter,
+  canAccessPromptGroupResource({ requiredPermission: PermissionBits.VIEW }),
+  configMiddleware,
+  handlers.resolvePrompt,
 );
 router.get('/all', configMiddleware, handlers.listAllPromptGroups);
 router.get('/groups', configMiddleware, handlers.listPromptGroups);
