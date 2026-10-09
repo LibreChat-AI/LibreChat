@@ -5,6 +5,7 @@ import { ThemeProvider, applyResolvedTheme, resolveTheme } from '@librechat/clie
 import type { ThemeDefinition } from '@librechat/client';
 import {
   isPublicRoute,
+  setThemeOwner,
   buildThemeCache,
   writeThemeCache,
   THEME_CACHE_KEY,
@@ -63,6 +64,7 @@ function appliedStyle(mode: 'light' | 'dark') {
 describe('index.html deployment theme boot script', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     root().removeAttribute('style');
     root().removeAttribute('class');
     [...root().attributes].forEach(({ name }) => {
@@ -77,6 +79,7 @@ describe('index.html deployment theme boot script', () => {
     mockMedia(false);
     window.history.pushState({}, '', '/c/new');
     writeThemeCache(buildThemeCache('tenant-a:user-1', 'acme', acme));
+    setThemeOwner('tenant-a:user-1');
   });
 
   it.each(['light', 'dark'] as const)(
@@ -111,6 +114,26 @@ describe('index.html deployment theme boot script', () => {
   it('does not replay an entry stored against another role set', () => {
     const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
     localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, v: 'before-a-new-role' }));
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+  });
+
+  it.each([
+    ['a tab that has not seen its owner signed in', undefined],
+    ['a tab last signed in as someone else', 'tenant-b:user-2'],
+  ])('paints no cached theme in %s', (_, tabOwner) => {
+    setThemeOwner(tabOwner);
+    boot();
+    expect(root().getAttribute('style')).toBeNull();
+    expect(root().hasAttribute('data-theme')).toBe(false);
+    expect(root().hasAttribute('data-theme-boot')).toBe(false);
+    expect(document.head.textContent).toContain('background-color: #ffffff');
+  });
+
+  it('paints no cached theme that names no owner', () => {
+    const stored = JSON.parse(localStorage.getItem(THEME_CACHE_KEY) ?? 'null');
+    localStorage.setItem(THEME_CACHE_KEY, JSON.stringify({ ...stored, owner: undefined }));
     boot();
     expect(root().getAttribute('style')).toBeNull();
     expect(root().hasAttribute('data-theme')).toBe(false);

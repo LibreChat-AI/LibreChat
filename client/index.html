@@ -87,8 +87,11 @@
         /* The deployment theme (`interface.theme`) arrives with /api/config, so a
          * signed-in reload replays the copy DeploymentTheme cached under
          * `deployment-theme` (client/src/Providers/themeCache.ts) to paint it
-         * before the bundle runs. High contrast outranks it, as in ThemeProvider,
-         * which drops this copy (`data-theme-boot`) once it applies its own. */
+         * before the bundle runs. The session cookies are unreadable here, so the
+         * copy paints only for the identity this tab last saw signed in
+         * (`deployment-theme-owner` in session storage); any other tab waits for
+         * its own answer. High contrast outranks it, as in ThemeProvider, which
+         * drops this copy (`data-theme-boot`) once it applies its own. */
         const base = document.querySelector('base');
         const basePath = base ? new URL(base.href).pathname : '/';
         const path =
@@ -105,7 +108,12 @@
           try {
             const cached = JSON.parse(localStorage.getItem('deployment-theme') || 'null');
             const boot =
-              cached && cached.v === '__THEME_CACHE_VERSION__' && cached.modes && cached.modes[dark ? 'dark' : 'light'];
+              cached &&
+              cached.v === '__THEME_CACHE_VERSION__' &&
+              typeof cached.owner === 'string' &&
+              cached.owner === sessionStorage.getItem('deployment-theme-owner') &&
+              cached.modes &&
+              cached.modes[dark ? 'dark' : 'light'];
             if (boot && Array.isArray(boot.properties)) {
               let surface;
               let canvas;

@@ -29,10 +29,11 @@ import {
   themeOwner,
   appBasePath,
   isPublicRoute,
-  readThemeCache,
+  setThemeOwner,
   clearThemeCache,
   buildThemeCache,
   writeThemeCache,
+  readOwnedThemeCache,
   reconcileThemeCache,
 } from './themeCache';
 import { getThemeFromEnv } from '~/utils/getThemeFromEnv';
@@ -145,16 +146,20 @@ function useRebindOnStartupConfigRebuild() {
  * The cached deployment theme, as last read or written. Losing the signed-in user drops
  * it, whichever way the session ended (logout, an empty silent refresh, a failed user
  * query, account deletion), so the next person on this browser does not get the
- * previous identity's theme painted before their own config answers.
+ * previous identity's theme painted before their own config answers. The cache is read
+ * only for the owner this tab last saw signed in, which the same session end forgets.
  */
 function useThemeCache(owner?: string) {
   const queryClient = useQueryClient();
   const [cached, setCached] = useState(() =>
-    isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readThemeCache(),
+    isPublicRoute(window.location.pathname, appBasePath()) ? undefined : readOwnedThemeCache(),
   );
   const signedIn = useRef(owner);
   useEffect(() => {
-    if (signedIn.current && !owner) {
+    if (owner) {
+      setThemeOwner(owner);
+    } else if (signedIn.current) {
+      setThemeOwner(undefined);
       clearThemeCache();
       setCached(undefined);
     }
@@ -168,6 +173,7 @@ function useThemeCache(owner?: string) {
    */
   useEffect(() => {
     const drop = () => {
+      setThemeOwner(undefined);
       clearThemeCache();
       setCached(undefined);
     };

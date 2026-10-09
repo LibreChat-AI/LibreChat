@@ -198,3 +198,77 @@ test('a deployment theme removed since the last visit wins once the config answe
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', 'clickhouse');
   await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), CACHE_KEY)).toBeNull();
 });
+
+/**
+ * The session cookies are unreadable before the bundle runs, so the cache is replayed only
+ * in a tab that last saw its owner signed in. A cache left by another identity, or a tab
+ * with no signed-in owner yet, paints the default shell until the config answers.
+ */
+async function expectNoCachedPaint(page: Page, open: (page: Page) => Promise<void>) {
+  let held = false;
+  const answeredAt = await serveTheme(
+    page,
+    () => 'clickhouse',
+    () => held,
+  );
+  await openChat(page);
+  await expect
+    .poll(() => page.evaluate((key) => localStorage.getItem(key), CACHE_KEY))
+    .not.toBeNull();
+
+  await open(page);
+  await sampleFrames(page);
+  await throttle(page);
+  held = true;
+  const reloadedAt = Date.now();
+  await page.reload();
+  await expect(page.getByTestId('composer-surface')).toBeVisible({ timeout: 60000 });
+  await expect.poll(() => answeredAt.some((at) => at > reloadedAt)).toBe(true);
+
+  const answered = Math.min(...answeredAt.filter((at) => at > reloadedAt));
+  const frames = (await page.evaluate(() => window.__themeFrames ?? [])).filter(
+    (frame) => frame.at < answered,
+  );
+  expect(frames.length).toBeGreaterThan(0);
+  expect(frames[0].shell).not.toBeNull();
+  expect(frames.some((frame) => frame.app)).toBe(true);
+  for (const frame of frames) {
+    expect(frame.theme).toBeNull();
+  }
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
+  await expect
+    .poll(() =>
+      page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null')?.owner, CACHE_KEY),
+    )
+    .not.toBe('tenant-x:someone-else');
+}
+
+/** What a browser that last held another identity's theme carries into this tab. */
+const cacheForSomeoneElse = (page: Page) =>
+  page.evaluate((key) => {
+    const entry = JSON.parse(localStorage.getItem(key) ?? 'null');
+    localStorage.setItem(key, JSON.stringify({ ...entry, owner: 'tenant-x:someone-else' }));
+  }, CACHE_KEY);
+
+/** A fresh tab: the session cookies are shared, the tab's own session storage is not. */
+const forgetTabOwner = (page: Page) => page.evaluate(() => sessionStorage.clear());
+
+for (const mode of ['light', 'dark'] as const) {
+  test.describe(`cached theme owner (${mode})`, () => {
+    test.use({ colorScheme: mode, viewport: { width: 1280, height: 800 } });
+
+    test(`a reload paints no deployment theme cached for another identity in ${mode} @scenario:cached-theme-other-owner-not-boot-painted-${mode}`, async ({
+      page,
+    }) => {
+      test.setTimeout(120000);
+      await expectNoCachedPaint(page, cacheForSomeoneElse);
+    });
+
+    test(`a tab that has not seen its owner signed in paints no cached deployment theme in ${mode} @scenario:cached-theme-unknown-owner-not-boot-painted-${mode}`, async ({
+      page,
+    }) => {
+      test.setTimeout(120000);
+      await expectNoCachedPaint(page, forgetTabOwner);
+    });
+  });
+}
