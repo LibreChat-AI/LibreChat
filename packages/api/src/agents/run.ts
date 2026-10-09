@@ -2441,7 +2441,7 @@ export async function createRun({
       llmConfig: agent.model_parameters as Partial<t.RunLLMConfig>,
       user: createSafeUser(user),
       tenantId,
-      body: requestBody,
+      body: { ...requestBody, agentId: agent.id },
     });
 
     const modelParameters = normalizeAgentModelParameters(agent.model_parameters);
