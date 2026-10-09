@@ -59,11 +59,12 @@ const VIEWPORT_PADDING = 12;
 const LIFT_MS = 200;
 /** Ariakit portals to document.body by default, which puts the palette outside every landmark. */
 const getMainLandmark = () => document.querySelector<HTMLElement>('main');
-/** Hidden on hover-capable pointers until the row is hovered or focused.
- *  Touch keeps them visible. `transition-none` overrides IconButton's color
- *  fade so the reveal is an appear, not a tint. */
+/** Hidden until the row is hovered or focused, wherever no pointer is coarse.
+ *  Any touchscreen keeps them visible, including a 2-in-1's beside its hovering
+ *  trackpad. `transition-none` overrides IconButton's color fade so the reveal
+ *  is an appear, not a tint. */
 const ROW_ACTION_REVEAL =
-  'transition-none opacity-100 group-focus-within/row:opacity-100 group-hover/row:opacity-100 [@media(hover:hover)]:opacity-0';
+  'transition-none opacity-100 group-focus-within/row:opacity-100 group-hover/row:opacity-100 no-touch:opacity-0';
 /** How long the folded destinations take to fade before they give up their
  *  space; matches `.animate-composer-palette-row-out` in `style.css`. */
 const ROW_FADE_MS = 110;
