@@ -11,6 +11,11 @@ const mockRecordCollectedUsage = jest
   .fn()
   .mockResolvedValue({ input_tokens: 100, output_tokens: 50 });
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
+const mockReleaseReservation = jest.fn().mockResolvedValue(undefined);
+const mockReserveRemoteAgentBalance = jest
+  .fn()
+  .mockResolvedValue({ release: mockReleaseReservation });
+const mockAddEstimatedUsageIfUnreported = jest.fn().mockResolvedValue(undefined);
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockResolveMemoryAvailability = jest.fn().mockResolvedValue(true);
 const mockInitialSessions = new Map([['execute_code', { session_id: 'seeded' }]]);
@@ -315,6 +320,8 @@ jest.mock('@librechat/api', () => ({
   getBalanceConfig: mockGetBalanceConfig,
   getTransactionsConfig: mockGetTransactionsConfig,
   recordCollectedUsage: mockRecordCollectedUsage,
+  reserveRemoteAgentBalance: mockReserveRemoteAgentBalance,
+  addEstimatedUsageIfUnreported: mockAddEstimatedUsageIfUnreported,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   CHILD_THREAD_READ_ONLY_ERROR:
     'This subagent thread is view-only. Continue it from its parent agent or create a separate chat.',
@@ -567,6 +574,9 @@ jest.mock('~/models', () => ({
   spendStructuredTokens: mockSpendStructuredTokens,
   getMultiplier: mockGetMultiplier,
   getCacheMultiplier: mockGetCacheMultiplier,
+  reserveBalance: jest.fn(),
+  renewBalanceReservation: jest.fn(),
+  releaseBalanceReservation: jest.fn(),
   getConvoFiles: jest.fn().mockResolvedValue([]),
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
   saveConvo: jest.fn().mockResolvedValue({}),
@@ -2381,6 +2391,124 @@ describe('createResponse controller', () => {
         );
       },
     );
+  });
+
+  describe('unreported usage', () => {
+    it.each([false, true])(
+      'estimates usage the provider did not report before recording it (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const inputMessages = [{ role: 'user', content: 'Hello' }];
+        const runMessages = [{ role: 'assistant', content: 'pong' }];
+        req.body.stream = stream;
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream },
+        });
+        api.convertInputToMessages.mockReturnValueOnce(inputMessages);
+        api.createRun.mockResolvedValueOnce({
+          processStream: jest.fn().mockResolvedValue(undefined),
+          getRunMessages: () => runMessages,
+        });
+
+        await createResponse(req, res);
+
+        expect(mockAddEstimatedUsageIfUnreported).toHaveBeenCalledWith(
+          expect.objectContaining({ messages: inputMessages, runMessages }),
+        );
+        const [{ collectedUsage }] = mockAddEstimatedUsageIfUnreported.mock.calls[0];
+        expect(mockRecordCollectedUsage.mock.calls[0][1].collectedUsage).toBe(collectedUsage);
+        expect(mockAddEstimatedUsageIfUnreported.mock.invocationCallOrder[0]).toBeLessThan(
+          mockRecordCollectedUsage.mock.invocationCallOrder[0],
+        );
+      },
+    );
+  });
+
+  describe('balance admission', () => {
+    const useRequest = (stream) => {
+      req.body.stream = stream;
+      require('@librechat/api').validateResponseRequest.mockReturnValueOnce({
+        request: { model: 'agent-123', input: 'Hello', stream },
+      });
+    };
+
+    it("reserves the primary agent's prompt cost before the run", async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const inputMessages = [{ role: 'user', content: 'Hello' }];
+      mockGetBalanceConfig.mockReturnValue({ enabled: true, startBalance: 500 });
+      api.convertInputToMessages.mockReturnValueOnce(inputMessages);
+
+      await createResponse(req, res);
+
+      expect(mockReserveRemoteAgentBalance).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req,
+          res,
+          user: 'user-123',
+          balanceConfig: { enabled: true, startBalance: 500 },
+          model: 'claude-3',
+          messages: inputMessages,
+        }),
+        expect.objectContaining({
+          getMultiplier: mockGetMultiplier,
+          reserveBalance: db.reserveBalance,
+          renewBalanceReservation: db.renewBalanceReservation,
+          releaseBalanceReservation: db.releaseBalanceReservation,
+        }),
+      );
+      expect(mockReserveRemoteAgentBalance.mock.invocationCallOrder[0]).toBeLessThan(
+        api.createRun.mock.invocationCallOrder[0],
+      );
+    });
+
+    it.each([false, true])(
+      'refuses a request the balance cannot cover with insufficient_quota (stream=%s)',
+      async (stream) => {
+        const api = require('@librechat/api');
+        useRequest(stream);
+        mockReserveRemoteAgentBalance.mockRejectedValueOnce(
+          new Error(JSON.stringify({ type: 'token_balance', balance: 0, tokenCost: 20 })),
+        );
+
+        await createResponse(req, res);
+
+        expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+          res,
+          429,
+          expect.any(String),
+          'insufficient_quota',
+          'insufficient_quota',
+        );
+        expect(api.setupStreamingResponse).not.toHaveBeenCalled();
+        expect(api.createRun).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([false, true])(
+      'releases the reservation only after usage is recorded (stream=%s)',
+      async (stream) => {
+        useRequest(stream);
+
+        await createResponse(req, res);
+
+        expect(mockReleaseReservation).toHaveBeenCalledTimes(1);
+        expect(mockReleaseReservation.mock.invocationCallOrder[0]).toBeGreaterThan(
+          mockRecordCollectedUsage.mock.invocationCallOrder[0],
+        );
+      },
+    );
+
+    it('releases the reservation when the run fails', async () => {
+      require('@librechat/api').createRun.mockResolvedValueOnce({
+        processStream: jest.fn().mockRejectedValue(new Error('provider failed')),
+      });
+
+      await createResponse(req, res);
+
+      expect(mockRecordCollectedUsage).not.toHaveBeenCalled();
+      expect(mockReleaseReservation).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('token usage recording - non-streaming', () => {
