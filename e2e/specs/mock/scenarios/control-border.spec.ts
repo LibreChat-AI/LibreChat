@@ -278,39 +278,54 @@ test.describe('form control outline', () => {
       const dialog = page.getByRole('dialog');
       const field = dialog.getByRole('textbox', { name: 'Description' });
       await dialog.getByRole('textbox', { name: 'Title' }).click();
-      await page.keyboard.press('Tab');
-      await expect(field).toBeFocused();
 
       const toRgb = (channels: string) => `rgb(${channels.split(/\s+/).join(', ')})`;
       const control = toRgb(await themeValue(page, '--border-control'));
-      const ring = toRgb(await themeValue(page, '--focus-control'));
+      /** `border-field-focus` follows `focus-control` unless the theme names it, and a theme
+       *  that focuses fields by their edge (ClickHouse) also swaps the border to it. */
+      const focus = toRgb(await themeValue(page, '--border-field-focus'));
+      const edgeFocus =
+        (await page.locator('html').getAttribute('data-theme-field-focus')) === 'border';
       /** The ring colour is read from the utility's own custom property: the dark stylesheet's
        *  outline rule outranks any outline utility, and the box shadow composes the ring. */
-      const painted = await field.evaluate((node) => {
-        const style = getComputedStyle(node);
-        const channels = style.getPropertyValue('--tw-ring-color').match(/\d+/g) ?? [];
-        let surface = getComputedStyle(document.body).backgroundColor;
-        for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
-          const background = getComputedStyle(el).backgroundColor;
-          if (background !== 'rgba(0, 0, 0, 0)' && background !== 'transparent') {
-            surface = background;
-            break;
+      const paint = () =>
+        field.evaluate((node) => {
+          const style = getComputedStyle(node);
+          const channels = style.getPropertyValue('--tw-ring-color').match(/\d+/g) ?? [];
+          let surface = getComputedStyle(document.body).backgroundColor;
+          for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
+            const background = getComputedStyle(el).backgroundColor;
+            if (background !== 'rgba(0, 0, 0, 0)' && background !== 'transparent') {
+              surface = background;
+              break;
+            }
           }
-        }
-        return {
-          border: style.borderTopColor,
-          ring: `rgb(${channels.slice(0, 3).join(', ')})`,
-          shadow: style.boxShadow !== 'none',
-          surface,
-        };
-      });
+          return {
+            border: style.borderTopColor,
+            ring: `rgb(${channels.slice(0, 3).join(', ')})`,
+            shadow: style.boxShadow !== 'none',
+            surface,
+          };
+        });
+
+      const resting = await paint();
+      await page.keyboard.press('Tab');
+      await expect(field).toBeFocused();
+      const focused = await paint();
 
       expect({
-        border: painted.border,
-        ring: painted.ring,
-        shadow: painted.shadow,
-        ringClears: contrast(parseRgb(painted.ring), parseRgb(painted.surface)) >= WCAG_NON_TEXT,
-      }).toEqual({ border: control, ring, shadow: true, ringClears: true });
+        resting: resting.border,
+        border: focused.border,
+        ring: focused.ring,
+        shadow: focused.shadow,
+        ringClears: contrast(parseRgb(focused.ring), parseRgb(focused.surface)) >= WCAG_NON_TEXT,
+      }).toEqual({
+        resting: control,
+        border: edgeFocus ? focus : control,
+        ring: focus,
+        shadow: true,
+        ringClears: true,
+      });
     });
   }
 });
