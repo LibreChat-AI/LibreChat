@@ -110,12 +110,13 @@ function variantDims(value) {
   });
 }
 
-/** The first bare `opacity-*` in `value`, for a string a `disabled` condition chooses. Which
- *  element it sits on is not known, so any recipe restores it. */
+/** The first fading `opacity-*` in `value` that no disabled variant already selects, for a
+ *  string a `disabled` condition chooses (`opacity-50`, `sm:opacity-50`). Which element it sits on
+ *  is not known, so any recipe restores it. */
 function bareDim(value) {
   const token = value.split(/\s+/).find((candidate) => {
     const { variants, base } = splitVariants(candidate);
-    return variants.length === 0 && isOpacity(base);
+    return isOpacity(base) && !variants.some(isDisabledVariant);
   });
   return token ? { dim: token, topology: 'any' } : undefined;
 }
@@ -422,19 +423,28 @@ function recipeReader(context) {
    *  the other entries of an array or template, the base of a `cva` around a variant, and class
    *  map entries switched on by the same condition. A condition's other branch is not. */
   /** A sibling that always emits a covering recipe, or one guarded by the same condition as the
-   *  dim's own entry: `cn(disabled && 'opacity-50', disabled && disabledFillClasses)`. */
-  const alongside = (sibling, child, topology) => {
+   *  dim's own entry, on the same side: `cn(disabled && 'opacity-50', disabled && recipe)` or
+   *  `cn(disabled ? 'opacity-50' : '', disabled ? recipe : '')`. */
+  const alongside = (sibling, child, start, topology) => {
     if (always(sibling, topology)) return true;
     const guarded = (node) => node.type === 'LogicalExpression' && node.operator === '&&';
-    return (
-      guarded(sibling) &&
-      guarded(child) &&
-      source.getText(sibling.left) === source.getText(child.left) &&
-      always(sibling.right, topology)
-    );
+    if (guarded(sibling) && guarded(child)) {
+      return (
+        source.getText(sibling.left) === source.getText(child.left) &&
+        always(sibling.right, topology)
+      );
+    }
+    if (sibling.type !== 'ConditionalExpression' || child.type !== 'ConditionalExpression') {
+      return false;
+    }
+    if (source.getText(sibling.test) !== source.getText(child.test)) return false;
+    let branch = start;
+    while (branch.parent && branch.parent !== child) branch = branch.parent;
+    const side = branch === child.consequent ? 'consequent' : 'alternate';
+    return always(sibling[side], topology);
   };
 
-  const companions = (parent, child, topology) => {
+  const companions = (parent, child, start, topology) => {
     switch (parent.type) {
       case 'CallExpression': {
         if (parent.callee === child) return false;
@@ -445,12 +455,12 @@ function recipeReader(context) {
             : base !== undefined && always(base, topology);
         }
         return parent.arguments.some(
-          (argument) => argument !== child && alongside(argument, child, topology),
+          (argument) => argument !== child && alongside(argument, child, start, topology),
         );
       }
       case 'ArrayExpression':
         return parent.elements.some(
-          (element) => element && element !== child && alongside(element, child, topology),
+          (element) => element && element !== child && alongside(element, child, start, topology),
         );
       case 'TemplateLiteral':
         return always(parent, topology);
@@ -480,7 +490,7 @@ function recipeReader(context) {
   return (start, list, topology) => {
     if (always(start, topology)) return true;
     for (let child = start; child !== list && child.parent; child = child.parent) {
-      if (companions(child.parent, child, topology)) return true;
+      if (companions(child.parent, child, start, topology)) return true;
     }
     return false;
   };
