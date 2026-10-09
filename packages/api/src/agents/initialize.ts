@@ -891,7 +891,7 @@ export type InitializedAgent = Agent & {
 export const DEFAULT_MAX_CONTEXT_TOKENS = 32000;
 /**
  * Parameters for initializing an agent
- * Matches the CJS signature from api/server/services/Endpoints/agents/agent.js
+ * Matches the CJS signature from api/server/services/Endpoints/agents/initialize.js
  */
 export interface InitializeAgentParams {
   /** Cancellation signal owned by the run performing initialization. */
@@ -1156,7 +1156,7 @@ export interface InitializeAgentDbMethods extends EndpointDbMethods {
  * Handles file processing, tool loading, provider configuration, and context token calculations.
  *
  * This function is exported from @librechat/api and replaces the CJS version from
- * api/server/services/Endpoints/agents/agent.js
+ * api/server/services/Endpoints/agents/initialize.js
  *
  * @param params - Initialization parameters
  * @param deps - Optional dependency injection for testing
