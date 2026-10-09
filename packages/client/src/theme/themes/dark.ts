@@ -150,7 +150,9 @@ export const darkTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '171 104 255', // #ab68ff
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  /** White, not the #ececec primary text: the glyph is a graphical object (WCAG 1.4.11) and
+   *  #ececec held only 2.6:1 on the #7989ff fill, where white reaches 3.07:1. */
+  'rgb-avatar-text': '255 255 255', // #ffffff
   'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
   'rgb-avatar-edge': '240 246 252', // #f0f6fc at 10%, a hairline that only shows against a dark page
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
