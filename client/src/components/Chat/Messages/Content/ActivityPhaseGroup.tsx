@@ -588,7 +588,9 @@ export default function ActivityPhaseGroup({
     [outcomeParts, attachmentsById],
   );
 
-  const partialWithoutOutcomes = labelPart.status === 'partial' && (!hasContent || toolCount === 0);
+  const partialMarkerFallback =
+    labelPart.status === 'partial' &&
+    (!hasContent || toolCount === 0 || isSpanFailed(failedCount, toolCount));
 
   /** Already `smoothStreaming && !reducedMotion` — it owns the media query, so
    *  a second subscription here would install one `matchMedia` listener per
@@ -797,7 +799,7 @@ export default function ActivityPhaseGroup({
       )}
       data-testid="activity-phase-card"
     >
-      <PhaseGlyph failed={allFailed} partial={partialWithoutOutcomes} />
+      <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
       <span
         className="tool-status-text min-w-0 flex-1 truncate text-left font-medium"
         role="status"
@@ -871,10 +873,10 @@ export default function ActivityPhaseGroup({
             ) : (
               <>
                 <RailGlyph hover={railHover}>
-                  {outcomeParts != null && !allFailed && !partialWithoutOutcomes ? (
+                  {outcomeParts != null && !allFailed && !partialMarkerFallback ? (
                     <SpanGlyph parts={outcomeParts} attachments={attachments} />
                   ) : (
-                    <PhaseGlyph failed={allFailed} partial={partialWithoutOutcomes} />
+                    <PhaseGlyph failed={allFailed} partial={partialMarkerFallback} />
                   )}
                 </RailGlyph>
                 <PhaseLabel text={label} animate={smoothStreaming} />
