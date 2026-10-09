@@ -282,6 +282,21 @@ function recipeReader(context) {
     return inRecipesFile ? RECIPES.get(identifier.name) : undefined;
   };
 
+  /** The recipe `namespace.name` is, when `namespace` is the recipes' module imported whole (or,
+   *  when nothing declares it, by the name alone). */
+  const memberRecipeOf = (member) => {
+    const name = RECIPES.get(member.property.name);
+    if (!name || member.object.type !== 'Identifier') return undefined;
+    const variable = findVariable(source.getScope(member), member.object.name);
+    if (!variable) return name;
+    const definition = variable.defs[0];
+    const whole =
+      definition?.type === 'ImportBinding' && definition.node.type === 'ImportNamespaceSpecifier';
+    return whole && isRecipeSource(definition.parent.source.value, context.filename)
+      ? name
+      : undefined;
+  };
+
   const stringCovers = (value, topology) =>
     typeof value === 'string' &&
     RECIPE_VARIANTS.some(([pattern, recipe]) => covers(recipe, topology) && pattern.test(value));
@@ -320,7 +335,7 @@ function recipeReader(context) {
       case 'Identifier':
         return covers(recipeOf(node), topology);
       case 'MemberExpression':
-        return !node.computed && covers(RECIPES.get(node.property.name), topology);
+        return !node.computed && covers(memberRecipeOf(node), topology);
       case 'CallExpression':
         if (isCva(node)) {
           const [base, config] = node.arguments;

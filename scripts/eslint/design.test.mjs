@@ -20,6 +20,7 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn('px-2 disabled:opacity-50', disabledFillClasses)",
     "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } }, defaultVariants: { tone: 'muted' } })",
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
+    "import * as client from '@librechat/client'; cn('disabled:opacity-50', client.disabledFillClasses)",
     {
       code: "import { disabledInkClasses } from '../utils'; cn('disabled:opacity-50', disabledInkClasses)",
       filename: '/repo/packages/client/src/components/Menu.tsx',
@@ -206,6 +207,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "import { disabledFillClasses } from '~/utils'; cn('disabled:opacity-50', disabledFillClasses)",
       filename: '/repo/client/src/components/Row.tsx',
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "const utils = { disabledInkClasses: 'px-2' }; cn('disabled:opacity-50', utils.disabledInkClasses)",
       errors: [missing('disabled:opacity-50')],
     },
     {
