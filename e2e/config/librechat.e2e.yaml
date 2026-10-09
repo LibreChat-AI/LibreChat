@@ -7,6 +7,9 @@ cache: true
 interface:
   # Isolated test fleet contains only ownership-aware replicas.
   runningChatRename: true
+  # Off the 300 ms default, so highlight-throttle.spec.ts can tell a configured
+  # cadence from the schema default in the served config.
+  codeHighlightThrottleMs: 250
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true

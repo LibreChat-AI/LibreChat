@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS } from 'librechat-data-provider';
 
 import {
   enableCodeInterpreter,
@@ -61,7 +62,29 @@ async function expectHighlightedCode(page: Parameters<typeof sendMessage>[0]) {
   return code;
 }
 
+/** The cadence `e2e/config/librechat.e2e.yaml` sets, off the schema default. */
+const CONFIGURED_THROTTLE_MS = 250;
+
 test.describe('streamed code highlighting', () => {
+  test('configured-highlight-cadence-reaches-client @scenario:configured-highlight-cadence-reaches-client', async ({
+    page,
+  }) => {
+    expect(CONFIGURED_THROTTLE_MS).not.toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+    /** The signed-in payload: the pre-login one carries only the fields a login page needs. */
+    const config = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/config' &&
+        response.ok() &&
+        Boolean(response.request().headers()['authorization']),
+      { timeout: 30000 },
+    );
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    const body = (await (await config).json()) as {
+      interface?: { codeHighlightThrottleMs?: number };
+    };
+    expect(body.interface?.codeHighlightThrottleMs).toBe(CONFIGURED_THROTTLE_MS);
+  });
+
   test('streamed-code-highlights-after-settle @scenario:streamed-code-highlights-after-settle', async ({
     page,
   }) => {
