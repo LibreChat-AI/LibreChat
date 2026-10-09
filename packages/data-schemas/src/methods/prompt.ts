@@ -5,6 +5,7 @@ import {
   ResourceType,
   SystemCategories,
   Time,
+  promptCategoryValueSchema,
 } from 'librechat-data-provider';
 import type { Model, Types } from 'mongoose';
 import type {
@@ -98,6 +99,8 @@ async function readAccessGeneration(cache: CacheStore): Promise<string | undefin
   }
 }
 
+const MAX_CUSTOM_PROMPT_CATEGORIES = 200;
+
 /**
  * Plain listing inputs. `name` is a case-insensitive substring; `category` is the stored
  * category value, where an empty string selects groups without a category.
@@ -132,6 +135,7 @@ export interface PromptMethods {
     has_more: boolean;
     after: string | null;
   }>;
+  getDistinctPromptGroupCategories(accessibleIds: Types.ObjectId[]): Promise<string[]>;
   incrementPromptGroupUsage(groupId: string): Promise<{ numberOfGenerations: number }>;
   createPromptGroup(saveData: {
     prompt: Record<string, unknown>;
@@ -492,6 +496,35 @@ export function createPromptMethods(
       has_more: hasMore,
       after: nextCursor,
     };
+  }
+
+  /**
+   * Get the sorted, validated custom category values used by the given prompt groups.
+   */
+  async function getDistinctPromptGroupCategories(
+    accessibleIds: Types.ObjectId[],
+  ): Promise<string[]> {
+    if (accessibleIds.length === 0) {
+      return [];
+    }
+
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const stored = await PromptGroup.distinct('category', {
+      _id: { $in: accessibleIds },
+      category: { $nin: ['', null] },
+    });
+
+    const values = new Set<string>();
+    for (const category of stored) {
+      const parsed = promptCategoryValueSchema.safeParse(category);
+      if (parsed.success) {
+        values.add(parsed.data);
+      }
+    }
+
+    return [...values]
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+      .slice(0, MAX_CUSTOM_PROMPT_CATEGORIES);
   }
 
   /**
@@ -1131,6 +1164,7 @@ export function createPromptMethods(
     deletePromptGroup,
     getAllPromptGroups,
     getListPromptGroupsByAccess,
+    getDistinctPromptGroupCategories,
     incrementPromptGroupUsage,
     createPromptGroup,
     savePrompt,
