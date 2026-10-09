@@ -5489,6 +5489,8 @@ export enum LocalStorageKeys {
   PIN_CODE_INTERPRETER_ = 'PIN_CODE_INTERPRETER_',
   /** Key for the last selected code approval mode */
   LAST_CODE_APPROVAL_MODE = 'lastCodeApprovalMode',
+  /** Selected message-branch target per conversation ID */
+  BRANCH_TARGET_ = 'branchTarget_',
 }
 
 export enum ForkOptions {

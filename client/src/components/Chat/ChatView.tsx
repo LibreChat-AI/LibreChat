@@ -11,6 +11,7 @@ import {
   useScrollbarGutterSeed,
   useAddedResponse,
   useResumeOnLoad,
+  useBranchOnLoad,
   useAdaptiveSSE,
   useChatHelpers,
   useQueueDrain,
@@ -135,6 +136,7 @@ function ChatView({
   // settle: a stale invalidated cache mounts with isLoading false while the
   // refetch is in flight, and resume must not build from (or race) it.
   useResumeOnLoad(conversationId, chatHelpers.getMessages, index, !isLoading && !isFetching);
+  useBranchOnLoad(conversationId, chatHelpers.getMessages, index, !isLoading && !isFetching);
 
   // Show a server-owned queued follow-up as the next user turn as soon as its
   // predecessor completes, ahead of the receipt and active-job polls.
