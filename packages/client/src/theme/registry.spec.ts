@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
-import type { ThemeDefinition } from './types';
+import type { IThemeRGB, ThemeDefinition } from './types';
 import {
   collectThemeWarnings,
   darkAppearanceDefaults,
@@ -666,6 +666,26 @@ describe('theme registry', () => {
     expect(inherited.colors['rgb-category-icon-4']).toBe('4 5 6');
     expect(explicit.colors['rgb-category-icon-4']).toBe('7 8 9');
     expect(explicit.colors['rgb-series-4']).toBe('4 5 6');
+  });
+
+  it('carries the slot 4 category icon from the role name it first shipped under', () => {
+    const legacy = { 'rgb-series-4': '4 5 6', 'rgb-category-icon': '7 8 9' } as IThemeRGB;
+    const renamed = resolveTheme(
+      { version: 1, name: 'renamed-category-icon', modes: { light: { colors: legacy } } },
+      'light',
+    );
+    const named = resolveTheme(
+      {
+        version: 1,
+        name: 'current-category-icon',
+        modes: { light: { colors: { ...legacy, 'rgb-category-icon-4': '1 2 3' } } },
+      },
+      'light',
+    );
+
+    expect(renamed.colors['rgb-category-icon-4']).toBe('7 8 9');
+    expect(named.colors['rgb-category-icon-4']).toBe('1 2 3');
+    expect(renamed.colors).not.toHaveProperty('rgb-category-icon');
   });
 
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {

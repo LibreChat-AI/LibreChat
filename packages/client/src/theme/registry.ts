@@ -538,13 +538,24 @@ function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   ) as Partial<T>;
 }
 
-/** A color token this reader does not know passed validation as a warning; it never reaches the DOM. */
+/** Roles that shipped under another name; a theme that names the old one keeps its value. */
+const renamedColors: ReadonlyArray<readonly [string, keyof IThemeRGB]> = [
+  ['rgb-category-icon', 'rgb-category-icon-4'],
+];
+
+/** A color token this reader does not know passed validation as a warning; it never reaches the
+ *  DOM. A renamed role is carried to its current name first, unless the theme names that too. */
 function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
   if (!colors) {
     return colors;
   }
+  const entries = Object.entries(colors) as Array<[string, string | undefined]>;
+  const renamed = renamedColors.flatMap(([from, to]) => {
+    const value = entries.find(([key]) => key === from)?.[1];
+    return value !== undefined && colors[to] === undefined ? [[to, value] as const] : [];
+  });
   return Object.fromEntries(
-    Object.entries(colors).filter(([key]) => colorTokenSet.has(key)),
+    [...entries, ...renamed].filter(([key]) => colorTokenSet.has(key)),
   ) as IThemeRGB;
 }
 
