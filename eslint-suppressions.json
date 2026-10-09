@@ -302,6 +302,11 @@
       "count": 1
     }
   },
+  "client/src/components/Chat/Messages/Content/Parts/SubagentCall.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    }
+  },
   "client/src/components/Chat/Messages/Content/Parts/Summary.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -479,6 +484,9 @@
     }
   },
   "client/src/components/Chat/Subagents/EventSubagentActivityGroup.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    },
     "shadcn/no-arbitrary-values": {
       "count": 1
     },
@@ -1206,6 +1214,11 @@
   "client/src/components/Skills/dialogs/CreateSkillDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 9
+    }
+  },
+  "client/src/components/Skills/dialogs/UploadSkillDialog.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
     }
   },
   "client/src/components/Skills/display/SkillDetail.tsx": {

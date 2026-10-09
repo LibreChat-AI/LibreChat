@@ -43,6 +43,11 @@ test.describe('the disabled-recipe design rule', () => {
       );
       expect(chosen, 'a dim a disabled condition chooses').toHaveLength(1);
 
+      const otherBranch = lint(
+        "export const A = ({ disabled }: { disabled: boolean }) => <span className={cn(disabled ? 'opacity-50' : disabledFillClasses)} />;\n",
+      );
+      expect(otherBranch, 'a recipe only on the branch the dim is not on').toHaveLength(1);
+
       const composed = lint(
         "export const A = () => <input className={cn('px-2 disabled:opacity-50', disabledFillClasses)} />;\n",
       );

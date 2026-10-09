@@ -270,7 +270,10 @@ export default [
       // recipe, or a theme with `disabledStyle: fill` cannot paint it (scripts/eslint/design.mjs).
       'design/disabled-recipe': [
         'error',
-        { primitives: ['Button', 'IconButton', 'Input', 'Textarea', 'Checkbox', 'Switch'] },
+        {
+          primitives: ['Button', 'IconButton', 'Input', 'Textarea', 'Checkbox', 'Switch'],
+          sources: ['@librechat/client'],
+        },
       ],
       // Now answerable: the rule asks the installed Tailwind whether a class generates CSS, and
       // the app is on v4. Classes declared in a stylesheet Tailwind reads are recognized on their

@@ -18,7 +18,8 @@ const missing = (dim) => ({ messageId: 'missing', data: { dim } });
 tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
   valid: [
     "cn('px-2 disabled:opacity-50', disabledFillClasses)",
-    "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses } } })",
+    "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } } })",
+    "cva(cn('rounded disabled:opacity-50', disabledFillClasses), { variants: {} })",
     "cn('has-[:disabled]:opacity-50', disabledWithinFillClasses)",
     "const label = cn('peer-disabled:opacity-70', peerDisabledInkClasses);",
     '<input className={cn(`disabled:opacity-50 ${size}`, disabledFillClasses)} />',
@@ -31,9 +32,24 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
       options: [{ primitives: ['Button'] }],
     },
     {
-      code: "<ui.Checkbox className={cn('disabled:opacity-70', size)} />",
-      options: [{ primitives: ['Checkbox'] }],
+      code: 'import { Button as Action } from \'@librechat/client\'; <Action className="disabled:opacity-80" />',
+      options: [{ primitives: ['Button'] }],
     },
+    {
+      code: "import * as ui from '~/components/ui'; <ui.Checkbox className={cn('disabled:opacity-70', size)} />",
+      options: [{ primitives: ['Checkbox'], sources: ['@librechat/client', '~/components/ui'] }],
+    },
+    {
+      code: 'import { Button } from \'./Button\'; <Button className="disabled:opacity-80" />',
+      filename: '/repo/packages/client/src/components/Dialog.tsx',
+      options: [{ primitives: ['Button'] }],
+    },
+    "import { disabledFillClasses as fill } from '@librechat/client'; cn('disabled:opacity-50', fill)",
+    "cn('peer-disabled:opacity-70', peerDisabledInkClasses)",
+    "cn('[&:has(:disabled)]:opacity-50', disabledWithinFillClasses)",
+    "cn(disabled ? 'opacity-50' : '', disabledInkClasses)",
+    "cn({ 'disabled:opacity-50': cond, [disabledFillClasses]: cond })",
+    "<input disabled={busy} className={cn(busy ? 'opacity-50' : '', disabledFillClasses)} />",
     "cn('hover:opacity-80 focus:opacity-100 opacity-60')",
     "cn(open ? 'opacity-100' : 'opacity-0')",
     "cn({ 'opacity-50': isLoading })",
@@ -42,7 +58,7 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "const label = 'disabled';",
     "cn('not-disabled:opacity-100 opacity-0')",
     "cn('data-[state=disabled]:opacity-50', utils.disabledInkClasses)",
-    "cva('rounded', { variants: { size: { sm: 'disabled:opacity-50' } }, compoundVariants: [{ class: disabledFillClasses }] })",
+    "cva('rounded', { variants: { size: { sm: cn('disabled:opacity-50', disabledFillClasses) } } })",
     "cn({ 'disabled:opacity-50': true, [disabledFillClasses]: true })",
     "cn(disabled ? '' : 'opacity-50')",
     "cn(!disabled && 'opacity-50')",
@@ -137,6 +153,64 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "const props = { className: 'disabled:opacity-50', footer: cn(disabledFillClasses) };",
       errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn(disabled ? 'opacity-50' : disabledFillClasses)",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-50', !disabled && disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: 'px-2' } } })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cva('rounded', { variants: { size: { sm: 'disabled:opacity-50' } }, compoundVariants: [{ class: disabledFillClasses }] })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn(disabled && { 'opacity-50': true })",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('peer-disabled:opacity-70', disabledFillClasses)",
+      errors: [missing('peer-disabled:opacity-70')],
+    },
+    {
+      code: "cn('has-[:disabled]:opacity-50', disabledInkClasses)",
+      errors: [missing('has-[:disabled]:opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-50', peerDisabledInkClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn('group-disabled:opacity-60', disabledFillClasses)",
+      errors: [missing('group-disabled:opacity-60')],
+    },
+    {
+      code: "const disabledFillClasses = 'px-2'; cn('disabled:opacity-50', disabledFillClasses)",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: 'import { Button } from \'./local\'; <Button className="disabled:opacity-80" />',
+      options: [{ primitives: ['Button'] }],
+      errors: [missing('disabled:opacity-80')],
+    },
+    {
+      code: 'import * as Ariakit from \'@ariakit/react\'; <Ariakit.Button className="disabled:opacity-80" />',
+      options: [{ primitives: ['Button'] }],
+      errors: [missing('disabled:opacity-80')],
+    },
+    {
+      code: "<button disabled={importMutation.isLoading} className={cn('px-2', importMutation.isLoading && 'cursor-wait opacity-50')} />",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "<button disabled={!canOpenDetails} className={cn(canOpenDetails ? 'hover:bg-surface-hover' : 'opacity-50')} />",
+      errors: [missing('opacity-50')],
     },
   ],
 });
