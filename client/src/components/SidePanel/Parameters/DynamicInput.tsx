@@ -197,7 +197,7 @@ function DynamicInput({
             onBlur={handleInputBlur}
             placeholder={placeholderText}
             className={cn(
-              'border-border-light bg-surface-secondary flex h-9 max-h-9 w-full resize-none rounded-lg border px-3 py-2',
+              'bg-surface-secondary flex h-9 max-h-9 w-full resize-none rounded-lg px-3 py-2',
             )}
           />
         </HoverCardTrigger>

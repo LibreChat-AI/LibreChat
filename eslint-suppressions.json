@@ -45,11 +45,6 @@
       "count": 1
     }
   },
-  "client/src/components/Bookmarks/BookmarkForm.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    }
-  },
   "client/src/components/Chat/ChatView.tsx": {
     "shadcn/no-restyle": {
       "count": 1
@@ -132,7 +127,7 @@
   },
   "client/src/components/Chat/Input/MCPConfigDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 17
+      "count": 15
     }
   },
   "client/src/components/Chat/Input/Mention.tsx": {
@@ -168,7 +163,7 @@
   },
   "client/src/components/Chat/Menus/Presets/EditPresetDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 3
+      "count": 2
     }
   },
   "client/src/components/Chat/Menus/Presets/PresetItems.tsx": {
@@ -366,7 +361,7 @@
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/OutputRenderer.tsx": {
     "shadcn/no-restyle": {
-      "count": 4
+      "count": 3
     }
   },
   "client/src/components/Chat/Messages/Content/ToolOutput/ToolIcon.tsx": {
@@ -413,7 +408,7 @@
   },
   "client/src/components/Chat/Messages/Feedback.tsx": {
     "shadcn/no-restyle": {
-      "count": 11
+      "count": 10
     },
     "shadcn/require-static-classes": {
       "count": 3
@@ -588,7 +583,7 @@
   },
   "client/src/components/Endpoints/SaveAsPresetDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Endpoints/Settings/Advanced.tsx": {
@@ -647,7 +642,7 @@
   },
   "client/src/components/MCP/CustomUserVarsSection.tsx": {
     "shadcn/no-restyle": {
-      "count": 12
+      "count": 8
     }
   },
   "client/src/components/MCP/MCPServerMenuItem.tsx": {
@@ -702,7 +697,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 28
+      "count": 24
     }
   },
   "client/src/components/Messages/Content/RunCode.tsx": {
@@ -883,7 +878,7 @@
   },
   "client/src/components/Prompts/forms/CreatePromptForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 15
+      "count": 14
     }
   },
   "client/src/components/Prompts/forms/PromptForm.tsx": {
@@ -958,7 +953,7 @@
       "count": 1
     },
     "shadcn/no-restyle": {
-      "count": 14
+      "count": 13
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/AdvancedPanel.tsx": {
@@ -973,7 +968,7 @@
   },
   "client/src/components/SidePanel/Agents/Advanced/AgentList.tsx": {
     "shadcn/no-restyle": {
-      "count": 8
+      "count": 7
     }
   },
   "client/src/components/SidePanel/Agents/Advanced/ui.tsx": {
@@ -1149,12 +1144,12 @@
   },
   "client/src/components/SidePanel/Memories/MemoryCreateDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 2
     }
   },
   "client/src/components/SidePanel/Memories/MemoryEditDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 3
     }
   },
   "client/src/components/SidePanel/Memories/MemoryPanel.tsx": {
@@ -1169,7 +1164,7 @@
   },
   "client/src/components/SidePanel/Parameters/DynamicInput.tsx": {
     "shadcn/no-restyle": {
-      "count": 7
+      "count": 5
     }
   },
   "client/src/components/SidePanel/Parameters/DynamicSlider.tsx": {
@@ -1207,7 +1202,7 @@
   },
   "client/src/components/Skills/dialogs/CreateSkillDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 10
+      "count": 9
     }
   },
   "client/src/components/Skills/display/SkillDetail.tsx": {
@@ -1222,7 +1217,7 @@
   },
   "client/src/components/Skills/forms/CreateSkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/Skills/forms/SkillContentEditor.tsx": {
@@ -1232,7 +1227,7 @@
   },
   "client/src/components/Skills/forms/SkillForm.tsx": {
     "shadcn/no-restyle": {
-      "count": 6
+      "count": 5
     }
   },
   "client/src/components/Skills/lists/SkillListItem.tsx": {
@@ -1258,7 +1253,7 @@
   },
   "client/src/components/Tools/AssistantToolsDialog.tsx": {
     "shadcn/no-restyle": {
-      "count": 5
+      "count": 3
     }
   },
   "client/src/components/Tools/ToolItem.tsx": {

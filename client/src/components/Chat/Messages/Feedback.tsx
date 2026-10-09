@@ -318,7 +318,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
           <Textarea
-            className="border-border-light h-auto w-full rounded-xl p-2"
+            className="h-auto w-full rounded-xl p-2"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}

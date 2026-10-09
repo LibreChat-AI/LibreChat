@@ -169,7 +169,7 @@ export default function CreateSkillForm({
                     {...field}
                     id="skill-name"
                     type="text"
-                    className="peer border-border-medium text-text-primary mr-2 w-full p-2 text-2xl"
+                    className="peer text-text-primary mr-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}

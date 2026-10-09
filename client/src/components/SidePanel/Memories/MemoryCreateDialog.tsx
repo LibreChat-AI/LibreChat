@@ -146,7 +146,7 @@ export default function MemoryCreateDialog({
                 onBlur={() => setTouched((prev) => ({ ...prev, value: true }))}
                 onKeyDown={handleKeyPress}
                 placeholder={localize('com_ui_enter_value')}
-                className="border-border-light text-text-primary focus-visible:ring-border-heavy max-h-[45vh] min-h-[11.25rem] w-full resize-y py-2 focus-visible:ring-1"
+                className="text-text-primary max-h-[45vh] min-h-[11.25rem] w-full resize-y py-2"
                 rows={8}
                 aria-invalid={showValueError && valueError != null}
                 aria-describedby="memory-value-message"
