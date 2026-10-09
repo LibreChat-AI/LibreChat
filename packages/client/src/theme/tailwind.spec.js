@@ -220,6 +220,19 @@ describe('LibreChat Tailwind preset', () => {
     );
     expect(target).not.toContain('--theme-min-target-size');
 
+    /** The default and `sm` Button heights predate the target validator, so the floor is drawn
+     *  rather than validated: a stored theme naming less still loads. */
+    const buttons = await generate(['h-theme-button', 'h-theme-button-sm', 'size-theme-button']);
+    expect(buttons).toContain(
+      `height: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
+    );
+    expect(buttons).toContain(
+      `height: max(var(--theme-button-height-sm, ${defaultAppearance.buttonHeightSm}), 24px)`,
+    );
+    expect(buttons).toContain(
+      `width: max(var(--theme-button-height, ${defaultAppearance.buttonHeight}), 24px)`,
+    );
+
     /** A stylesheet that predates the control spacing roles pads controls with the shared
      *  spacing they read before. */
     expect(rule(css, 'px-theme-control-x')).toContain(
