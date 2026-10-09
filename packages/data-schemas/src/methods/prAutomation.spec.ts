@@ -4,6 +4,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationEventStopCode } from '~/types/prAutomation';
 import { createPRAutomationMethods } from './prAutomation';
+import { tenantStorage } from '~/config/tenantContext';
 
 logger.silent = true;
 
@@ -423,10 +424,8 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     expect((await methods.getPRAutomation(key))?.pullNumber).toBe(2);
   });
 
-  test('restores the enable that landed between the crossing enable writes, not an older one', async () => {
+  test('never brings back an older binding when an enable crosses a deletion', async () => {
     await enable(pullOne);
-    /** A newer enable lands after the crossing enable's first write and before its rebind,
-     * then account deletion starts before the crossing enable checks again. */
     const spy = interleave(async () => {
       await enable(otherRepository);
       await startAccountDeletionNow();
@@ -437,7 +436,70 @@ describe('enabling for a conversation or owner that no longer exists', () => {
       spy.mockRestore();
     }
     await cancelAccountDeletion();
-    expect(await methods.getPRAutomation(key)).toMatchObject(otherRepository);
+    expect(await methods.getPRAutomation(key)).not.toMatchObject(pullOne);
+  });
+
+  test('leaves nothing claimable when two enables cross the same deletion', async () => {
+    await enable(pullOne);
+    /**
+     * Owner reads, in order: A before, A after, B before, B after. A writes, B writes over it,
+     * the deletion starts, A sees it and rolls back first, then B sees it and rolls back.
+     */
+    const User = mongoose.models.User;
+    const original = User.findById.bind(User);
+    let reads = 0;
+    let reachedB = () => {};
+    const atB = new Promise<void>((resolve) => (reachedB = resolve));
+    let releaseB = () => {};
+    const gateB = new Promise<void>((resolve) => (releaseB = resolve));
+    let enableB: Promise<unknown> = Promise.resolve();
+    const before: Record<number, () => Promise<void>> = {
+      2: async () => {
+        enableB = methods.enablePRAutomation({ ...key, binding: otherRepository });
+        await atB;
+        await startAccountDeletionNow();
+      },
+      4: async () => {
+        reachedB();
+        await gateB;
+      },
+    };
+    const spy = jest.spyOn(User, 'findById').mockImplementation(((
+      ...args: Parameters<typeof User.findById>
+    ) => {
+      const hook = before[++reads];
+      const query = original(...args);
+      if (hook == null) {
+        return query;
+      }
+      const lean = query.lean.bind(query);
+      query.lean = ((...leanArgs: Parameters<typeof query.lean>) => ({
+        then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+          hook()
+            .then(() => lean(...leanArgs))
+            .then(resolve, reject),
+      })) as unknown as typeof query.lean;
+      return query;
+    }) as typeof User.findById);
+    try {
+      await methods.enablePRAutomation({ ...key, binding: pullTwo });
+      releaseB();
+      await enableB;
+    } finally {
+      spy.mockRestore();
+    }
+    await cancelAccountDeletion();
+    expect(await claim(1, { binding: pullTwo })).not.toMatchObject({ ok: true });
+  });
+
+  test('lets the next enable recover a record an interrupted enable left pending', async () => {
+    await enable(pullOne);
+    await PRAutomation.updateOne(
+      { user: userId, conversationId: key.conversationId },
+      { $set: { pending: 'interrupted-attempt' } },
+    );
+    await enable(pullOne);
+    expect((await claim(1)).ok).toBe(true);
   });
 
   test('keeps a record the crossing enable did not change', async () => {
@@ -597,6 +659,24 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
         headSha: head(1),
       }),
     ).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+  });
+
+  test("does not let another tenant's conversation stand in for a deleted parent", async () => {
+    await mongoose.models.Conversation.deleteMany({});
+    const inTenant = <T>(tenantId: string, run: () => Promise<T>) =>
+      tenantStorage.run({ tenantId }, run);
+    await inTenant('tenant-b', () => seedConversation());
+    await mongoose.models.User.deleteMany({});
+    await inTenant('tenant-a', () =>
+      mongoose.models.User.create({ _id: userId, email: 'owner@example.com', provider: 'local' }),
+    );
+    await inTenant('tenant-a', async () => {
+      await seedConversation();
+      await seedChild();
+      await enableWith({ ...childKey, binding: pullOne });
+      await mongoose.models.Conversation.deleteOne({ conversationId: key.conversationId });
+      expect(await claimChild()).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+    });
   });
 
   test('accepts a claim for a child while its root is active', async () => {

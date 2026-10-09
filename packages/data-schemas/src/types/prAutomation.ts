@@ -41,6 +41,11 @@ export interface IPRAutomation {
    */
   epoch: string;
   /**
+   * Set to the enable attempt that wrote the record until that attempt confirms the owner and
+   * conversation are still live. Nothing claims a pending record.
+   */
+  pending?: string;
+  /**
    * Every head a round has been claimed for since the last restart. A delayed
    * delivery of an earlier head is rejected against this list. It holds at most
    * one entry per round, so the round cap bounds it.

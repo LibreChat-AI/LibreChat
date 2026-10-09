@@ -75,6 +75,7 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
     claimedHeads: { type: [{ type: String, maxlength: 64 }], default: [] },
     runId: { type: String, maxlength: 64 },
     epoch: { type: String, maxlength: 64, required: true, default: () => randomUUID() },
+    pending: { type: String, maxlength: 64 },
   },
   { timestamps: true },
 );

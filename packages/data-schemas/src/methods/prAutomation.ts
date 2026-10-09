@@ -38,6 +38,7 @@ const canonicalRepository = (repository: string) => repository.toLowerCase();
 const LINK_FIELDS = [
   'conversationId',
   'user',
+  'tenantId',
   'expiredAt',
   'subagentThread.rootConversationId',
   'subagentThread.parentConversationId',
@@ -47,7 +48,8 @@ const LINK_FIELDS = [
  * One aggregation that reads a conversation and up to `MAX_SUBAGENT_DEPTH` ancestors, one
  * `$lookup` per generation, so a liveness check is one round trip at any depth. `$graphLookup`
  * would be shorter but Amazon DocumentDB rejects it. Each lookup is served by the unique
- * `{ conversationId, user, tenantId }` index; ownership and retention are judged on the result.
+ * `{ conversationId, user, tenantId }` index. Nested lookups bypass the tenant plugin, so
+ * ownership, tenant and retention are all judged on the result.
  */
 function lineagePipeline({ userId, conversationId }: t.PRAutomationKey): PipelineStage[] {
   const stages: PipelineStage[] = [
@@ -165,6 +167,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     type Link = {
       conversationId: string;
       user: string;
+      tenantId?: string | null;
       expiredAt?: Date | null;
       subagentThread?: { rootConversationId?: string; parentConversationId?: string };
     };
@@ -180,13 +183,19 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (owner.agentTriggerDeletionStartedAt != null) {
       return 'owner_inactive';
     }
-    /** Links of other users never count: a lookup by `conversationId` is not scoped by owner. */
+    /**
+     * Links of other users or other tenants never count: a lookup by `conversationId` is scoped
+     * by neither. The first link came through the tenant-scoped `$match`, so it names the tenant.
+     */
     const now = Date.now();
+    const tenant = rows[0]?.l0?.tenantId ?? null;
     const links = new Map<string, Link>();
     for (const row of rows) {
       for (const link of Object.values(row)) {
         const active = link?.expiredAt == null || new Date(link.expiredAt).getTime() > now;
-        if (link != null && String(link.user) === key.userId && active) {
+        const owned =
+          link != null && String(link.user) === key.userId && (link.tenantId ?? null) === tenant;
+        if (link != null && owned && active) {
           links.set(link.conversationId, link);
         }
       }
@@ -285,9 +294,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
      * atomically with it, and the last one this attempt did not already own is what a crossed
      * deletion restores: a later enable that landed between this attempt's read and write is
      * kept, and nothing a later enable wrote afterwards is reverted.
+     *
+     * The writes also mark the record `pending` with the attempt, and nothing claims a pending
+     * record. Only an attempt that passes its second liveness check clears the mark. A preimage
+     * that another rejected attempt left is therefore still pending when it is restored, so two
+     * enables crossing the same deletion leave nothing claimable.
      */
     const attempt = randomUUID();
-    const reset = (fields: Record<string, unknown>) => runReset(attempt, fields);
+    const reset = (fields: Record<string, unknown>) =>
+      runReset(attempt, { ...fields, pending: attempt });
     const options = { runValidators: true };
     let undo: { previous: t.IPRAutomation | null } | undefined;
     const write = async (condition: Record<string, unknown>, update: Record<string, unknown>) => {
@@ -309,6 +324,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           trustedBots: [],
           claimedHeads: [],
           epoch: attempt,
+          pending: attempt,
           trust: trust ?? 'approvedBots',
           ...binding,
         },
@@ -339,6 +355,12 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
         reset({ ...revive, ...binding }),
       );
     }
+    /**
+     * A record still pending for another attempt is either in flight or was left by an attempt
+     * that never finished. Taking it over under this attempt's epoch recovers the second case,
+     * and the in-flight attempt's own undo then misses on its epoch, so this attempt decides.
+     */
+    await write({ pending: { $exists: true, $ne: attempt } }, reset({ ...revive, ...binding }));
     const after = await checkLiveness(key);
     if (isGone(after)) {
       await PRAutomation.deleteOne(filter);
@@ -350,6 +372,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       }
       return { ok: false, error: { code: after } };
     }
+    await PRAutomation.updateOne({ ...filter, pending: attempt }, { $unset: { pending: '' } });
     const record = await getPRAutomation(key);
     if (record == null) {
       throw new Error('PR automation record missing after enable');
@@ -437,6 +460,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       {
         ...filter,
         state: { $in: CLAIMABLE_STATES },
+        pending: { $exists: false },
         round: { $lt: maxRounds },
         $or: [{ startedAt: { $exists: false } }, { startedAt: { $gte: cutoff } }],
         claimedHeads: { $ne: headSha },
@@ -502,6 +526,10 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     }
     if (current.startedAt != null && current.startedAt < cutoff) {
       return { ok: false, error: { code: 'time_cap' } };
+    }
+    if (current.pending != null) {
+      /** An enable is still deciding; it either commits this run or replaces it. */
+      return { ok: false, error: { code: 'conflict' } };
     }
     if (current.claimedHeads.includes(headSha)) {
       return { ok: false, error: { code: 'stale_head' } };
