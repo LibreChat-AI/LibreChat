@@ -73,6 +73,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await PRAutomation.deleteMany({});
   await mongoose.models.Conversation.deleteMany({});
+  await mongoose.models.User.deleteMany({});
+  await mongoose.models.User.create({ _id: userId, email: 'owner@example.com', provider: 'local' });
   await seedConversation();
 });
 
@@ -153,169 +155,138 @@ describe('enablePRAutomation', () => {
   });
 });
 
-describe('a record stopped by a deletion fence', () => {
-  const deletionCodes = ['conversation_deleting', 'account_deleting'] as const;
+describe('claiming while the owner is being deleted', () => {
+  const startAccountDeletion = () =>
+    mongoose.models.User.updateOne(
+      { _id: userId },
+      { $set: { agentTriggerDeletionStartedAt: new Date() } },
+    );
 
-  test.each(deletionCodes)(
-    'is not revived by enabling the same pull request (%s)',
-    async (code) => {
-      await enable(pullOne);
-      await methods.stopPRAutomation(key, code, pullOne);
-      expect(await enable(pullOne)).toMatchObject({ state: 'stopped', stopCode: code });
-    },
-  );
-
-  test.each(deletionCodes)(
-    'is not revived by another pull request in the repository (%s)',
-    async (code) => {
-      await enable(pullOne);
-      await methods.stopPRAutomation(key, code, pullOne);
-      expect(await enable(pullTwo)).toMatchObject({
-        state: 'stopped',
-        stopCode: code,
-        pullNumber: 1,
-      });
-    },
-  );
-
-  test.each(deletionCodes)('is not revived or rebound to another repository (%s)', async (code) => {
+  test('refuses a claim once account deletion has started', async () => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code, pullOne);
-    expect(await enable(otherRepository)).toMatchObject({
-      state: 'stopped',
-      stopCode: code,
-      repository: 'acme/one',
-    });
+    await startAccountDeletion();
+    expect(await claim(1)).toEqual({ ok: false, error: { code: 'owner_inactive' } });
   });
 
-  test.each(deletionCodes)('is not revived without a binding (%s)', async (code) => {
+  test('keeps the record and spends no round, so a cancelled deletion leaves it as it was', async () => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code, pullOne);
-    expect(await methods.enablePRAutomation(key)).toMatchObject({
-      state: 'stopped',
-      stopCode: code,
-    });
+    await startAccountDeletion();
+    await claim(1);
+    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'idle', round: 0 });
   });
 
-  test.each(deletionCodes)('still refuses a claim (%s)', async (code) => {
+  test('refuses a claim for an owner that no longer exists', async () => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, code, pullOne);
-    await enable(pullOne);
-    expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_active' } });
+    await mongoose.models.User.deleteMany({});
+    expect(await claim(1)).toEqual({ ok: false, error: { code: 'owner_inactive' } });
   });
 
-  test.each(deletionCodes)('replaces a user stop when a deletion begins (%s)', async (code) => {
+  test('claims again once the deletion was cancelled', async () => {
     await enable(pullOne);
-    await methods.stopPRAutomation(key, 'user_stopped');
-    await methods.stopPRAutomations(userId, code, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'stopped', stopCode: code });
-    expect(await enable(pullOne)).toMatchObject({ state: 'stopped', stopCode: code });
-  });
-
-  test('keeps a record of another conversation restartable', async () => {
-    await enable(pullOne);
-    await methods.stopPRAutomation(key, 'user_stopped');
-    await methods.stopPRAutomations(userId, 'conversation_deleting', ['another-convo']);
-    expect(await methods.getPRAutomation(key)).toMatchObject({ stopCode: 'user_stopped' });
-  });
-
-  test('a user stop is still restartable', async () => {
-    await enable(pullOne);
-    await methods.stopPRAutomation(key, 'user_stopped');
-    expect(await enable(pullOne)).toMatchObject({ state: 'idle' });
+    await startAccountDeletion();
+    await claim(1);
+    await mongoose.models.User.updateOne(
+      { _id: userId },
+      { $unset: { agentTriggerDeletionStartedAt: 1 } },
+    );
+    expect((await claim(1)).ok).toBe(true);
   });
 });
 
-describe('a deletion fence written before any record exists', () => {
-  const fenceConversation = () =>
-    methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
+describe('a deletion that lands while a claim is in flight', () => {
+  /** Runs `during` right after the claim's atomic write, before the claim checks again. */
+  const interleave = (during: () => Promise<unknown>) => {
+    const original = PRAutomation.findOneAndUpdate.bind(PRAutomation);
+    return jest.spyOn(PRAutomation, 'findOneAndUpdate').mockImplementationOnce(((
+      ...args: Parameters<typeof PRAutomation.findOneAndUpdate>
+    ) => {
+      const query = original(...args);
+      const lean = query.lean.bind(query);
+      query.lean = ((...leanArgs: Parameters<typeof query.lean>) => {
+        const result = lean(...leanArgs);
+        return {
+          ...result,
+          then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+            result
+              .then(async (value: unknown) => {
+                await during();
+                return value;
+              })
+              .then(resolve, reject),
+        };
+      }) as typeof query.lean;
+      return query;
+    }) as typeof PRAutomation.findOneAndUpdate);
+  };
 
-  test('is not replaced by an enable that was already in flight', async () => {
-    await fenceConversation();
-    expect(await enable(pullOne)).toMatchObject({
-      state: 'stopped',
-      stopCode: 'conversation_deleting',
-    });
-  });
-
-  test('refuses a claim', async () => {
-    await fenceConversation();
+  test('does not hand out a round for a conversation deleted after the first check', async () => {
     await enable(pullOne);
-    expect((await claim(1)).ok).toBe(false);
+    const spy = interleave(() => mongoose.models.Conversation.deleteMany({}));
+    try {
+      expect(await claim(1)).toEqual({ ok: false, error: { code: 'conversation_gone' } });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
-  test('is written once when the fence is written twice', async () => {
-    await fenceConversation();
-    await fenceConversation();
-    expect(await PRAutomation.countDocuments({ user: userId })).toBe(1);
+  test('does not hand out a round once account deletion started after the first check', async () => {
+    await enable(pullOne);
+    const spy = interleave(() =>
+      mongoose.models.User.updateOne(
+        { _id: userId },
+        { $set: { agentTriggerDeletionStartedAt: new Date() } },
+      ),
+    );
+    try {
+      expect(await claim(1)).toEqual({ ok: false, error: { code: 'owner_inactive' } });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
-  test('does not touch another conversation', async () => {
-    await fenceConversation();
-    expect(await methods.getPRAutomation({ userId, conversationId: 'other-convo' })).toBeNull();
+  test('leaves no round running when the owner deletion started mid-claim', async () => {
+    await enable(pullOne);
+    const spy = interleave(() =>
+      mongoose.models.User.updateOne(
+        { _id: userId },
+        { $set: { agentTriggerDeletionStartedAt: new Date() } },
+      ),
+    );
+    try {
+      await claim(1);
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await methods.getPRAutomation(key))?.state).toBe('waiting');
   });
 });
 
-describe('releasing a deletion fence after an aborted deletion', () => {
-  const fence = () =>
-    methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
-
-  test('keeps a fence that only existed for the deletion restartable if the conversation survived', async () => {
-    await fence();
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toMatchObject({
-      state: 'stopped',
-      stopCode: 'deletion_aborted',
-    });
+describe('removing records in bulk', () => {
+  test('removes every listed conversation, across more than one batch', async () => {
+    const ids = Array.from({ length: 2500 }, (_, index) => `convo-${index}`);
+    await PRAutomation.insertMany(ids.map((conversationId) => ({ user: userId, conversationId })));
+    await methods.deletePRAutomations(userId, ids);
+    expect(await PRAutomation.countDocuments({ user: userId })).toBe(0);
   });
 
-  test('removes a fence whose conversation was removed', async () => {
-    await fence();
-    await mongoose.models.Conversation.deleteMany({});
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toBeNull();
+  test('bounds each write instead of sending one unbounded list', async () => {
+    const ids = Array.from({ length: 2500 }, (_, index) => `convo-${index}`);
+    const spy = jest.spyOn(PRAutomation, 'deleteMany');
+    try {
+      await methods.deletePRAutomations(userId, ids);
+      const sizes = spy.mock.calls.map(
+        ([filter]) => (filter as { conversationId: { $in: string[] } }).conversationId.$in.length,
+      );
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(1000);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
-  test('keeps the record of a conversation that survived, stopped and restartable', async () => {
-    await enable(pullOne);
-    await fence();
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toMatchObject({
-      state: 'stopped',
-      stopCode: 'deletion_aborted',
-      repository: 'acme/one',
-    });
-  });
-
-  test('lets the user turn a released record back on', async () => {
-    await enable(pullOne);
-    await fence();
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await enable(pullOne)).toMatchObject({ state: 'idle' });
-  });
-
-  test('removes the record of a conversation the deletion did remove', async () => {
-    await enable(pullOne);
-    await fence();
-    await mongoose.models.Conversation.deleteMany({});
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toBeNull();
-  });
-
-  test('leaves a record that is not under a deletion fence alone', async () => {
-    await enable(pullOne);
-    await methods.releasePRAutomationFences(userId, [key.conversationId]);
-    expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'idle' });
-  });
-
-  test('releases every fenced record of an account that survived', async () => {
-    await enable(pullOne);
-    await methods.stopPRAutomations(userId, 'account_deleting');
-    await methods.releasePRAutomationFences(userId);
-    expect(await methods.getPRAutomation(key)).toMatchObject({
-      state: 'stopped',
-      stopCode: 'deletion_aborted',
-    });
+  test('leaves other users alone', async () => {
+    await PRAutomation.create({ user: 'someone-else', conversationId: 'convo-1' });
+    await methods.deletePRAutomations(userId, ['convo-1']);
+    expect(await PRAutomation.countDocuments({ user: 'someone-else' })).toBe(1);
   });
 });
 
@@ -978,29 +949,6 @@ describe('disablePRAutomation', () => {
 
   test('reports nothing removed when there was no record', async () => {
     expect(await methods.disablePRAutomation(key)).toEqual({ removed: false });
-  });
-
-  test.each(['conversation_deleting', 'account_deleting'] as const)(
-    'does not remove a deletion fence (%s)',
-    async (code) => {
-      await enable(pullOne);
-      await methods.stopPRAutomations(userId, code, [key.conversationId]);
-      expect(await methods.disablePRAutomation(key)).toEqual({ removed: false });
-      expect(await methods.getPRAutomation(key)).toMatchObject({
-        state: 'stopped',
-        stopCode: code,
-      });
-    },
-  );
-
-  test('keeps an overlapping enable from recreating a record under a deletion fence', async () => {
-    await enable(pullOne);
-    await methods.stopPRAutomations(userId, 'conversation_deleting', [key.conversationId]);
-    await methods.disablePRAutomation(key);
-    expect(await enable(pullOne)).toMatchObject({
-      state: 'stopped',
-      stopCode: 'conversation_deleting',
-    });
   });
 
   test('still removes a record a user stopped', async () => {

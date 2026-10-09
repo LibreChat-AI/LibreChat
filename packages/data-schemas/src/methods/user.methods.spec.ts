@@ -2125,27 +2125,44 @@ describe('User Methods - Database Tests', () => {
 });
 
 describe('PR automation cleanup on account deletion', () => {
-  it('keeps the records, restartable, when the account delete fails', async () => {
+  it('keeps the records exactly as they were when the account delete fails', async () => {
     const user = await User.create({ email: 'delete-pr-fail@example.com', provider: 'local' });
     const id = user._id.toString();
     const PRAutomation = mongoose.models.PRAutomation;
-    await mongoose.models.Conversation.create({
-      conversationId: 'chat-a',
-      user: id,
-      endpoint: 'agents',
-    });
     await PRAutomation.create({ user: id, conversationId: 'chat-a', repository: 'acme/one' });
     const deletion = jest.spyOn(User, 'deleteOne').mockRejectedValueOnce(new Error('db down'));
     try {
       await expect(methods.deleteUserById(id)).rejects.toThrow('db down');
       expect(await User.exists({ _id: user._id })).not.toBeNull();
       expect(await PRAutomation.findOne({ user: id }).lean()).toMatchObject({
-        state: 'stopped',
-        stopCode: 'deletion_aborted',
+        state: 'idle',
         repository: 'acme/one',
       });
     } finally {
       deletion.mockRestore();
+    }
+  });
+
+  it('invalidates the auth cache before a cleanup that fails', async () => {
+    enableAuthUserDocCache();
+    const user = await User.create({ email: 'delete-pr-cache@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const cache = {
+      get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
+      set: jest.fn().mockResolvedValue(true),
+      delete: jest.fn().mockResolvedValue(true),
+    };
+    const methodsWithCache = createUserMethods(mongoose, { getCache: () => cache });
+    const cleanup = jest
+      .spyOn(mongoose.models.PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    try {
+      await expect(methodsWithCache.deleteUserById(id)).rejects.toThrow(
+        'synthetic cleanup failure',
+      );
+      expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${id}`);
+    } finally {
+      cleanup.mockRestore();
     }
   });
 

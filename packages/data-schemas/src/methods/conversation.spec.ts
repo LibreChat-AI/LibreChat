@@ -3749,33 +3749,50 @@ describe('Conversation Operations', () => {
         expect(await Conversation.exists({ conversationId })).not.toBeNull();
       });
 
-      it('leaves the record stopped, so a webhook cannot claim it, but not fenced for good', async () => {
+      it('leaves the record exactly as it was, so the kept conversation keeps working', async () => {
         const { conversationId, automation } = await setup();
         expect(await automation.getPRAutomation({ userId: user, conversationId })).toMatchObject({
-          state: 'stopped',
-          stopCode: 'deletion_aborted',
+          state: 'idle',
+          repository: 'acme/one',
+          pullNumber: 1,
         });
-        const claimed = await automation.claimPRAutomationRound({
-          userId: user,
-          conversationId,
-          binding: { repository: 'acme/one', pullNumber: 1 },
-          maxRounds: 5,
-          maxMinutes: 60,
-          headSha: 'a'.repeat(40),
-        });
-        expect(claimed).toEqual({ ok: false, error: { code: 'not_active' } });
       });
+    });
 
-      it('lets the user turn the automation back on for the conversation they kept', async () => {
-        const { conversationId, automation } = await setup();
-        expect(
-          await automation.enablePRAutomation({
-            userId: user,
-            conversationId,
-            binding: { repository: 'acme/one', pullNumber: 1 },
-          }),
-        ).toMatchObject({ state: 'idle' });
-      });
+    it('writes nothing for a conversation that never had an automation', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: 'user123', endpoint: 'agents' });
+      const PRAutomation = mongoose.models.PRAutomation;
+      const writes = ['updateOne', 'updateMany', 'bulkWrite', 'insertMany', 'create'].map(
+        (method) => jest.spyOn(PRAutomation, method as 'updateOne'),
+      );
+      try {
+        await deleteConvos('user123', { conversationId });
+        for (const write of writes) {
+          expect(write).not.toHaveBeenCalled();
+        }
+        expect(await PRAutomation.countDocuments({ user: 'user123', conversationId })).toBe(0);
+      } finally {
+        writes.forEach((write) => write.mockRestore());
+      }
+    });
+
+    it('still reports a deletion that committed when the record cleanup keeps failing', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: 'user123', endpoint: 'agents' });
+      const PRAutomation = mongoose.models.PRAutomation;
+      await PRAutomation.create({ user: 'user123', conversationId });
+      const cleanup = jest
+        .spyOn(PRAutomation, 'deleteMany')
+        .mockRejectedValue(new Error('cleanup unavailable'));
+      try {
+        await expect(deleteConvos('user123', { conversationId })).resolves.toMatchObject({
+          deletedCount: 1,
+        });
+        expect(cleanup.mock.calls.length).toBeGreaterThan(1);
+      } finally {
+        cleanup.mockRestore();
+      }
     });
 
     it('removes the PR automation record of a root that a previous attempt already deleted', async () => {

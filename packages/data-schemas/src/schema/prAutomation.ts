@@ -15,10 +15,11 @@ const trustedBotSchema = new Schema(
 
 const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
   {
+    /** Served by the unique `{ user, conversationId }` index below; a second index only adds
+     *  write cost. */
     user: {
       type: String,
       required: true,
-      index: true,
     },
     tenantId: {
       type: String,

@@ -89,6 +89,7 @@ export type PRAutomationClaimErrorCode =
   | 'not_active'
   | 'binding_mismatch'
   | 'conversation_gone'
+  | 'owner_inactive'
   | 'round_cap'
   | 'time_cap'
   | 'stale_head';

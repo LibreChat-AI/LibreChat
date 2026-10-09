@@ -5,17 +5,15 @@ import type { PRAutomationStopCode } from 'librechat-data-provider';
 import type { PRAutomationState } from 'librechat-data-provider';
 import type * as t from '~/types/prAutomation';
 import { activeExpirationFilter } from '~/utils/retention';
+import { isValidObjectIdString } from '~/utils/objectId';
 import { createIndexesWithRetry } from '~/utils/retry';
 
 const PROJECTION = '-_id -__v';
-/**
- * A deletion fence is not a user decision. Enabling must never clear it, or a webhook could
- * claim work for a conversation or account that is being removed.
- */
-const DELETION_STOP_CODES: PRAutomationStopCode[] = ['conversation_deleting', 'account_deleting'];
-const RESTARTABLE = { state: 'stopped', stopCode: { $nin: DELETION_STOP_CODES } };
-/** Conversations looked up per query when a fence is released. */
-const RELEASE_BATCH = 500;
+const RESTARTABLE = { state: 'stopped' };
+/** Records removed per write, so a cleanup never holds one unbounded `$in`. */
+const DELETE_BATCH = 1000;
+
+type Liveness = 'live' | 'conversation_gone' | 'owner_inactive';
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
 const SETTLEABLE_STATES: PRAutomationState[] = ['fixing', 'needs_user'];
 const SETTLED_STATES: PRAutomationState[] = ['waiting', 'needs_user'];
@@ -43,12 +41,6 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       binding: t.PRAutomationBinding,
     ): Promise<t.IPRAutomation | null>;
   };
-  stopPRAutomations: (
-    userId: string,
-    stopCode: PRAutomationStopCode,
-    conversationIds?: string[],
-  ) => Promise<void>;
-  releasePRAutomationFences: (userId: string, conversationIds?: string[]) => Promise<void>;
   deletePRAutomations: (userId: string, conversationIds?: string[]) => Promise<void>;
   setPRAutomationTrust: (
     key: t.PRAutomationKey,
@@ -88,6 +80,63 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     user: userId,
     conversationId,
   });
+
+  /**
+   * Whether a round may run for this record right now: the owner exists and no account
+   * deletion has started (the same durable marker agent triggers use), and the conversation
+   * and every conversation that controls it still exist and are inside their retention. A
+   * subagent thread is controlled by its parent and its root, and a deletion removes the
+   * root before it discovers the descendants. Deletions do not fence the record; the claim
+   * asks this on both sides of its write instead.
+   */
+  async function checkLiveness(key: t.PRAutomationKey): Promise<Liveness> {
+    if (!isValidObjectIdString(key.userId)) {
+      return 'owner_inactive';
+    }
+    const Conversation = mongoose.models.Conversation;
+    const active = activeExpirationFilter();
+    const [owner, conversation] = await Promise.all([
+      mongoose.models.User.exists({
+        _id: key.userId,
+        agentTriggerDeletionStartedAt: { $exists: false },
+      }),
+      Conversation.findOne({ user: key.userId, conversationId: key.conversationId, ...active })
+        .select('subagentThread')
+        .lean<{ subagentThread?: { rootConversationId: string; parentConversationId: string } }>(),
+    ]);
+    if (owner == null) {
+      return 'owner_inactive';
+    }
+    if (conversation == null) {
+      return 'conversation_gone';
+    }
+    const thread = conversation.subagentThread;
+    if (thread == null) {
+      return 'live';
+    }
+    const ancestors = [...new Set([thread.rootConversationId, thread.parentConversationId])];
+    const activeAncestors = await Conversation.countDocuments({
+      user: key.userId,
+      conversationId: { $in: ancestors },
+      ...active,
+    });
+    return activeAncestors === ancestors.length ? 'live' : 'conversation_gone';
+  }
+
+  /** A record whose conversation is gone can never run again, so it is removed. */
+  async function refuseClaim(
+    key: t.PRAutomationKey,
+    liveness: Exclude<Liveness, 'live'>,
+  ): Promise<t.ClaimPRAutomationRoundResult> {
+    if (liveness === 'owner_inactive') {
+      return { ok: false, error: { code: 'owner_inactive' } };
+    }
+    const removed = await mongoose.models.PRAutomation.deleteOne(keyFilter(key));
+    return {
+      ok: false,
+      error: { code: removed.deletedCount > 0 ? 'conversation_gone' : 'not_found' },
+    };
+  }
 
   function assertStopCode(stopCode: PRAutomationStopCode): void {
     if (!PR_AUTOMATION_STOP_CODES.includes(stopCode)) {
@@ -183,17 +232,9 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return record;
   }
 
-  /**
-   * A deletion fence is not removed here. It belongs to the delete that wrote it, and removing
-   * it early would let an overlapping enable recreate an idle record while that delete is still
-   * in progress.
-   */
   async function disablePRAutomation(key: t.PRAutomationKey): Promise<{ removed: boolean }> {
     const PRAutomation = mongoose.models.PRAutomation;
-    const result = await PRAutomation.deleteOne({
-      ...keyFilter(key),
-      stopCode: { $nin: DELETION_STOP_CODES },
-    });
+    const result = await PRAutomation.deleteOne(keyFilter(key));
     return { removed: result.deletedCount > 0 };
   }
 
@@ -225,38 +266,12 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const runId = randomUUID();
 
     /**
-     * Conversations leave through the retention index without passing `deleteConvos`, so
-     * the record cannot rely on that cascade. A claim for a conversation that is gone or
-     * past its retention date removes the record instead of starting work for it.
+     * Conversations also leave through the retention index, which never runs
+     * `deleteConvos`, so liveness is checked here rather than trusted to a cascade.
      */
-    const conversation = await mongoose.models.Conversation.findOne({
-      user: key.userId,
-      conversationId: key.conversationId,
-      ...activeExpirationFilter(),
-    })
-      .select('subagentThread')
-      .lean<{ subagentThread?: { rootConversationId: string; parentConversationId: string } }>();
-    /**
-     * A subagent thread is controlled by its parent and its root. A deletion removes a root
-     * before it discovers the descendants, so for a moment the child still exists while the
-     * conversation that controls it does not; both ancestors must be active to claim.
-     */
-    const thread = conversation?.subagentThread;
-    const ancestors =
-      thread == null ? [] : [thread.rootConversationId, thread.parentConversationId];
-    const required = [...new Set(ancestors)];
-    const activeAncestors =
-      required.length === 0
-        ? 0
-        : await mongoose.models.Conversation.countDocuments({
-            user: key.userId,
-            conversationId: { $in: required },
-            ...activeExpirationFilter(),
-          });
-    if (conversation == null || activeAncestors !== required.length) {
-      const removed = await PRAutomation.deleteOne(keyFilter(key));
-      const code = removed.deletedCount > 0 ? 'conversation_gone' : 'not_found';
-      return { ok: false, error: { code } };
+    const before = await checkLiveness(key);
+    if (before !== 'live') {
+      return refuseClaim(key, before);
     }
 
     /**
@@ -283,7 +298,20 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();
     if (claimed != null) {
-      return { ok: true, value: { ...claimed, runId } };
+      /**
+       * A deletion that started between the first check and the write is seen here. The
+       * claimed round is handed back to `waiting` under its own run id, so it never starts
+       * work, and a record whose conversation is gone is removed.
+       */
+      const after = await checkLiveness(key);
+      if (after === 'live') {
+        return { ok: true, value: { ...claimed, runId } };
+      }
+      await PRAutomation.updateOne(
+        { ...keyFilter(key), runId, state: 'fixing' },
+        { $set: { state: 'waiting' } },
+      );
+      return refuseClaim(key, after);
     }
 
     const current = await getPRAutomation(key);
@@ -361,116 +389,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   }
 
   /**
-   * Fences every record of a user, or of the listed conversations, without
-   * removing it. A deletion fences first so a webhook cannot claim a record
-   * whose conversation or account is going away, and removes the record only
-   * after the delete committed, so a failed delete keeps the stored state.
+   * Removes every record of a user, or of the listed conversations, in bounded batches.
+   * Cleanup only: it creates nothing, so a deployment that never used the feature pays one
+   * indexed delete that matches no document.
    */
-  async function stopPRAutomations(
-    userId: string,
-    stopCode: PRAutomationStopCode,
-    conversationIds?: string[],
-  ): Promise<void> {
-    assertStopCode(stopCode);
-    const PRAutomation = mongoose.models.PRAutomation;
-    if (PRAutomation == null || conversationIds?.length === 0) {
-      return;
-    }
-    await PRAutomation.updateMany(
-      {
-        user: userId,
-        /** A user stop is overwritten, because only a deletion code resists a restart. */
-        stopCode: { $nin: DELETION_STOP_CODES },
-        ...(conversationIds != null && { conversationId: { $in: conversationIds } }),
-      },
-      { $set: { state: 'stopped', stopCode } },
-    );
-    /**
-     * A conversation without a record gets a tombstone, so an enable that was already in
-     * flight finds the fence instead of creating an idle record. An existing record, fenced
-     * or not, makes this a no-op, and the unique index keeps it to one per conversation.
-     */
-    if (conversationIds == null || !DELETION_STOP_CODES.includes(stopCode)) {
-      return;
-    }
-    await ensureIndexes();
-    await Promise.all(
-      conversationIds.map((conversationId) =>
-        PRAutomation.updateOne(
-          { user: userId, conversationId },
-          {
-            $setOnInsert: {
-              user: userId,
-              conversationId,
-              state: 'stopped',
-              stopCode,
-              round: 0,
-              trustedBots: [],
-              claimedHeads: [],
-              trust: 'approvedBots',
-            },
-          },
-          { upsert: true, runValidators: true },
-        ),
-      ),
-    );
-  }
-
-  /**
-   * Gives a deletion fence its way out. A deletion that did not commit, or only partly did,
-   * must not leave a conversation that survived with an automation nobody can turn back on:
-   * its record becomes an ordinary stop the user can restart. A record whose conversation is
-   * gone is removed. Records that are not under a deletion fence are left alone.
-   */
-  async function releasePRAutomationFences(
-    userId: string,
-    conversationIds?: string[],
-  ): Promise<void> {
-    const PRAutomation = mongoose.models.PRAutomation;
-    if (PRAutomation == null || conversationIds?.length === 0) {
-      return;
-    }
-    const fenced = {
-      user: userId,
-      stopCode: { $in: DELETION_STOP_CODES },
-      ...(conversationIds != null && { conversationId: { $in: conversationIds } }),
-    };
-    const records = await PRAutomation.find(fenced)
-      .select('conversationId')
-      .lean<{ conversationId: string }[]>();
-    const ids = records.map(({ conversationId }) => conversationId);
-    for (let start = 0; start < ids.length; start += RELEASE_BATCH) {
-      const batch = ids.slice(start, start + RELEASE_BATCH);
-      const surviving: string[] = await mongoose.models.Conversation.distinct('conversationId', {
-        user: userId,
-        conversationId: { $in: batch },
-        ...activeExpirationFilter(),
-      });
-      const kept = new Set(surviving);
-      const gone = batch.filter((id) => !kept.has(id));
-      const survivors = batch.filter((id) => kept.has(id));
-      if (survivors.length > 0) {
-        await PRAutomation.updateMany(
-          { ...fenced, conversationId: { $in: survivors } },
-          { $set: { stopCode: 'deletion_aborted' } },
-        );
-      }
-      if (gone.length > 0) {
-        await PRAutomation.deleteMany({ ...fenced, conversationId: { $in: gone } });
-      }
-    }
-  }
-
-  /** Removes every record of a user, or of the listed conversations. */
   async function deletePRAutomations(userId: string, conversationIds?: string[]): Promise<void> {
     const PRAutomation = mongoose.models.PRAutomation;
     if (PRAutomation == null || conversationIds?.length === 0) {
       return;
     }
-    await PRAutomation.deleteMany({
-      user: userId,
-      ...(conversationIds != null && { conversationId: { $in: conversationIds } }),
-    });
+    if (conversationIds == null) {
+      await PRAutomation.deleteMany({ user: userId });
+      return;
+    }
+    for (let start = 0; start < conversationIds.length; start += DELETE_BATCH) {
+      await PRAutomation.deleteMany({
+        user: userId,
+        conversationId: { $in: conversationIds.slice(start, start + DELETE_BATCH) },
+      });
+    }
   }
 
   async function setPRAutomationTrust(
@@ -550,8 +487,6 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     claimPRAutomationRound,
     settlePRAutomationRound,
     stopPRAutomation,
-    stopPRAutomations,
-    releasePRAutomationFences,
     deletePRAutomations,
     setPRAutomationTrust,
     addPRAutomationBot,

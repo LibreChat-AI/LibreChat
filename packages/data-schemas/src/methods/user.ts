@@ -605,27 +605,18 @@ export function createUserMethods(
     try {
       const User = mongoose.models.User;
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
-      /** Fenced first so a webhook cannot claim a record for an account that is going away.
-       * The records are removed only once the account delete committed, so a delete that fails
-       * keeps the user's automation: the fence is released into an ordinary stop they can
-       * restart. A cleanup that fails after the commit throws, and the retry removes them. */
-      await prAutomation.stopPRAutomations(userId, 'account_deleting');
-      let result: Awaited<ReturnType<typeof User.deleteOne>>;
-      try {
-        result = await User.deleteOne({ _id: userId });
-      } catch (error) {
-        await prAutomation.releasePRAutomationFences(userId).catch(() => {
-          logger.warn(
-            '[deleteUserById] PR automation fence release failed; the records stay stopped.',
-          );
-        });
-        throw error;
+      const result = await User.deleteOne({ _id: userId });
+      if (result.deletedCount > 0) {
+        /** Before any fallible cleanup, so a stale cached `req.user` cannot outlive the account. */
+        await invalidateAuthUserDocCache(userId);
       }
+      /** Removed only after the account delete committed, so a failed delete keeps the user's
+       * automation. A claim refuses a deleted owner, and a failed cleanup throws so the caller
+       * retries; a retry on a deleted account still reaches this line. */
       await prAutomation.deletePRAutomations(userId);
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
-      await invalidateAuthUserDocCache(userId);
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

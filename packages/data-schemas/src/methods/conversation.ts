@@ -4124,29 +4124,14 @@ export function createConversationMethods(
         );
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
-        /** Fenced before the delete so a webhook cannot claim a record whose conversation is
-         * going away, with a tombstone when none exists yet. Once the delete settles the fence
-         * is released: a record whose conversation is gone is removed, and one whose
-         * conversation survived becomes an ordinary stop the user can restart. */
-        await prAutomation.stopPRAutomations(user, 'conversation_deleting', waveIds);
-        let result: Awaited<ReturnType<typeof Conversation.deleteMany>>;
-        try {
-          result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
-        } catch (error) {
-          await prAutomation.releasePRAutomationFences(user, waveIds).catch(() => {
-            logger.warn(
-              '[deleteConvos] PR automation fence release failed; the record stays stopped.',
-            );
-          });
-          throw error;
-        }
-        try {
-          await prAutomation.releasePRAutomationFences(user, waveIds);
-        } catch {
-          logger.warn(
-            '[deleteConvos] PR automation fence release failed; the record stays stopped.',
-          );
-        }
+        const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        /** Only after the delete committed, so a failed delete keeps the user's automation.
+         * A claim refuses any record whose conversation is gone and removes it, so a cleanup
+         * that still fails after its retry converges on the next claim. */
+        await retryCascadeOperation(() => prAutomation.deletePRAutomations(user, waveIds)).catch(
+          (error) =>
+            logger.warn('[deleteConvos] PR automation cleanup deferred to its next claim', error),
+        );
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -4180,11 +4165,11 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
-        try {
-          await prAutomation.deletePRAutomations(user, recoveryConversationIds);
-        } catch {
-          logger.warn('[deleteConvos] PR automation cleanup failed; the record stays stopped.');
-        }
+        await retryCascadeOperation(() =>
+          prAutomation.deletePRAutomations(user, recoveryConversationIds),
+        ).catch((error) =>
+          logger.warn('[deleteConvos] PR automation cleanup deferred to its next claim', error),
+        );
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({
