@@ -33,6 +33,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn('data-[state=disabled]:opacity-50', utils.disabledInkClasses)",
     "cva('rounded', { variants: { size: { sm: 'disabled:opacity-50' } }, compoundVariants: [{ class: disabledFillClasses }] })",
     "cn({ 'disabled:opacity-50': true, [disabledFillClasses]: true })",
+    "cn(disabled ? '' : 'opacity-50')",
+    "cn(!disabled && 'opacity-50')",
+    "cn({ 'opacity-50': disabled === false })",
+    "cn('data-[disabled=false]:opacity-50 aria-[disabled=false]:opacity-60')",
   ],
   invalid: [
     {
@@ -78,6 +82,10 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "const styles = { base: 'disabled:opacity-50' }; cn(styles.base, disabledFillClasses);",
       errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn(isEnabled ? 'hover:bg-surface-hover' : '', !disabled ? '' : 'opacity-50')",
+      errors: [missing('opacity-50')],
     },
     {
       code: "cn('aria-[disabled=true]:opacity-50')",

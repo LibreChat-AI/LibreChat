@@ -16,9 +16,12 @@ const RECIPE_VARIANT = /(?:^|\s)(?:peer-)?theme-disabled(?:-within)?:/;
 
 /** A variant that selects a disabled control, its group, its peer or a wrapper around it:
  *  `disabled:`, `aria-disabled:`, `data-[state=disabled]:`, `has-[:disabled]:`, `[&:disabled]:`.
- *  The recipes' own `theme-disabled` and a negated `not-disabled` select something else. */
+ *  The recipes' own `theme-disabled`, a negated `not-disabled` and an explicit
+ *  `[disabled=false]` select something else. */
 const isDisabledVariant = (variant) =>
-  /disabled/.test(variant) && !/^(?:(?:group|peer)-)?(?:theme-disabled|not-)/.test(variant);
+  /disabled/.test(variant) &&
+  !/^(?:(?:group|peer)-)?(?:theme-disabled|not-)/.test(variant) &&
+  !/disabled\s*!?=\s*["']?false\b|disabled\s*!=/.test(variant);
 
 /** Ancestors that keep a class string inside one class list: the expression a recipe is
  *  composed into reaches up through these, and stops at a declaration or an attribute. */
@@ -73,20 +76,46 @@ const bareDim = (value) =>
     return variants.length === 0 && isOpacity(base);
   });
 
-const mentionsDisabled = (source, node) => /disabled/i.test(source.getText(node));
+/** Whether `test` holds while the control is disabled (`true`), while it is enabled (`false`),
+ *  or says nothing about it (`undefined`): it has to name `disabled`, and any `!` or comparison
+ *  to `false` (or inequality to `true`) flips the sense. */
+function disabledSense(test, source) {
+  let node = test;
+  let negated = false;
+  for (;;) {
+    if (node.type === 'UnaryExpression' && node.operator === '!') {
+      negated = !negated;
+      node = node.argument;
+      continue;
+    }
+    if (node.type === 'BinaryExpression' && /^[!=]==?$/.test(node.operator)) {
+      const literal = [node.left, node.right].find((side) => side.type === 'Literal');
+      if (literal && typeof literal.value === 'boolean') {
+        const inequality = node.operator.startsWith('!');
+        if (literal.value === inequality) negated = !negated;
+        node = literal === node.left ? node.right : node.left;
+        continue;
+      }
+    }
+    break;
+  }
+  return /disabled/i.test(source.getText(node)) ? !negated : undefined;
+}
 
 /** Whether a `disabled` condition chooses the string: `disabled ? 'opacity-50' : ''`,
- *  `isDisabled && 'opacity-50'`, or `{ 'opacity-50': disabled }` in a class map. */
+ *  `isDisabled && 'opacity-50'`, or `{ 'opacity-50': disabled }` in a class map. A string the
+ *  condition picks for the enabled state (`disabled ? '' : 'opacity-50'`) is not a disabled dim. */
 function chosenByDisabled(node, source) {
   const parent = node.parent;
   if (parent?.type === 'ConditionalExpression' && parent.test !== node) {
-    return mentionsDisabled(source, parent.test);
+    const sense = disabledSense(parent.test, source);
+    return sense !== undefined && sense === (parent.consequent === node);
   }
   if (parent?.type === 'LogicalExpression' && parent.right === node && parent.operator === '&&') {
-    return mentionsDisabled(source, parent.left);
+    return disabledSense(parent.left, source) === true;
   }
   if (parent?.type === 'Property' && parent.key === node) {
-    return mentionsDisabled(source, parent.value);
+    return disabledSense(parent.value, source) === true;
   }
   return false;
 }
