@@ -52,10 +52,10 @@ const FUNCTION = new RegExp(
 );
 const RELATIVE_COLOR = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*from\s+/gi;
 const CHANNEL_KEYWORD = /(?<![\w-])(?:[rgbhslwcaxyz]|alpha)(?![\w-])/i;
-const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
+const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:e[+-]?\\d+)?%?';
 /** An innermost math function, or grouping parenthesis, over numbers alone: no `var()` and no unit. */
 const NUMERIC_MATH = new RegExp(
-  String.raw`(?<![\w-])(?:${MATH_FUNCTIONS})?\([\d.%+*/,\s-]*\)`,
+  String.raw`(?<![\w-])(?:${MATH_FUNCTIONS})?\((?:[\d.%+*/,\s-]|e|pi|infinity|nan)*\)`,
   'gi',
 );
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
