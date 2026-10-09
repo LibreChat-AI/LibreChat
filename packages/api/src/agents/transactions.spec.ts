@@ -65,6 +65,67 @@ const mockPricing: PricingFns = {
   getCacheMultiplier: jest.fn().mockReturnValue(null),
 };
 
+describe('transaction agent attribution', () => {
+  const pricing: PricingFns = {
+    getMultiplier: () => 1,
+    getCacheMultiplier: () => 1,
+  };
+
+  it('preserves agentId and rootAgentId in standard token transactions', () => {
+    const entries = prepareTokenSpend(
+      {
+        user: 'user-1',
+        conversationId: 'conversation-1',
+        context: 'completion',
+        model: 'test-model',
+        agentId: 'agent-child',
+        rootAgentId: 'agent-root',
+        transactions: { enabled: true },
+      },
+      {
+        promptTokens: 10,
+        completionTokens: 5,
+      },
+      pricing,
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0].doc.agentId).toBe('agent-child');
+    expect(entries[0].doc.rootAgentId).toBe('agent-root');
+    expect(entries[1].doc.agentId).toBe('agent-child');
+    expect(entries[1].doc.rootAgentId).toBe('agent-root');
+  });
+
+  it('preserves agentId and rootAgentId in structured token transactions', () => {
+    const entries = prepareStructuredTokenSpend(
+      {
+        user: 'user-1',
+        conversationId: 'conversation-1',
+        context: 'completion',
+        model: 'test-model',
+        agentId: 'agent-child',
+        rootAgentId: 'agent-root',
+        transactions: { enabled: true },
+      },
+      {
+        promptTokens: {
+          input: 10,
+          write: 2,
+          read: 3,
+        },
+        completionTokens: 5,
+      },
+      pricing,
+    );
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0].doc.agentId).toBe('agent-child');
+    expect(entries[0].doc.rootAgentId).toBe('agent-root');
+    expect(entries[1].doc.agentId).toBe('agent-child');
+    expect(entries[1].doc.rootAgentId).toBe('agent-root');
+  });
+});
+
 describe('prepareTokenSpend', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -470,5 +531,92 @@ describe('end-to-end: prepare → bulk write → verify', () => {
       unknown
     > | null;
     expect(bal!.tokenCredits).toBeLessThan(5000);
+  });
+});
+
+describe('bulkWriteTransactions balance behavior', () => {
+  it('does not update balance when all prepared entries have balance disabled', async () => {
+    const insertMany = jest.fn().mockResolvedValue(undefined);
+    const updateBalance = jest.fn().mockResolvedValue(undefined);
+
+    await bulkWriteTransactions(
+      {
+        user: 'user-1',
+        docs: [
+          {
+            doc: {
+              user: 'user-1',
+              conversationId: 'conversation-1',
+              tokenType: 'prompt',
+              model: 'test-model',
+              context: 'message',
+              rawAmount: -1,
+              tokenValue: 1000,
+            },
+            tokenValue: 1000,
+            balance: {
+              enabled: false,
+            },
+          },
+        ],
+      },
+      {
+        insertMany,
+        updateBalance,
+      },
+    );
+
+    expect(insertMany).toHaveBeenCalledTimes(1);
+    expect(insertMany).toHaveBeenCalledWith([
+      {
+        user: 'user-1',
+        conversationId: 'conversation-1',
+        tokenType: 'prompt',
+        model: 'test-model',
+        context: 'message',
+        rawAmount: -1,
+        tokenValue: 1000,
+      },
+    ]);
+    expect(updateBalance).not.toHaveBeenCalled();
+  });
+
+  it('updates balance when a prepared entry enables balance deduction', async () => {
+    const insertMany = jest.fn().mockResolvedValue(undefined);
+    const updateBalance = jest.fn().mockResolvedValue(undefined);
+
+    await bulkWriteTransactions(
+      {
+        user: 'user-1',
+        docs: [
+          {
+            doc: {
+              user: 'user-1',
+              conversationId: 'conversation-1',
+              tokenType: 'prompt',
+              model: 'test-model',
+              context: 'message',
+              rawAmount: -1,
+              tokenValue: 1000,
+            },
+            tokenValue: 1000,
+            balance: {
+              enabled: true,
+            },
+          },
+        ],
+      },
+      {
+        insertMany,
+        updateBalance,
+      },
+    );
+
+    expect(insertMany).toHaveBeenCalledTimes(1);
+    expect(updateBalance).toHaveBeenCalledTimes(1);
+    expect(updateBalance).toHaveBeenCalledWith({
+      user: 'user-1',
+      incrementValue: 1000,
+    });
   });
 });

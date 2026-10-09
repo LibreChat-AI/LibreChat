@@ -356,7 +356,7 @@ export async function fireSchedule(
         );
     }
 
-    if (await deps.isOutOfBalance(user)) {
+    if (await deps.isOutOfBalance(user, schedule.agent_id)) {
       // Revalidate BEFORE writing the skip. Everything above (user, config, permission
       // and balance lookups) can outlast the 5-minute lease, and a skip is not a no-op:
       // it stamps the card and walks the balance-skip streak toward auto-disable. Under
