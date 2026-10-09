@@ -1,5 +1,5 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
-import { Providers, StandardGraph } from '@librechat/agents';
+import { Providers, StandardGraph, getTokenCountForMessage } from '@librechat/agents';
 import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
 import { ContentTypes, DEFAULT_MAX_RETAINED_TOOL_COUNT_CHARS } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -11,6 +11,8 @@ import {
   collectToolCallIds,
   countRetainedToolTokens,
   createCachedTokenCounter,
+  countFormattedMessageTokens,
+  estimateMediaTokensForMessage,
   payloadParser,
   prependQuotes,
   prependFileContext,
@@ -18,6 +20,98 @@ import {
 } from './client';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 import Tokenizer from '~/utils/tokenizer';
+
+describe('provider-native media token accounting', () => {
+  const encodings: EncodingName[] = ['o200k_base', 'claude'];
+  const blocks = [
+    { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(150_000) },
+    { type: 'media', mimeType: 'application/pdf', fileUri: 'gs://bucket/document.pdf' },
+    { type: 'media', mimeType: 'image/png', data: 'AAAA' },
+    { type: 'media', mimeType: 'audio/wav', data: 'A'.repeat(64_000) },
+    { type: 'media', mimeType: 'video/mp4', data: 'A'.repeat(100_000) },
+  ];
+
+  it.each(encodings)('counts media consistently with the SDK using %s', (encoding) => {
+    const countText = (text: string) => Tokenizer.getTokenCount(text, encoding);
+    const empty = new HumanMessage({ content: [] });
+    const framing = getTokenCountForMessage(empty, countText, encoding);
+    const isClaude = encoding === 'claude';
+
+    for (const block of blocks) {
+      const sdkMediaTokens =
+        getTokenCountForMessage(new HumanMessage({ content: [block] }), countText, encoding) -
+        framing;
+      expect(sdkMediaTokens).toBeGreaterThan(0);
+      expect(estimateMediaTokensForMessage([block], isClaude, countText)).toBe(sdkMediaTokens);
+
+      const text = { type: 'text', text: 'Please read the attachment.' };
+      const textOnly = countFormattedMessageTokens({ role: 'user', content: [text] }, encoding);
+      const withMedia = countFormattedMessageTokens(
+        { role: 'user', content: [text, block] },
+        encoding,
+      );
+      const correction = isClaude ? 1.1 : 1;
+      expect(withMedia - textOnly).toBeGreaterThanOrEqual(Math.floor(sdkMediaTokens * correction));
+      expect(withMedia - textOnly).toBeLessThanOrEqual(Math.ceil(sdkMediaTokens * correction));
+    }
+  });
+
+  it('does not let a large Google PDF look like a text-only message below the context cap', () => {
+    const count = (data: string) =>
+      countFormattedMessageTokens(
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Read this PDF.' },
+            { type: 'media', mimeType: 'application/pdf', data },
+          ],
+        },
+        'o200k_base',
+      );
+    const small = count('A'.repeat(75_000));
+    const large = count('A'.repeat(10_000_000));
+    expect(small).toBeGreaterThan(1500);
+    expect(large).toBeGreaterThan(190_000);
+    expect(large).toBeGreaterThan(small);
+  });
+
+  it('does not count text as media and handles empty content', () => {
+    expect(estimateMediaTokensForMessage([{ type: 'text', text: 'hello' }], false)).toBe(0);
+    expect(estimateMediaTokensForMessage([], false)).toBe(0);
+    expect(estimateMediaTokensForMessage(undefined, false)).toBe(0);
+  });
+
+  it('rejects an oversized PDF before invoking the model with precomputed counts', async () => {
+    const content = [
+      { type: 'text', text: 'Read this PDF.' },
+      { type: 'media', mimeType: 'application/pdf', data: 'A'.repeat(10_000_000) },
+    ];
+    const graph = new StandardGraph({
+      runId: 'oversized-native-pdf',
+      agents: [
+        {
+          agentId: 'primary',
+          provider: Providers.GOOGLE,
+          maxContextTokens: 190_000,
+          summarizationEnabled: false,
+        },
+      ],
+      tokenCounter: await createCachedTokenCounter('o200k_base'),
+      indexTokenCountMap: {
+        0: countFormattedMessageTokens({ role: 'user', content }, 'o200k_base'),
+      },
+    });
+    graph.overrideTestModel(['should not be called']);
+    await expect(
+      graph
+        .createAgentNode('primary')
+        .invoke(
+          { messages: [new HumanMessage({ content })] },
+          { configurable: { thread_id: graph.runId }, recursionLimit: 12 },
+        ),
+    ).rejects.toThrow('empty_messages');
+  });
+});
 
 describe('createCachedTokenCounter', () => {
   const encodings: EncodingName[] = ['o200k_base', 'claude'];
