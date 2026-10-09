@@ -70,8 +70,12 @@ test.describe('streamed code highlighting', () => {
     page,
   }) => {
     expect(CONFIGURED_THROTTLE_MS).not.toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+    /** The signed-in payload: the pre-login one carries only the fields a login page needs. */
     const config = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === '/api/config' && response.ok(),
+      (response) =>
+        new URL(response.url()).pathname === '/api/config' &&
+        response.ok() &&
+        Boolean(response.request().headers()['authorization']),
       { timeout: 30000 },
     );
     await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
