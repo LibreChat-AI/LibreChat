@@ -8,6 +8,7 @@ import type {
 import {
   mergeHeaders,
   resolveHeaders,
+  resolveAddParams,
   isUserProvided,
   checkUserKeyExpiry,
   getAzureCredentials,
@@ -133,6 +134,14 @@ export async function initializeOpenAI(
      *  env-before-user invariant. Azure-managed headers stay authoritative. */
     if (globalHeaders) {
       clientOptions.headers = mergeHeaders(globalHeaders, clientOptions.headers);
+    }
+
+    if (clientOptions.addParams) {
+      clientOptions.addParams = resolveAddParams({
+        addParams: clientOptions.addParams,
+        user,
+        body: requestBody,
+      });
     }
 
     apiKey = azureOptions.azureOpenAIApiKey;

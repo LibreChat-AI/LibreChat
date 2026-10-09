@@ -5,6 +5,7 @@ import type { IUser } from '@librechat/data-schemas';
 import {
   createSafeUser,
   resolveHeaders,
+  resolveAddParams,
   resolveNestedObject,
   processMCPEnv,
   encodeHeaderValue,
@@ -2231,6 +2232,153 @@ describe('processMCPEnv', () => {
       } else {
         throw new Error('Expected streamable-http options');
       }
+    });
+  });
+
+  describe('resolveAddParams', () => {
+    it('should resolve body template variables in addParams', () => {
+      const body = {
+        conversationId: 'conv-123',
+        parentMessageId: 'parent-456',
+        messageId: 'msg-789',
+      };
+      const addParams = {
+        conversation_id: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        parent_message_id: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}',
+        message_id: '{{LIBRECHAT_BODY_MESSAGEID}}',
+      };
+
+      const result = resolveAddParams({ addParams, body });
+
+      expect(result.conversation_id).toBe('conv-123');
+      expect(result.parent_message_id).toBe('parent-456');
+      expect(result.message_id).toBe('msg-789');
+    });
+
+    it('should resolve user template variables in addParams', () => {
+      const user = createTestUser({ id: 'user-abc', username: 'testuser', email: 'test@example.com' });
+      const addParams = {
+        user_id: '{{LIBRECHAT_USER_ID}}',
+        username: '{{LIBRECHAT_USER_USERNAME}}',
+        email: '{{LIBRECHAT_USER_EMAIL}}',
+      };
+
+      const result = resolveAddParams({ addParams, user });
+
+      expect(result.user_id).toBe('user-abc');
+      expect(result.username).toBe('testuser');
+      expect(result.email).toBe('test@example.com');
+    });
+
+    it('should handle nested objects in addParams', () => {
+      const body = { messageId: 'msg-789' };
+      const user = createTestUser({ id: 'user-abc' });
+      const addParams = {
+        metadata: {
+          message_id: '{{LIBRECHAT_BODY_MESSAGEID}}',
+          user_id: '{{LIBRECHAT_USER_ID}}',
+        },
+      };
+
+      const result = resolveAddParams({ addParams, body, user });
+
+      expect((result.metadata as Record<string, unknown>).message_id).toBe('msg-789');
+      expect((result.metadata as Record<string, unknown>).user_id).toBe('user-abc');
+    });
+
+    it('should handle arrays in addParams', () => {
+      const user = createTestUser({ id: 'user-abc' });
+      const addParams = {
+        tags: ['{{LIBRECHAT_USER_ID}}', 'static-tag', '{{LIBRECHAT_USER_USERNAME}}'],
+      };
+
+      const result = resolveAddParams({ addParams, user });
+
+      expect(Array.isArray(result.tags)).toBe(true);
+      expect((result.tags as string[])[0]).toBe('user-abc');
+      expect((result.tags as string[])[1]).toBe('static-tag');
+      expect((result.tags as string[])[2]).toBeUndefined(); // username not set in createTestUser
+    });
+
+    it('should preserve non-string primitive values', () => {
+      const addParams = {
+        max_tokens: 100,
+        temperature: 0.7,
+        stream: true,
+        top_p: null,
+      };
+
+      const result = resolveAddParams({ addParams });
+
+      expect(result.max_tokens).toBe(100);
+      expect(result.temperature).toBe(0.7);
+      expect(result.stream).toBe(true);
+      expect(result.top_p).toBe(null);
+    });
+
+    it('should handle mixed types in addParams', () => {
+      const body = { messageId: 'msg-789' };
+      const user = createTestUser({ id: 'user-abc' });
+      const addParams = {
+        message_id: '{{LIBRECHAT_BODY_MESSAGEID}}',
+        max_tokens: 100,
+        metadata: {
+          user_id: '{{LIBRECHAT_USER_ID}}',
+          static_value: 'unchanged',
+        },
+        temperature: 0.7,
+      };
+
+      const result = resolveAddParams({ addParams, body, user });
+
+      expect(result.message_id).toBe('msg-789');
+      expect(result.max_tokens).toBe(100);
+      expect((result.metadata as Record<string, unknown>).user_id).toBe('user-abc');
+      expect((result.metadata as Record<string, unknown>).static_value).toBe('unchanged');
+      expect(result.temperature).toBe(0.7);
+    });
+
+    it('should resolve environment variables in addParams', () => {
+      process.env.TEST_API_KEY = 'test-env-value';
+      const addParams = {
+        api_key: '${TEST_API_KEY}',
+        static_value: 'unchanged',
+      };
+
+      const result = resolveAddParams({ addParams });
+
+      expect(result.api_key).toBe('test-env-value');
+      expect(result.static_value).toBe('unchanged');
+
+      delete process.env.TEST_API_KEY;
+    });
+
+    it('should handle customUserVars in addParams', () => {
+      const customUserVars = { MY_CUSTOM_VAR: 'custom-value' };
+      const addParams = {
+        custom_field: '{{MY_CUSTOM_VAR}}',
+        static_field: 'unchanged',
+      };
+
+      const result = resolveAddParams({ addParams, customUserVars });
+
+      expect(result.custom_field).toBe('custom-value');
+      expect(result.static_field).toBe('unchanged');
+    });
+
+    it('should return empty object for undefined addParams', () => {
+      const result = resolveAddParams({ addParams: undefined });
+      expect(result).toEqual({});
+    });
+
+    it('should return empty object for null addParams', () => {
+      const result = resolveAddParams({ addParams: null as unknown as Record<string, unknown> });
+      expect(result).toEqual({});
+    });
+
+    it('should handle empty addParams object', () => {
+      const result = resolveAddParams({ addParams: {} });
+      expect(result).toEqual({});
     });
   });
 });

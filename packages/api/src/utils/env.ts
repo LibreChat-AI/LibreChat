@@ -681,3 +681,73 @@ export function resolveHeaders(options?: {
 
   return resolvedHeaders;
 }
+
+/**
+ * Recursively processes addParams to replace template variables and environment variables in values.
+ *
+ * @param options - Processing parameters
+ * @param options.addParams - The addParams object to process
+ * @param options.user - Optional user object for replacing user field placeholders
+ * @param options.body - Optional request body object for replacing body field placeholders
+ * @param options.customUserVars - Optional custom user variables to replace placeholders
+ * @returns The processed addParams with all placeholders replaced
+ */
+export function resolveAddParams(options?: {
+  addParams: Record<string, unknown> | undefined;
+  user?: Partial<IUser> | { id: string };
+  body?: RequestBody;
+  customUserVars?: Record<string, string>;
+}): Record<string, unknown> {
+  const { addParams, user, body, customUserVars } = options ?? {};
+  if (!addParams || typeof addParams !== 'object' || Array.isArray(addParams)) {
+    return addParams ?? {};
+  }
+
+  const resolvedParams: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(addParams)) {
+    if (typeof value === 'string') {
+      resolvedParams[key] = processSingleValue({
+        originalValue: value,
+        customUserVars,
+        user: user as IUser,
+        body,
+        isHeader: false, // addParams are not headers, no special encoding needed
+      });
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      // Recursively process nested objects
+      resolvedParams[key] = resolveAddParams({
+        addParams: value as Record<string, unknown>,
+        user,
+        body,
+        customUserVars,
+      });
+    } else if (Array.isArray(value)) {
+      // Process array elements
+      resolvedParams[key] = value.map((item) => {
+        if (typeof item === 'string') {
+          return processSingleValue({
+            originalValue: item,
+            customUserVars,
+            user: user as IUser,
+            body,
+            isHeader: false,
+          });
+        } else if (item && typeof item === 'object') {
+          return resolveAddParams({
+            addParams: item as Record<string, unknown>,
+            user,
+            body,
+            customUserVars,
+          });
+        }
+        return item;
+      });
+    } else {
+      // Keep non-string primitive values as-is
+      resolvedParams[key] = value;
+    }
+  }
+
+  return resolvedParams;
+}
