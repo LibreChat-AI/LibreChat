@@ -18,7 +18,10 @@ const missing = (dim) => ({ messageId: 'missing', data: { dim } });
 tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
   valid: [
     "cn('px-2 disabled:opacity-50', disabledFillClasses)",
-    "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } }, defaultVariants: { tone: 'muted' } })",
+    "<span className={cn(disabled && 'opacity-50', disabledWithinFillClasses)} />",
+    "<button disabled={disabled} className={cn(disabled && 'opacity-50', disabledFillClasses)} />",
+    "cn('disabled:opacity-60!', 'theme-disabled:opacity-100!')",
+    "<button disabled className={cn('opacity-50', disabledFillClasses)} />",
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
     "cn(disabled && 'opacity-50', disabled && disabledFillClasses)",
     "cn(disabled ? 'opacity-50' : '', disabled ? disabledFillClasses : '')",
@@ -230,6 +233,34 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cn('disabled:opacity-50', drop(disabledFillClasses))",
       errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cva('rounded disabled:opacity-50', { variants: { tone: { muted: disabledInkClasses, loud: cn('px-2', disabledFillClasses) } }, defaultVariants: { tone: 'muted' } })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "<span className={cn(disabled && 'opacity-50', disabledFillClasses)} />",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn('[tr[data-disabled=true]_&]:opacity-50', disabledFillClasses)",
+      errors: [missing('[tr[data-disabled=true]_&]:opacity-50')],
+    },
+    {
+      code: "<div className={first('disabled:opacity-50', disabledFillClasses)} />",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cn('disabled:opacity-60!', disabledFillClasses)",
+      errors: [missing('disabled:opacity-60!')],
+    },
+    {
+      code: '<button disabled className="opacity-50" />',
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: '<button aria-disabled="true" className="px-2 opacity-40" />',
+      errors: [missing('opacity-40')],
     },
     {
       code: "cn('disabled:opacity-60!')",

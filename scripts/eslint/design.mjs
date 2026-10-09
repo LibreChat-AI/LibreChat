@@ -18,9 +18,9 @@ const RECIPES = new Map([
 /** The full-opacity override every recipe carries, so a class list that spells one out also
  *  counts; another `theme-disabled:` utility alone still leaves the control faded. */
 const RECIPE_VARIANTS = [
-  [/(?:^|\s)theme-disabled:!?opacity-100!?(?=\s|$)/, 'self'],
-  [/(?:^|\s)theme-disabled-within:!?opacity-100!?(?=\s|$)/, 'within'],
-  [/(?:^|\s)peer-theme-disabled:!?opacity-100!?(?=\s|$)/, 'peer'],
+  [/(?:^|\s)theme-disabled:(!?)opacity-100(!?)(?=\s|$)/, 'self'],
+  [/(?:^|\s)theme-disabled-within:(!?)opacity-100(!?)(?=\s|$)/, 'within'],
+  [/(?:^|\s)peer-theme-disabled:(!?)opacity-100(!?)(?=\s|$)/, 'peer'],
 ];
 
 /** Where the shared primitives live, for a relative import inside the component library. */
@@ -53,10 +53,12 @@ const isDisabledVariant = (variant) =>
   !/disabled\s*!?=\s*["']?false\b|disabled\s*!=/.test(variant);
 
 /** Which element a disabled variant fades: the control, a wrapper that has one, a label that
- *  follows one through `peer`, or a descendant of a disabled `group`, which no recipe restores. */
+ *  follows one through `peer`, or a descendant of a disabled `group` or of an ancestor an
+ *  arbitrary selector names (`[tr[data-disabled=true]_&]`), which no recipe restores. */
 function topologyOf(variant) {
   if (/^peer-/.test(variant)) return 'peer';
   if (/^group-/.test(variant)) return 'group';
+  if (/^\[(?!&)/.test(variant)) return 'group';
   if (/^has-|:has\(/.test(variant)) return 'within';
   return 'self';
 }
@@ -101,29 +103,37 @@ function splitVariants(token) {
  *  not a dim. */
 const isOpacity = (base) => /^!?opacity-(?!100!?$)/.test(base);
 
+const isImportant = (base) => base.startsWith('!') || base.endsWith('!');
+
 /** Every utility in `value` that dims a disabled control through a variant, with the element
  *  it fades. */
 function variantDims(value) {
   return value.split(/\s+/).flatMap((token) => {
     const { variants, base } = splitVariants(token);
     const variant = isOpacity(base) ? variants.find(isDisabledVariant) : undefined;
-    return variant ? [{ dim: token, topology: topologyOf(variant) }] : [];
+    return variant
+      ? [{ dim: token, topology: topologyOf(variant), important: isImportant(base) }]
+      : [];
   });
 }
 
 /** The first fading `opacity-*` in `value` that no disabled variant already selects, for a
- *  string a `disabled` condition chooses (`opacity-50`, `sm:opacity-50`). Which element it sits on
- *  is not known, so any recipe restores it. */
-function bareDim(value) {
+ *  string a `disabled` condition chooses (`opacity-50`, `sm:opacity-50`), restored by the recipe
+ *  for the element it sits on. */
+function bareDim(value, topology) {
   const token = value.split(/\s+/).find((candidate) => {
     const { variants, base } = splitVariants(candidate);
     return isOpacity(base) && !variants.some(isDisabledVariant);
   });
-  return token ? { dim: token, topology: 'any' } : undefined;
+  return token
+    ? { dim: token, topology, important: isImportant(splitVariants(token).base) }
+    : undefined;
 }
 
-const covers = (recipe, topology) =>
-  recipe !== undefined && (topology === 'any' || recipe === topology);
+/** Whether a shared recipe restores a dim: it targets the dim's element, and the dim is not
+ *  `!important`, which no shared recipe outranks. */
+const covers = (recipe, need) =>
+  recipe !== undefined && !need.important && (need.topology === 'any' || recipe === need.topology);
 
 /** The variable a name resolves to from `scope`, or `undefined` when nothing declares it. */
 function findVariable(scope, name) {
@@ -311,16 +321,6 @@ const isClassCall = (call) =>
     call.callee.type === 'MemberExpression' ? call.callee.property.name : call.callee.name,
   );
 
-const propertyNamed = (object, name) =>
-  object?.type === 'ObjectExpression'
-    ? object.properties.find(
-        (property) =>
-          property.type === 'Property' &&
-          !property.computed &&
-          (property.key.name ?? property.key.value) === name,
-      )
-    : undefined;
-
 /** Reads, for one class list, what a recipe reference resolves to and which strings and
  *  expressions always emit one. */
 function recipeReader(context) {
@@ -359,40 +359,17 @@ function recipeReader(context) {
       : undefined;
   };
 
-  const stringCovers = (value, topology) =>
+  /** A spelled-out recipe for the dim's element, `!important` when the dim is. */
+  const stringCovers = (value, need) =>
     typeof value === 'string' &&
-    RECIPE_VARIANTS.some(([pattern, recipe]) => covers(recipe, topology) && pattern.test(value));
+    RECIPE_VARIANTS.some(([pattern, recipe]) => {
+      const match = pattern.exec(value);
+      if (!match || !(need.topology === 'any' || recipe === need.topology)) return false;
+      return !need.important || Boolean(match[1] || match[2]);
+    });
 
-  /** A default that selects one of the group's own options: not `null`, `undefined` or a name
-   *  the group does not define. */
-  const namesOption = (value, options) =>
-    value?.type === 'Literal' &&
-    value.value !== null &&
-    options.type === 'ObjectExpression' &&
-    options.properties.some(
-      (option) => option.type === 'Property' && keyName(option) === String(value.value),
-    );
-
-  /** Every option of some `cva` variant group composes a covering recipe, and the group has a
-   *  default, so whichever option is chosen, or none, restores the control. */
-  const variantsAlways = (config, topology) => {
-    const groups = propertyNamed(config, 'variants')?.value;
-    if (groups?.type !== 'ObjectExpression') return false;
-    const defaults = propertyNamed(config, 'defaultVariants')?.value;
-    return groups.properties.some(
-      (group) =>
-        group.type === 'Property' &&
-        !group.computed &&
-        namesOption(propertyNamed(defaults, keyName(group))?.value, group.value) &&
-        group.value.type === 'ObjectExpression' &&
-        group.value.properties.length > 0 &&
-        group.value.properties.every(
-          (option) => option.type === 'Property' && always(option.value, topology),
-        ),
-    );
-  };
-
-  /** Whether `node` emits a recipe covering `topology` on every path through it. */
+  /** Whether `node` emits a recipe covering `need` (the dim's element and importance) on every
+   *  path through it. */
   const always = (node, topology) => {
     switch (node.type) {
       case 'Literal':
@@ -410,8 +387,8 @@ function recipeReader(context) {
         return !node.computed && covers(memberRecipeOf(node), topology);
       case 'CallExpression':
         if (isCva(node)) {
-          const [base, config] = node.arguments;
-          return (base !== undefined && always(base, topology)) || variantsAlways(config, topology);
+          const [base] = node.arguments;
+          return base !== undefined && always(base, topology);
         }
         return isClassCall(node) && node.arguments.some((argument) => always(argument, topology));
       case 'ArrayExpression':
@@ -449,9 +426,6 @@ function recipeReader(context) {
       ? always(property.key, topology)
       : stringCovers(property.key.value, topology));
 
-  /** The parts of `parent` emitted whenever `child` is: the other arguments of a class call,
-   *  the other entries of an array or template, the base of a `cva` around a variant, and class
-   *  map entries switched on by the same condition. A condition's other branch is not. */
   /** A sibling that always emits a covering recipe, or one guarded by the same condition as the
    *  dim's own entry, on the same side: `cn(disabled && 'opacity-50', disabled && recipe)` or
    *  `cn(disabled ? 'opacity-50' : '', disabled ? recipe : '')`. */
@@ -474,16 +448,19 @@ function recipeReader(context) {
     return always(sibling[side], topology);
   };
 
+  /** The parts of `parent` emitted whenever `child` is: the other arguments of a class helper,
+   *  the other entries of an array or template, the base of a `cva` around a variant (a variant
+   *  can be passed `null`, so it never proves one), and class map entries switched on by the same
+   *  condition. A condition's other branch is not. */
   const companions = (parent, child, start, topology) => {
     switch (parent.type) {
       case 'CallExpression': {
         if (parent.callee === child) return false;
         if (isCva(parent)) {
-          const [base, config] = parent.arguments;
-          return child === base
-            ? variantsAlways(config, topology)
-            : base !== undefined && always(base, topology);
+          const [base] = parent.arguments;
+          return child !== base && base !== undefined && always(base, topology);
         }
+        if (!isClassCall(parent)) return false;
         return parent.arguments.some(
           (argument) => argument !== child && alongside(argument, child, start, topology),
         );
@@ -549,15 +526,29 @@ function elementImport(element, source) {
   return { component: imported?.name ?? imported?.value, from, declared: true };
 }
 
+/** Marks an element that is disabled outright (`disabled`, `disabled={true}`,
+ *  `aria-disabled="true"`), where every fade on it is a disabled dim. */
+const STATIC = Symbol('static');
+
 /** The element's own `disabled` and `aria-disabled` expressions, with their negations, so a
- *  condition spelled the same way reads as the disabled state whatever it is named. */
+ *  condition spelled the same way reads as the disabled state whatever it is named. Any such
+ *  attribute also says the element is the control itself. */
 function disabledExpressions(element, source) {
   const known = new Map();
   for (const attribute of element?.attributes ?? []) {
     if (attribute.type !== 'JSXAttribute') continue;
     if (!['disabled', 'aria-disabled'].includes(attribute.name.name)) continue;
+    const literal = attribute.value?.type === 'Literal' ? attribute.value.value : undefined;
     const expression =
       attribute.value?.type === 'JSXExpressionContainer' ? attribute.value.expression : undefined;
+    if (
+      attribute.value == null ||
+      literal === 'true' ||
+      (expression?.type === 'Literal' && expression.value === true)
+    ) {
+      known.set(STATIC, true);
+      continue;
+    }
     if (!expression || expression.type === 'JSXEmptyExpression' || expression.type === 'Literal') {
       continue;
     }
@@ -620,10 +611,20 @@ const disabledRecipe = {
       const list = classList(node);
       const element = classNameElement(list);
       const known = disabledExpressions(element, source);
-      const chosen = chosenByDisabled(node, source, known) ? bareDim(value) : undefined;
+      const control = element?.attributes.some(
+        (attribute) =>
+          attribute.type === 'JSXAttribute' &&
+          ['disabled', 'aria-disabled'].includes(attribute.name.name),
+      );
+      /** A bare fade sits on the control when the element carries the disabled state, on a
+       *  wrapper around it when the element does not, and on an unknown element outside JSX. */
+      let bareTopology = 'any';
+      if (element) bareTopology = control ? 'self' : 'within';
+      const picked = known.get(STATIC) === true || chosenByDisabled(node, source, known);
+      const chosen = picked ? bareDim(value, bareTopology) : undefined;
       const dims = [...variantDims(value), ...(chosen ? [chosen] : [])];
       if (dims.length === 0 || isPrimitive(element)) return;
-      const missing = dims.find(({ topology }) => !restored(node, list, topology));
+      const missing = dims.find((need) => !restored(node, list, need));
       if (!missing) return;
       context.report({ node: reported, messageId: 'missing', data: { dim: missing.dim } });
     };
