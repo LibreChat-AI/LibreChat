@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { logger, createModels } from '..';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { PRAutomationStopCode } from 'librechat-data-provider';
+import type { PRAutomationEventStopCode } from '~/types/prAutomation';
 import { createPRAutomationMethods } from './prAutomation';
 
 logger.silent = true;
@@ -21,7 +22,15 @@ const pullTwo = { repository: 'acme/one', pullNumber: 2 };
 const otherRepository = { repository: 'acme/two', pullNumber: 2 };
 
 const mismatch = { ok: false, error: { code: 'binding_mismatch' } };
-const enable = (binding = pullOne) => methods.enablePRAutomation({ ...key, binding });
+/** Enables and returns the record, for setups that expect the enable to succeed. */
+const enableWith = async (params: Parameters<typeof methods.enablePRAutomation>[0]) => {
+  const result = await methods.enablePRAutomation(params);
+  if (!result.ok) {
+    throw new Error(`enable failed: ${result.error.code}`);
+  }
+  return result.value;
+};
+const enable = (binding = pullOne) => enableWith({ ...key, binding });
 const claim = (n: number, extra: { now?: Date; binding?: typeof pullOne } = {}) =>
   methods.claimPRAutomationRound({
     ...key,
@@ -55,6 +64,43 @@ const seedConversation = (fields: Record<string, unknown> = {}) =>
     endpoint: 'agents',
     ...fields,
   });
+
+/** Runs `during` right after the claim's atomic write, before the claim checks again. */
+function interleave(during: () => Promise<unknown>) {
+  const original = PRAutomation.findOneAndUpdate.bind(PRAutomation);
+  return jest.spyOn(PRAutomation, 'findOneAndUpdate').mockImplementationOnce(((
+    ...args: Parameters<typeof PRAutomation.findOneAndUpdate>
+  ) => {
+    const query = original(...args);
+    const lean = query.lean.bind(query);
+    query.lean = ((...leanArgs: Parameters<typeof query.lean>) => {
+      const result = lean(...leanArgs);
+      return {
+        ...result,
+        then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
+          result
+            .then(async (value: unknown) => {
+              await during();
+              return value;
+            })
+            .then(resolve, reject),
+      };
+    }) as typeof query.lean;
+    return query;
+  }) as typeof PRAutomation.findOneAndUpdate);
+}
+/** What an event handler captured about the run it acts on. */
+const fenceFor = async (binding = pullOne) => ({
+  ...binding,
+  epoch: (await methods.getPRAutomation(key))?.epoch as string,
+});
+const startAccountDeletionNow = () =>
+  mongoose.models.User.updateOne(
+    { _id: userId },
+    { $set: { agentTriggerDeletionStartedAt: new Date() } },
+  );
+const cancelAccountDeletion = () =>
+  mongoose.models.User.updateOne({ _id: userId }, { $unset: { agentTriggerDeletionStartedAt: 1 } });
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryServer.create();
@@ -137,7 +183,7 @@ describe('enablePRAutomation', () => {
   test('clears approved bots when the conversation is bound to a different repository', async () => {
     await methods.enablePRAutomation({ ...key, binding: pullOne });
     await addBot(101);
-    const rebound = await methods.enablePRAutomation({ ...key, binding: otherRepository });
+    const rebound = await enableWith({ ...key, binding: otherRepository });
     expect(rebound).toMatchObject({ ...otherRepository, trustedBots: [] });
   });
 
@@ -150,7 +196,7 @@ describe('enablePRAutomation', () => {
   test('keeps approved bots when the same repository is bound to another pull request', async () => {
     await methods.enablePRAutomation({ ...key, binding: pullOne });
     await addBot(101);
-    const rebound = await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    const rebound = await enableWith({ ...key, binding: pullTwo });
     expect(rebound).toMatchObject({ pullNumber: 2, trustedBots: [{ id: 101 }] });
   });
 });
@@ -181,6 +227,13 @@ describe('claiming while the owner is being deleted', () => {
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'owner_inactive' } });
   });
 
+  test('removes the record of an owner that no longer exists', async () => {
+    await enable(pullOne);
+    await mongoose.models.User.deleteMany({});
+    await claim(1);
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
   test('claims again once the deletion was cancelled', async () => {
     await enable(pullOne);
     await startAccountDeletion();
@@ -194,31 +247,6 @@ describe('claiming while the owner is being deleted', () => {
 });
 
 describe('a deletion that lands while a claim is in flight', () => {
-  /** Runs `during` right after the claim's atomic write, before the claim checks again. */
-  const interleave = (during: () => Promise<unknown>) => {
-    const original = PRAutomation.findOneAndUpdate.bind(PRAutomation);
-    return jest.spyOn(PRAutomation, 'findOneAndUpdate').mockImplementationOnce(((
-      ...args: Parameters<typeof PRAutomation.findOneAndUpdate>
-    ) => {
-      const query = original(...args);
-      const lean = query.lean.bind(query);
-      query.lean = ((...leanArgs: Parameters<typeof query.lean>) => {
-        const result = lean(...leanArgs);
-        return {
-          ...result,
-          then: (resolve: (value: unknown) => unknown, reject: (error: unknown) => unknown) =>
-            result
-              .then(async (value: unknown) => {
-                await during();
-                return value;
-              })
-              .then(resolve, reject),
-        };
-      }) as typeof query.lean;
-      return query;
-    }) as typeof PRAutomation.findOneAndUpdate);
-  };
-
   test('does not hand out a round for a conversation deleted after the first check', async () => {
     await enable(pullOne);
     const spy = interleave(() => mongoose.models.Conversation.deleteMany({}));
@@ -257,7 +285,71 @@ describe('a deletion that lands while a claim is in flight', () => {
     } finally {
       spy.mockRestore();
     }
-    expect((await methods.getPRAutomation(key))?.state).toBe('waiting');
+    expect((await methods.getPRAutomation(key))?.state).not.toBe('fixing');
+  });
+
+  /** Runs one claim whose owner deletion starts between its write and its second check. */
+  const claimDuringDeletion = async (n: number) => {
+    const spy = interleave(startAccountDeletionNow);
+    try {
+      return await claim(n);
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  test('lets the same head claim again once a deletion that started mid-claim is cancelled', async () => {
+    await enable(pullOne);
+    await claimDuringDeletion(1);
+    await cancelAccountDeletion();
+    expect((await claim(1)).ok).toBe(true);
+  });
+
+  test('does not spend a round on a claim it handed back', async () => {
+    await enable(pullOne);
+    await claimDuringDeletion(1);
+    expect((await methods.getPRAutomation(key))?.round).toBe(0);
+  });
+
+  test('does not open the time window for a claim it handed back', async () => {
+    await enable(pullOne);
+    await claimDuringDeletion(1);
+    expect((await methods.getPRAutomation(key))?.startedAt).toBeUndefined();
+  });
+
+  test('hands a later claim back to exactly where the previous round left the record', async () => {
+    await enable(pullOne);
+    await startRound(1);
+    await toWaiting();
+    await claimDuringDeletion(2);
+    expect(await methods.getPRAutomation(key)).toMatchObject({
+      state: 'waiting',
+      round: 1,
+      lastHeadSha: head(1),
+      claimedHeads: [head(1)],
+    });
+  });
+});
+
+describe('enabling for a conversation or owner that no longer exists', () => {
+  test('does not leave a record behind for a deleted conversation', async () => {
+    await mongoose.models.Conversation.deleteMany({});
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    expect(await methods.getPRAutomation(key)).toBeNull();
+  });
+
+  test('reports that the conversation is gone', async () => {
+    await mongoose.models.Conversation.deleteMany({});
+    expect(await methods.enablePRAutomation({ ...key, binding: pullOne })).toEqual({
+      ok: false,
+      error: { code: 'conversation_gone' },
+    });
+  });
+
+  test('does not leave a record behind for an owner that no longer exists', async () => {
+    await mongoose.models.User.deleteMany({});
+    await methods.enablePRAutomation({ ...key, binding: pullOne });
+    expect(await methods.getPRAutomation(key)).toBeNull();
   });
 });
 
@@ -429,7 +521,7 @@ describe('binding a pull request', () => {
     await toWaiting();
     await startRound(2);
 
-    const rebound = await methods.enablePRAutomation({ ...key, binding: pullTwo });
+    const rebound = await enableWith({ ...key, binding: pullTwo });
     expect(rebound).toMatchObject({ pullNumber: 2, state: 'idle', round: 0, claimedHeads: [] });
     expect(rebound.startedAt).toBeUndefined();
     expect(rebound.lastHeadSha).toBeUndefined();
@@ -464,7 +556,7 @@ describe('binding a pull request', () => {
   test('leaves a run alone when it is bound to the pair it already has', async () => {
     await methods.enablePRAutomation({ ...key, binding: pullOne });
     await startRound(1);
-    const again = await methods.enablePRAutomation({ ...key, binding: pullOne });
+    const again = await enableWith({ ...key, binding: pullOne });
     expect(again).toMatchObject({ state: 'fixing', round: 1 });
   });
 
@@ -510,6 +602,17 @@ describe('claimPRAutomationRound', () => {
     await toWaiting();
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'stale_head' } });
     expect((await methods.getPRAutomation(key))?.round).toBe(2);
+  });
+
+  test('reports a retryable conflict when the running round settles before the fallback read', async () => {
+    await enable();
+    await claim(1);
+    const spy = interleave(toWaiting);
+    try {
+      expect(await claim(2)).toEqual({ ok: false, error: { code: 'conflict' } });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test('rejects a claim while a round is already running', async () => {
@@ -650,8 +753,8 @@ describe('claiming for a conversation that no longer exists', () => {
     await enable();
     await mongoose.models.Conversation.deleteMany({});
     await claim(1);
-    await enable();
     await seedConversation();
+    await enable();
     expect(await startRound(1)).toMatchObject({ round: 1 });
   });
 
@@ -739,7 +842,7 @@ describe('settlePRAutomationRound', () => {
 describe('stopPRAutomation', () => {
   test('records the stop code', async () => {
     await enable();
-    expect(await methods.stopPRAutomation(key, 'round_cap', pullOne)).toMatchObject({
+    expect(await methods.stopPRAutomation(key, 'round_cap', await fenceFor())).toMatchObject({
       state: 'stopped',
       stopCode: 'round_cap',
     });
@@ -756,7 +859,7 @@ describe('stopPRAutomation', () => {
 
   test('keeps the first stop code when it is stopped again', async () => {
     await enable();
-    await methods.stopPRAutomation(key, 'round_cap', pullOne);
+    await methods.stopPRAutomation(key, 'round_cap', await fenceFor());
     expect(await methods.stopPRAutomation(key, 'user_stopped')).toBeNull();
     expect((await methods.getPRAutomation(key))?.stopCode).toBe('round_cap');
   });
@@ -764,7 +867,11 @@ describe('stopPRAutomation', () => {
   test('rejects a code outside the stop code list', async () => {
     await enable();
     await expect(
-      methods.stopPRAutomation(key, 'because' as unknown as PRAutomationStopCode, pullOne),
+      methods.stopPRAutomation(
+        key,
+        'because' as unknown as PRAutomationEventStopCode,
+        await fenceFor(),
+      ),
     ).rejects.toThrow();
   });
 
@@ -775,19 +882,23 @@ describe('stopPRAutomation', () => {
   test('ignores an event-driven stop for a pull request the record was rebound away from', async () => {
     await enable(pullOne);
     await enable(pullTwo);
-    expect(await methods.stopPRAutomation(key, 'pull_request_closed', pullOne)).toBeNull();
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', await fenceFor())).toBeNull();
     expect(await methods.getPRAutomation(key)).toMatchObject({ state: 'idle', pullNumber: 2 });
   });
 
   test('ignores an event-driven stop for another repository', async () => {
     await enable(pullOne);
-    expect(await methods.stopPRAutomation(key, 'pull_request_closed', otherRepository)).toBeNull();
+    expect(
+      await methods.stopPRAutomation(key, 'pull_request_closed', await fenceFor(otherRepository)),
+    ).toBeNull();
     expect((await methods.getPRAutomation(key))?.state).toBe('idle');
   });
 
   test('applies an event-driven stop for the pull request the record is bound to', async () => {
     await enable(pullOne);
-    expect(await methods.stopPRAutomation(key, 'pull_request_closed', pullOne)).toMatchObject({
+    expect(
+      await methods.stopPRAutomation(key, 'pull_request_closed', await fenceFor()),
+    ).toMatchObject({
       state: 'stopped',
       stopCode: 'pull_request_closed',
     });
@@ -804,6 +915,33 @@ describe('stopPRAutomation', () => {
       )(key, 'pull_request_closed'),
     ).rejects.toThrow(RangeError);
     expect((await methods.getPRAutomation(key))?.state).toBe('idle');
+  });
+
+  test('applies a user stop that names a pull request the record was rebound away from', async () => {
+    await enable(pullOne);
+    await enable(pullTwo);
+    const stop = methods.stopPRAutomation as (
+      target: typeof key,
+      code: PRAutomationStopCode,
+      binding: typeof pullOne,
+    ) => Promise<unknown>;
+    expect(await stop(key, 'user_stopped', pullOne)).toMatchObject({ state: 'stopped' });
+  });
+
+  test('ignores an event stop from a run that was stopped and restarted on the same pull request', async () => {
+    await enable(pullOne);
+    const previous = await fenceFor();
+    await methods.stopPRAutomation(key, 'user_stopped');
+    await enable(pullOne);
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', previous)).toBeNull();
+  });
+
+  test('ignores an event stop from a record that was disabled and enabled again', async () => {
+    await enable(pullOne);
+    const previous = await fenceFor();
+    await methods.disablePRAutomation(key);
+    await enable(pullOne);
+    expect(await methods.stopPRAutomation(key, 'pull_request_closed', previous)).toBeNull();
   });
 
   test('lets a user stop win even after the record was rebound', async () => {
@@ -933,6 +1071,7 @@ describe('approved bots', () => {
 
   test('keeps each conversation allowlist separate', async () => {
     await enable();
+    await seedConversation({ conversationId: 'convo-2' });
     await methods.enablePRAutomation({ userId, conversationId: 'convo-2' });
     await addBot(101);
     const other = await methods.getPRAutomation({ userId, conversationId: 'convo-2' });

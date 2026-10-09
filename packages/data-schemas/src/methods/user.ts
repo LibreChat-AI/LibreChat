@@ -611,9 +611,17 @@ export function createUserMethods(
         await invalidateAuthUserDocCache(userId);
       }
       /** Removed only after the account delete committed, so a failed delete keeps the user's
-       * automation. A claim refuses a deleted owner, and a failed cleanup throws so the caller
-       * retries; a retry on a deleted account still reaches this line. */
-      await prAutomation.deletePRAutomations(userId);
+       * automation. Once the account is gone a cleanup failure must not report the deletion as
+       * failed: the next claim removes any record whose owner no longer exists. A retry on an
+       * account that was already gone has committed nothing, so its failure still throws. */
+      try {
+        await prAutomation.deletePRAutomations(userId);
+      } catch (error) {
+        if (result.deletedCount === 0) {
+          throw error;
+        }
+        logger.warn('[deleteUserById] PR automation cleanup deferred to its next claim', error);
+      }
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }

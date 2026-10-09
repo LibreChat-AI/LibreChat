@@ -13,19 +13,26 @@ const RESTARTABLE = { state: 'stopped' };
 /** Records removed per write, so a cleanup never holds one unbounded `$in`. */
 const DELETE_BATCH = 1000;
 
-type Liveness = 'live' | 'conversation_gone' | 'owner_inactive';
+/**
+ * `owner_inactive` is an account deletion in progress, which can still be cancelled, so the
+ * record is kept. `owner_gone` and `conversation_gone` can never run again.
+ */
+type Liveness = 'live' | 'conversation_gone' | 'owner_gone' | 'owner_inactive';
+type Gone = Extract<Liveness, 'conversation_gone' | 'owner_gone'>;
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
 const SETTLEABLE_STATES: PRAutomationState[] = ['fixing', 'needs_user'];
 const SETTLED_STATES: PRAutomationState[] = ['waiting', 'needs_user'];
-/** Everything that belongs to one run on one pull request. */
-const RUN_RESET = {
-  $set: { state: 'idle', round: 0, claimedHeads: [] },
+/** Everything that belongs to one run on one pull request, under a new epoch. */
+const runReset = (fields: Record<string, unknown> = {}) => ({
+  $set: { state: 'idle', round: 0, claimedHeads: [], epoch: randomUUID(), ...fields },
   $unset: { stopCode: '', startedAt: '', lastHeadSha: '', runId: '' },
-};
+});
+const isGone = (liveness: Liveness): liveness is Gone =>
+  liveness === 'conversation_gone' || liveness === 'owner_gone';
 
 export function createPRAutomationMethods(mongoose: typeof import('mongoose')): {
   getPRAutomation: (key: t.PRAutomationKey) => Promise<t.IPRAutomation | null>;
-  enablePRAutomation: (params: t.EnablePRAutomationParams) => Promise<t.IPRAutomation>;
+  enablePRAutomation: (params: t.EnablePRAutomationParams) => Promise<t.EnablePRAutomationResult>;
   disablePRAutomation: (key: t.PRAutomationKey) => Promise<{ removed: boolean }>;
   claimPRAutomationRound: (
     params: t.ClaimPRAutomationRoundParams,
@@ -37,8 +44,8 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     (key: t.PRAutomationKey, stopCode: 'user_stopped'): Promise<t.IPRAutomation | null>;
     (
       key: t.PRAutomationKey,
-      stopCode: PRAutomationStopCode,
-      binding: t.PRAutomationBinding,
+      stopCode: t.PRAutomationEventStopCode,
+      fence: t.PRAutomationRunFence,
     ): Promise<t.IPRAutomation | null>;
   };
   deletePRAutomations: (userId: string, conversationIds?: string[]) => Promise<void>;
@@ -86,8 +93,8 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * deletion has started (the same durable marker agent triggers use), and the conversation
    * and every conversation that controls it still exist and are inside their retention. A
    * subagent thread is controlled by its parent and its root, and a deletion removes the
-   * root before it discovers the descendants. Deletions do not fence the record; the claim
-   * asks this on both sides of its write instead.
+   * root before it discovers the descendants. Deletions do not fence the record; enable and
+   * claim ask this on both sides of their write instead.
    */
   async function checkLiveness(key: t.PRAutomationKey): Promise<Liveness> {
     if (!isValidObjectIdString(key.userId)) {
@@ -96,15 +103,17 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const Conversation = mongoose.models.Conversation;
     const active = activeExpirationFilter();
     const [owner, conversation] = await Promise.all([
-      mongoose.models.User.exists({
-        _id: key.userId,
-        agentTriggerDeletionStartedAt: { $exists: false },
-      }),
+      mongoose.models.User.findById(key.userId)
+        .select('agentTriggerDeletionStartedAt')
+        .lean<{ agentTriggerDeletionStartedAt?: Date }>(),
       Conversation.findOne({ user: key.userId, conversationId: key.conversationId, ...active })
         .select('subagentThread')
         .lean<{ subagentThread?: { rootConversationId: string; parentConversationId: string } }>(),
     ]);
     if (owner == null) {
+      return 'owner_gone';
+    }
+    if (owner.agentTriggerDeletionStartedAt != null) {
       return 'owner_inactive';
     }
     if (conversation == null) {
@@ -123,18 +132,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return activeAncestors === ancestors.length ? 'live' : 'conversation_gone';
   }
 
-  /** A record whose conversation is gone can never run again, so it is removed. */
+  /** A missing owner reads as inactive to callers; the distinction only decides removal. */
+  const goneCode = (liveness: Gone) =>
+    liveness === 'owner_gone' ? 'owner_inactive' : 'conversation_gone';
+
+  /**
+   * A record whose conversation or owner is gone can never run again, so it is removed. This
+   * also converges a cleanup that failed after the delete committed.
+   */
   async function refuseClaim(
     key: t.PRAutomationKey,
     liveness: Exclude<Liveness, 'live'>,
   ): Promise<t.ClaimPRAutomationRoundResult> {
-    if (liveness === 'owner_inactive') {
-      return { ok: false, error: { code: 'owner_inactive' } };
+    if (!isGone(liveness)) {
+      return { ok: false, error: { code: liveness } };
     }
     const removed = await mongoose.models.PRAutomation.deleteOne(keyFilter(key));
     return {
       ok: false,
-      error: { code: removed.deletedCount > 0 ? 'conversation_gone' : 'not_found' },
+      error: { code: removed.deletedCount > 0 ? goneCode(liveness) : 'not_found' },
     };
   }
 
@@ -164,19 +180,25 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * A different pull request in the same repository keeps the bots and starts a fresh
    * run, because the round count, the time window and the claimed heads describe the
    * previous pull request.
+   *
+   * Liveness is checked on both sides of the writes, like a claim. An enable for a conversation
+   * or owner that is already gone writes nothing. One that passed the first check but lost a
+   * race with the deletion and its cleanup removes the record it wrote, so a late enable cannot
+   * recreate a record nobody will clean up.
    */
   async function enablePRAutomation({
     trust,
     binding,
     ...key
-  }: t.EnablePRAutomationParams): Promise<t.IPRAutomation> {
+  }: t.EnablePRAutomationParams): Promise<t.EnablePRAutomationResult> {
+    const before = await checkLiveness(key);
+    if (before !== 'live') {
+      return { ok: false, error: { code: isGone(before) ? goneCode(before) : before } };
+    }
     await ensureIndexes();
     const PRAutomation = mongoose.models.PRAutomation;
     const filter = keyFilter(key);
-    const reset = (fields: Record<string, unknown>) => ({
-      $set: { ...RUN_RESET.$set, ...fields },
-      $unset: RUN_RESET.$unset,
-    });
+    const reset = runReset;
     const options = { runValidators: true };
     await PRAutomation.updateOne(
       filter,
@@ -187,6 +209,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           round: 0,
           trustedBots: [],
           claimedHeads: [],
+          epoch: randomUUID(),
           trust: trust ?? 'approvedBots',
           ...binding,
         },
@@ -225,11 +248,16 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
         options,
       );
     }
+    const after = await checkLiveness(key);
+    if (isGone(after)) {
+      await PRAutomation.deleteOne(filter);
+      return { ok: false, error: { code: goneCode(after) } };
+    }
     const record = await getPRAutomation(key);
     if (record == null) {
       throw new Error('PR automation record missing after enable');
     }
-    return record;
+    return { ok: true, value: record };
   }
 
   async function disablePRAutomation(key: t.PRAutomationKey): Promise<{ removed: boolean }> {
@@ -300,16 +328,32 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (claimed != null) {
       /**
        * A deletion that started between the first check and the write is seen here. The
-       * claimed round is handed back to `waiting` under its own run id, so it never starts
-       * work, and a record whose conversation is gone is removed.
+       * whole claim is undone under its own run id, so it never starts work and a cancelled
+       * deletion leaves the record as it was: the round, the window and the head are not
+       * spent. Rounds and heads are claimed one for one and the window opens with the first
+       * round, so the state before the claim follows from the claimed record. A record whose
+       * conversation or owner is gone is removed.
        */
       const after = await checkLiveness(key);
       if (after === 'live') {
         return { ok: true, value: { ...claimed, runId } };
       }
+      const previousHeads = claimed.claimedHeads.slice(0, -1);
+      const lastHeadSha = previousHeads[previousHeads.length - 1];
       await PRAutomation.updateOne(
-        { ...keyFilter(key), runId, state: 'fixing' },
-        { $set: { state: 'waiting' } },
+        { ...keyFilter(key), runId, state: 'fixing', round: claimed.round },
+        {
+          $set: {
+            state: lastHeadSha == null ? 'idle' : 'waiting',
+            round: claimed.round - 1,
+            claimedHeads: previousHeads,
+            ...(lastHeadSha != null && { lastHeadSha }),
+          },
+          $unset: {
+            runId: '',
+            ...(lastHeadSha == null && { startedAt: '', lastHeadSha: '' }),
+          },
+        },
       );
       return refuseClaim(key, after);
     }
@@ -330,7 +374,11 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (current.startedAt != null && current.startedAt < cutoff) {
       return { ok: false, error: { code: 'time_cap' } };
     }
-    return { ok: false, error: { code: 'stale_head' } };
+    if (current.claimedHeads.includes(headSha)) {
+      return { ok: false, error: { code: 'stale_head' } };
+    }
+    /** Every condition passes now, so the record changed between the write and this read. */
+    return { ok: false, error: { code: 'conflict' } };
   }
 
   /**
@@ -366,23 +414,29 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * maps it to the reason it shows. The first stop wins, and a stopped record leaves that
    * state only through `enablePRAutomation`.
    *
-   * A user stop is unconditional, so it is never lost to a race. Every other code comes from
-   * an event about one pull request, and a delayed one must not stop the run that replaced
-   * it, so it names the pull request it is for and applies only while the record is still
-   * bound to it.
+   * A user stop is unconditional, so it is never lost to a race; any fence passed with it is
+   * ignored. Every other code comes from an event about one run, and a delayed one must not
+   * stop the run that replaced it, so it names the pull request and the epoch it saw and
+   * applies only while both are current. A restart on the same pull request starts a new
+   * epoch, so a stop meant for the previous run cannot end the new one.
    */
   async function stopPRAutomation(
     key: t.PRAutomationKey,
     stopCode: PRAutomationStopCode,
-    binding?: t.PRAutomationBinding,
+    fence?: t.PRAutomationRunFence,
   ): Promise<t.IPRAutomation | null> {
     assertStopCode(stopCode);
-    if (stopCode !== 'user_stopped' && binding == null) {
-      throw new RangeError('An event-driven stop must name the pull request it is for');
+    const user = stopCode === 'user_stopped';
+    if (!user && (fence?.repository == null || fence.pullNumber == null || !fence.epoch)) {
+      throw new RangeError('An event-driven stop must name the pull request and run it is for');
     }
+    const condition =
+      user || fence == null
+        ? {}
+        : { repository: fence.repository, pullNumber: fence.pullNumber, epoch: fence.epoch };
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
-      { ...keyFilter(key), ...binding, state: { $ne: 'stopped' } },
+      { ...keyFilter(key), ...condition, state: { $ne: 'stopped' } },
       { $set: { state: 'stopped', stopCode } },
       { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();

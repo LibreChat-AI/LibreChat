@@ -3733,10 +3733,11 @@ describe('Conversation Operations', () => {
         const conversationId = uuidv4();
         await Conversation.create({ conversationId, user, endpoint: EModelEndpoint.agents });
         const automation = createPRAutomationMethods(mongoose);
-        await automation.enablePRAutomation({
-          userId: user,
+        await mongoose.models.PRAutomation.create({
+          user,
           conversationId,
-          binding: { repository: 'acme/one', pullNumber: 1 },
+          repository: 'acme/one',
+          pullNumber: 1,
         });
         jest.spyOn(Conversation, 'deleteMany').mockRejectedValueOnce(new Error('delete failed'));
         await expect(deleteConvos(user, { conversationId })).rejects.toThrow('delete failed');

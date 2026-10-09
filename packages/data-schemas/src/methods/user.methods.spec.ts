@@ -2157,10 +2157,23 @@ describe('PR automation cleanup on account deletion', () => {
       .spyOn(mongoose.models.PRAutomation, 'deleteMany')
       .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
     try {
-      await expect(methodsWithCache.deleteUserById(id)).rejects.toThrow(
-        'synthetic cleanup failure',
-      );
+      await methodsWithCache.deleteUserById(id);
       expect(cache.delete).toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${id}`);
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
+  it('reports the account deleted when only the cleanup after the delete fails', async () => {
+    const user = await User.create({ email: 'delete-pr-committed@example.com', provider: 'local' });
+    const id = user._id.toString();
+    const PRAutomation = mongoose.models.PRAutomation;
+    await PRAutomation.create({ user: id, conversationId: 'chat-a' });
+    const cleanup = jest
+      .spyOn(PRAutomation, 'deleteMany')
+      .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
+    try {
+      await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 1 });
     } finally {
       cleanup.mockRestore();
     }
@@ -2175,7 +2188,7 @@ describe('PR automation cleanup on account deletion', () => {
       .spyOn(PRAutomation, 'deleteMany')
       .mockRejectedValueOnce(new Error('synthetic cleanup failure'));
     try {
-      await expect(methods.deleteUserById(id)).rejects.toThrow('synthetic cleanup failure');
+      await methods.deleteUserById(id);
       expect(await User.exists({ _id: user._id })).toBeNull();
       expect(await PRAutomation.countDocuments({ user: id })).toBe(1);
       await expect(methods.deleteUserById(id)).resolves.toMatchObject({ deletedCount: 0 });

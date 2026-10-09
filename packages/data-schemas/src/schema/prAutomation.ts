@@ -1,4 +1,5 @@
 import { Schema } from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { PR_AUTOMATION_STATES } from 'librechat-data-provider';
 import { MAX_PR_AUTOMATION_BOTS } from 'librechat-data-provider';
 import { PR_AUTOMATION_STOP_CODES } from 'librechat-data-provider';
@@ -65,6 +66,7 @@ const prAutomationSchema: Schema<IPRAutomationDocument> = new Schema(
     lastHeadSha: { type: String, maxlength: 64 },
     claimedHeads: { type: [{ type: String, maxlength: 64 }], default: [] },
     runId: { type: String, maxlength: 64 },
+    epoch: { type: String, maxlength: 64, required: true, default: () => randomUUID() },
   },
   { timestamps: true },
 );

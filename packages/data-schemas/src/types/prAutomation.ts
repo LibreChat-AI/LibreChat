@@ -35,6 +35,12 @@ export interface IPRAutomation {
    */
   runId?: string;
   /**
+   * Identifies the run: a new value on every enable that starts one, every restart and every
+   * rebind. An event-driven stop names it, so a stop meant for an earlier run on the same pull
+   * request cannot end the current one.
+   */
+  epoch: string;
+  /**
    * Every head a round has been claimed for since the last restart. A delayed
    * delivery of an earlier head is rejected against this list. It holds at most
    * one entry per round, so the round cap bounds it.
@@ -56,6 +62,17 @@ export interface PRAutomationBinding {
   repository: string;
   pullNumber: number;
 }
+
+/** What an event handler saw about the run it acts on. */
+export interface PRAutomationRunFence extends PRAutomationBinding {
+  epoch: string;
+}
+
+export type PRAutomationEventStopCode = Exclude<PRAutomationStopCode, 'user_stopped'>;
+
+export type EnablePRAutomationResult =
+  | { ok: true; value: IPRAutomation }
+  | { ok: false; error: { code: 'conversation_gone' | 'owner_inactive' } };
 
 export interface EnablePRAutomationParams extends PRAutomationKey {
   trust?: PRAutomationTrustLevel;
@@ -92,7 +109,9 @@ export type PRAutomationClaimErrorCode =
   | 'owner_inactive'
   | 'round_cap'
   | 'time_cap'
-  | 'stale_head';
+  | 'stale_head'
+  /** The record changed while the claim was being decided; the delivery may be retried. */
+  | 'conflict';
 
 export type ClaimPRAutomationRoundResult =
   | { ok: true; value: IPRAutomation & { runId: string } }
