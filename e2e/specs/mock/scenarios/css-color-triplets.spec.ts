@@ -33,11 +33,12 @@ test.describe('the CSS colour gate', () => {
   test('a custom property triplet written with math functions is rejected @scenario:css-math-channel-triplet-is-rejected', () => {
     inOneProject();
     const result = scanStylesheet(
-      ':root {\n  --brand: calc(255) 0 0;\n  --accent: 255 min(100, 50 * 2) 0;\n}\n',
+      ':root {\n  --brand: calc(255) 0 0;\n  --accent: 255 min(100, 50 * 2) 0;\n  --deep: calc(min(100, max(0, 255))) 0 0;\n}\n',
     );
     expect(result.status, result.output).toBe(1);
     expect(result.output).toContain(`${STYLESHEET}:2 calc(255) 0 0`);
     expect(result.output).toContain(`${STYLESHEET}:3 255 min(100, 50 * 2) 0`);
+    expect(result.output).toContain(`${STYLESHEET}:4 calc(min(100, max(0, 255))) 0 0`);
   });
 
   test('a triplet whose math reads a variable or a length is accepted @scenario:css-math-channel-with-variable-or-unit-is-accepted', () => {

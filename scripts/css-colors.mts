@@ -52,11 +52,12 @@ const FUNCTION = new RegExp(
 );
 const RELATIVE_COLOR = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*from\s+/gi;
 const CHANNEL_KEYWORD = /(?<![\w-])(?:[rgbhslwcaxyz]|alpha)(?![\w-])/i;
-const NUMBER = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
-const MATH_OPERANDS = '[\\d.%+*/,\\s-]';
-/** A math function over numbers alone (`calc(255)`, `min(100%, 50% * 2)`): no `var()`, no unit, so it is still a fixed channel. */
-const MATH_CHANNEL = `(?:${MATH_FUNCTIONS})\\((?:${MATH_OPERANDS}|(?:${MATH_FUNCTIONS})?\\(${MATH_OPERANDS}*\\))*\\)`;
-const CHANNEL = `(?:${NUMBER}|${MATH_CHANNEL})`;
+const CHANNEL = '[+-]?(?:\\d+\\.?\\d*|\\.\\d+)%?';
+/** An innermost math function, or grouping parenthesis, over numbers alone: no `var()` and no unit. */
+const NUMERIC_MATH = new RegExp(
+  String.raw`(?<![\w-])(?:${MATH_FUNCTIONS})?\([\d.%+*/,\s-]*\)`,
+  'gi',
+);
 const SEPARATOR = '(?:\\s*,\\s*|\\s+)';
 const BARE_TRIPLET = `${CHANNEL}${SEPARATOR}${CHANNEL}${SEPARATOR}${CHANNEL}(?:\\s*/\\s*(?:${CHANNEL}|var\\([^)]*\\)))?`;
 /** The whole value is three bare channels, or one is the fallback of a `var()`. */
@@ -71,6 +72,12 @@ const NON_COLOR_PROPERTY =
   /^(?:font|animation|transition|grid|counter|content|will-change|view-transition|container|src|list-style|quotes|cursor|appearance|mask-(?:mode|type|composite|repeat|clip|origin|position|size)|clip|anchor|position-anchor|scroll-timeline|view-timeline|timeline-scope)/i;
 
 const blank = (match: string): string => match.replace(/[^\n]/g, ' ');
+
+/** A math function over numbers (`calc(255)`, `min(100, max(0, 255))`) is a fixed channel, so it reads as one. */
+function collapseMath(text: string): string {
+  const collapsed = text.replace(NUMERIC_MATH, '0');
+  return collapsed === text ? text : collapseMath(collapsed);
+}
 
 const URL_FUNCTION = /url\(\s*(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|[^)]*)\)/gi;
 const STRING = /"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'/g;
@@ -159,7 +166,7 @@ function relativeLiterals(text: string): Array<{ literal: string; offset: number
     const bodyStart = offset + match[0].length;
     const isColorFunction = /^color\(/i.test(match[0]);
     const [origin, ...rest] = relativeTokens(text, bodyStart);
-    if (origin && TRIPLET_FALLBACK.test(origin.text)) {
+    if (origin && TRIPLET_FALLBACK.test(collapseMath(origin.text))) {
       return [{ literal: text.slice(offset, origin.end), offset }];
     }
     const channels = rest.slice(isColorFunction ? 1 : 0, isColorFunction ? 4 : 3);
@@ -206,7 +213,7 @@ export function findCssColorLiterals(
     const selector = parent?.type === 'rule' ? parent.selector : '';
     if (isAllowed(allowedRules, selector, declaration.prop)) return;
     const line = declaration.source?.start?.line ?? 1;
-    if (isCustomProperty && TRIPLET.test(colourText(declaration.value))) {
+    if (isCustomProperty && TRIPLET.test(collapseMath(colourText(declaration.value)))) {
       findings.push({ line, literal: declaration.value.trim() });
       return;
     }

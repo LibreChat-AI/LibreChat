@@ -182,6 +182,13 @@ test('reads math function channels in a custom property triplet', () => {
   assert.deepEqual(literals('a { --brand: var(--configured, calc(255) 0 0); }'), [
     'var(--configured, calc(255) 0 0)',
   ]);
+  assert.deepEqual(literals('a { --brand: calc(min(100, max(0, 255))) 0 0; }'), [
+    'calc(min(100, max(0, 255))) 0 0',
+  ]);
+  assert.deepEqual(literals('a { color: rgb(from var(--base, calc(255) 0 0) r g b); }'), [
+    'rgb(from var(--base, calc(255) 0 0)',
+  ]);
+  assert.deepEqual(literals('a { --brand: calc(min(var(--r), max(0, 255))) 0 0; }'), []);
   assert.deepEqual(literals('a { --brand: calc(var(--r)) 0 0; }'), []);
   assert.deepEqual(literals('a { --brand: calc(var(--r) * 2) 0 0; }'), []);
   assert.deepEqual(
