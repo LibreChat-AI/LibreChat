@@ -6,6 +6,7 @@ import {
   createProject,
   deleteChat,
   deleteProject,
+  earlierReplyCopy,
   hitAtCenter,
   paintedOpacity,
   projectRow,
@@ -68,7 +69,7 @@ test('a 2-in-1 shows message actions and the timestamp without hover @scenario:t
       timeout: 20000,
     });
 
-    const copy = page.getByTestId('copy-response-button').first();
+    const copy = earlierReplyCopy(page);
     await expect(copy).toBeAttached();
     expect(await paintedOpacity(copy)).toBe(1);
     expect(await hitAtCenter(copy)).toBe(true);

@@ -6,36 +6,55 @@ import { getAccessToken, requestJson } from '../helpers';
 import { getE2EUser } from '../../../setup/user';
 
 /**
- * Shared by the hover-reveal scenarios: a seeded chat with one reply, a project in the
+ * Shared by the hover-reveal scenarios: a seeded two-turn chat, a project in the
  * sidebar, and the opacity a control actually paints with.
  */
 
 export const REPLY_TEXT = 'Reveal scenario reply';
 
-/** A chat with one user turn and one reply, opened at its route. */
+/** A chat with two turns, opened at its route. The latest reply always shows its actions, so the
+ *  reveal is asserted on the earlier one, `REPLY_TEXT`. */
 export async function seedReplyChat(title: string): Promise<string> {
   const conversationId = randomUUID();
   const { email } = getE2EUser();
   await seedConversations(email, [{ conversationId, title, updatedAt: new Date() }]);
-  const userMessageId = randomUUID();
+  const [firstQuestion, firstReply, secondQuestion] = [randomUUID(), randomUUID(), randomUUID()];
   await seedMessages(email, conversationId, [
     {
-      messageId: userMessageId,
+      messageId: firstQuestion,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
       text: 'Reveal scenario question',
       isCreatedByUser: true,
       sender: 'User',
     },
     {
-      messageId: randomUUID(),
-      parentMessageId: userMessageId,
+      messageId: firstReply,
+      parentMessageId: firstQuestion,
       text: REPLY_TEXT,
+      isCreatedByUser: false,
+      sender: 'Mock Provider A',
+    },
+    {
+      messageId: secondQuestion,
+      parentMessageId: firstReply,
+      text: 'Reveal scenario follow-up',
+      isCreatedByUser: true,
+      sender: 'User',
+    },
+    {
+      messageId: randomUUID(),
+      parentMessageId: secondQuestion,
+      text: 'Reveal scenario latest reply',
       isCreatedByUser: false,
       sender: 'Mock Provider A',
     },
   ]);
   return conversationId;
 }
+
+/** The copy action of the earlier reply, the one a reveal hides at rest. */
+export const earlierReplyCopy = (page: Page): Locator =>
+  page.getByTestId('copy-response-button').first();
 
 export async function deleteChat(conversationId: string): Promise<void> {
   await deleteConversations([conversationId]);

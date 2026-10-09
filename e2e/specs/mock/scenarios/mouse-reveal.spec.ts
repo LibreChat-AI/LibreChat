@@ -5,6 +5,7 @@ import {
   createProject,
   deleteChat,
   deleteProject,
+  earlierReplyCopy,
   paintedOpacity,
   projectRow,
   seedReplyChat,
@@ -32,7 +33,7 @@ test('a mouse desktop reveals message actions on hover and keyboard focus @scena
     ).toBe(true);
     const reply = page.getByText(REPLY_TEXT, { exact: true }).first();
     await expect(reply).toBeVisible({ timeout: 20000 });
-    const copy = page.getByTestId('copy-response-button').first();
+    const copy = earlierReplyCopy(page);
     const timestamp = page.locator('.message-render .message-timestamp').first();
     await expect(copy).toBeAttached();
     await expect(timestamp).toBeAttached();
