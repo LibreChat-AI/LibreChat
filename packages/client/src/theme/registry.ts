@@ -6,12 +6,14 @@ import {
   collectThemeWarningIssues,
   defaultSwitchSize,
   themeColorTokens as sharedColorTokens,
+  renamedThemeColorTokens,
   themeBrandTokens as sharedBrandTokens,
 } from 'librechat-data-provider';
 import type {
   ThemeColorToken,
   ThemeBrandToken,
   ThemeAppearanceToken,
+  RenamedThemeColorToken,
 } from 'librechat-data-provider';
 import type {
   IThemeAppearance,
@@ -177,7 +179,12 @@ export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, ke
   ['rgb-text-tooltip', 'rgb-text-primary'],
   ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
   ['rgb-alert-error-border', 'rgb-status-error-border'],
-  ['rgb-category-icon', 'rgb-series-4'],
+  ['rgb-category-icon-1', 'rgb-series-1'],
+  ['rgb-category-icon-2', 'rgb-series-2'],
+  ['rgb-category-icon-4', 'rgb-series-4'],
+  ['rgb-category-icon-5', 'rgb-series-5'],
+  ['rgb-category-icon-6', 'rgb-series-6'],
+  ['rgb-category-icon-7', 'rgb-series-7'],
 ];
 
 /** A theme that repaints a source role keeps the tooltip, the error alert and the category icons on
@@ -533,13 +540,30 @@ function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   ) as Partial<T>;
 }
 
+/** Roles that shipped under another name, each paired with the name it has now. */
+export const renamedColorTokens: ReadonlyArray<readonly [RenamedThemeColorToken, keyof IThemeRGB]> =
+  renamedThemeColorTokens;
+
+/** Colors as a theme written before a rename may carry them. */
+export type RenamedThemeRGB = IThemeRGB & Partial<Record<RenamedThemeColorToken, string>>;
+
+/** Carries a renamed role to its current name, unless the colors name that too, so every reader
+ *  that keeps only known tokens keeps the value. */
+export function withRenamedColors(colors: RenamedThemeRGB): IThemeRGB {
+  const renamed = renamedColorTokens.flatMap(([from, to]) => {
+    const value = colors[from];
+    return value !== undefined && colors[to] === undefined ? [[to, value] as const] : [];
+  });
+  return renamed.length > 0 ? { ...colors, ...Object.fromEntries(renamed) } : colors;
+}
+
 /** A color token this reader does not know passed validation as a warning; it never reaches the DOM. */
-function knownColors(colors?: IThemeRGB): IThemeRGB | undefined {
+function knownColors(colors?: RenamedThemeRGB): IThemeRGB | undefined {
   if (!colors) {
     return colors;
   }
   return Object.fromEntries(
-    Object.entries(colors).filter(([key]) => colorTokenSet.has(key)),
+    Object.entries(withRenamedColors(colors)).filter(([key]) => colorTokenSet.has(key)),
   ) as IThemeRGB;
 }
 
@@ -880,10 +904,11 @@ export function resolveTheme(theme: ThemeDefinition, mode: ThemeMode): ResolvedT
   };
 }
 
-export function fromLegacyTheme(colors: IThemeRGB, name = 'custom'): ThemeDefinition {
+export function fromLegacyTheme(colors: RenamedThemeRGB, name = 'custom'): ThemeDefinition {
   const legacyName = name.trim() || 'custom';
+  const current = withRenamedColors(colors);
   const sanitizedColors = themeColorTokens.reduce<IThemeRGB>((result, token) => {
-    const value = colors[token];
+    const value = current[token];
     if (isThemeRGB(value)) {
       result[token] = value;
     }

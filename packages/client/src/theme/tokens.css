@@ -202,8 +202,13 @@
   --color-series-6: rgb(var(--series-6));
   --color-series-7: rgb(var(--series-7));
   --color-series-8: rgb(var(--series-8));
-  /* Follows the slot it was painted in before its role, for a stylesheet that predates it. */
-  --color-category-icon: rgb(var(--category-icon, var(--series-4)));
+  /* Each follows the slot it was painted in before its role, for a stylesheet that predates it. */
+  --color-category-icon-1: rgb(var(--category-icon-1, var(--series-1)));
+  --color-category-icon-2: rgb(var(--category-icon-2, var(--series-2)));
+  --color-category-icon-4: rgb(var(--category-icon-4, var(--series-4)));
+  --color-category-icon-5: rgb(var(--category-icon-5, var(--series-5)));
+  --color-category-icon-6: rgb(var(--category-icon-6, var(--series-6)));
+  --color-category-icon-7: rgb(var(--category-icon-7, var(--series-7)));
 
   /* charts and controls */
   --color-chart-widget-surface: rgb(var(--chart-widget-surface));

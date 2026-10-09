@@ -226,7 +226,12 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-series-6': '77 26 153', // #4d1a99
   'rgb-series-7': '15 92 15', // #0f5c0f
   'rgb-series-8': '0 0 0', // #000000 (neutral text stop)
-  'rgb-category-icon': '92 74 0', // #5c4a00 (matching series-4)
+  'rgb-category-icon-1': '11 79 160', // #0b4fa0 (matching series-1)
+  'rgb-category-icon-2': '143 59 0', // #8f3b00 (matching series-2)
+  'rgb-category-icon-4': '92 74 0', // #5c4a00 (matching series-4)
+  'rgb-category-icon-5': '148 0 92', // #94005c (matching series-5)
+  'rgb-category-icon-6': '77 26 153', // #4d1a99 (matching series-6)
+  'rgb-category-icon-7': '15 92 15', // #0f5c0f (matching series-7)
 
   /** Unchecked switch track. The stock 58%/40% greys land at 2.9:1 and 2.2:1
    *  against these canvases. This clears 3:1 three ways at once: 5.74:1 against
@@ -437,7 +442,12 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-series-6': '200 163 255', // #c8a3ff
   'rgb-series-7': '140 230 140', // #8ce68c
   'rgb-series-8': '255 255 255', // #ffffff (neutral text stop)
-  'rgb-category-icon': '255 224 102', // #ffe066 (matching series-4)
+  'rgb-category-icon-1': '107 184 255', // #6bb8ff (matching series-1)
+  'rgb-category-icon-2': '255 179 102', // #ffb366 (matching series-2)
+  'rgb-category-icon-4': '255 224 102', // #ffe066 (matching series-4)
+  'rgb-category-icon-5': '255 153 194', // #ff99c2 (matching series-5)
+  'rgb-category-icon-6': '200 163 255', // #c8a3ff (matching series-6)
+  'rgb-category-icon-7': '140 230 140', // #8ce68c (matching series-7)
 
   /** Unchecked switch track: 5.32:1 against the page and the `surface-primary`
    *  thumb, 3.95:1 against the checked `surface-inverted` track. */

@@ -188,7 +188,12 @@ export const defaultTheme: IThemeRGB = {
   'rgb-series-6': '126 35 205', // #7e23cd (violet)
   'rgb-series-7': '1 131 1', // #018301 (green)
   'rgb-series-8': '63 81 181', // #3f51b5 (indigo)
-  'rgb-category-icon': '182 123 5', // #b67b05 (matching series-4)
+  'rgb-category-icon-1': '5 110 189', // #056ebd (matching series-1)
+  'rgb-category-icon-2': '233 86 13', // #e9560d (matching series-2)
+  'rgb-category-icon-4': '182 123 5', // #b67b05 (matching series-4)
+  'rgb-category-icon-5': '216 90 142', // #d85a8e (matching series-5)
+  'rgb-category-icon-6': '126 35 205', // #7e23cd (matching series-6)
+  'rgb-category-icon-7': '1 131 1', // #018301 (matching series-7)
 
   /** Unchecked switch track. 3.03:1 against the white page and the
    *  `surface-primary` thumb, 5.91:1 against the checked `surface-inverted`

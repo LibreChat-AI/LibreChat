@@ -1,4 +1,4 @@
-import type { ThemeDefinition } from '../types';
+import type { IThemeRGB, ThemeDefinition } from '../types';
 import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
@@ -73,6 +73,12 @@ describe('applyTheme', () => {
     expect(document.documentElement.style.getPropertyValue('--surface-composer-hover')).toBe(
       '66 66 66',
     );
+  });
+
+  it('writes a renamed category icon role from legacy colors to its slot 4 name', () => {
+    applyTheme({ 'rgb-category-icon': '7 8 9' } as IThemeRGB);
+
+    expect(document.documentElement.style.getPropertyValue('--category-icon-4')).toBe('7 8 9');
   });
 
   it('keeps existing custom hover colors on composer controls', () => {

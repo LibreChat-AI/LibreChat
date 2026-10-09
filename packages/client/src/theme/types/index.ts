@@ -246,9 +246,17 @@ export interface IThemeRGB {
   'rgb-series-6'?: string;
   'rgb-series-7'?: string;
   'rgb-series-8'?: string;
-  /** The prompt category icons drawn in `rgb-series-4` (idea, travel, aftersales); it follows
-   *  `rgb-series-4` when a theme omits it, so a theme can quiet them without moving the chart slot. */
-  'rgb-category-icon'?: string;
+  /**
+   * The prompt category icons, one role per series slot they were drawn in. Each follows its
+   * `rgb-series-N` when a theme omits it, so a theme can quiet the icons without moving the
+   * chart slots they share.
+   */
+  'rgb-category-icon-1'?: string;
+  'rgb-category-icon-2'?: string;
+  'rgb-category-icon-4'?: string;
+  'rgb-category-icon-5'?: string;
+  'rgb-category-icon-6'?: string;
+  'rgb-category-icon-7'?: string;
 
   /**
    * Unchecked track of the shared `Switch`. A control state rather than a
@@ -435,7 +443,12 @@ export interface IThemeVariables {
   '--series-6': string;
   '--series-7': string;
   '--series-8': string;
-  '--category-icon': string;
+  '--category-icon-1': string;
+  '--category-icon-2': string;
+  '--category-icon-4': string;
+  '--category-icon-5': string;
+  '--category-icon-6': string;
+  '--category-icon-7': string;
 
   '--switch-unchecked': string;
   '--switch-thumb': string;
@@ -601,7 +614,12 @@ export interface IThemeColors {
   'table-header-text'?: string;
   'table-header-fill'?: string;
   'series-8'?: string;
-  'category-icon'?: string;
+  'category-icon-1'?: string;
+  'category-icon-2'?: string;
+  'category-icon-4'?: string;
+  'category-icon-5'?: string;
+  'category-icon-6'?: string;
+  'category-icon-7'?: string;
   presentation?: string;
 
   // Retained for excluded SidePanel/Agents + SidePanel/Builder (pending migration)

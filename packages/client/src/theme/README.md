@@ -398,9 +398,10 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
-- `text-category-icon` - The prompt category icons that were drawn in `series-4` (idea, travel
-  and aftersales). It follows `series-4`, so a theme can quiet those icons without moving the
-  chart slot; ClickHouse draws them in its muted text, as Click UI draws its icons.
+- `text-category-icon-1`, `-2`, `-4`, `-5`, `-6`, `-7` - The prompt category icons, one role per
+  series slot they were drawn in. Each follows its `series-N`, so a theme can quiet the icons
+  without moving the chart slots; ClickHouse draws all of them in its muted text, as Click UI
+  draws its icons.
 - Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
   `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
   `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and
