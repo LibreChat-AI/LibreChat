@@ -11,13 +11,21 @@ const {
   getResourcePermissionsMap,
 } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { getAppConfig } = require('~/server/services/Config');
 const db = require('~/models');
 
-/** Wiring only: the write/present decision logic lives in `@librechat/api` (`createInstructionsPromptAccess`, `checkInstructionsPromptWrite`). */
+/**
+ * Wiring only: the write/present decision logic lives in `@librechat/api`
+ * (`createInstructionsPromptAccess`, `checkInstructionsPromptWrite`).
+ */
 const instructionsPromptAccess = createInstructionsPromptAccess({
   getResourcePermissionsMap,
   canManagePrompts: (user) => hasCapability(user, SystemCapabilities.MANAGE_PROMPTS),
-  promptService: createPromptService({ db, grantPermission }),
+  promptService: createPromptService({
+    db,
+    grantPermission,
+    getAppConfig,
+  }),
   assertAgentInstructionsContent: ({ instructions, filters }) =>
     assertModelBoundContent({ filters, agents: [{ instructions }] }),
   /** The same role-level gate `checkPromptAccess` applies to every `/prompts` route

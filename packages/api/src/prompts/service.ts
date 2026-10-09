@@ -1,4 +1,4 @@
-import { logger } from '@librechat/data-schemas';
+import { logger, BASE_CONFIG_PRINCIPAL_ID } from '@librechat/data-schemas';
 import { AccessRoleIds, PrincipalType, ResourceType } from 'librechat-data-provider';
 import type { FiltersConfig, TDeletePromptResponse } from 'librechat-data-provider';
 import type {
@@ -10,6 +10,7 @@ import type {
   PromptGroupRecord,
   ResolvePromptInput,
   PromptServiceError,
+  PromptSourceAdapter,
   PromptServiceResult,
   PromptCreationResult,
   CreatePromptGroupInput,
@@ -17,6 +18,7 @@ import type {
   MakePromptProductionResult,
 } from './types';
 import type { ProjectedStoredPrompt, ProjectedStoredPromptGroup } from './protection';
+import type { CreateLangfuseSourceResolverDeps } from '../langfuse/promptSync';
 import {
   inspectPromptContent,
   projectStoredPrompts,
@@ -34,6 +36,8 @@ import {
   selectionUnavailableReason,
 } from './native';
 import { safeValidatePromptGroupUpdate, safeValidatePromptPayload } from './schemas';
+import { createLangfuseSourceResolver } from '../langfuse/promptSync';
+import { createLangfusePromptAdapter } from './langfuse';
 import { withPromptStage } from './errors';
 
 type WithPromptFilters<T> = T & { readonly filters?: FiltersConfig };
@@ -65,6 +69,7 @@ export interface PromptService {
       readonly groupId: string;
       readonly prompt: unknown;
       readonly author: string;
+      readonly loadedGroup?: PromptGroupRecord | null;
     }>,
   ): Promise<PromptServiceResult<{ readonly prompt: PromptRecord }>>;
   /**
@@ -120,28 +125,50 @@ function inspect(
   return finding == null ? null : { ok: false, error: { type: 'blocked_content', finding } };
 }
 
-/** Builds the prompt service from a content source, a catalog store and an ownership grant. */
+/** Builds the prompt service from a native adapter, a Langfuse adapter, a catalog
+ *  store and an ownership grant. */
 export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters): PromptService {
-  const { source, catalog, grantCreatorOwnership, logger } = adapters;
+  const { native, langfuse, catalog, grantCreatorOwnership, logger } = adapters;
+  const adaptersBySource: Record<PromptGroupRecord['source'], PromptSourceAdapter> = {
+    native,
+    langfuse,
+  };
 
   const readPrompt = (promptId: string, loaded?: PromptRecord | null) =>
     loaded?._id === promptId
       ? Promise.resolve(loaded)
-      : withPromptStage('read', () => source.getPrompt(promptId));
+      : withPromptStage('read', () => native.getPrompt(promptId));
+
+  const readGroup = (groupId: string, loaded?: PromptGroupRecord | null) =>
+    loaded?._id === groupId
+      ? Promise.resolve(loaded)
+      : withPromptStage('read', () => catalog.getPromptGroup(groupId));
 
   return {
-    async resolvePrompt({ filters, ...input }) {
-      const resolved = await source.resolvePrompt(input);
-      if (resolved == null) {
+    async resolvePrompt({
+      groupId,
+      selection,
+      loadedGroup,
+      loadedRevision,
+      filters,
+      allowedSources,
+    }) {
+      const group = await readGroup(groupId, loadedGroup);
+      if (group == null) {
         return {
           ok: false,
-          error: {
-            type: 'unavailable_selection',
-            reason: selectionUnavailableReason(input.selection),
-          },
+          error: { type: 'unavailable_selection', reason: selectionUnavailableReason(selection) },
         };
       }
-      return inspect({ prompt: resolved.prompt }, filters) ?? { ok: true, value: resolved };
+      if (allowedSources != null && !allowedSources.includes(group.source)) {
+        return { ok: false, error: { type: 'unsupported_source', source: group.source } };
+      }
+      const adapter = adaptersBySource[group.source];
+      const resolved = await adapter.resolvePrompt({ group, selection, loadedRevision });
+      if (!resolved.ok) {
+        return resolved;
+      }
+      return inspect({ prompt: resolved.value.prompt }, filters) ?? resolved;
     },
 
     async getListPromptGroupsByAccess(input) {
@@ -171,7 +198,9 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
     },
 
     async getPrompts({ groupId, filters }) {
-      const prompts = await withPromptStage('read', () => source.getPrompts(groupId));
+      // Keyed by groupId against the native `Prompt` collection: a Langfuse group has no
+      // rows there, so this already resolves to `[]` for one without a source check.
+      const prompts = await withPromptStage('read', () => native.getPrompts(groupId));
       return projectStoredPrompts(prompts, filters);
     },
 
@@ -202,7 +231,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (rejection != null) {
         return rejection;
       }
-      const value = await source.createPromptGroup({ ...input, group, prompt: validation.data });
+      const value = await native.createPromptGroup({ ...input, group, prompt: validation.data });
       const groupId = value.prompt?.groupId;
       if (value.prompt?._id && groupId) {
         try {
@@ -217,8 +246,8 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       return { ok: true, value };
     },
 
-    async savePrompt({ groupId, prompt, author, filters }) {
-      if (!source.savePrompt) {
+    async savePrompt({ groupId, prompt, author, filters, loadedGroup }) {
+      if (!native.savePrompt) {
         return unsupported('savePrompt');
       }
       if (!prompt) {
@@ -228,11 +257,17 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (!validation.success) {
         return invalidInput(validation.error.issues[0]?.message ?? 'Invalid prompt');
       }
+      // A missing group is left to the write below; only a group that is known and not
+      // native blocks a native revision from being added to it.
+      const group = await readGroup(groupId, loadedGroup);
+      if (group != null && group.source !== 'native') {
+        return unsupported('savePrompt');
+      }
       const rejection = inspect({ prompt: validation.data }, filters);
       if (rejection != null) {
         return rejection;
       }
-      const save = source.savePrompt;
+      const save = native.savePrompt;
       const value = await withPromptStage('write', () =>
         save({ groupId, prompt: validation.data, author }),
       );
@@ -240,10 +275,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
     },
 
     async getPromptGroup({ groupId, loadedGroup, filters }) {
-      const group =
-        loadedGroup?._id === groupId
-          ? loadedGroup
-          : await withPromptStage('read', () => source.getPromptGroup(groupId));
+      const group = await readGroup(groupId, loadedGroup);
       if (group == null) {
         return null;
       }
@@ -281,7 +313,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
     },
 
     async makePromptProduction({ promptId, loadedRevision, filters }) {
-      if (!source.makePromptProduction) {
+      if (!native.makePromptProduction) {
         return unsupported('makePromptProduction');
       }
       const revision = await readPrompt(promptId, loadedRevision);
@@ -289,16 +321,16 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (rejection != null) {
         return rejection;
       }
-      const promote = source.makePromptProduction;
+      const promote = native.makePromptProduction;
       const value = await withPromptStage('write', () => promote(promptId));
       return { ok: true, value, groupId: revision?.groupId };
     },
 
     async deletePrompt(input) {
-      if (!source.deletePrompt) {
+      if (!native.deletePrompt) {
         return unsupported('deletePrompt');
       }
-      return { ok: true, value: await source.deletePrompt(input) };
+      return { ok: true, value: await native.deletePrompt(input) };
     },
 
     deletePromptGroup: (groupId) => catalog.deletePromptGroup(groupId),
@@ -315,15 +347,36 @@ export interface PromptServiceDependencies {
     accessRoleId: AccessRoleIds;
     grantedBy: string;
   }) => Promise<unknown>;
+  /** Reads the app config a Langfuse content read resolves against. Configuration —
+   *  the deployment gate, the tenant's prompt-sync switch, and whether a connection
+   *  can be built from it — decides at request time whether a Langfuse group's
+   *  `resolvePrompt` reaches Langfuse or returns `source_unavailable`; the caller
+   *  never decides whether Langfuse exists. */
+  readonly getAppConfig: CreateLangfuseSourceResolverDeps['getAppConfig'];
 }
 
-/** Builds the prompt service from the LibreChat database methods and permission service. */
+/**
+ * Builds the prompt service from the LibreChat database methods and permission service.
+ * Every prompt source LibreChat supports has an adapter here, including Langfuse:
+ * `getAppConfig` builds its source resolver, which reads the deployment's base config
+ * through `db.findConfigByPrincipal`. Configuration, not the caller, decides whether a
+ * Langfuse group's `resolvePrompt` reaches Langfuse or returns
+ * `source_unavailable{reason:'disabled'|'not_configured'|'source_changed'}`.
+ */
 export function createPromptService({
   db,
   grantPermission,
+  getAppConfig,
 }: PromptServiceDependencies): PromptService {
   return createPromptServiceFromAdapters({
-    source: createNativePromptAdapter(db),
+    native: createNativePromptAdapter(db),
+    langfuse: createLangfusePromptAdapter({
+      resolveSource: createLangfuseSourceResolver({
+        findBaseConfig: () =>
+          db.findConfigByPrincipal(PrincipalType.ROLE, BASE_CONFIG_PRINCIPAL_ID),
+        getAppConfig,
+      }),
+    }),
     catalog: createPromptCatalogStore(db),
     grantCreatorOwnership: async ({ userId, groupId }) => {
       await grantPermission({

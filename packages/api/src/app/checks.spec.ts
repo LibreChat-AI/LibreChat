@@ -367,4 +367,16 @@ describe('handleRateLimits', () => {
     expect(process.env.AGENT_EVENT_USER_MAX).toEqual('80');
     expect(process.env.AGENT_EVENT_USER_WINDOW).toEqual('2');
   });
+
+  it('should set the prompt resolve rate limit', () => {
+    handleRateLimits({
+      promptResolve: {
+        userMax: 30,
+        userWindowInMinutes: 2,
+      },
+    });
+
+    expect(process.env.PROMPT_RESOLVE_USER_MAX).toEqual('30');
+    expect(process.env.PROMPT_RESOLVE_USER_WINDOW).toEqual('2');
+  });
 });
