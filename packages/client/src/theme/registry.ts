@@ -608,7 +608,8 @@ function withComposableShadows(appearance: IThemeAppearance): IThemeAppearance {
  * family before the display role existed, theme-sized controls were padded by the shared spacing,
  * and dialog titles were set in the `text-lg` step and the display family, the composer's popovers, the model selector and the send button drew `rounded-2xl`, `rounded-xl` and the round control corner, and the sign-in controls drew `rounded-2xl` and the other sign-in actions the default Button's height and corner, so a theme that names
  * the broader role and not the split one keeps what it drew. Pairs resolve in order, so a role can
- * follow one that is itself inherited.
+ * follow one that is itself inherited; the other sign-in actions resolve before the sign-in corner
+ * is derived, so they follow only a corner the theme names and otherwise keep `radiusLg`.
  */
 const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAppearance]> = [
   ['displayFontFamily', 'fontFamily'],
@@ -620,11 +621,11 @@ const inheritedAppearance: ReadonlyArray<[keyof IThemeAppearance, keyof IThemeAp
   ['popoverRadius', 'radius2xl'],
   ['menuPanelRadius', 'radiusXl'],
   ['composerActionRadius', 'roundControlRadius'],
+  ['authActionRadius', 'authControlRadius'],
+  ['authActionRadius', 'radiusLg'],
   ['authControlRadius', 'radius2xl'],
   ['authActionHeight', 'authButtonHeight'],
   ['authActionHeight', 'buttonHeight'],
-  ['authActionRadius', 'authControlRadius'],
-  ['authActionRadius', 'radiusLg'],
 ];
 
 /**

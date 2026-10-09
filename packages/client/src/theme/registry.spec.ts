@@ -1466,6 +1466,10 @@ describe('theme registry', () => {
         authControlRadius: '0',
       }),
     ).toMatchObject({ authActionHeight: '2rem', authActionRadius: '0' });
+    expect(resolve({ radius2xl: '2px', radiusLg: '5px' })).toMatchObject({
+      authControlRadius: '2px',
+      authActionRadius: '5px',
+    });
     expect(
       resolve({ authButtonHeight: '2rem', authActionHeight: '3.5rem', authActionRadius: '1px' }),
     ).toMatchObject({ authActionHeight: '3.5rem', authActionRadius: '1px' });

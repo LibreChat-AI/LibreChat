@@ -23,6 +23,16 @@ const REFERENCE_THEME = {
   },
 };
 
+/** The smallest sign-in field a theme may draw. */
+const MINIMUM_FIELD_THEME = {
+  version: 1,
+  name: 'auth-shape-minimum',
+  modes: {
+    light: { appearance: { authFieldHeight: '24px' } },
+    dark: { appearance: { authFieldHeight: '24px' } },
+  },
+};
+
 async function serveTheme(page: Page, theme: string | Record<string, unknown>) {
   await page.route(
     (url) => url.pathname === '/api/config',
@@ -174,6 +184,9 @@ test.describe('sign-in control shape roles', () => {
     await openLogin(page);
     await expect(page.locator('html')).toHaveAttribute('data-theme', REFERENCE_THEME.name);
     await expectShape(page, { field: 56, button: 40, radius: '0px' });
+    await expectResetLabelCentered(page);
+
+    await serveTheme(page, MINIMUM_FIELD_THEME);
     await expectResetLabelCentered(page);
   });
 

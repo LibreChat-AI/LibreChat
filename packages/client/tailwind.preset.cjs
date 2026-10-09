@@ -59,6 +59,12 @@ module.exports = {
         /** The tallest a Select's list draws before it scrolls. */
         'theme-list': 'var(--theme-list-max-height, 24rem)',
       },
+      inset: {
+        /** Where a sign-in label rests in its field: centered 2px low, as on the stock 44px field,
+         *  and never past the field's bottom edge at the 24px minimum height. Read on the label, so
+         *  `lh` is the label's own line. */
+        'theme-auth-label-rest': 'min(calc(50% - 0.5lh + 2px), calc(100% - 1lh))',
+      },
       width: {
         /** Never narrower than the track is tall, so the knob always has somewhere to travel. */
         'theme-switch':
