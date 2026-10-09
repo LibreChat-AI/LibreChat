@@ -36,6 +36,7 @@ async function uploadLocalImage({ req, file, file_id, endpoint, resolution = 'hi
     buffer: resizedBuffer,
     width,
     height,
+    type,
   } = await resizeImageBuffer(inputBuffer, resolution, endpoint);
   const extension = path.extname(inputFilePath);
 
@@ -50,7 +51,14 @@ async function uploadLocalImage({ req, file, file_id, endpoint, resolution = 'hi
   const newPath = path.join(userPath, fileName);
   const targetExtension = `.${appConfig.imageOutputType}`;
 
-  if (extension.toLowerCase() === targetExtension) {
+  /* The name is only a claim about the contents, so conversion is skipped only when the bytes
+   * agree with it. A JPEG named `.png` otherwise reaches `createFile` typed `image/png`, and that
+   * type is handed to providers verbatim; Anthropic then refuses the request, and keeps refusing
+   * it, because the image stays in the conversation's history. */
+  if (
+    extension.toLowerCase() === targetExtension &&
+    type === `image/${appConfig.imageOutputType}`
+  ) {
     const bytes = Buffer.byteLength(resizedBuffer);
     await fs.promises.writeFile(newPath, resizedBuffer);
     const filepath = path.posix.join('/', 'images', req.user.id, path.basename(newPath));
