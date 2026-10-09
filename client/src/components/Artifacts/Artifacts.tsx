@@ -481,13 +481,14 @@ export default function Artifacts() {
                   isFullscreen ? 'inset-0 rounded-none' : 'inset-x-0 bottom-0 rounded-t-[20px]',
                   isVisible && !isClosing
                     ? 'translate-y-0 opacity-100'
-                    : 'translate-y-full opacity-0 transition-all',
-                  isDragging ? '' : 'transition-all duration-300',
+                    : 'translate-y-full opacity-0',
+                  !isDragging && 'transition-all',
+                  !isDragging && (isClosing ? 'duration-250' : 'duration-300'),
                 )
               : cn(
                   'h-full overflow-hidden shadow-2xl',
                   isVisible && !isClosing
-                    ? 'translate-x-0 opacity-100 transition-all duration-150'
+                    ? 'translate-x-0 opacity-100 transition-all duration-350'
                     : 'translate-x-5 opacity-0 transition-all duration-300',
                 ),
           )}
