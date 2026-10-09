@@ -695,6 +695,16 @@ describe('theme registry', () => {
     expect(fromLegacyTheme(legacy).modes.light?.colors).not.toHaveProperty('rgb-category-icon');
   });
 
+  it('does not warn that a renamed category icon role is ignored', () => {
+    const theme = {
+      version: 1,
+      name: 'renamed-category-icon-warning',
+      modes: { light: { colors: { 'rgb-category-icon': '7 8 9' } as IThemeRGB } },
+    };
+
+    expect(collectThemeWarnings(theme)).toEqual([]);
+  });
+
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
     const explicit = resolveTheme(
       {

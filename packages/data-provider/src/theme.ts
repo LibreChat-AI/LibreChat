@@ -186,6 +186,14 @@ export const themeColorTokens = Object.freeze([
 
 export type ThemeColorToken = (typeof themeColorTokens)[number];
 
+/** Role names a release shipped and a later one renamed. */
+export type RenamedThemeColorToken = 'rgb-category-icon';
+
+/** Each renamed role paired with the name it has now; readers carry a value to the current name. */
+export const renamedThemeColorTokens: ReadonlyArray<
+  readonly [RenamedThemeColorToken, ThemeColorToken]
+> = Object.freeze([['rgb-category-icon', 'rgb-category-icon-4']] as const);
+
 export const themeBrandTokens = Object.freeze([
   'provider-openai',
   'provider-openai-gpt4',
@@ -571,6 +579,9 @@ export const isThemeAppearanceToken = (key: string): key is ThemeAppearanceToken
   Object.prototype.hasOwnProperty.call(appearanceValidators, key);
 
 const colorTokenSet: ReadonlySet<string> = new Set<string>(themeColorTokens);
+const renamedColorTokenSet: ReadonlySet<string> = new Set<string>(
+  renamedThemeColorTokens.map(([from]) => from),
+);
 const brandTokenSet: ReadonlySet<string> = new Set<string>(themeBrandTokens);
 const themeModes = ['light', 'dark'] as const;
 
@@ -666,7 +677,11 @@ export function collectThemeWarningIssues(theme: unknown): ThemeIssue[] {
     const futureColors = isPlainThemeRecord(colors)
       ? Object.entries(colors)
           .filter(
-            ([key, value]) => !colorTokenSet.has(key) && isColorTokenName(key) && isThemeRGB(value),
+            ([key, value]) =>
+              !colorTokenSet.has(key) &&
+              !renamedColorTokenSet.has(key) &&
+              isColorTokenName(key) &&
+              isThemeRGB(value),
           )
           .map(([key]) =>
             issue(['modes', mode, 'colors', key], `Unknown ${mode} color token ignored: ${key}`),

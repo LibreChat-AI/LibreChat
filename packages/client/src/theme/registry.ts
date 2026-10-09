@@ -6,12 +6,14 @@ import {
   collectThemeWarningIssues,
   defaultSwitchSize,
   themeColorTokens as sharedColorTokens,
+  renamedThemeColorTokens,
   themeBrandTokens as sharedBrandTokens,
 } from 'librechat-data-provider';
 import type {
   ThemeColorToken,
   ThemeBrandToken,
   ThemeAppearanceToken,
+  RenamedThemeColorToken,
 } from 'librechat-data-provider';
 import type {
   IThemeAppearance,
@@ -538,16 +540,12 @@ function definedEntries<T extends object>(values?: Partial<T>): Partial<T> {
   ) as Partial<T>;
 }
 
-/** Role names a release shipped and a later one renamed. */
-type RenamedColorToken = 'rgb-category-icon';
-
 /** Roles that shipped under another name, each paired with the name it has now. */
-export const renamedColorTokens: ReadonlyArray<readonly [RenamedColorToken, keyof IThemeRGB]> = [
-  ['rgb-category-icon', 'rgb-category-icon-4'],
-];
+export const renamedColorTokens: ReadonlyArray<readonly [RenamedThemeColorToken, keyof IThemeRGB]> =
+  renamedThemeColorTokens;
 
 /** Colors as a theme written before a rename may carry them. */
-export type RenamedThemeRGB = IThemeRGB & Partial<Record<RenamedColorToken, string>>;
+export type RenamedThemeRGB = IThemeRGB & Partial<Record<RenamedThemeColorToken, string>>;
 
 /** Carries a renamed role to its current name, unless the colors name that too, so every reader
  *  that keeps only known tokens keeps the value. */
