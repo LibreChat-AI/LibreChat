@@ -11,6 +11,17 @@ export interface TenantContext {
 /** Sentinel value for deliberate cross-tenant system operations */
 export const SYSTEM_TENANT_ID = '__SYSTEM__';
 
+const MAX_TENANT_ID_LENGTH = 128;
+const TENANT_ID_PATTERN = /^[-a-zA-Z0-9_.]+$/;
+
+/**
+ * Whether `tenantId` has the shape of a tenant ID an operator may name (the `X-Tenant-Id`
+ * header, CLI tools). The system sentinel matches the shape; callers reject it separately.
+ */
+export function isValidTenantId(tenantId: string): boolean {
+  return tenantId.length <= MAX_TENANT_ID_LENGTH && TENANT_ID_PATTERN.test(tenantId);
+}
+
 /**
  * AsyncLocalStorage instance for propagating tenant context.
  * Callbacks passed to `tenantStorage.run()` must be `async` for the context to propagate
