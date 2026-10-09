@@ -49,6 +49,7 @@ const isDisabledVariant = (variant) =>
   /disabled/.test(variant) &&
   !/^(?:(?:group|peer)-)?(?:theme-disabled|not-)/.test(variant) &&
   !/:not\([^)]*disabled/.test(variant) &&
+  !/(?:not|non)[-_]?disabled/.test(variant) &&
   !/disabled\s*!?=\s*["']?false\b|disabled\s*!=/.test(variant);
 
 /** Which element a disabled variant fades: the control, a wrapper that has one, a label that
@@ -232,10 +233,13 @@ function chosenByDisabled(start, source, known) {
   const parent = node.parent;
   if (parent?.type === 'ConditionalExpression' && parent.test !== node) {
     const sense = disabledSense(parent.test, source, known);
-    return sense !== undefined && sense === (parent.consequent === node);
+    if (sense === undefined) return chosenByDisabled(parent, source, known);
+    return sense === (parent.consequent === node);
   }
   if (parent?.type === 'LogicalExpression' && parent.right === node && parent.operator === '&&') {
-    return disabledSense(parent.left, source, known) === true;
+    const sense = disabledSense(parent.left, source, known);
+    if (sense === undefined) return chosenByDisabled(parent, source, known);
+    return sense === true;
   }
   if (
     parent?.type === 'Property' &&
@@ -345,6 +349,16 @@ function recipeReader(context) {
     typeof value === 'string' &&
     RECIPE_VARIANTS.some(([pattern, recipe]) => covers(recipe, topology) && pattern.test(value));
 
+  /** A default that selects one of the group's own options: not `null`, `undefined` or a name
+   *  the group does not define. */
+  const namesOption = (value, options) =>
+    value?.type === 'Literal' &&
+    value.value !== null &&
+    options.type === 'ObjectExpression' &&
+    options.properties.some(
+      (option) => option.type === 'Property' && keyName(option) === String(value.value),
+    );
+
   /** Every option of some `cva` variant group composes a covering recipe, and the group has a
    *  default, so whichever option is chosen, or none, restores the control. */
   const variantsAlways = (config, topology) => {
@@ -355,7 +369,7 @@ function recipeReader(context) {
       (group) =>
         group.type === 'Property' &&
         !group.computed &&
-        propertyNamed(defaults, group.key.name ?? group.key.value) !== undefined &&
+        namesOption(propertyNamed(defaults, keyName(group))?.value, group.value) &&
         group.value.type === 'ObjectExpression' &&
         group.value.properties.length > 0 &&
         group.value.properties.every(

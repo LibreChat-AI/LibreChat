@@ -22,6 +22,8 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     "cn(disabled && { 'opacity-50': true }, disabledFillClasses)",
     "cn(disabled && 'opacity-50', disabled && disabledFillClasses)",
     "cn(disabled ? 'opacity-50' : '', disabled ? disabledFillClasses : '')",
+    "cn('data-[state=not-disabled]:opacity-50 aria-[state=non-disabled]:opacity-40')",
+    "cn(disabled ? '' : (active ? 'opacity-50' : ''))",
     "cn('disabled:opacity-50 theme-disabled:opacity-100!')",
     "cn('disabled:opacity-100!')",
     "cva(disabledFillClasses, { variants: { disabled: { true: 'opacity-50', false: '' } } })",
@@ -201,6 +203,22 @@ tester.run('design/disabled-recipe', design.rules['disabled-recipe'], {
     {
       code: "cn(disabled ? 'opacity-50' : '', disabled ? '' : disabledFillClasses)",
       errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn(disabled && (active ? 'opacity-50' : ''))",
+      errors: [missing('opacity-50')],
+    },
+    {
+      code: "cn(disabled && (active && 'opacity-40'))",
+      errors: [missing('opacity-40')],
+    },
+    {
+      code: "cva('disabled:opacity-50', { variants: { tone: { muted: disabledFillClasses } }, defaultVariants: { tone: null } })",
+      errors: [missing('disabled:opacity-50')],
+    },
+    {
+      code: "cva('disabled:opacity-50', { variants: { tone: { muted: disabledFillClasses } }, defaultVariants: { tone: 'loud' } })",
+      errors: [missing('disabled:opacity-50')],
     },
     {
       code: "cn('disabled:opacity-60!')",
