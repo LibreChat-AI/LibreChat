@@ -143,7 +143,7 @@ const EditPresetDialog = ({
 
   return (
     <OGDialog open={presetModalVisible} onOpenChange={handleOpenChange} triggerRef={triggerRef}>
-      <OGDialogContent className="bg-surface-dialog md:rounded-theme-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col overflow-y-visible md:h-auto md:max-h-[90vh] md:max-w-[75vw] lg:max-w-[59.375rem]">
+      <OGDialogContent className="md:rounded-theme-surface flex h-[100dvh] max-h-[100dvh] w-full max-w-full flex-col overflow-y-visible md:h-auto md:max-h-[90vh] md:max-w-[75vw] lg:max-w-[59.375rem]">
         <OGDialogTitle className="shrink-0">
           {localize('com_ui_edit_preset_title', { title: preset?.title })}
         </OGDialogTitle>
@@ -163,7 +163,7 @@ const EditPresetDialog = ({
               value={(title as string | undefined) ?? ''}
               onChange={onTitleChange}
               placeholder={localize('com_endpoint_set_custom_name')}
-              className="rounded-theme-control border-border-medium h-9 w-full px-3 py-2"
+              className="rounded-theme-control border-border-medium h-9 w-full"
             />
           </div>
           <div className="flex w-full flex-col">

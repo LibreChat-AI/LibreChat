@@ -106,6 +106,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-border-menu': '227 227 227', // matching border-light
   'rgb-surface-composer': '255 255 255', // matching surface-chat
   'rgb-surface-search': '247 247 248', // matching surface-secondary
+  'rgb-surface-sidebar': '247 247 248', // matching surface-primary-alt
   'rgb-surface-disabled': '236 236 236', // #ececec (gray-100)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '227 227 227', // #e3e3e3 (gray-200)
@@ -145,6 +146,16 @@ export const defaultTheme: IThemeRGB = {
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-scrollbar-thumb': '0 0 0', // #000000
+  'rgb-page-canvas': '247 247 248', // #f7f7f8 (gray-50, matching surface-primary-alt)
+  'rgb-select-fill': '255 255 255', // #ffffff
+  'rgb-select-edge': '142 142 160', // #8e8ea0
+  'rgb-button-neutral-border': '0 0 0', // #000000 at 10%
+  'rgb-button-neutral-text': '64 65 79', // #40414f
+  'rgb-button-neutral-hover': '236 236 241', // #ececf1 (gray-20)
+  'rgb-link-inline': '0 102 204', // #0066cc
+  'rgb-toast-edge': '67 90 111', // #435a6f
+  'rgb-stroke-ink': '0 0 0', // #000000 at 10%
   'rgb-file-document': '255 85 136', // #ff5588
   'rgb-file-sheet': '16 163 127', // #10a37f
   'rgb-file-code': '255 110 60', // #ff6e3c
@@ -177,6 +188,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-series-6': '126 35 205', // #7e23cd (violet)
   'rgb-series-7': '1 131 1', // #018301 (green)
   'rgb-series-8': '63 81 181', // #3f51b5 (indigo)
+  'rgb-category-icon': '182 123 5', // #b67b05 (matching series-4)
 
   /** Unchecked switch track. 3.03:1 against the white page and the
    *  `surface-primary` thumb, 5.91:1 against the checked `surface-inverted`

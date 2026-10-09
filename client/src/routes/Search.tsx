@@ -291,7 +291,7 @@ export default function Search() {
 
   const loadingSpinner = (
     <div className="absolute inset-0 flex items-center justify-center">
-      <Spinner className="text-text-primary" />
+      <Spinner tone="primary" />
     </div>
   );
 
@@ -361,15 +361,14 @@ export default function Search() {
           overscanRowCount={10}
           aria-label={localize('com_nav_search_placeholder')}
           className={cn(
-            'focus-visible:ring-ring-primary outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+            'focus-visible:ring-ring-primary outline-none focus-visible:ring-2 focus-visible:ring-inset',
             showingStale && 'opacity-70',
           )}
-          style={{ outline: 'none' }}
         />
       </div>
       {isFetchingNextPage && (
         <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex justify-center py-4">
-          <Spinner className="text-text-primary" />
+          <Spinner tone="primary" />
         </div>
       )}
       <div className="from-surface-primary-alt pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />

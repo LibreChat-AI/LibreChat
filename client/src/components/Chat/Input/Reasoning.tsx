@@ -24,6 +24,7 @@ import type {
 import type { TranslationKeys } from '~/hooks';
 import { getReasoningStateKey, pendingReasoningOverrideFamily } from './Composer/state';
 import { useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
+import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { formatTokens, resolveAgentTarget } from '~/utils';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -336,6 +337,11 @@ export function useComposerReasoning({
   const provider = isAgent ? (agentTarget?.provider ?? '') : (conversation?.endpoint ?? '');
   const model = isAgent ? (agentTarget?.model ?? '') : (conversation?.model ?? '');
   const endpointType = getEndpointField(endpointsConfig, provider, 'type');
+  const { modelReasoning, pending: capabilitiesPending } = useModelReasoning(
+    endpointsConfig,
+    provider,
+    model,
+  );
   const setting = useMemo(() => {
     const customParams = endpointsConfig[provider]?.customParams ?? {};
     return resolveReasoningSettingForTarget({
@@ -346,18 +352,28 @@ export function useComposerReasoning({
       reasoningFormat: customParams.reasoningFormat,
       paramDefinitions: customParams.paramDefinitions,
       blockedReasoningKeys,
+      modelReasoning,
     });
-  }, [blockedReasoningKeys, endpointType, endpointsConfig, isAgent, model, provider]);
-  const settingFingerprint =
-    setting == null
-      ? ''
-      : `${setting.key}:${setting.type}:${setting.options?.join(',') ?? ''}:${setting.range?.min ?? ''}:${setting.range?.positiveMin ?? ''}:${setting.range?.max ?? ''}:${setting.range?.step ?? ''}`;
+  }, [
+    blockedReasoningKeys,
+    endpointType,
+    endpointsConfig,
+    isAgent,
+    model,
+    modelReasoning,
+    provider,
+  ]);
   const targetResolved =
     endpoint !== '' &&
     (!isAgent || agentTarget != null) &&
     (setting != null || endpointsQuery.data != null);
+  /* The target is the endpoint or agent and the model. The efforts a catalog advertises for it
+     are not part of the identity: a refresh that changes them is not the user switching targets,
+     and a value the refreshed setting no longer allows is cleared as `mismatchedSetting` below. It
+     is recorded even while the capabilities load, so a switch made then is not mistaken for the
+     first target once they arrive. */
   const targetFingerprint = targetResolved
-    ? `${isAgent ? conversation?.agent_id : provider}:${model}:${settingFingerprint}`
+    ? `${isAgent ? conversation?.agent_id : provider}:${model}`
     : null;
   const previousTarget = useRef({ key: reasoningStateKey, fingerprint: targetFingerprint });
   const explicitlyUnavailable =
@@ -386,13 +402,19 @@ export function useComposerReasoning({
        key may survive while its enum value or number no longer does. */
     const mismatchedSetting =
       setting != null && value != null && !isReasoningOverrideSupported(value, setting);
+    /* While the capabilities are unknown the setting is hidden, which says nothing about the
+       staged choice: keep it until the catalog confirms or refutes it. A switch of target is
+       different, because the choice belonged to the old one, so it clears at once. */
     if (
-      (explicitlyUnavailable || unsupportedResolved || targetChanged || mismatchedSetting) &&
-      value != null
+      value != null &&
+      (targetChanged ||
+        (!capabilitiesPending &&
+          (explicitlyUnavailable || unsupportedResolved || mismatchedSetting)))
     ) {
       setValue(undefined);
     }
   }, [
+    capabilitiesPending,
     explicitlyUnavailable,
     reasoningStateKey,
     setValue,

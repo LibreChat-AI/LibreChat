@@ -123,15 +123,6 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
         role="tablist"
         aria-label={localize('com_agents_category_tabs_label')}
         aria-orientation="horizontal"
-        style={
-          isSmallScreen
-            ? {
-                scrollbarWidth: 'none',
-                msOverflowStyle: 'none',
-                WebkitOverflowScrolling: 'touch',
-              }
-            : undefined
-        }
       >
         {categories.map((category, index) => (
           <button

@@ -34,7 +34,20 @@ const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
 const mockAgentQueryData: { current?: Agent } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
+const mockCapabilitiesState: {
+  current?: { status: string; fetchStatus?: string; dataUpdatedAt?: number };
+} = {};
+/** A query that holds data always has a timestamp: loaded data is fresh unless a test says otherwise. */
+const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) =>
+  queryKey[0] === QueryKeys.reasoningCapabilities
+    ? { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current }
+    : undefined,
+);
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return mockCapabilitiesData.current;
+  }
   if (queryKey[0] === QueryKeys.agent) {
     return mockAgentQueryData.current;
   }
@@ -63,7 +76,7 @@ jest.mock('react-router-dom', () => ({
 jest.mock('@tanstack/react-query', () => ({
   useQueryClient: () => ({
     getQueryData: mockGetQueryData,
-    getQueryState: jest.fn(() => undefined),
+    getQueryState: (queryKey: readonly unknown[]) => mockGetQueryState(queryKey),
   }),
 }));
 
@@ -210,6 +223,8 @@ function renderAsk(
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
+    mockCapabilitiesData.current = undefined;
+    mockCapabilitiesState.current = undefined;
     localStorage.clear();
     jest.clearAllMocks();
     mockAgentQueryData.current = undefined;
@@ -675,6 +690,216 @@ describe('useChatFunctions ask', () => {
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
     expect(submission.userMessage.reasoningOverride).toEqual(override);
+  });
+
+  describe('replaying a reasoning override on an OpenRouter endpoint', () => {
+    const model = 'openai/gpt-6.1-sol';
+    const override = { key: 'reasoning_effort', value: 'max' } as TReasoningOverride;
+    const openRouter = (paramDefinitions?: unknown[]) => ({
+      OpenRouter: {
+        type: 'custom',
+        customParams: {
+          defaultParamsEndpoint: 'openrouter',
+          reasoningFormat: 'reasoning_effort',
+          ...(paramDefinitions && { paramDefinitions }),
+        },
+      },
+    });
+    const replay = (value: TReasoningOverride = override) => {
+      const { result, setSubmission } = renderAsk([], 'openrouter-conversation', {
+        endpoint: 'OpenRouter' as TConversation['endpoint'],
+        model,
+      });
+      act(() => {
+        result.current.ask({ text: 'Think' }, { overrideReasoning: value });
+      });
+      return (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage.reasoningOverride;
+    };
+
+    beforeEach(() => {
+      mockEndpointsQueryData.current = openRouter();
+    });
+
+    it('omits the override while the capabilities have not loaded', () => {
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when no capabilities request has run', () => {
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps an override the loaded capabilities support', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('omits an override the loaded capabilities do not support', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when the capabilities request failed, as its efforts are unknown', () => {
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when a refresh failed although the previous data is still cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'error' };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override while an expired entry is refreshed, although its data is cached', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = { status: 'success', fetchStatus: 'fetching' } as never;
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('omits the override when the cached entry is past its lifetime and idle', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = {
+        status: 'success',
+        fetchStatus: 'idle',
+        dataUpdatedAt: Date.now() - 61_000,
+      };
+
+      expect(replay()).toBeUndefined();
+    });
+
+    it('keeps the override while the cached entry is still within its lifetime', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+        expiresInMs: 60000,
+      };
+      mockCapabilitiesState.current = {
+        status: 'success',
+        fetchStatus: 'idle',
+        dataUpdatedAt: Date.now() - 30_000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    describe('a staged effort submitted while the capabilities are unknown', () => {
+      const submitStaged = () => {
+        const { result, setSubmission, reasoningStore } = renderAsk([], 'openrouter-conversation', {
+          endpoint: 'OpenRouter' as TConversation['endpoint'],
+          model,
+          reasoningOverride: override,
+        });
+        act(() => {
+          result.current.ask({ text: 'Think' });
+        });
+        const sent = (setSubmission.mock.calls.at(-1)?.[0] as TSubmission).userMessage
+          .reasoningOverride;
+        return {
+          sent,
+          left: reasoningStore.get(pendingReasoningOverrideFamily('openrouter-conversation')),
+        };
+      };
+
+      it('leaves it staged for the next message instead of losing it', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toEqual(override);
+      });
+
+      it('leaves it staged while the capabilities are loading', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(submitStaged().left).toEqual(override);
+      });
+
+      it('consumes it once it is sent', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['max', 'high'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toEqual(override);
+        expect(left).toBeUndefined();
+      });
+
+      it('consumes it when the loaded catalog refuses it', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: ['low'] } } },
+          expiresInMs: 60000,
+        };
+
+        const { sent, left } = submitStaged();
+
+        expect(sent).toBeUndefined();
+        expect(left).toBeUndefined();
+      });
+    });
+
+    describe('an Auto override, which sends no effort', () => {
+      const auto = { key: 'reasoning_effort', value: '' } as TReasoningOverride;
+
+      it('is kept while the capabilities have not loaded', () => {
+        mockCapabilitiesState.current = { status: 'loading' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept when the capabilities request failed', () => {
+        mockCapabilitiesState.current = { status: 'error' };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+
+      it('is kept for a model the loaded catalog lists without effort selection', () => {
+        mockCapabilitiesData.current = {
+          capabilities: { OpenRouter: { [model]: { efforts: [] } } },
+          expiresInMs: 60000,
+        };
+
+        expect(replay(auto)).toEqual(auto);
+      });
+    });
+
+    it('keeps an override for a model the loaded catalog does not list', () => {
+      mockCapabilitiesData.current = {
+        capabilities: { OpenRouter: { 'meta/other': { efforts: ['low'] } } },
+        expiresInMs: 60000,
+      };
+
+      expect(replay()).toEqual(override);
+    });
+
+    it('keeps an administrator-defined effort override without waiting for the catalog', () => {
+      mockEndpointsQueryData.current = openRouter([{ key: 'reasoning_effort' }]);
+      mockCapabilitiesState.current = { status: 'loading' };
+
+      expect(replay()).toEqual(override);
+    });
   });
 
   it('uses hydrated per-agent query data when the agent catalog is unavailable', () => {

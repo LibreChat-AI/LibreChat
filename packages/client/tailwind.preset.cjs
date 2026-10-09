@@ -74,6 +74,7 @@ module.exports = {
         'theme-icon-lg': 'var(--theme-icon-size-lg, 1.5rem)',
         /** A theme-sized control's inline padding and gap, falling back to the shared spacing it
          *  read before, for a stylesheet that predates the roles. */
+        'theme-button-x': 'var(--theme-button-padding-x, 1rem)',
         'theme-control-x': 'var(--theme-control-padding-x, var(--theme-space-normal, 0.75rem))',
         'theme-control-gap': 'var(--theme-control-gap, var(--theme-space-compact, 0.375rem))',
         /** A dialog's inline padding and the gap between its title and description. */
@@ -144,6 +145,13 @@ module.exports = {
       boxShadow: {
         'theme-surface':
           'var(--theme-elevation-surface, 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1))',
+      },
+      /** The width and offset of the keyboard focus outline, the `focusRingWidth` and `focusRingOffset` roles. */
+      outlineWidth: {
+        'theme-focus': 'var(--theme-focus-ring-width, 2px)',
+      },
+      outlineOffset: {
+        'theme-focus': 'var(--theme-focus-ring-offset, 2px)',
       },
       transitionDuration: {
         'theme-fast': 'var(--theme-motion-fast, 150ms)',

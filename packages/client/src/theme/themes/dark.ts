@@ -106,6 +106,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-border-menu': '33 33 33', // matching border-light
   'rgb-surface-composer': '47 47 47', // matching surface-chat
   'rgb-surface-search': '33 33 33', // matching surface-secondary
+  'rgb-surface-sidebar': '23 23 23', // matching surface-primary-alt
   'rgb-surface-disabled': '47 47 47', // #2f2f2f (gray-700)
   'rgb-text-disabled': '153 150 150', // #999696 (gray-400)
   'rgb-border-disabled': '57 57 57', // #393939 (gray-650)
@@ -149,12 +150,24 @@ export const darkTheme: IThemeRGB = {
   // Brand colors
   'rgb-brand-purple': '171 104 255', // #ab68ff
   'rgb-avatar-fill': '121 137 255', // #7989ff (the default avatar fill in every bundled theme)
-  'rgb-avatar-text': '236 236 236', // #ececec (gray-100, matching text-primary)
+  /** White, not the #ececec primary text: the glyph is a graphical object (WCAG 1.4.11) and
+   *  #ececec held only 2.6:1 on the #7989ff fill, where white reaches 3.07:1. */
+  'rgb-avatar-text': '255 255 255', // #ffffff
   'rgb-avatar-placeholder': '47 47 47', // #2f2f2f (gray-700, matching surface-tertiary)
   'rgb-avatar-edge': '240 246 252', // #f0f6fc at 10%, a hairline that only shows against a dark page
   'rgb-illustration-subtle': '175 193 255', // #afc1ff
   'rgb-illustration': '121 137 255', // #7989ff
   'rgb-illustration-strong': '60 70 255', // #3c46ff
+  'rgb-scrollbar-thumb': '255 255 255', // #ffffff
+  'rgb-page-canvas': '23 23 23', // #171717 (gray-850)
+  'rgb-select-fill': '255 255 255', // #ffffff
+  'rgb-select-edge': '142 142 160', // #8e8ea0
+  'rgb-button-neutral-border': '66 66 66', // #424242 (gray-600)
+  'rgb-button-neutral-text': '255 255 240', // #fffff0
+  'rgb-button-neutral-hover': '66 66 66', // #424242 (gray-600)
+  'rgb-link-inline': '82 160 255', // #52a0ff
+  'rgb-toast-edge': '67 90 111', // #435a6f
+  'rgb-stroke-ink': '255 255 255', // #ffffff at 30%
   'rgb-file-document': '255 85 136', // #ff5588
   'rgb-file-sheet': '16 163 127', // #10a37f
   'rgb-file-code': '255 110 60', // #ff6e3c
@@ -191,6 +204,7 @@ export const darkTheme: IThemeRGB = {
   'rgb-series-6': '171 104 254', // #ab68fe (violet)
   'rgb-series-7': '80 167 49', // #50a731 (green)
   'rgb-series-8': '120 130 190', // #8082be (indigo)
+  'rgb-category-icon': '200 133 12', // #c8850c (matching series-4)
 
   /** Unchecked switch track. 3.38:1 against the page and the `surface-primary`
    *  thumb, 5.74:1 against the checked `surface-inverted` track. */

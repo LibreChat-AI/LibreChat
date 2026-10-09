@@ -139,6 +139,7 @@ export interface IThemeRGB {
   'rgb-border-menu'?: string;
   'rgb-surface-composer'?: string;
   'rgb-surface-search'?: string;
+  'rgb-surface-sidebar'?: string;
   /** Disabled fill, ink and edge. Painted only under the `fill` disabled style. */
   'rgb-surface-disabled'?: string;
   'rgb-text-disabled'?: string;
@@ -194,6 +195,20 @@ export interface IThemeRGB {
   'rgb-illustration-subtle'?: string;
   'rgb-illustration'?: string;
   'rgb-illustration-strong'?: string;
+  /** The stylesheet-level roles: the webkit scrollbar thumb, the dark page behind the app, a native
+   *  `select`'s fill and edge, the legacy `.btn-neutral` border, ink and hover fill, inline links in
+   *  mobile.css, the toast's shadow tint, and the ink of the avatar's translucent ring. The opacities
+   *  of the thumb and ring stay in CSS; the neutral border's is `buttonNeutralBorderOpacity`. */
+  'rgb-scrollbar-thumb'?: string;
+  'rgb-page-canvas'?: string;
+  'rgb-select-fill'?: string;
+  'rgb-select-edge'?: string;
+  'rgb-button-neutral-border'?: string;
+  'rgb-button-neutral-text'?: string;
+  'rgb-button-neutral-hover'?: string;
+  'rgb-link-inline'?: string;
+  'rgb-toast-edge'?: string;
+  'rgb-stroke-ink'?: string;
   /** File-type tiles: one fill per kind of file and the ink of the glyph drawn on them. */
   'rgb-file-document'?: string;
   'rgb-file-sheet'?: string;
@@ -231,6 +246,9 @@ export interface IThemeRGB {
   'rgb-series-6'?: string;
   'rgb-series-7'?: string;
   'rgb-series-8'?: string;
+  /** The prompt category icons drawn in `rgb-series-4` (idea, travel, aftersales); it follows
+   *  `rgb-series-4` when a theme omits it, so a theme can quiet them without moving the chart slot. */
+  'rgb-category-icon'?: string;
 
   /**
    * Unchecked track of the shared `Switch`. A control state rather than a
@@ -348,6 +366,7 @@ export interface IThemeVariables {
   '--border-menu': string;
   '--surface-composer': string;
   '--surface-search': string;
+  '--surface-sidebar': string;
   '--surface-disabled': string;
   '--text-disabled': string;
   '--border-disabled': string;
@@ -380,6 +399,16 @@ export interface IThemeVariables {
   '--illustration-subtle': string;
   '--illustration': string;
   '--illustration-strong': string;
+  '--scrollbar-thumb': string;
+  '--page-canvas': string;
+  '--select-fill': string;
+  '--select-edge': string;
+  '--button-neutral-border': string;
+  '--button-neutral-text': string;
+  '--button-neutral-hover': string;
+  '--link-inline': string;
+  '--toast-edge': string;
+  '--stroke-ink': string;
   '--file-document': string;
   '--file-sheet': string;
   '--file-code': string;
@@ -406,6 +435,7 @@ export interface IThemeVariables {
   '--series-6': string;
   '--series-7': string;
   '--series-8': string;
+  '--category-icon': string;
 
   '--switch-unchecked': string;
   '--switch-thumb': string;
@@ -507,6 +537,7 @@ export interface IThemeColors {
   'border-menu'?: string;
   'surface-composer'?: string;
   'surface-search'?: string;
+  'surface-sidebar'?: string;
   'surface-disabled'?: string;
   'text-disabled'?: string;
   'border-disabled'?: string;
@@ -539,6 +570,16 @@ export interface IThemeColors {
   'illustration-subtle'?: string;
   illustration?: string;
   'illustration-strong'?: string;
+  'scrollbar-thumb'?: string;
+  'page-canvas'?: string;
+  'select-fill'?: string;
+  'select-edge'?: string;
+  'button-neutral-border'?: string;
+  'button-neutral-text'?: string;
+  'button-neutral-hover'?: string;
+  'link-inline'?: string;
+  'toast-edge'?: string;
+  'stroke-ink'?: string;
   'file-document'?: string;
   'file-sheet'?: string;
   'file-code'?: string;
@@ -560,6 +601,7 @@ export interface IThemeColors {
   'table-header-text'?: string;
   'table-header-fill'?: string;
   'series-8'?: string;
+  'category-icon'?: string;
   presentation?: string;
 
   // Retained for excluded SidePanel/Agents + SidePanel/Builder (pending migration)
@@ -616,6 +658,8 @@ export interface IThemeAppearance {
   /** A theme-sized control's inline padding and icon-to-label gap; they follow `spaceNormal` and
    *  `spaceCompact` when a theme names those and not these. */
   controlPaddingX: string;
+  /** The Button's default size inline padding. */
+  buttonPaddingX: string;
   controlGap: string;
   /** An icon beside a label or in a menu row (0.75 to 1.25rem), and the larger one a dialog's
    *  close button draws (1 to 2rem). */
@@ -677,12 +721,19 @@ export interface IThemeAppearance {
   textLg: string;
   textXl: string;
   text2xl: string;
+  /** Sizes between and below the scale (10, 11, 13 and 15px) that carry no line height of their own. */
+  text3xs: string;
+  text2xs: string;
+  text1xs: string;
+  text1sm: string;
+  text3xl: string;
   leadingXs: string;
   leadingSm: string;
   leadingBase: string;
   leadingLg: string;
   leadingXl: string;
   leading2xl: string;
+  leading3xl: string;
   /**
    * An OGDialog's edge stroke width (painted in `border-light`), inline padding and title to
    * description gap, and its title's size, leading, weight and family. The title follows `textLg`
@@ -699,6 +750,8 @@ export interface IThemeAppearance {
   scrimOpacity: string;
   alertScrimOpacity: string;
   modalScrimOpacity: string;
+  /** Opacity of the `.btn-neutral` border ink: a hairline tint by default, solid where a theme names its stroke. */
+  buttonNeutralBorderOpacity: string;
   elevationSurface: string;
   /** The lift a dragged badge takes while it is held. */
   elevationDrag: string;

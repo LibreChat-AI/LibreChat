@@ -34,6 +34,8 @@ jest.mock('~/cache', () => ({
 jest.mock('~/utils', () => ({
   isUserProvided: (val: string) => val === 'user_provided',
   checkUserKeyExpiry: jest.fn(),
+  resolveHeaders: ({ headers }: { headers?: Record<string, string> }) => ({ ...headers }),
+  applyAxiosProxyConfig: jest.fn(),
 }));
 
 const mockGetCustomEndpointConfig = jest.fn();
@@ -723,5 +725,128 @@ describe('initializeCustom – native Anthropic provider', () => {
     );
     expect(options.useLegacyContent).toBe(true);
     expect(options.provider).toBeUndefined();
+  });
+});
+
+describe('initializeCustom: stored reasoning effort', () => {
+  const OPENROUTER = 'https://openrouter.ai/api/v1';
+  const sol = 'openai/gpt-6.1-sol';
+  const catalog = {
+    data: [
+      { id: sol, reasoning: { supported_efforts: ['low', 'high'], mandatory: false } },
+      { id: 'google/gemini-3.5-flash', reasoning: { supported_efforts: ['max'] } },
+    ],
+  };
+  const makeDeps = (fetchPage: jest.Mock = jest.fn(async () => catalog)) => ({
+    deps: {
+      fetchPage,
+      cache: { get: jest.fn(async () => undefined), set: jest.fn(async () => true) },
+    },
+    fetchPage,
+  });
+  const run = async (
+    modelParameters: Record<string, unknown>,
+    options: {
+      deps?: ReturnType<typeof makeDeps>['deps'];
+      addParams?: Record<string, unknown>;
+    } = {},
+  ) => {
+    const params = createParams({ baseURL: OPENROUTER });
+    mockGetCustomEndpointConfig.mockReturnValue({
+      name: 'OpenRouter',
+      apiKey: 'sk-test-key',
+      baseURL: OPENROUTER,
+      models: {},
+      ...(options.addParams && { addParams: options.addParams }),
+    });
+    params.model_parameters = modelParameters;
+    params.reasoningCapabilityDeps = options.deps;
+    await initializeCustom(params);
+    return mockGetOpenAIConfig.mock.calls[0][1].modelOptions as Record<string, unknown>;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('drops a stored effort the selected model does not accept', async () => {
+    const { deps } = makeDeps();
+
+    const sent = await run({ model: sol, reasoning_effort: 'max' }, { deps });
+
+    expect(sent).not.toHaveProperty('reasoning_effort');
+    expect(sent.model).toBe(sol);
+  });
+
+  it('keeps a stored effort the selected model accepts', async () => {
+    const { deps } = makeDeps();
+
+    const sent = await run({ model: sol, reasoning_effort: 'low' }, { deps });
+
+    expect(sent.reasoning_effort).toBe('low');
+  });
+
+  it('does not check an endpoint that pins its model through addParams', async () => {
+    const { deps, fetchPage } = makeDeps();
+
+    const sent = await run(
+      { model: sol, reasoning_effort: 'max' },
+      { deps, addParams: { model: 'google/gemini-3.5-flash' } },
+    );
+
+    expect(sent.reasoning_effort).toBe('max');
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it('leaves the stored effort alone when addParams sets one', async () => {
+    const { deps, fetchPage } = makeDeps();
+
+    const sent = await run(
+      { model: sol, reasoning_effort: 'max' },
+      { deps, addParams: { reasoning_effort: 'low' } },
+    );
+
+    expect(sent.reasoning_effort).toBe('max');
+    expect(fetchPage).not.toHaveBeenCalled();
+  });
+
+  it('sends the stored effort as saved when no capability dependencies are supplied', async () => {
+    const sent = await run({ model: sol, reasoning_effort: 'max' });
+
+    expect(sent.reasoning_effort).toBe('max');
+  });
+
+  it('starts the catalog lookup while the model list is still being fetched', async () => {
+    const { fetchModels } = jest.requireMock('~/endpoints/models');
+    const events: string[] = [];
+    fetchModels.mockReset().mockImplementation(async () => {
+      events.push('models-start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      events.push('models-end');
+      return [];
+    });
+    const fetchPage = jest.fn(async () => {
+      events.push('catalog-start');
+      return catalog;
+    });
+    const { deps } = makeDeps(fetchPage);
+    const params = createParams({ baseURL: OPENROUTER });
+    params.endpoint = 'openrouter';
+    mockGetCustomEndpointConfig.mockReturnValue({
+      name: 'OpenRouter',
+      apiKey: 'sk-test-key',
+      baseURL: OPENROUTER,
+      models: { fetch: true },
+    });
+    params.model_parameters = { model: sol, reasoning_effort: 'max' };
+    params.reasoningCapabilityDeps = deps;
+
+    await initializeCustom(params);
+
+    expect(events.indexOf('catalog-start')).toBeGreaterThan(-1);
+    expect(events.indexOf('catalog-start')).toBeLessThan(events.indexOf('models-end'));
+    expect(mockGetOpenAIConfig.mock.calls[0][1].modelOptions).not.toHaveProperty(
+      'reasoning_effort',
+    );
   });
 });

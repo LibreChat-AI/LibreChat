@@ -62,6 +62,10 @@ import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { fileConfigSchema } from './file-config';
+import {
+  PULL_REQUEST_BATCH_VERSION,
+  PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS,
+} from './types/pullRequest';
 import { isActionTool } from './types/tools';
 import { apiBaseUrl } from './api-endpoints';
 import { FileSources } from './types/files';
@@ -1476,6 +1480,9 @@ export const DEFAULT_AVATAR_REFRESH_COVERAGE_LIMIT = 1000;
 export const DEFAULT_MAX_PROVIDER_ERROR_CHARS = 2000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS = 900_000;
 export const DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS = 300_000;
+/** Below the idle cutoff of common proxies (nginx 60 s, Cloudflare 100 s), so a
+ * stream that is silent while a tool runs is not closed underneath the client. */
+export const DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS = 25_000;
 export const DEFAULT_CACHE_CLEAR_TIMEOUT_MS = 1000;
 
 export const HOST_FILE_EDIT_HARD_MAX_COUNT = 100;
@@ -1543,6 +1550,17 @@ export const agentsEndpointSchema = baseEndpointSchema
         .min(0)
         .max(86_400_000)
         .default(DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS),
+      /** Interval between SSE comment frames on an otherwise silent chat stream, so
+       * proxies with an idle timeout keep it open; 0 disables the keepalive. */
+      streamKeepaliveIntervalMs: z
+        .number()
+        .int()
+        .min(0)
+        .max(3_600_000)
+        .refine((ms) => ms === 0 || ms >= 1_000, {
+          message: 'Use 0 to disable, or at least 1000 ms',
+        })
+        .default(DEFAULT_STREAM_KEEPALIVE_INTERVAL_MS),
       recursionLimit: z.number().optional(),
       disableBuilder: z.boolean().optional().default(false),
       /** Optional workspace guidance acquisition budget, separate from command execution. */
@@ -1855,17 +1873,25 @@ export const agentsEndpointSchema = baseEndpointSchema
         })
         .optional(),
       /** Header pull request chip: finds the pull request for the branch a conversation's code
-       *  workspace reports, using a server-held GitHub token. Off unless an administrator opts in. */
+       *  workspace reports, using a server-held GitHub token. On by default once a token is found
+       *  (`token`, else `GITHUB_PULL_REQUEST_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`) and a repository
+       *  scope is set; `enabled: false` turns it off. */
       pullRequests: z
         .object({
-          enabled: z.boolean().optional().default(false),
+          enabled: z.boolean().optional(),
           /** Environment variable reference holding a read-only GitHub token, e.g.
-           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. */
+           *  `${GITHUB_PULL_REQUEST_TOKEN}`. Never the token itself. Optional: without it the first
+           *  of `GITHUB_PULL_REQUEST_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` that is set is used. */
           token: pullRequestTokenReferenceSchema.optional(),
           /** Repositories the token may be used for, as `owner/name` or `owner/*`. A worker reports
            *  its own repository, so without this list a user could point the server's token at any
            *  repository it can read. */
           allowedRepositories: z.array(pullRequestRepositorySchema).max(256).optional(),
+          /** Look up every repository a worker reports, limited only by what the token can read.
+           *  Off by default: a worker names its own repository, so with this on any user can point
+           *  the server's token at any repository it can see. Use a read-only token scoped to the
+           *  repositories you are willing to show. */
+          allowAllRepositories: z.boolean().optional(),
           /** Seconds a looked-up pull request is reused before GitHub is asked again. */
           cacheTtlSeconds: z.number().int().min(5).max(3600).optional().default(30),
           /** Pull requests cached per credential before the oldest is evicted. Size it to the
@@ -1876,6 +1902,17 @@ export const agentsEndpointSchema = baseEndpointSchema
            *  Deployment-wide: when principals configure different values, the largest applies.
            *  Raise it when many tenants each configure their own token. */
           cacheMaxCredentials: z.number().int().min(1).max(10_000).optional().default(256),
+          /** Pull request lookups a single sidebar request runs at once. Each lookup is a few
+           *  GitHub requests, so this bounds how hard one request leans on the token. */
+          maxConcurrentLookups: z.number().int().min(1).max(16).optional().default(4),
+          /** Seconds one sidebar request may stay open in total, whatever its lookups are doing. */
+          batchTimeoutSeconds: z
+            .number()
+            .int()
+            .min(1)
+            .max(PULL_REQUEST_BATCH_TIMEOUT_MAX_SECONDS)
+            .optional()
+            .default(20),
           /** Longest one GitHub request may take. Raise it behind a slow proxy. */
           requestTimeoutSeconds: z.number().int().min(1).max(60).optional().default(10),
           /** Longest a whole lookup, every request together, may hold the header request. */
@@ -1885,24 +1922,11 @@ export const agentsEndpointSchema = baseEndpointSchema
           /** Pull requests listed per state when matching a branch's history to the commit a chat
            *  last ran at. Raise it for branch names that are reused many times. */
           maxCandidatePullRequests: z.number().int().min(1).max(100).optional().default(10),
+          /** Pages of those candidates read per state, so a branch name reused more often than one
+           *  page holds can still reach an older match. Each page is one request. */
+          maxCandidatePages: z.number().int().min(1).max(10).optional().default(1),
           /** Candidates compared with that commit before the search gives up. Each is one request. */
           maxHeadComparisons: z.number().int().min(0).max(20).optional().default(3),
-        })
-        .superRefine((value, ctx) => {
-          if (value.enabled && !value.token) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['token'],
-              message: 'A token reference is required when pull requests are enabled',
-            });
-          }
-          if (value.enabled && (value.allowedRepositories?.length ?? 0) === 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ['allowedRepositories'],
-              message: 'At least one allowed repository is required when pull requests are enabled',
-            });
-          }
         })
         .optional(),
       /** Conversational background-task delivery policy. Automatic completion wakeups are
@@ -2061,6 +2085,26 @@ export const endpointSchema = baseEndpointSchema.merge(
         /** Also reconstructs `reasoning_content` from persisted history across turns (implies `includeReasoningContent`). */
         includeReasoningHistory: z.boolean().optional(),
         paramDefinitions: z.array(paramDefinitionSchema).optional(),
+        /**
+         * Milliseconds to wait for each request when reading an OpenRouter endpoint's
+         * per-model reasoning efforts. Omission keeps 5000.
+         */
+        reasoningCatalogTimeoutMs: z.number().int().min(500).max(30000).optional(),
+        /**
+         * Most pages of an OpenRouter endpoint's model catalog to read before treating it as
+         * unavailable. Omission keeps 20.
+         */
+        reasoningCatalogMaxPages: z.number().int().min(1).max(200).optional(),
+        /**
+         * Milliseconds a failed or unreadable OpenRouter catalog is remembered before it is
+         * requested again; 0 retries on every request. Omission keeps 30000.
+         */
+        reasoningCatalogFailureTtlMs: z.number().int().min(0).max(600000).optional(),
+        /**
+         * Milliseconds a successfully read OpenRouter catalog is kept before it is read again.
+         * Omission keeps 3600000 (one hour).
+         */
+        reasoningCatalogTtlMs: z.number().int().min(60000).max(86400000).optional(),
       })
       .strict()
       .optional(),
@@ -2731,6 +2775,8 @@ export const interfaceSchema = z
     /** Tool keys (and `'mcp'` or an MCP server name) pinned to the prompt bar by default */
     defaultPinnedTools: z.array(z.string()).optional(),
     buildInfo: z.boolean().optional(),
+    /** Allows Lia, the welcome screen mascot. Users still opt in from Settings. */
+    mascot: z.boolean().optional(),
     remoteAgents: z
       .object({
         use: z.boolean().optional(),
@@ -2943,6 +2989,7 @@ export const interfaceSchema = z
     fileSearch: true,
     fileCitations: true,
     buildInfo: true,
+    mascot: true,
     remoteAgents: {
       use: false,
       create: false,
@@ -3135,6 +3182,14 @@ export type TStartupConfig = {
   langfuseFanoutEnabled?: boolean;
   langfuseConnectionAccess?: boolean;
   insightsEnabled?: boolean;
+  /** Whether pull requests are active (on unless turned off, with a token and a repository scope);
+   *  the header does not ask for a pull request without it. */
+  pullRequestsEnabled?: boolean;
+  /** Present with `pullRequestsEnabled` once this server has the batch route the sidebar uses. */
+  pullRequestsBatchVersion?: typeof PULL_REQUEST_BATCH_VERSION;
+  /** `endpoints.agents.pullRequests.maxConcurrentLookups`, so the single-route fallback of an
+   *  upgrade in progress keeps to the limit the operator configured. */
+  pullRequestsMaxConcurrentLookups?: number;
   /** Manual context compaction, gated by the same `summarization.enabled`
    *  switch that governs the automatic detour. */
   compactionEnabled?: boolean;
@@ -4586,6 +4641,10 @@ export enum CacheKeys {
    * Key for accessing the model token config cache.
    */
   TOKEN_CONFIG = 'TOKEN_CONFIG',
+  /**
+   * Key for the per-model reasoning effort cache of OpenRouter endpoints.
+   */
+  REASONING_CAPABILITIES = 'REASONING_CAPABILITIES',
   /**
    * Key for the app config namespace.
    */

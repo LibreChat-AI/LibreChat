@@ -79,6 +79,9 @@ function stripActorCheckpointFields(record: Record<string, unknown>): void {
 /** Written only by the lane methods, so no save, unset or import may reach them. */
 const LANE_PRIVATE_FIELDS = ['laneGit', 'laneGitSeq', 'codeAttachmentEpoch'] as const;
 
+/** The lane state a reader may see; the sequence number that fences writes stays private. */
+export type ConvoLaneGitView = Omit<NonNullable<IConversation['laneGit']>, 'seq'>;
+
 /** What a lane recorder needs to place and fence its writes, read once when its tool is created. */
 export type ConvoLaneContext = {
   subagentThread?: IConversation['subagentThread'] | null;
@@ -367,6 +370,10 @@ export interface ConversationMethods {
     user: string,
     conversationId: string,
   ): Promise<Omit<NonNullable<IConversation['laneGit']>, 'seq'> | null>;
+  getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>>;
   addConvoToolApprovalAllows(input: {
     user: string;
     conversationId: string;
@@ -378,7 +385,7 @@ export interface ConversationMethods {
     conversationId: string,
   ): Promise<Pick<
     IConversation,
-    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces'
+    'conversationId' | 'codeEnvironmentMode' | 'codeWorkspaces' | 'codeAttachmentEpoch'
   > | null>;
   replaceConvoCodeEnvironmentDecision(
     params: {
@@ -3078,22 +3085,59 @@ export function createConversationMethods(
     conversationId: string,
   ): Promise<ConvoLaneContext | null> {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    const stored = await Conversation.findOne(
-      { user, conversationId, ...activeExpirationFilter<IConversation>() },
-      'subagentThread +codeAttachmentEpoch',
-    ).lean<Pick<IConversation, 'subagentThread' | 'codeAttachmentEpoch'>>();
-    if (stored == null) return null;
-    const rootId = stored.subagentThread?.rootConversationId;
+    const now = new Date();
+    /**
+     * The thread and its visible root in one operation, so the epoch cannot move between two
+     * reads. The tenant plugin scopes only the base collection of an aggregate, never the joined
+     * one, so the join is narrowed here to the same owner, tenant and visibility as the base row:
+     * a root outside them reads as absent, exactly as it did when it was read on its own.
+     */
+    const [row] = await Conversation.aggregate<{
+      subagentThread?: IConversation['subagentThread'] | null;
+      codeAttachmentEpoch?: number;
+      _root?: Array<{ codeAttachmentEpoch?: number }>;
+    }>([
+      { $match: { user, conversationId, ...activeExpirationFilter<IConversation>() } },
+      {
+        $lookup: {
+          from: 'conversations',
+          localField: 'subagentThread.rootConversationId',
+          foreignField: 'conversationId',
+          as: '_root',
+        },
+      },
+      {
+        $project: {
+          subagentThread: 1,
+          codeAttachmentEpoch: 1,
+          _root: {
+            $filter: {
+              input: '$_root',
+              as: 'r',
+              cond: {
+                $and: [
+                  { $eq: ['$$r.user', user] },
+                  { $eq: [{ $ifNull: ['$$r.tenantId', null] }, { $ifNull: ['$tenantId', null] }] },
+                  {
+                    $or: [
+                      { $eq: [{ $ifNull: ['$$r.expiredAt', null] }, null] },
+                      { $gt: ['$$r.expiredAt', now] },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+      { $limit: 1 },
+    ]);
+    if (row == null) return null;
+    const rootId = row.subagentThread?.rootConversationId;
     /** A thread's report is written to its visible root, so it is fenced by the root's epoch. */
-    const fenced =
-      rootId && rootId !== conversationId
-        ? await Conversation.findOne(
-            { user, conversationId: rootId, ...activeExpirationFilter<IConversation>() },
-            '+codeAttachmentEpoch',
-          ).lean<Pick<IConversation, 'codeAttachmentEpoch'>>()
-        : stored;
+    const fenced = rootId && rootId !== conversationId ? row._root?.[0] : row;
     return {
-      subagentThread: stored.subagentThread ?? null,
+      subagentThread: row.subagentThread ?? null,
       codeAttachmentEpoch: fenced?.codeAttachmentEpoch ?? 0,
     };
   }
@@ -3214,17 +3258,51 @@ export function createConversationMethods(
     return { branch, head, ...(repo ? { repo } : {}) };
   }
 
+  /**
+   * The last reported lane state of each of the owner's conversations that has one, in one query.
+   * A conversation that is missing, expired, another owner's or has no lane is simply absent, so a
+   * caller cannot tell them apart.
+   */
+  async function getConvosLaneGit(
+    user: string,
+    conversationIds: string[],
+  ): Promise<Array<{ conversationId: string; laneGit: ConvoLaneGitView }>> {
+    if (conversationIds.length === 0) return [];
+    const Conversation = mongoose.models.Conversation as Model<IConversation>;
+    const stored = await Conversation.find({
+      user,
+      conversationId: { $in: conversationIds },
+      laneGit: { $exists: true, $ne: null },
+      ...activeExpirationFilter<IConversation>(),
+    })
+      .select('conversationId laneGit')
+      .lean<Array<Pick<IConversation, 'conversationId' | 'laneGit'>>>();
+    return stored.flatMap(({ conversationId, laneGit }) => {
+      if (laneGit == null || conversationId == null) return [];
+      const { branch, head, repo } = laneGit;
+      return [{ conversationId, laneGit: { branch, head, ...(repo ? { repo } : {}) } }];
+    });
+  }
+
+  /**
+   * The decision a run is admitted on, with the attachment epoch of that same document. The epoch
+   * is `0` for a conversation never moved, so a lane report can be fenced by exactly the snapshot
+   * the workspace came from instead of a second read that a move could slip between.
+   */
   async function readAdmittedConvoCodeEnvironmentDecision(user: string, conversationId: string) {
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
-    return withoutMeiliIndexing(
+    const admitted = await withoutMeiliIndexing(
       Conversation.findOneAndUpdate(
         { user, conversationId },
         { $inc: { codeEnvironmentRevision: 1 } },
         { new: true, timestamps: false },
       ),
     )
-      .select('conversationId codeEnvironmentMode codeWorkspaces')
+      .select('conversationId codeEnvironmentMode codeWorkspaces +codeAttachmentEpoch')
       .lean<IConversation>();
+    return admitted == null
+      ? admitted
+      : { ...admitted, codeAttachmentEpoch: admitted.codeAttachmentEpoch ?? 0 };
   }
 
   /**
@@ -3784,7 +3862,7 @@ export function createConversationMethods(
            the sidebar lists archived and unarchived chats in the same session, and the
            active list also carries the unarchived pins beside them. */
         .select(
-          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt',
+          'conversationId endpoint title titleSetByUser titleRevision createdAt updatedAt archivedAt isArchived user model agent_id assistant_id spec iconURL chatProjectId pinned lastResponseAt lastResponseMessageId lastResponseIsManual isMarkedUnread lastSeenAt codeEnvironmentMode codeWorkspaces',
         )
         .sort(sortObj)
         .limit(pageSize + 1)
@@ -3820,6 +3898,12 @@ export function createConversationMethods(
           id: String(lastReturned._id),
         };
         nextCursor = Buffer.from(JSON.stringify(composite)).toString('base64');
+      }
+
+      /* Stamped by the replica that selected the decision, so a row from one that predates it
+         is told apart from an ordinary chat, which carries no decision either. */
+      for (const convo of convos) {
+        convo.codeDecisionListed = true;
       }
 
       if (sharedIds != null) {
@@ -4452,6 +4536,7 @@ export function createConversationMethods(
     reserveConvoLaneGitSeq,
     setConvoLaneGit,
     getConvoLaneGit,
+    getConvosLaneGit,
     getConvoLaneContext,
     readAdmittedConvoCodeEnvironmentDecision,
     replaceConvoCodeEnvironmentDecision,

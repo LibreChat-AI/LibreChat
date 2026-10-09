@@ -54,7 +54,7 @@ describe('SplitText', () => {
       for (const [index, box] of Array.from(wordBoxes).entries()) {
         expect(box).toHaveAttribute('aria-hidden', 'true');
         expect(
-          Array.from(box.querySelectorAll('span.inline-block'))
+          Array.from(box.querySelectorAll('span.inline-block.will-change-transform'))
             .map((span) => span.textContent)
             .join(''),
         ).toBe(expectedWords[index]);

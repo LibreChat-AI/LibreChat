@@ -166,7 +166,7 @@ const SearchBar = forwardRef((props: SearchBarProps, ref: React.Ref<HTMLDivEleme
        *
        *  No edge on focus, by request. What marks the focused field is its caret and
        *  the chord appearing in the trailing slot. */
-      className="group bg-surface-search text-text-primary flex h-9 min-w-0 flex-1 cursor-text items-center gap-2 rounded-lg pr-1 pl-2.5"
+      className="group bg-surface-search text-text-primary theme-field-fill:border theme-field-fill:border-border-control flex h-9 min-w-0 flex-1 cursor-text items-center gap-2 rounded-lg pr-1 pl-2.5"
     >
       <Search aria-hidden="true" className="text-text-secondary size-4 shrink-0" />
       <input

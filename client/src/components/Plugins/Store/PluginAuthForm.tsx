@@ -156,7 +156,7 @@ function PluginAuthForm({
           };
           return (
             <div key={`${authField}-${i}`} className="flex w-full flex-col gap-1.5">
-              <Label htmlFor={authField} className="text-sm font-medium text-text-secondary">
+              <Label htmlFor={authField} variant="secondary" className="text-sm font-medium">
                 {config.label}
               </Label>
               <HoverCard openDelay={300}>

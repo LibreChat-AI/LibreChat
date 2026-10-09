@@ -311,6 +311,7 @@ function MyComponent() {
 - `fill-illustration-subtle`, `fill-illustration`, `fill-illustration-strong` - The three tones of in-app artwork, such as the file drop zone's illustration
 - `fill-file-document`, `fill-file-sheet`, `fill-file-code`, `fill-file-artifact`, `fill-file-audio`, `fill-file-video`, `fill-file-generic` - File-type tile fills; `stroke-file-ink` and `fill-file-ink` draw the glyph on them
 - `bg-surface-qr` - Backdrop behind a QR code, kept light in every mode so it scans
+- `scrollbar-thumb`, `page-canvas`, `select-fill`, `select-edge`, `button-neutral-border`, `button-neutral-text`, `button-neutral-hover`, `link-inline`, `toast-edge`, `stroke-ink` - The stylesheet-level colour roles, read by the stylesheet as `rgb(var(--name))`: the scrollbar thumb, the dark page behind the app, a native `select`, the legacy `.btn-neutral`, inline links on mobile, the toast's shadow tint and the avatar's translucent ring. Their opacities stay in CSS, except the neutral border's, which is the `buttonNeutralBorderOpacity` appearance role (10% in light, solid in dark)
 
 ### Border Colors
 
@@ -342,6 +343,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `bg-avatar-fill` / `text-avatar-text` - The default user avatar drawn when a
   user has no image, and its glyph. A theme that sets `rgb-text-primary` but not
   `rgb-avatar-text` inks the glyph in its primary text, as it did before the role.
+  The bundled dark theme inks it white, which clears the 3:1 WCAG 1.4.11 sets for
+  the glyph on the fill where its #ececec primary text does not.
 - `bg-avatar-placeholder` - Behind an agent or assistant avatar while its image
   loads or where it is transparent. A theme that sets only its surfaces keeps it
   on `surface-secondary` in light and `surface-tertiary` in dark, where it sat
@@ -395,14 +398,17 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   (0.5rem, 0.25rem and 1rem by default).
 - `bg-alert-error-fill` / `border-alert-error-border` - The error `Alert`'s fill and edge. They
   follow `status-error-subtle` and `status-error-border`, which the badges, tags and diffs keep.
+- `text-category-icon` - The prompt category icons that were drawn in `series-4` (idea, travel
+  and aftersales). It follows `series-4`, so a theme can quiet those icons without moving the
+  chart slot; ClickHouse draws them in its muted text, as Click UI draws its icons.
 - Layering roles - `bg-surface-canvas` (the chat canvas and its header fade),
   `bg-surface-user-message` (the user turn's bubble), `bg-surface-card` and
   `bg-surface-card-hover` (marketplace cards), `bg-surface-nav-hover` and
   `bg-surface-nav-selected` (sidebar, rail and drawer rows), `bg-surface-tab-selected`
   (the settings tab rail), `bg-surface-menu` and `bg-surface-popover` with `border-border-menu` (menu and popover
   panels), `bg-surface-composer` (the composer box) and `bg-surface-search` (the sidebar
-  search pill). Each follows the surface it painted before it had a name
-  (`surface-primary-alt`, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
+  search pill) and `bg-surface-sidebar` (the sidebar panel). Each follows the surface it painted before it had a name
+  (`surface-primary-alt` for the canvas and the sidebar, `surface-tertiary`, `surface-secondary`, `surface-active-alt`,
   `presentation` for menus, `surface-primary` or `surface-secondary` for popovers, `border-light`, `surface-chat`),
   so a theme that repaints that surface keeps the layer on it, and a theme steps the layers
   apart by naming them.
@@ -426,7 +432,8 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-dialog-title` - An OGDialog title's ink. Follows `text-primary` when a
   theme names only that.
 - OGDialog chrome - `border-(length:--theme-dialog-stroke)` (`dialogStroke`, painted in
-  `border-light`, none by default), `px-theme-dialog-x` (`dialogPaddingX`),
+  `border-light`, none by default), `px-theme-button-x` (`buttonPaddingX`, the Button's default
+  size), `px-theme-dialog-x` (`dialogPaddingX`),
   `space-y-theme-dialog-header` (`dialogHeaderGap`), and for the title
   `text-(length:--theme-dialog-title-size)` and
   `leading-(--theme-dialog-title-leading)` (`dialogTitleSize`, `dialogTitleLeading`),
@@ -434,17 +441,21 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   `font-theme-dialog-title` (`dialogTitleFontFamily`). The title size and family
   follow `textLg` and `displayFontFamily` when a theme omits them, and a caller's
   own padding, size or weight class replaces the role.
-- `text-xs` to `text-2xl` - Sizes and line heights read `textXs`..`text2xl` and
-  `leadingXs`..`leading2xl`, in the app and in a consumer alike; the defaults are
+- `text-3xs`, `text-2xs`, `text-1xs`, `text-1sm` - The 10, 11, 13 and 15px steps (`text3xs`, `text2xs`, `text1xs`, `text1sm`); they set a size only, never a line height.
+- `text-xs` to `text-3xl` - Sizes and line heights read `textXs`..`text3xl` and
+  `leadingXs`..`leading3xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
 - `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
   and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
   `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
   65% by default). A bundled scrim dims the page and never lifts it.
-- `theme-destructive-soft:` - A variant for a `destructive` Button's tint: the
+- `theme-destructive-soft:` - A variant for a `destructive-soft` Button's tint (the inline delete or revoke; a dialog's confirming `destructive` button stays solid): the
   button paints a 10% tint of the destructive surface under the destructive ink
   when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
   solid destructive surface.
+- `theme-chrome-quiet:` - A variant for a surface that stands in for a chrome
+  outline: it applies when the theme's `chromeBorderAlpha` is `0`, so a floating
+  control or a bar over a scrolling thread stays separable once its edge is gone.
 - `border-border-inset-medium` - `border-medium` at the `insetBorderAlpha`
   appearance role, for the box edges of a form that sits on a stroked page.
 - `ring-focus-subtle` / `outline-focus-subtle` - The keyboard ring of a row or

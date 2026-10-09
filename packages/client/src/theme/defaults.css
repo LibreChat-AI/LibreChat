@@ -104,6 +104,18 @@ html {
   --text-destructive: var(--red-600);
   --link: var(--blue-600);
   --link-hover: var(--blue-700);
+  --scrollbar-thumb: var(--black);
+  --scrollbar-thumb-alpha: 0.1;
+  --page-canvas: var(--surface-primary-alt);
+  --select-fill: var(--white);
+  --select-edge: 142 142 160;
+  --button-neutral-border: var(--black);
+  --button-neutral-text: 64 65 79;
+  --button-neutral-hover: var(--gray-20);
+  --link-inline: 0 102 204;
+  --toast-edge: 67 90 111;
+  --stroke-ink: var(--black);
+  --stroke-ink-alpha: 0.1;
   --link-visited: 147 51 234;
   --link-prose: var(--link);
   --accent-primary: 18 110 107;
@@ -155,7 +167,7 @@ html {
   --border-xheavy: var(--gray-500);
   --border-xheavy-alpha: 1;
   /* The drawer's own fill: the scrim separates it in light. */
-  --drawer-edge: var(--surface-primary-alt);
+  --drawer-edge: var(--surface-sidebar);
   --border-destructive: var(--red-600);
   --border-control: var(--gray-200);
   --border-field-focus: var(--focus-control);
@@ -178,6 +190,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --focus-control: var(--gray-800);
   --border-disabled: var(--gray-200);
   --status-success: var(--green-700);
@@ -212,6 +225,7 @@ html {
   --series-6: 126 35 205;
   --series-7: 1 131 1;
   --series-8: 63 81 181;
+  --category-icon: var(--series-4);
 
   /* Code syntax highlighting */
   --syntax-text: var(--gray-800);
@@ -263,6 +277,7 @@ html {
   --theme-icon-size-md: 1.25rem;
   --theme-icon-size-lg: 1.5rem;
   --theme-control-font-weight: 500;
+  --theme-button-padding-x: 1rem;
   --theme-button-height: 2.5rem;
   --theme-button-height-sm: 2.25rem;
   --theme-button-height-xs: 1.75rem;
@@ -297,6 +312,7 @@ html {
   --theme-scrim-opacity: 0.8;
   --theme-alert-scrim-opacity: 0.9;
   --theme-modal-scrim-opacity: 0.65;
+  --theme-button-neutral-border-opacity: 0.1;
   --theme-font-family: Inter, sans-serif;
   --theme-display-font-family: Inter, sans-serif;
   --theme-text-xs: 0.75rem;
@@ -310,7 +326,13 @@ html {
   --theme-text-xl: 1.25rem;
   --theme-text-xl-leading: calc(1.75 / 1.25);
   --theme-text-2xl: 1.5rem;
+  --theme-text-3xs: 0.625rem;
+  --theme-text-2xs: 0.6875rem;
+  --theme-text-1xs: 0.8125rem;
+  --theme-text-1sm: 0.9375rem;
   --theme-text-2xl-leading: calc(2 / 1.5);
+  --theme-text-3xl: 1.875rem;
+  --theme-text-3xl-leading: calc(2.25 / 1.875);
   /* Roboto Mono is self-hosted (the `@font-face` block below), so code renders the same on every
    * platform with real bold and italic faces. The tail is reached while the font loads, if it
    * fails, and per glyph for what the bundled latin subset omits (box drawing in terminal output
@@ -356,7 +378,7 @@ html {
 .dark {
   --brand-purple: 171 104 255;
   --avatar-fill: 121 137 255;
-  --avatar-text: var(--text-primary);
+  --avatar-text: 255 255 255;
   --avatar-placeholder: var(--surface-tertiary);
   --avatar-edge: 240 246 252;
   --illustration-subtle: 175 193 255;
@@ -385,6 +407,14 @@ html {
   --text-warning: var(--amber-500);
   --text-destructive: var(--red-400);
   --link: var(--blue-400);
+  --scrollbar-thumb: var(--white);
+  --page-canvas: var(--gray-850);
+  --button-neutral-border: var(--gray-600);
+  --button-neutral-text: 255 255 240;
+  --button-neutral-hover: var(--gray-600);
+  --link-inline: 82 160 255;
+  --stroke-ink: var(--white);
+  --stroke-ink-alpha: 0.3;
   --link-hover: var(--blue-300);
   --link-visited: 192 132 252;
   --link-prose: var(--text-primary);
@@ -454,6 +484,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --focus-control: var(--gray-100);
   --border-disabled: var(--gray-650);
   --status-success: var(--green-300);
@@ -487,6 +518,7 @@ html {
   --series-6: 171 104 254;
   --series-7: 80 167 49;
   --series-8: 120 130 190;
+  --category-icon: var(--series-4);
 
   /* Code syntax highlighting. Comment and meta are the flattened equivalents of
      the 50% and 60% alpha whites this palette used before it was tokenized. */
@@ -521,6 +553,7 @@ html {
   /* The appearance defaults that differ in dark mode (`darkAppearanceDefaults`). */
   --theme-menu-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.25), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   --theme-tooltip-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.35);
+  --theme-button-neutral-border-opacity: 1;
 }
 
 /* A root other than the document one that a legacy palette themes (`THEME_SCOPE_ATTRIBUTE` in
@@ -544,6 +577,7 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
 }
 .dark [data-theme-scope],
 [data-theme-scope].dark {
@@ -560,5 +594,6 @@ html {
   --border-menu: var(--border-light);
   --surface-composer: var(--surface-chat);
   --surface-search: var(--surface-secondary);
+  --surface-sidebar: var(--surface-primary-alt);
   --surface-code-inline: var(--surface-hover-alt);
 }

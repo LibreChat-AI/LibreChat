@@ -127,6 +127,8 @@ test.describe('primitive size roles', () => {
         'min-w-theme-tab': '0px',
         'min-w-theme-list': '0px',
         'h-theme-field': '32px',
+        /** 3.6876rem: the 3rem title line, field.space.y twice and a 1px stroke each side (Click UI field metrics). */
+        'h-theme-field-lg': '59px',
       });
     }
   });

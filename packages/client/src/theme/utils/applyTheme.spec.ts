@@ -148,9 +148,38 @@ describe('applyTheme', () => {
     expect(root.style.getPropertyValue('--theme-motion-fast')).toBe('80ms');
   });
 
-  /** The plain `rounded-*`, `font-sans` and `font-mono` utilities read these properties, so a
-   *  theme reaches every call site only if the adapter writes them and a reset removes them. */
-  it('applies and clears the radius and shadow scales and the mono family', () => {
+  it.each(['0', '.0', '0.0', '0.00'])('writes a chrome border alpha of %s as 0', (alpha) => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'quiet-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: alpha } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0',
+    );
+  });
+
+  it('leaves a non-zero chrome border alpha as written', () => {
+    const theme: ThemeDefinition = {
+      version: 1,
+      name: 'faint-reference',
+      modes: { light: { appearance: { chromeBorderAlpha: '0.5' } } },
+    };
+
+    applyResolvedTheme(resolveTheme(theme, 'light'));
+
+    expect(document.documentElement.style.getPropertyValue('--theme-border-chrome-alpha')).toBe(
+      '0.5',
+    );
+  });
+
+  /** The plain `rounded-*`, `shadow-*`, `font-sans`, `font-mono` and control spacing utilities
+   *  read these properties, so one theme reaches every call site only if the adapter writes all
+   *  four families together and a reset removes them. */
+  it('applies and clears one reference theme across radius, font, shadow and spacing', () => {
     const root = document.documentElement;
     const scale = {
       radiusSm: ['--theme-radius-sm', '0px'],
@@ -159,7 +188,14 @@ describe('applyTheme', () => {
       radiusXl: ['--theme-radius-xl', '0.5rem'],
       radius2xl: ['--theme-radius-2xl', '0.75rem'],
       radius3xl: ['--theme-radius-3xl', '1rem'],
+      controlRadius: ['--theme-control-radius', '0.25rem'],
+      fontFamily: ['--theme-font-family', 'Inter, Arial, sans-serif'],
       monoFontFamily: ['--theme-mono-font-family', 'Inconsolata, monospace'],
+      spaceCompact: ['--theme-space-compact', '0.25rem'],
+      spaceNormal: ['--theme-space-normal', '0.5rem'],
+      controlPaddingX: ['--theme-control-padding-x', '0.625rem'],
+      buttonPaddingX: ['--theme-button-padding-x', '0.875rem'],
+      controlGap: ['--theme-control-gap', '0.25rem'],
       shadow2xs: ['--theme-shadow-2xs', '0 1px rgb(0 0 0 / 0.1)'],
       shadowXs: ['--theme-shadow-xs', '0 1px 2px rgb(0 0 0 / 0.15)'],
       shadowSm: ['--theme-shadow-sm', '0 2px 4px rgb(0 0 0 / 0.15)'],
@@ -191,6 +227,11 @@ describe('applyTheme', () => {
       defaultAppearance.monoFontFamily,
     );
     expect(root.style.getPropertyValue('--theme-shadow-lg')).toBe(defaultAppearance.shadowLg);
+    expect(root.style.getPropertyValue('--theme-font-family')).toBe(defaultAppearance.fontFamily);
+    expect(root.style.getPropertyValue('--theme-space-normal')).toBe(defaultAppearance.spaceNormal);
+    expect(root.style.getPropertyValue('--theme-control-padding-x')).toBe(
+      defaultAppearance.controlPaddingX,
+    );
 
     clearAppliedTheme(root);
     Object.values(scale).forEach(([property]) => {
@@ -298,6 +339,16 @@ describe('applyTheme', () => {
     applyTheme({ 'rgb-text-primary': '10 20 30', 'rgb-shimmer-base': '90 80 70' }, root);
 
     expect(root.style.getPropertyValue('--shimmer-base')).toBe('90 80 70');
+  });
+
+  it('carries a legacy theme without a page canvas onto its alternate surface', () => {
+    const root = document.documentElement;
+
+    applyTheme({ 'rgb-surface-primary-alt': '12 13 14' }, root);
+    expect(root.style.getPropertyValue('--page-canvas')).toBe('12 13 14');
+
+    applyTheme({ 'rgb-surface-primary-alt': '12 13 14', 'rgb-page-canvas': '1 2 3' }, root);
+    expect(root.style.getPropertyValue('--page-canvas')).toBe('1 2 3');
   });
 
   it('carries a legacy theme without muted text onto its tertiary text color', () => {

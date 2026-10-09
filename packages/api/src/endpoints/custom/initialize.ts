@@ -18,6 +18,7 @@ import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm
 import { resolveModelTransportTimeouts } from '~/agents/config';
 import { extractDefaultParams } from '~/endpoints/openai/llm';
 import { isUserProvided, checkUserKeyExpiry, resolveAddParams } from '~/utils';
+import { withSupportedEffort } from '~/endpoints/reasoning';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getScopedTokenConfigKey } from '~/endpoints/keys';
 import { getCustomEndpointConfig } from '~/app/config';
@@ -263,6 +264,20 @@ export async function initializeCustom(
   const userId = user?.id ?? '';
   const tenantId = user?.tenantId;
 
+  /** The stored effort is checked against the provider's catalog, an independent read: it starts
+   *  here and is awaited where the model options are built, so it overlaps token discovery below
+   *  instead of following it. The no-op catch keeps an early failure from going unhandled. */
+  const requestedOptions = { ...(model_parameters ?? {}), user: userId };
+  const effortCheck =
+    params.reasoningCapabilityDeps == null
+      ? undefined
+      : withSupportedEffort(
+          requestedOptions,
+          endpointConfig as TEndpoint,
+          params.reasoningCapabilityDeps,
+        );
+  effortCheck?.catch(() => undefined);
+
   const cache = tokenConfigCache();
   const hasTokenConfig = endpointConfig.tokenConfig != null;
   const tokenKey = getTokenConfigKey(endpointConfig, endpoint, userId, tenantId);
@@ -329,7 +344,7 @@ export async function initializeCustom(
     ...customOptions,
   };
 
-  const modelOptions = { ...(model_parameters ?? {}), user: userId };
+  const modelOptions = effortCheck == null ? requestedOptions : await effortCheck;
 
   let options: InitializeResultBase;
   if (endpointConfig.provider === EModelEndpoint.anthropic) {

@@ -84,7 +84,7 @@ const BookmarkForm = ({
       <div className="space-y-4">
         {/* Tag name input */}
         <div className="space-y-2">
-          <Label htmlFor="bookmark-tag" className="text-text-primary text-sm font-medium">
+          <Label htmlFor="bookmark-tag" className="text-sm font-medium">
             {localize('com_ui_bookmarks_title')}
           </Label>
           <Input
@@ -120,7 +120,7 @@ const BookmarkForm = ({
           <Label
             id="bookmark-description-label"
             htmlFor="bookmark-description"
-            className="text-text-primary text-sm font-medium"
+            className="text-sm font-medium"
           >
             {localize('com_ui_bookmarks_description')}
           </Label>

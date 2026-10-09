@@ -37,19 +37,13 @@ export default function SkillFilePreview({ skillId, nodeId, fileName }: SkillFil
           )}
           <span className="text-text-primary truncate text-sm font-medium">{fileName}</span>
           {ext && (
-            <span className="bg-surface-tertiary text-text-tertiary rounded px-1.5 py-0.5 text-[11px] font-medium tracking-wide uppercase">
+            <span className="bg-surface-tertiary text-text-tertiary text-2xs rounded px-1.5 py-0.5 font-medium tracking-wide uppercase">
               {ext}
             </span>
           )}
         </div>
         {downloadUrl && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 px-2.5 text-xs"
-            asChild
-          >
+          <Button type="button" variant="outline" size="compact" className="h-7" asChild>
             <a
               href={downloadUrl}
               download={fileName}

@@ -5,6 +5,7 @@ import * as Select from '@ariakit/react/select';
 import * as Combobox from '@ariakit/react/combobox';
 import type { Option } from '~/common';
 import { cn, disabledFillClasses } from '~/utils';
+import { focusOutlineRole } from './Focus';
 import { fieldControl } from './Field';
 import './Dropdown.css';
 
@@ -171,6 +172,7 @@ const Dropdown: React.FC<DropdownProps> = ({
           variant !== 'field' && [
             shapeClasses[shape],
             'hover:text-text-primary disabled:hover:text-text-primary',
+            focusOutlineRole,
           ],
           'disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent',
           disabledFillClasses,

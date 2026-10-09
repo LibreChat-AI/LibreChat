@@ -19,7 +19,7 @@ export default function ActionCallback({ action_id }: { action_id?: string }) {
 
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor="oauth-callback-url" className="text-sm font-medium text-text-primary">
+      <Label htmlFor="oauth-callback-url" className="text-sm font-medium">
         {localize('com_ui_callback_url')}
       </Label>
       <div className="relative">
@@ -31,14 +31,14 @@ export default function ActionCallback({ action_id }: { action_id?: string }) {
           value={callbackURL}
           aria-label={localize('com_ui_callback_url')}
           onFocus={(event) => event.currentTarget.select()}
-          className="pr-10 text-text-secondary"
+          className="text-text-secondary pr-10"
         />
         <CopyButton
           iconOnly
           isCopied={isCopied}
           onClick={() => copyCallbackURL(setIsCopied)}
           label={localize('com_ui_copy_link')}
-          className="absolute right-1 top-1/2 -translate-y-1/2"
+          className="absolute top-1/2 right-1 -translate-y-1/2"
         />
       </div>
     </div>

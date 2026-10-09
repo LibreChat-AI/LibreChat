@@ -484,7 +484,7 @@ export default function ToolCall({
         <div className="flex w-full flex-col gap-2.5">
           <div className="mt-2 mb-1">
             <Button
-              className="inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-medium"
+              className="inline-flex items-center justify-center rounded-xl font-medium"
               variant="default"
               rel="noopener noreferrer"
               disabled={oauthBinding === 'pending'}

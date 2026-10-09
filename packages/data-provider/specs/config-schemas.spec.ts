@@ -383,6 +383,84 @@ describe('endpointSchema addParams validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts a reasoning catalog timeout within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: 8000 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogTimeoutMs).toBe(8000);
+    }
+  });
+
+  it.each([0, 100, 60000, 1.5])('rejects reasoning catalog timeout %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a reasoning catalog page limit within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: 50 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogMaxPages).toBe(50);
+    }
+  });
+
+  it.each([0, 201, 1.5])('rejects reasoning catalog page limit %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([0, 30000, 600000])('accepts a reasoning catalog failure window of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([-1, 600001, 1.5])('rejects reasoning catalog failure window %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([60000, 3600000, 86400000])('accepts a reasoning catalog lifetime of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([0, 59999, 86400001, 1.5])('rejects reasoning catalog lifetime %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts custom reasoning response key config', () => {
     const result = endpointSchema.safeParse({
       ...validEndpoint,

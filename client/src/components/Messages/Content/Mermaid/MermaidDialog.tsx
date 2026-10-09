@@ -84,7 +84,7 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
       <OGDialog open={open} onOpenChange={onOpenChange} triggerRef={triggerRef}>
         <OGDialogContent
           showCloseButton={false}
-          className="border-border-light bg-surface-dialog flex h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
+          className="flex h-[85vh] max-h-[85vh] w-[90vw] max-w-[90vw] flex-col gap-0 overflow-hidden p-0"
         >
           <OGDialogTitle className="border-border-light bg-surface-secondary text-text-secondary flex h-10 shrink-0 items-center justify-between border-b px-4 font-sans text-xs">
             <span>{localize('com_ui_mermaid')}</span>
@@ -97,10 +97,10 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               />
               <Button
                 ref={showCodeButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={showCode ? localize('com_ui_hide_code') : localize('com_ui_show_code')}
-                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
+                className="focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:min-w-[6rem] sm:px-1 sm:py-0"
                 onClick={handleToggleCode}
               >
                 <MorphIcon icon={showCode ? ChevronUp : ChevronDown} className="h-4 w-4" />
@@ -110,10 +110,10 @@ const MermaidDialog: React.FC<MermaidDialogProps> = memo(
               </Button>
               <Button
                 ref={copyButtonRef}
-                variant="ghost"
+                variant="quiet"
                 size="sm"
                 aria-label={localize('com_ui_copy_code')}
-                className="text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
+                className="focus-visible:ring-border-heavy size-8 min-w-0 gap-1 rounded-sm p-0 text-xs focus-visible:ring-offset-0 sm:h-auto sm:w-auto sm:px-1 sm:py-0"
                 onClick={handleCopy}
               >
                 <MorphIcon icon={isCopied ? Check : Copy} size="1.125rem" />

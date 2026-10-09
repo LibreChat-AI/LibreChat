@@ -178,7 +178,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const part = screen.getByTestId('steer-part');
     expect(part).toHaveAttribute('id', 'steer-s1');
-    expect(part).toHaveClass('steer-render');
+    expect(part).toHaveAttribute('data-steer-render');
   });
 
   it('stays on the message content edge instead of outdenting', () => {

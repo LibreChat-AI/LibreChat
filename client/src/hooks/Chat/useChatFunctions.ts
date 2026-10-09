@@ -9,8 +9,10 @@ import {
   Constants,
   QueryKeys,
   ContentTypes,
+  ReasoningEffort,
   EModelEndpoint,
   getEndpointField,
+  resolveModelReasoning,
   isAgentsEndpoint,
   parseCompactConvo,
   replaceSpecialVars,
@@ -28,6 +30,7 @@ import type {
   TEndpointOption,
   TEndpointsConfig,
   EndpointSchemaKey,
+  TReasoningCapabilitiesResponse,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { TAskFunction, ExtendedFile } from '~/common';
@@ -51,6 +54,7 @@ import {
   resolveSubmittedCodeApprovalMode,
 } from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import { usesReasoningCapabilities } from '~/hooks/Endpoint/useModelReasoning';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
@@ -516,9 +520,13 @@ export default function useChatFunctions({
       }
     }
     let reasoningOverride = overrideReasoning ?? undefined;
-    if (overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited) {
-      reasoningOverride = drainPendingReasoning(getReasoningStateKey(conversationId, index));
+    const reasoningStateKey = getReasoningStateKey(conversationId, index);
+    const drainedReasoning =
+      overrideReasoning === undefined && !regenerateShaped && !isContinued && !isEdited;
+    if (drainedReasoning) {
+      reasoningOverride = drainPendingReasoning(reasoningStateKey);
     }
+    const stagedReasoning = reasoningOverride;
     if (reasoningOverride != null) {
       const isAgent = isAgentsEndpoint(endpoint);
       const agentId = isAgent ? conversation?.agent_id : undefined;
@@ -532,6 +540,30 @@ export default function useChatFunctions({
       const effectiveEndpointType = getEndpointField(endpointsConfig, effectiveEndpoint, 'type');
       const customParams =
         effectiveEndpoint == null ? undefined : endpointsConfig?.[effectiveEndpoint]?.customParams;
+      const capabilitiesKey = [QueryKeys.reasoningCapabilities, effectiveEndpoint];
+      /* A failed or running refresh leaves the previous data cached, and so does an entry that is
+         past its lifetime while its refetch has not started (a throttled background tab): the
+         efforts are unknown in all three, as they are in the editors. */
+      const capabilitiesState = queryClient.getQueryState(capabilitiesKey);
+      const cachedCapabilities =
+        queryClient.getQueryData<TReasoningCapabilitiesResponse>(capabilitiesKey);
+      const capabilitiesExpired =
+        cachedCapabilities != null &&
+        Date.now() - (capabilitiesState?.dataUpdatedAt ?? 0) >= cachedCapabilities.expiresInMs;
+      const capabilitiesData =
+        capabilitiesState?.status === 'error' ||
+        capabilitiesState?.fetchStatus === 'fetching' ||
+        capabilitiesExpired
+          ? undefined
+          : cachedCapabilities?.capabilities;
+      /* Auto sends no effort, so no catalog can refuse it and a restored one is always kept. */
+      const clearsEffort =
+        reasoningOverride.key === 'reasoning_effort' &&
+        reasoningOverride.value === ReasoningEffort.unset &&
+        usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '');
+      /* A replayed override is checked against the loaded per-model efforts. While they are
+         unknown (never requested, running or failed) `resolveModelReasoning` offers nothing, so
+         the override is omitted rather than sent and refused by the server. */
       const supportedSetting =
         effectiveEndpoint == null
           ? undefined
@@ -542,9 +574,28 @@ export default function useChatFunctions({
               defaultParamsEndpoint: customParams?.defaultParamsEndpoint,
               reasoningFormat: customParams?.reasoningFormat,
               paramDefinitions: customParams?.paramDefinitions,
+              modelReasoning:
+                effectiveModel == null || clearsEffort
+                  ? undefined
+                  : resolveModelReasoning({
+                      capabilities: capabilitiesData,
+                      endpoint: effectiveEndpoint,
+                      model: effectiveModel,
+                      paramDefinitions: customParams?.paramDefinitions,
+                    }),
             });
       if (!isReasoningOverrideSupported(reasoningOverride, supportedSetting)) {
         reasoningOverride = undefined;
+        /* Refused only because the catalog is not known yet, not because it said no: the user's
+           one-shot choice is put back instead of being lost, and applies once it can be checked. */
+        if (
+          drainedReasoning &&
+          stagedReasoning != null &&
+          capabilitiesData == null &&
+          usesReasoningCapabilities(endpointsConfig, effectiveEndpoint ?? '')
+        ) {
+          reasoningStore.set(pendingReasoningOverrideFamily(reasoningStateKey), stagedReasoning);
+        }
       }
     }
     const isEditOrContinue = isEdited || isContinued;

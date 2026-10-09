@@ -171,6 +171,8 @@ export const backgroundTasksCancel = (conversationId: string) =>
 export const conversationPullRequest = (conversationId: string) =>
   `${conversationsRoot}/${encodeURIComponent(conversationId)}/pull-request`;
 
+export const conversationPullRequests = () => `${conversationsRoot}/pull-requests`;
+
 export const genTitle = (conversationId: string) =>
   `${conversationsRoot}/gen_title/${encodeURIComponent(conversationId)}`;
 
@@ -224,6 +226,9 @@ export const deletePreset = () => `${BASE_URL}/api/presets/delete`;
 export const aiEndpoints = () => `${BASE_URL}/api/endpoints`;
 
 export const tokenConfig = () => `${BASE_URL}/api/endpoints/token-config`;
+
+export const reasoningCapabilities = (endpoint: string) =>
+  `${BASE_URL}/api/endpoints/reasoning-capabilities?endpoint=${encodeURIComponent(endpoint)}`;
 
 export const models = () => `${BASE_URL}/api/models`;
 

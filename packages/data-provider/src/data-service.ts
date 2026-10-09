@@ -418,6 +418,12 @@ export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
   return request.get(endpoints.tokenConfig());
 };
 
+export const getReasoningCapabilities = (
+  endpoint: string,
+): Promise<t.TReasoningCapabilitiesResponse> => {
+  return request.get(endpoints.reasoningCapabilities(endpoint));
+};
+
 export const getModels = async (): Promise<t.TModelsConfig> => {
   return request.get(endpoints.models());
 };
@@ -1229,8 +1235,16 @@ export function cancelBackgroundTasks(
 
 export function getConversationPullRequest(
   conversationId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<t.TConversationPullRequestResponse> {
-  return request.get(endpoints.conversationPullRequest(conversationId));
+  return request.get(endpoints.conversationPullRequest(conversationId), options);
+}
+
+export function getConversationPullRequests(
+  conversationIds: string[],
+  options?: { signal?: AbortSignal },
+): Promise<t.TConversationPullRequestsResponse> {
+  return request.post(endpoints.conversationPullRequests(), { conversationIds }, options);
 }
 
 export function getPrompt(id: string): Promise<{ prompt: t.TPrompt }> {

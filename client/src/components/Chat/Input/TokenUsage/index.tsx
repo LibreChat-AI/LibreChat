@@ -134,7 +134,7 @@ function TokenUsageIndicator({
       busy={compaction.isCompacting}
       trigger={(open) =>
         compaction.isCompacting && !open ? (
-          <Spinner className="text-text-secondary size-5" />
+          <Spinner tone="secondary" className="size-5" />
         ) : (
           <span
             role="meter"

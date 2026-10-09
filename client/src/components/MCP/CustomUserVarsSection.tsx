@@ -77,8 +77,7 @@ function AuthField({ name, config, hasValue, control, errors, autoFocus }: AuthF
           const placeholder = hasValue
             ? localize('com_ui_mcp_update_var', { 0: config.title })
             : localize('com_ui_mcp_enter_var', { 0: config.title });
-          const className =
-            'w-full rounded border border-border-medium bg-transparent px-2 py-1 text-text-primary placeholder:text-text-secondary sm:text-sm';
+          const className = 'w-full rounded border border-border-medium px-2 py-1 sm:text-sm';
           // Prevent autofill: browser DOM mutations bypass React's synthetic
           // onChange, silently emptying react-hook-form state on submit.
           const sharedProps = {
@@ -174,7 +173,7 @@ export default function CustomUserVarsSection({
       <div className="flex justify-end gap-2">
         <Button
           type="button"
-          variant="destructive"
+          variant="destructive-soft"
           disabled={isSubmitting}
           onClick={handleRevokeClick}
         >

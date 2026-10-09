@@ -358,7 +358,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           <TableRow aria-hidden="true">
             <TableCell
               colSpan={tableColumns.length}
-              style={{ height: paddingTop, padding: 0, border: 0 }}
+              className="border-0 p-0"
+              style={{ height: paddingTop }}
             />
           </TableRow>
         )}
@@ -381,7 +382,8 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
           <TableRow aria-hidden="true">
             <TableCell
               colSpan={tableColumns.length}
-              style={{ height: paddingBottom, padding: 0, border: 0 }}
+              className="border-0 p-0"
+              style={{ height: paddingBottom }}
             />
           </TableRow>
         )}
@@ -609,11 +611,9 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       )}
       <div
         ref={tableContainerRef}
-        className="relative flex min-h-0 flex-1 flex-col overflow-auto will-change-scroll"
+        className="relative flex min-h-0 flex-1 flex-col overflow-auto overscroll-contain will-change-scroll"
         style={
           {
-            WebkitOverflowScrolling: 'touch',
-            overscrollBehavior: 'contain',
             /** Inherited by memoized cells and skeletons so one scaled breakpoint
              * controls every table column without rebuilding the row model. */
             '--data-table-desktop-display': isSmallScreen ? 'none' : 'table-cell',

@@ -28,7 +28,7 @@ export default function ListCard({
     : localize('com_ui_prompt_group_button_no_category', { name });
 
   return (
-    <div className="relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pt-3 pb-4 text-start align-top text-[15px]">
+    <div className="text-1sm relative flex w-full cursor-pointer flex-col gap-2 rounded-xl px-3 pt-3 pb-4 text-start align-top">
       {onClick && (
         <button
           type="button"
@@ -43,7 +43,7 @@ export default function ListCard({
           <CategoryIcon category={category} className="icon-md shrink-0" aria-hidden="true" />
           <Label
             id={titleId}
-            className="text-text-primary min-w-0 truncate text-sm font-medium select-none"
+            className="min-w-0 truncate text-sm font-medium select-none"
             title={name}
           >
             {name}

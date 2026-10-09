@@ -69,6 +69,19 @@ describe('host-side file edit limits', () => {
   });
 });
 
+describe('stream keepalive interval', () => {
+  it('defaults to 25 seconds and accepts 0 to disable', () => {
+    expect(agentsEndpointSchema.parse({}).streamKeepaliveIntervalMs).toBe(25_000);
+    expect(
+      agentsEndpointSchema.parse({ streamKeepaliveIntervalMs: 0 }).streamKeepaliveIntervalMs,
+    ).toBe(0);
+  });
+
+  it.each([1, 999])('rejects a sub-second interval of %p ms', (streamKeepaliveIntervalMs) => {
+    expect(agentsEndpointSchema.safeParse({ streamKeepaliveIntervalMs }).success).toBe(false);
+  });
+});
+
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {
     for (const [input, expected] of [
@@ -1118,7 +1131,7 @@ describe('agent pull request config', () => {
   const parse = (pullRequests?: unknown) =>
     configSchema.safeParse({ version: '1.0', endpoints: { agents: { pullRequests } } });
 
-  it('is off by default and absent when not configured', () => {
+  it('is absent when not configured, and has no switch of its own until one is set', () => {
     const absent = configSchema.parse({ version: '1.0', endpoints: { agents: {} } });
     expect(absent.endpoints?.agents?.pullRequests).toBeUndefined();
     const empty = configSchema.parse({
@@ -1126,15 +1139,17 @@ describe('agent pull request config', () => {
       endpoints: { agents: { pullRequests: {} } },
     });
     expect(empty.endpoints?.agents?.pullRequests).toEqual({
-      enabled: false,
       cacheTtlSeconds: 30,
       requestTimeoutSeconds: 10,
       lookupTimeoutSeconds: 30,
       maxCheckRunPages: 10,
       maxCandidatePullRequests: 10,
+      maxCandidatePages: 1,
       maxHeadComparisons: 3,
       cacheMaxEntries: 500,
       cacheMaxCredentials: 256,
+      maxConcurrentLookups: 4,
+      batchTimeoutSeconds: 20,
     });
   });
 
@@ -1148,13 +1163,19 @@ describe('agent pull request config', () => {
     expect(parse(enabled).success).toBe(true);
   });
 
-  it('requires a token reference when enabled', () => {
-    expect(parse({ ...enabled, token: undefined }).success).toBe(false);
+  it("needs no token reference, so the deployment's own GitHub token can be used", () => {
+    expect(parse({ ...enabled, token: undefined }).success).toBe(true);
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
   });
 
-  it('requires at least one allowed repository when enabled, so a worker cannot name its own', () => {
-    expect(parse({ ...enabled, allowedRepositories: undefined }).success).toBe(false);
-    expect(parse({ ...enabled, allowedRepositories: [] }).success).toBe(false);
+  it('accepts the opt-in to every repository, and nothing but a boolean for it', () => {
+    expect(parse({ allowAllRepositories: true }).success).toBe(true);
+    expect(parse({ allowAllRepositories: false }).success).toBe(true);
+    expect(parse({ allowAllRepositories: 'yes' }).success).toBe(false);
+  });
+
+  it('can be switched off explicitly', () => {
+    expect(parse({ enabled: false }).success).toBe(true);
   });
 
   it.each(['LibreChat-AI/*', 'o/r', 'My.Org/my_repo-2'])('accepts the repository %s', (repo) => {
@@ -1185,6 +1206,8 @@ describe('agent pull request config', () => {
     ['maxCheckRunPages', 1.5],
     ['maxCandidatePullRequests', 0],
     ['maxCandidatePullRequests', 101],
+    ['maxCandidatePages', 0],
+    ['maxCandidatePages', 11],
     ['maxHeadComparisons', -1],
     ['maxHeadComparisons', 21],
     ['maxHeadComparisons', 1.5],
@@ -1194,6 +1217,12 @@ describe('agent pull request config', () => {
     ['cacheMaxCredentials', 0],
     ['cacheMaxCredentials', 10_001],
     ['cacheMaxCredentials', 1.5],
+    ['maxConcurrentLookups', 0],
+    ['maxConcurrentLookups', 17],
+    ['maxConcurrentLookups', 1.5],
+    ['batchTimeoutSeconds', 0],
+    ['batchTimeoutSeconds', 121],
+    ['batchTimeoutSeconds', 1.5],
   ])('rejects %s of %s', (field, value) => {
     expect(parse({ [field]: value }).success).toBe(false);
   });
@@ -1205,8 +1234,11 @@ describe('agent pull request config', () => {
         lookupTimeoutSeconds: 120,
         maxCheckRunPages: 50,
         maxCandidatePullRequests: 100,
+        maxCandidatePages: 10,
         maxHeadComparisons: 20,
         cacheMaxEntries: 100_000,
+        maxConcurrentLookups: 16,
+        batchTimeoutSeconds: 120,
       }).success,
     ).toBe(true);
     expect(parse({ maxHeadComparisons: 0 }).success).toBe(true);

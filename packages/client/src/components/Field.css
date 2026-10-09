@@ -7,31 +7,75 @@
    keeps that edge on pointer focus too, so it puts the edge back over the
    reset. The style is read from the `--theme-field-focus-style` property of the
    nearest themed root, so a field under a ring root nested in a border root is
-   reset again, and a browser without style queries keeps the default reset. */
-html[data-input-modality='pointer'] .lc-field:focus,
-html[data-input-modality='pointer'] .lc-field:focus-visible {
-  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
+   reset again, and a browser without style queries keeps the default reset. A field marked
+   `aria-invalid` keeps its destructive edge through both border resets but still
+   loses the ring and outline on pointer focus. The framed and flush editors
+   (`lc-own-focus`) take the same ring and outline reset, so they behave alike
+   without the SPA's global textarea rules. */
+html[data-input-modality='pointer'] :is(.lc-field, .lc-own-focus):focus,
+html[data-input-modality='pointer'] :is(.lc-field, .lc-own-focus):focus-visible {
   box-shadow: none;
   outline: none;
 }
 
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus,
+html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):focus-visible {
+  border-color: rgb(var(--border-light) / var(--border-light-alpha, 1));
+}
+
 @container style(--theme-field-focus-style: border) {
-  html[data-input-modality='pointer'] .lc-field:is(:root *):focus,
-  html[data-input-modality='pointer'] .lc-field:is(:root *):focus-visible {
+  html[data-input-modality='pointer'] .lc-field:not([aria-invalid='true']):is(:root *):focus,
+  html[data-input-modality='pointer']
+    .lc-field:not([aria-invalid='true']):is(:root *):focus-visible {
     border-color: rgb(var(--border-field-focus, var(--focus-control)));
   }
 }
 
-/* A field focused by its edge draws no outline either. The app's dark-mode
-   `:focus-visible` outline is unlayered, so it outranks the field's own
-   `focus-visible:outline-hidden` utility and would add a second indicator
-   around the swapped edge; `:is(:root *)` keeps this rule's weight above it.
-   Forced colors drop the edge color and the ring, so there the outline stays
-   as the only indicator. */
+/* A field draws its own indicator (the ring, or the swapped edge), so it draws no outline too.
+   The app's dark-mode `:focus-visible` outline is unlayered, so it outranks the field's own
+   `focus-visible:outline-hidden` utility and would add a second indicator; `:is(:root *)` keeps
+   this rule's weight above it. Forced colors drop the edge color and the ring, so there the
+   outline stays as the only indicator, and the contrast modes enlarge the outline to 3px on
+   purpose, so `html.high-contrast` keeps it. */
 @media not (forced-colors: active) {
-  @container style(--theme-field-focus-style: border) {
-    .lc-field:is(:root *):focus-visible {
-      outline: none;
-    }
+  html:not(.high-contrast) .lc-field:focus-visible {
+    outline: none;
+  }
+}
+
+/* The floating-label field (`floatingField`) paints its own fill over the browser's autofill, so
+   an autofilled sign-in field keeps the theme's field color instead of the UA's yellow. The mask
+   is one entry of the box-shadow list, followed by the ring and shadow layers Tailwind composes,
+   so the field's keyboard ring still paints over it. */
+.webkit-dark-styles {
+  --lc-autofill-mask: 0 0 0 50vh rgb(var(--field-fill, var(--surface-primary))) inset;
+}
+
+.webkit-dark-styles,
+.webkit-dark-styles:focus {
+  background-clip: content-box;
+  box-shadow:
+    var(--lc-autofill-mask), var(--tw-ring-offset-shadow, 0 0 transparent),
+    var(--tw-ring-shadow, 0 0 transparent), var(--tw-shadow, 0 0 transparent);
+}
+
+html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus,
+html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
+  box-shadow: var(--lc-autofill-mask);
+}
+
+.dark .webkit-dark-styles,
+.dark .webkit-dark-styles:focus {
+  -webkit-text-fill-color: rgb(var(--field-text, var(--text-primary)));
+}
+
+/* A control outside `.lc-field` that carries `lc-own-focus` (the framed and flush editors) has
+   its own ring, or a frame that owns the indicator, so the app's global focus outline for
+   non-`.lc-field` textareas would add a second one. `:root` lifts this above that rule's
+   weight; forced colors keep the outline as the only indicator, and the contrast modes keep
+   their enlarged outline. */
+@media not (forced-colors: active) {
+  html:root:not(.high-contrast) textarea.lc-own-focus:focus-visible {
+    outline: none !important;
   }
 }

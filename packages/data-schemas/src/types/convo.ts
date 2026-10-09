@@ -334,6 +334,9 @@ export interface IConversation extends Document {
   pinned?: boolean;
   /** Derived per request from the shared-links collection; never persisted on the conversation. */
   isShared?: boolean;
+  /** Derived per list request: this replica listed the row's code decision, so an absent decision
+   *  means an ordinary chat rather than a server that does not say. Never persisted. */
+  codeDecisionListed?: boolean;
   iconURL?: string;
   greeting?: string;
   spec?: string;

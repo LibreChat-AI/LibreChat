@@ -104,6 +104,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-border-menu',
   'rgb-surface-composer',
   'rgb-surface-search',
+  'rgb-surface-sidebar',
   'rgb-surface-disabled',
   'rgb-text-disabled',
   'rgb-border-disabled',
@@ -136,6 +137,16 @@ export const themeColorTokens = Object.freeze([
   'rgb-illustration-subtle',
   'rgb-illustration',
   'rgb-illustration-strong',
+  'rgb-scrollbar-thumb',
+  'rgb-page-canvas',
+  'rgb-select-fill',
+  'rgb-select-edge',
+  'rgb-button-neutral-border',
+  'rgb-button-neutral-text',
+  'rgb-button-neutral-hover',
+  'rgb-link-inline',
+  'rgb-toast-edge',
+  'rgb-stroke-ink',
   'rgb-file-document',
   'rgb-file-sheet',
   'rgb-file-code',
@@ -160,6 +171,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-series-6',
   'rgb-series-7',
   'rgb-series-8',
+  'rgb-category-icon',
   'rgb-switch-unchecked',
   'rgb-switch-thumb',
   'rgb-table-header-text',
@@ -180,6 +192,23 @@ export const themeBrandTokens = Object.freeze([
 ] as const);
 
 export type ThemeBrandToken = (typeof themeBrandTokens)[number];
+
+/**
+ * Color utilities the stylesheet computes from other roles, so a theme sets the roles they read
+ * (an overlay, a border, an appearance share) and never the name itself.
+ */
+export const themeDerivedColorTokens = Object.freeze([
+  'scrim',
+  'scrim-alert',
+  'scrim-modal',
+  'border-chrome',
+  'border-chrome-heavy',
+  'border-chrome-medium',
+  'border-inset',
+  'border-inset-medium',
+] as const);
+
+export type ThemeDerivedColorToken = (typeof themeDerivedColorTokens)[number];
 
 /** One problem in a theme definition: where it is, relative to the definition, and what it is. */
 export interface ThemeIssue {
@@ -403,6 +432,8 @@ const appearanceValidators = {
   /** The inline padding and icon-to-label gap of a theme-sized control, apart from the shared
    *  spacing that also pads message rows. */
   controlPaddingX: isLength,
+  /** The Button's default size inline padding. */
+  buttonPaddingX: isLength,
   controlGap: isLength,
   /** An icon's size (0.75 to 1.25rem), and the larger one a dialog's close button draws (1 to
    *  2rem). */
@@ -452,12 +483,18 @@ const appearanceValidators = {
   textLg: isLength,
   textXl: isLength,
   text2xl: isLength,
+  text3xs: isLength,
+  text2xs: isLength,
+  text1xs: isLength,
+  text1sm: isLength,
+  text3xl: isLength,
   leadingXs: isLineHeight,
   leadingSm: isLineHeight,
   leadingBase: isLineHeight,
   leadingLg: isLineHeight,
   leadingXl: isLineHeight,
   leading2xl: isLineHeight,
+  leading3xl: isLineHeight,
   /** A dialog's edge stroke width, inline padding and title-to-description gap, and its title's
    *  size, leading, weight and family. */
   dialogStroke: isLength,
@@ -471,6 +508,7 @@ const appearanceValidators = {
   scrimOpacity: isOpacity,
   alertScrimOpacity: isOpacity,
   modalScrimOpacity: isOpacity,
+  buttonNeutralBorderOpacity: isOpacity,
   /** Released themes may hold `var()` here, so this role keeps its original, looser check. */
   elevationSurface: (value: unknown) =>
     typeof value === 'string' && value.trim().length > 0 && !/[;{}]|url\s*\(/i.test(value),
@@ -501,6 +539,28 @@ export type ThemeAppearanceToken = keyof typeof appearanceValidators;
 export const themeAppearanceTokens = Object.freeze(
   Object.keys(appearanceValidators) as ThemeAppearanceToken[],
 );
+
+/**
+ * Bumped by hand when a release changes what resolving a theme emits without changing its roles
+ * (a palette value, a fallback derivation, an emitted attribute), so cached entries are rebuilt.
+ */
+export const THEME_CACHE_EPOCH = 3 as const;
+
+/**
+ * Names the role set a stored resolved theme was built against: any color, brand or appearance
+ * role added or removed changes it. A cache that replays resolved variables keys itself on this,
+ * so an entry that predates a role is dropped instead of painting that role's stylesheet default.
+ */
+export function themeRoleFingerprint(): string {
+  const roles = [...themeColorTokens, ...themeBrandTokens, ...themeAppearanceTokens]
+    .sort()
+    .join(',');
+  let hash = 5381;
+  for (let i = 0; i < roles.length; i++) {
+    hash = ((hash * 33) ^ roles.charCodeAt(i)) >>> 0;
+  }
+  return `${THEME_VERSION}.${THEME_CACHE_EPOCH}.${hash.toString(36)}`;
+}
 
 export const isThemeAppearanceToken = (key: string): key is ThemeAppearanceToken =>
   Object.prototype.hasOwnProperty.call(appearanceValidators, key);

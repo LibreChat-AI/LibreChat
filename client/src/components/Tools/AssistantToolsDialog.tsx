@@ -157,11 +157,11 @@ function AssistantToolsDialog({
       }}
     >
       <OGDialogContent
-        className="bg-surface-dialog gap-0 overflow-hidden overflow-y-auto p-0 text-left max-sm:h-full sm:mx-7 sm:my-8 sm:max-w-2xl lg:max-w-5xl xl:max-w-7xl"
+        className="gap-0 overflow-hidden overflow-y-auto p-0 text-left max-sm:h-full sm:mx-7 sm:my-8 sm:max-w-2xl lg:max-w-5xl xl:max-w-7xl"
         style={{ minHeight: 'min(38.125rem, 90vh)' }}
       >
         <div>
-          <div className="border-border-medium flex items-center justify-between border-b-[1px] px-4 pt-5 pb-4 sm:p-6">
+          <div className="border-border-medium flex items-center justify-between border-b px-4 pt-5 pb-4 sm:p-6">
             <div className="flex items-center">
               <div className="text-center sm:text-left">
                 <OGDialogTitle className="text-lg leading-6 font-medium">
@@ -169,7 +169,7 @@ function AssistantToolsDialog({
                     ? localize('com_nav_tool_dialog_agents')
                     : localize('com_nav_tool_dialog')}
                 </OGDialogTitle>
-                <OGDialogDescription className="text-text-secondary text-sm">
+                <OGDialogDescription className="text-sm">
                   {localize('com_nav_tool_dialog_description')}
                 </OGDialogDescription>
               </div>
@@ -199,7 +199,7 @@ function AssistantToolsDialog({
                   onChange={handleSearch}
                   placeholder={localize('com_nav_tool_search')}
                   aria-label={localize('com_nav_tool_search')}
-                  className="border-border-medium text-text-primary max-w-64 min-w-0 flex-1 rounded border bg-transparent px-2 py-1"
+                  className="border-border-medium max-w-64 min-w-0 flex-1 rounded border px-2 py-1"
                 />
               </div>
               <div

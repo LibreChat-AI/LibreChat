@@ -57,18 +57,18 @@ const modes: ThemeMode[] = ['light', 'dark'];
 const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
   light: {
     'rgb-text-primary': 'global.color.text.default',
-    'rgb-text-secondary': 'palette.slate.700',
-    'rgb-text-secondary-alt': 'palette.slate.700',
-    'rgb-text-tertiary': 'palette.slate.700',
+    'rgb-text-secondary': 'global.color.text.muted',
+    'rgb-text-secondary-alt': 'global.color.text.muted',
+    'rgb-text-tertiary': 'global.color.text.muted',
     'rgb-text-muted': 'global.color.text.muted',
     'rgb-text-warning': 'click.global.color.text.warning',
     'rgb-text-destructive': 'click.global.color.text.danger',
     'rgb-shimmer-base': 'global.color.text.default',
     'rgb-shimmer-dip': 'palette.slate.500',
-    'rgb-link': 'palette.info.500',
+    'rgb-link': 'global.color.text.link.default',
     'rgb-link-hover': 'global.color.text.link.hover',
     'rgb-link-visited': 'palette.violet.600',
-    'rgb-link-prose': 'palette.info.500',
+    'rgb-link-prose': 'global.color.text.link.default',
     'rgb-accent-primary': 'global.color.accent.default',
     'rgb-accent-primary-hover': 'palette.neutral.712',
     'rgb-ring-primary': 'global.color.outline.default',
@@ -97,6 +97,10 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-dialog-title': 'click.dialog.color.title.default',
     'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
+    'rgb-surface-nav-hover': 'click.sidebar.main.navigation.item.color.background.hover',
+    'rgb-avatar-edge': 'global.color.stroke.default',
+    'rgb-alert-error-fill': 'click.alert.color.background.danger',
+    'rgb-alert-error-border': 'click.alert.color.background.danger',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.neutral.712',
     'rgb-surface-destructive': 'palette.danger.600',
@@ -105,8 +109,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.lightMode.color.background.default',
     'rgb-surface-code-inline': 'palette.slate.200',
-    'rgb-prose-bullet': 'palette.slate.700',
-    'rgb-prose-quote-bar': 'palette.slate.700',
+    'rgb-prose-bullet': 'global.color.stroke.intense',
+    'rgb-prose-quote-bar': 'global.color.stroke.intense',
     'rgb-surface-qr': 'palette.neutral.0',
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'palette.neutral.900',
@@ -122,10 +126,10 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-medium': 'global.color.stroke.default',
     'rgb-border-medium-alt': 'global.color.stroke.default',
     'rgb-border-heavy': 'global.color.stroke.intense',
-    'rgb-border-xheavy': 'palette.slate.500',
-    'rgb-drawer-edge': 'global.color.background.split',
+    'rgb-border-xheavy': 'global.color.stroke.intense',
+    'rgb-drawer-edge': 'click.sidebar.main.color.background.default',
     'rgb-border-destructive': 'palette.danger.600',
-    'rgb-border-control': 'palette.slate.500',
+    'rgb-border-control': 'click.field.color.stroke.default',
     'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-field-fill': 'click.field.color.background.default',
     'rgb-field-text': 'click.field.color.text.default',
@@ -139,15 +143,16 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-popover': 'click.genericMenu.panel.color.background.default',
     'rgb-border-menu': 'click.genericMenu.panel.color.stroke.default',
     'rgb-surface-composer': 'global.color.background.default',
-    'rgb-surface-search': 'global.color.background.default',
+    'rgb-surface-sidebar': 'click.sidebar.main.color.background.default',
+    'rgb-surface-search': 'click.field.color.background.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
     'rgb-border-disabled': 'click.field.color.stroke.disabled',
-    'rgb-status-success': 'palette.success.800',
+    'rgb-status-success': 'global.color.feedback.success.foreground',
     'rgb-status-success-subtle': 'global.color.feedback.success.background',
     'rgb-status-success-border': 'palette.success.200',
     'rgb-status-success-strong': 'global.color.feedback.success.foreground',
-    'rgb-status-info': 'palette.info.600',
+    'rgb-status-info': 'global.color.feedback.info.foreground',
     'rgb-status-info-subtle': 'global.color.feedback.info.background',
     'rgb-status-info-border': 'palette.info.200',
     'rgb-status-info-strong': 'palette.info.600',
@@ -171,13 +176,19 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
-    'rgb-file-document': 'palette.info.700',
+    'rgb-page-canvas': 'global.color.background.split',
+    'rgb-select-fill': 'click.field.color.background.default',
+    'rgb-select-edge': 'click.field.color.stroke.default',
+    'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
+    'rgb-button-neutral-text': 'global.color.text.default',
+    'rgb-link-inline': 'global.color.text.link.default',
+    'rgb-file-document': 'palette.info.600',
     'rgb-file-sheet': 'palette.success.700',
     'rgb-file-code': 'palette.warning.600',
     'rgb-file-artifact': 'palette.slate.800',
     'rgb-file-audio': 'palette.sunrise.700',
     'rgb-file-video': 'palette.violet.600',
-    'rgb-file-generic': 'palette.info.600',
+    'rgb-file-generic': 'palette.slate.600',
     'rgb-file-ink': 'palette.neutral.0',
     'rgb-syntax-text': 'click.codeblock.lightMode.color.text.default',
     'rgb-syntax-comment': 'global.color.text.muted',
@@ -188,14 +199,15 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-syntax-attr': 'palette.fuchsia.700',
     'rgb-syntax-title': 'palette.warning.700',
     'rgb-series-1': 'global.color.chart.default.blue',
-    'rgb-series-2': 'palette.warning.500',
-    'rgb-series-3': 'palette.success.700',
+    'rgb-series-2': 'global.color.chart.default.orange',
+    'rgb-series-3': 'global.color.chart.default.green',
     'rgb-series-4': 'global.color.chart.default.fuchsia',
-    'rgb-series-5': 'palette.sunrise.600',
+    'rgb-series-5': 'global.color.chart.default.yellow',
     'rgb-series-6': 'global.color.chart.default.violet',
-    'rgb-series-7': 'palette.babyblue.600',
+    'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
-    'rgb-switch-unchecked': 'palette.slate.500',
+    'rgb-category-icon': 'global.color.text.muted',
+    'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
@@ -243,6 +255,11 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-tertiary-alt': 'palette.neutral.712',
     'rgb-surface-dialog': 'global.color.background.default',
     'rgb-dialog-title': 'click.dialog.color.title.default',
+    'rgb-surface-overlay': 'click.dialog.color.opaqueBackground.default',
+    'rgb-surface-nav-selected': 'click.sidebar.main.navigation.item.color.background.active',
+    'rgb-avatar-edge': 'global.color.stroke.default',
+    'rgb-alert-error-fill': 'click.alert.color.background.danger',
+    'rgb-alert-error-border': 'click.alert.color.background.danger',
     'rgb-badge-label': 'click.badge.opaque.color.text.default',
     'rgb-surface-submit': 'global.color.accent.default',
     'rgb-surface-submit-hover': 'palette.brand.200',
@@ -252,8 +269,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-code': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-code-body': 'click.codeblock.darkMode.color.background.default',
     'rgb-surface-code-inline': 'palette.neutral.700',
-    'rgb-prose-bullet': 'palette.neutral.500',
-    'rgb-prose-quote-bar': 'palette.neutral.500',
+    'rgb-prose-bullet': 'global.color.stroke.intense',
+    'rgb-prose-quote-bar': 'global.color.stroke.intense',
     'rgb-surface-qr': 'palette.neutral.0',
     'rgb-text-on-media': 'palette.neutral.0',
     'rgb-surface-inverted': 'click.button.basic.color.primary.background.default',
@@ -269,10 +286,10 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-border-medium': 'global.color.stroke.default',
     'rgb-border-medium-alt': 'global.color.stroke.default',
     'rgb-border-heavy': 'global.color.stroke.intense',
-    'rgb-border-xheavy': 'palette.neutral.500',
+    'rgb-border-xheavy': 'global.color.stroke.intense',
     'rgb-drawer-edge': 'palette.neutral.500',
     'rgb-border-destructive': 'palette.danger.300',
-    'rgb-border-control': 'palette.neutral.500',
+    'rgb-border-control': 'click.field.color.stroke.default',
     'rgb-border-field-focus': 'click.field.color.stroke.active',
     'rgb-field-fill': 'click.field.color.background.default',
     'rgb-field-text': 'click.field.color.text.default',
@@ -286,6 +303,7 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-surface-popover': 'click.genericMenu.panel.color.background.default',
     'rgb-border-menu': 'click.genericMenu.panel.color.stroke.default',
     'rgb-surface-composer': 'click.field.color.background.default',
+    'rgb-surface-sidebar': 'click.sidebar.main.color.background.default',
     'rgb-surface-search': 'click.field.color.background.default',
     'rgb-surface-disabled': 'click.button.basic.color.primary.background.disabled',
     'rgb-text-disabled': 'global.color.text.disabled',
@@ -318,13 +336,19 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-illustration-subtle': 'palette.info.200',
     'rgb-illustration': 'palette.info.400',
     'rgb-illustration-strong': 'palette.info.600',
-    'rgb-file-document': 'palette.info.400',
+    'rgb-page-canvas': 'global.color.background.split',
+    'rgb-select-fill': 'click.field.color.background.default',
+    'rgb-select-edge': 'click.field.color.stroke.default',
+    'rgb-button-neutral-border': 'click.button.basic.color.secondary.stroke.default',
+    'rgb-button-neutral-text': 'global.color.text.default',
+    'rgb-link-inline': 'global.color.text.link.default',
+    'rgb-file-document': 'palette.info.600',
     'rgb-file-sheet': 'palette.success.700',
     'rgb-file-code': 'palette.warning.600',
     'rgb-file-artifact': 'palette.slate.800',
     'rgb-file-audio': 'palette.sunrise.700',
     'rgb-file-video': 'palette.violet.600',
-    'rgb-file-generic': 'palette.info.600',
+    'rgb-file-generic': 'palette.slate.600',
     'rgb-file-ink': 'palette.neutral.0',
     'rgb-syntax-text': 'click.codeblock.darkMode.color.text.default',
     'rgb-syntax-comment': 'global.color.text.muted',
@@ -342,46 +366,53 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
     'rgb-series-6': 'global.color.chart.default.violet',
     'rgb-series-7': 'global.color.chart.default.babyblue',
     'rgb-series-8': 'global.color.chart.default.teal',
-    'rgb-switch-unchecked': 'palette.neutral.500',
+    'rgb-category-icon': 'global.color.text.muted',
+    'rgb-switch-unchecked': 'click.switch.color.background.default',
     'rgb-switch-thumb': 'click.switch.color.indicator.default',
     'rgb-table-header-text': 'click.table.header.color.title.default',
     'rgb-table-header-fill': 'click.table.header.color.background.default',
     'rgb-presentation': 'global.color.background.default',
-    'rgb-surface-tooltip': 'palette.neutral.712',
+    'rgb-surface-tooltip': 'click.tooltip.color.background.default',
     'rgb-text-tooltip': 'click.tooltip.color.label.default',
   },
 };
 
-/** Click UI has no scrim for media; a lightbox or preview frames the user's image in black. */
+/** Values the theme sets on purpose without a Click UI source, and why. */
 const MEDIA_OVERLAY_REASON =
   'Click UI has no media scrim; the image frame stays black in both modes';
-const AVATAR_EDGE_REASON =
-  'Click UI avatars draw no edge; the theme keeps the 10% hairline every LibreChat avatar has';
-const MEDIA_SCRIM_DEPARTURE =
-  'the dialog scrim is the nearest Click UI job; a lightbox frames the user image in black instead';
+const STYLESHEET_ROLE_REASON =
+  'Click UI has no scrollbar, secondary button fill or toast edge; the theme keeps the stock role';
+const STROKE_INK_REASON =
+  'Click UI avatars draw no edge ink of their own; the theme keeps the stock ring tint';
 
-const ALERT_ALPHA_REASON =
-  'Click UI draws the danger alert as feedback.danger at 10% (light) or 20% (dark) alpha with no edge; a role holds an opaque triplet, so the theme takes the fill blended over the page and the edge equals it';
+const STYLESHEET_ROLES: Partial<Record<keyof IThemeRGB, string>> = {
+  'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+  'rgb-scrollbar-thumb': STYLESHEET_ROLE_REASON,
+  'rgb-button-neutral-hover': STYLESHEET_ROLE_REASON,
+  'rgb-toast-edge': STYLESHEET_ROLE_REASON,
+  'rgb-stroke-ink': STROKE_INK_REASON,
+};
 
-/** Values the theme sets on purpose without a Click UI source, and why. */
 const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
+  light: STYLESHEET_ROLES,
+  dark: STYLESHEET_ROLES,
+};
+
+/**
+ * Roles hold an opaque triplet, so a Click UI token drawn with alpha reaches the page as the token
+ * composited on the surface it sits on. Each role here names that surface; its Click UI value is the
+ * composite, which is exactly what Click UI paints.
+ */
+const composites: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> = {
   light: {
-    'rgb-surface-nav-hover':
-      'Click UI sidebar item hover is a 0.6 alpha lch; the theme paints its composite on background.split',
-    'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
-    'rgb-avatar-edge': AVATAR_EDGE_REASON,
-    'rgb-alert-error-fill': ALERT_ALPHA_REASON,
-    'rgb-alert-error-border': ALERT_ALPHA_REASON,
+    'rgb-surface-nav-hover': 'click.sidebar.main.color.background.default',
+    'rgb-alert-error-fill': 'global.color.background.default',
+    'rgb-alert-error-border': 'global.color.background.default',
   },
   dark: {
-    'rgb-surface-nav-selected':
-      'Click UI sidebar item active is a 0.6 alpha lch; the theme paints its composite on background.split',
-    'rgb-surface-overlay':
-      'Click UI dark dialog.color.opaqueBackground is a gray that leaves the dialog under 3:1',
-    'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
-    'rgb-avatar-edge': AVATAR_EDGE_REASON,
-    'rgb-alert-error-fill': ALERT_ALPHA_REASON,
-    'rgb-alert-error-border': ALERT_ALPHA_REASON,
+    'rgb-surface-nav-selected': 'click.sidebar.main.color.background.default',
+    'rgb-alert-error-fill': 'global.color.background.default',
+    'rgb-alert-error-border': 'global.color.background.default',
   },
 };
 
@@ -389,7 +420,7 @@ const unsourcedColors: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>
  * How close a role lands on Click UI: `match` holds the token that names the role's job, `near` is
  * within deltaE2000 5 of it, and `mismatch` is further off.
  */
-type RoleStatus = 'match' | 'near' | 'mismatch';
+type RoleStatus = 'match' | 'near' | 'mismatch' | 'unsourced';
 
 interface Departure {
   /** The Click UI token that names the role's job, which the theme's value departs from. */
@@ -404,182 +435,8 @@ interface Departure {
  * the counterpart. Every other role holds its counterpart, so its status is `match`.
  */
 const departures: Record<ThemeMode, Partial<Record<keyof IThemeRGB, Departure>>> = {
-  light: {
-    'rgb-alert-error-fill': {
-      counterpart: 'click.alert.color.background.danger',
-      status: 'mismatch',
-      reason: ALERT_ALPHA_REASON,
-    },
-    'rgb-alert-error-border': {
-      counterpart: 'click.alert.color.background.danger',
-      status: 'mismatch',
-      reason: ALERT_ALPHA_REASON,
-    },
-    'rgb-surface-nav-hover': {
-      counterpart: 'click.sidebar.main.navigation.item.color.background.hover',
-      status: 'near',
-      reason:
-        'the token is lch(91.609 1.1023 265.86) at 0.6 alpha; the theme value is its composite on background.split',
-    },
-    'rgb-avatar-edge': {
-      counterpart: 'global.color.stroke.default',
-      status: 'near',
-      reason: AVATAR_EDGE_REASON,
-    },
-    'rgb-surface-media-overlay': {
-      counterpart: 'click.dialog.color.opaqueBackground.default',
-      status: 'near',
-      reason: MEDIA_SCRIM_DEPARTURE,
-    },
-    'rgb-text-secondary': {
-      counterpart: 'global.color.text.muted',
-      status: 'mismatch',
-      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
-    },
-    'rgb-text-secondary-alt': {
-      counterpart: 'global.color.text.muted',
-      status: 'mismatch',
-      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
-    },
-    'rgb-text-tertiary': {
-      counterpart: 'global.color.text.muted',
-      status: 'mismatch',
-      reason: 'text.muted is 4.05:1 on feedback.danger.background, where secondary copy also sits',
-    },
-    'rgb-link': {
-      counterpart: 'global.color.text.link.default',
-      status: 'mismatch',
-      reason: 'text.link.default is 3.84:1 on white',
-    },
-    'rgb-link-prose': {
-      counterpart: 'global.color.text.link.default',
-      status: 'mismatch',
-      reason: 'text.link.default is 3.84:1 on white',
-    },
-    'rgb-border-xheavy': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason: 'stroke.intense is 2.03:1 on white, under the 3:1 a heavy edge carries',
-    },
-    'rgb-prose-bullet': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason:
-        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (2.03:1 on white) misses',
-    },
-    'rgb-prose-quote-bar': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason:
-        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (2.03:1 on white) misses',
-    },
-    'rgb-border-control': {
-      counterpart: 'click.field.color.stroke.default',
-      status: 'mismatch',
-      reason: 'field.color.stroke.default misses the 3:1 non-text floor for a control edge',
-    },
-    'rgb-status-success': {
-      counterpart: 'global.color.feedback.success.foreground',
-      status: 'mismatch',
-      reason: 'feedback.success.foreground is 4.27:1 on its own fill',
-    },
-    'rgb-status-info': {
-      counterpart: 'global.color.feedback.info.foreground',
-      status: 'mismatch',
-      reason: 'feedback.info.foreground is 3.32:1 on its own fill',
-    },
-    'rgb-series-2': {
-      counterpart: 'global.color.chart.default.orange',
-      status: 'mismatch',
-      reason: 'chart.default.orange is 2.65:1 on white, under the 3:1 a chart mark needs',
-    },
-    'rgb-series-3': {
-      counterpart: 'global.color.chart.default.green',
-      status: 'mismatch',
-      reason: 'chart.default.green is 1.72:1 on white, under the 3:1 a chart mark needs',
-    },
-    'rgb-series-5': {
-      counterpart: 'global.color.chart.default.yellow',
-      status: 'mismatch',
-      reason: 'chart.default.yellow is 1.19:1 on white, under the 3:1 a chart mark needs',
-    },
-    'rgb-series-7': {
-      counterpart: 'global.color.chart.default.babyblue',
-      status: 'mismatch',
-      reason: 'chart.default.babyblue is 1.95:1 on white, under the 3:1 a chart mark needs',
-    },
-    'rgb-switch-unchecked': {
-      counterpart: 'click.switch.color.background.default',
-      status: 'mismatch',
-      reason: 'switch.color.background.default misses the 3:1 non-text floor for the off track',
-    },
-  },
-  dark: {
-    'rgb-surface-nav-selected': {
-      counterpart: 'click.sidebar.main.navigation.item.color.background.active',
-      status: 'near',
-      reason:
-        'the token is lch(27.535 0 none) at 0.6 alpha; the theme value is its composite on background.split',
-    },
-    'rgb-border-xheavy': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason: 'stroke.intense is 1.62:1 on the canvas, under the 3:1 a heavy edge carries',
-    },
-    'rgb-prose-bullet': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason:
-        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (1.62:1 on the canvas) misses',
-    },
-    'rgb-prose-quote-bar': {
-      counterpart: 'global.color.stroke.intense',
-      status: 'mismatch',
-      reason:
-        'a list marker and a quote bar are the only cue of their element, so they take the 3:1 non-text floor stroke.intense (1.62:1 on the canvas) misses',
-    },
-    'rgb-border-control': {
-      counterpart: 'click.field.color.stroke.default',
-      status: 'mismatch',
-      reason: 'field.color.stroke.default misses the 3:1 non-text floor for a control edge',
-    },
-    'rgb-switch-unchecked': {
-      counterpart: 'click.switch.color.background.default',
-      status: 'mismatch',
-      reason: 'switch.color.background.default misses the 3:1 non-text floor for the off track',
-    },
-    'rgb-surface-overlay': {
-      counterpart: 'click.dialog.color.opaqueBackground.default',
-      status: 'mismatch',
-      reason: 'the dark scrim is a #606060 gray that lifts the page instead of dimming it',
-    },
-    'rgb-surface-media-overlay': {
-      counterpart: 'click.dialog.color.opaqueBackground.default',
-      status: 'mismatch',
-      reason: MEDIA_SCRIM_DEPARTURE,
-    },
-    'rgb-alert-error-fill': {
-      counterpart: 'click.alert.color.background.danger',
-      status: 'mismatch',
-      reason: ALERT_ALPHA_REASON,
-    },
-    'rgb-alert-error-border': {
-      counterpart: 'click.alert.color.background.danger',
-      status: 'mismatch',
-      reason: ALERT_ALPHA_REASON,
-    },
-    'rgb-surface-tooltip': {
-      counterpart: 'click.tooltip.color.background.default',
-      status: 'near',
-      reason:
-        'tooltip.color.background.default is the #282828 canvas in dark, which hides the chip; one step up the neutral ramp keeps white 4.5:1 and lifts it off the page',
-    },
-    'rgb-avatar-edge': {
-      counterpart: 'global.color.stroke.default',
-      status: 'mismatch',
-      reason: AVATAR_EDGE_REASON,
-    },
-  },
+  light: {},
+  dark: {},
 };
 
 interface AppearanceDecision {
@@ -602,13 +459,6 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     value: 'fill',
     status: 'match',
     reason: 'fill: Click UI paints disabled controls in fixed disabled tokens, never opacity',
-  },
-  text2xl: {
-    value: '1.5rem',
-    token: 'typography.font.sizes.6',
-    status: 'mismatch',
-    reason:
-      "1.5rem: Click UI's next size, font.sizes.6 (2rem), would pass Tailwind's unthemed text-3xl (1.875rem)",
   },
   buttonHeight: {
     value: '2rem',
@@ -646,7 +496,7 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     value: '24rem',
     status: 'mismatch',
     reason:
-      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's",
+      "24rem: Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so the cap keeps LibreChat's; tracked under the not-expressible list",
   },
   iconButtonSizeSm: {
     value: '1.5rem',
@@ -659,6 +509,12 @@ const appearanceDecisions: Partial<Record<keyof IThemeAppearance, AppearanceDeci
     status: 'match',
     reason:
       '2rem: Click UI sizes its field by content, field.space.y (0.2813rem) twice, a 0.875rem/1.5 value and a 1px stroke each side',
+  },
+  fieldHeightLg: {
+    value: '3.6876rem',
+    status: 'match',
+    reason:
+      '3.6876rem: the title field is content-sized like fieldHeight, a 3rem line (typography.font.sizes.6 at line-height 1.5), field.space.y (0.2813rem) twice and a 1px stroke each side',
   },
   fieldFocusStyle: {
     value: 'border',
@@ -741,12 +597,15 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   textBase: 'typography.font.sizes.3',
   textLg: 'typography.font.sizes.4',
   textXl: 'typography.font.sizes.5',
+  text2xl: 'typography.font.sizes.6',
+  text3xl: 'typography.font.sizes.6',
   leadingXs: 'typography.font.line-height.1',
   leadingSm: 'typography.font.line-height.1',
   leadingBase: 'typography.font.line-height.1',
   leadingLg: 'typography.font.line-height.1',
   leadingXl: 'typography.font.line-height.1',
   leading2xl: 'typography.font.line-height.1',
+  leading3xl: 'typography.font.line-height.1',
   shadow2xs: 'shadow.5',
   shadowXs: 'shadow.5',
   shadowSm: 'shadow.5',
@@ -759,6 +618,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   elevationDrag: 'shadow.1',
   controlHeight: 'click.genericMenu.panel.size.height',
   controlPaddingX: 'click.button.basic.space.x',
+  buttonPaddingX: 'click.button.basic.space.x',
   controlGap: 'click.button.basic.space.gap',
   controlFontWeight: 'click.button.basic.typography.label.default',
   dialogStroke: 'click.dialog.stroke.default',
@@ -775,6 +635,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   scrimOpacity: 'click.dialog.color.opaqueBackground.default',
   alertScrimOpacity: 'click.dialog.color.opaqueBackground.default',
   modalScrimOpacity: 'click.dialog.color.opaqueBackground.default',
+  buttonNeutralBorderOpacity: 'click.button.basic.color.secondary.stroke.default',
   switchWidth: 'click.switch.size.width',
   switchHeight: 'click.switch.size.height',
   checkboxSize: 'click.checkbox.size.all',
@@ -885,6 +746,23 @@ const sameRgb = (theme: string, source: Rgba) => {
   );
 };
 
+/** The Click UI color a role holds: the token itself, or the token composited on its surface. */
+function sourceColor(mode: ThemeMode, key: keyof IThemeRGB, token: string): Rgba {
+  const color = clickColor(clickToken(mode, token));
+  const surface = composites[mode][key];
+  if (surface === undefined) {
+    return color;
+  }
+  const [r, g, b] = clickColor(clickToken(mode, surface));
+  const alpha = color[3];
+  return [
+    color[0] * alpha + r * (1 - alpha),
+    color[1] * alpha + g * (1 - alpha),
+    color[2] * alpha + b * (1 - alpha),
+    1,
+  ];
+}
+
 /** sRGB channels to CIE L*a*b* under D65. */
 function toLab([r, g, b]: Rgba): [number, number, number] {
   const linear = (value: number) => {
@@ -955,6 +833,7 @@ const scrimKeys: ReadonlySet<keyof IThemeAppearance> = new Set([
   'scrimOpacity',
   'alertScrimOpacity',
   'modalScrimOpacity',
+  'buttonNeutralBorderOpacity',
 ]);
 
 /** Roles read out of a Click UI `font` shorthand, and the part each one is. */
@@ -1260,9 +1139,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: inputProbe,
-    deviation: bothModes(
-      'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
-    ),
   },
   'Field text': {
     token: 'click.field.color.text.default',
@@ -1281,9 +1157,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: dropdownProbe,
-    deviation: bothModes(
-      'border-control holds form controls to the 3:1 non-text floor stroke.default misses',
-    ),
   },
   'Dropdown trigger corner': {
     token: 'border.radii.1',
@@ -1344,9 +1217,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'bg',
     element: dialogProbe('.inset-0'),
-    deviation: {
-      dark: 'surface-overlay keeps the dark scrim black; Click UI #606060 lifts the page it covers',
-    },
   },
   'Dialog inline padding': {
     token: 'click.dialog.space.x',
@@ -1373,10 +1243,6 @@ const parityProbes: Record<string, ParityProbe> = {
     utility: 'bg',
     variant: 'data-[state=unchecked]:',
     element: switchProbe(false),
-    deviation: {
-      light: 'switch-unchecked holds the off track to the 3:1 non-text floor #cccfd3 misses',
-      dark: 'switch-unchecked holds the off track to the 3:1 non-text floor #606060 misses',
-    },
   },
   'Switch thumb': {
     token: 'click.switch.color.indicator.default',
@@ -1429,10 +1295,6 @@ const parityProbes: Record<string, ParityProbe> = {
     kind: 'color',
     utility: 'border',
     element: checkboxProbe(false),
-    deviation: {
-      light: 'border-xheavy holds the box edge to the 3:1 non-text floor #b3b6bd misses',
-      dark: 'border-xheavy holds the box edge to the 3:1 non-text floor #414141 misses',
-    },
   },
   'Checkbox corner': {
     token: 'click.checkbox.radii.all',
@@ -1522,6 +1384,8 @@ const parityProbes: Record<string, ParityProbe> = {
 interface NotExpressible {
   /** The parity decisions the gap leaves unmatched, per mode. */
   decisions: Partial<Record<ThemeMode, string[]>>;
+  /** The appearance roles the gap leaves unmatched, in both modes. */
+  appearance?: Array<keyof IThemeAppearance>;
   /** Why no theme can reach Click UI's value today. */
   reason: string;
   /** The berry-13/LibreChat issue that tracks the role or change that closes it. */
@@ -1540,6 +1404,13 @@ const notExpressible: Record<string, NotExpressible> = {
     reason:
       'the checkbox paints no fill of its own and shows the surface behind it; no role carries checkbox.color.background.default',
     issue: 'https://github.com/berry-13/LibreChat/issues/250',
+  },
+  'Select list height': {
+    decisions: {},
+    appearance: ['listMaxHeight'],
+    reason:
+      "Click UI caps its select list only at var(--radix-popover-content-available-height), which a length role cannot express, so listMaxHeight keeps LibreChat's 24rem",
+    issue: 'https://github.com/berry-13/LibreChat/issues/282',
   },
   'Checkbox corner': {
     decisions: { light: ['Checkbox corner'], dark: ['Checkbox corner'] },
@@ -1592,7 +1463,11 @@ const sizeRoles: Record<SizeUtility, Record<string, keyof IThemeAppearance>> = {
     'theme-button-sm': 'buttonHeightSm',
   },
   py: { 'theme-table-cell': 'tableCellSpaceY', 'theme-field-y': 'fieldPaddingY' },
-  px: { 'theme-control-x': 'controlPaddingX', 'theme-dialog-x': 'dialogPaddingX' },
+  px: {
+    'theme-button-x': 'buttonPaddingX',
+    'theme-control-x': 'controlPaddingX',
+    'theme-dialog-x': 'dialogPaddingX',
+  },
   gap: { 'theme-control-gap': 'controlGap' },
 };
 
@@ -1770,10 +1645,11 @@ function roleStatuses(mode: ThemeMode): Array<[keyof IThemeRGB, RoleStatus, stri
     const departure = departures[mode][key];
     const token = departure?.counterpart ?? colorSources[mode][key];
     if (token === undefined) {
-      return [key, 'mismatch', 'unsourced'];
+      const reason = unsourcedColors[mode][key];
+      return [key, reason === undefined ? 'mismatch' : 'unsourced', reason ?? 'unsourced'];
     }
     const theme = tripletRgba(colors[key] ?? '');
-    const counterpart = clickColor(clickToken(mode, token));
+    const counterpart = sourceColor(mode, key, token);
     const distance = deltaE(theme, counterpart);
     const departed: RoleStatus = distance < NEAR ? 'near' : 'mismatch';
     const status = sameRgb(colors[key] ?? '', counterpart) ? 'match' : departed;
@@ -1835,7 +1711,7 @@ describe('ClickHouse theme drift against Click UI', () => {
         return [`${key}: Click UI token ${token} is not in clickui.json`];
       }
       const theme = colors[key as keyof IThemeRGB] ?? '';
-      return sameRgb(theme, parseColor(String(source)))
+      return sameRgb(theme, sourceColor(mode, key as keyof IThemeRGB, token))
         ? []
         : [`${key}: theme ${theme}, Click UI ${token} is ${source}`];
     });
@@ -1887,6 +1763,7 @@ describe('ClickHouse theme drift against Click UI', () => {
   it.each(modes)('keeps only the %s tokens the theme cites in the snapshot', (mode) => {
     const cited = new Set([
       ...Object.values(colorSources[mode]),
+      ...Object.values(composites[mode]),
       ...Object.values(departures[mode]).map((departure) => departure.counterpart),
       ...Object.values(appearanceSources),
       ...Object.keys(clickSpaces),
@@ -1937,9 +1814,10 @@ describe('ClickHouse primitive parity against Click UI components', () => {
 
   it('keeps the not-expressible list to real, tracked, unmatched decisions', () => {
     const problems = Object.entries(notExpressible).flatMap(
-      ([gap, { decisions, reason, issue }]) => [
+      ([gap, { decisions, appearance = [], reason, issue }]) => [
         ...(reason.trim() === '' ? [`${gap}: no reason`] : []),
-        ...(Object.values(decisions).some((listed) => (listed?.length ?? 0) > 0)
+        ...(appearance.length > 0 ||
+        Object.values(decisions).some((listed) => (listed?.length ?? 0) > 0)
           ? []
           : [`${gap}: names no decision`]),
         ...(/^https:\/\/github\.com\/berry-13\/LibreChat\/issues\/\d+$/.test(issue)
@@ -1980,7 +1858,10 @@ describe('ClickHouse primitive parity against Click UI components', () => {
     ]);
 
     const moved = statuses.flatMap(([key, status]) => {
-      const pinned = departures[mode][key]?.status ?? 'match';
+      const pinned =
+        unsourcedColors[mode][key] === undefined
+          ? (departures[mode][key]?.status ?? 'match')
+          : 'unsourced';
       return status === pinned ? [] : [`${key}: pinned ${pinned}, measures ${status}`];
     });
     const stale = Object.keys(departures[mode]).filter(
@@ -2003,10 +1884,9 @@ describe('ClickHouse primitive parity against Click UI components', () => {
     });
 
     expect(moved).toEqual([]);
-    expect(statuses.filter(([, status]) => status === 'mismatch').map(([key]) => key)).toEqual([
-      'listMaxHeight',
-      'text2xl',
-    ]);
+    expect(statuses.filter(([, status]) => status === 'mismatch').map(([key]) => key)).toEqual(
+      Object.values(notExpressible).flatMap(({ appearance = [] }) => appearance),
+    );
     expect(statuses.filter(([, status]) => status === 'near').map(([key]) => key)).toEqual([]);
   });
 });

@@ -6,6 +6,7 @@ const {
   inspectContent,
   extractChatContent,
   contentFilterBlockResponse,
+  getReasoningCapabilities,
   applyRequestReasoningOverride,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
@@ -193,6 +194,8 @@ async function buildEndpointOption(req, res, next) {
       defaultParamsEndpoint,
       appliedModelSpecPrivateFields,
       enforcedModelSpecFields,
+      loadReasoningCapabilities: (endpointName) =>
+        getReasoningCapabilities(appConfig, endpointName),
     });
     if (!reasoningApplied) {
       return handleError(res, { text: 'Invalid reasoning override' });
