@@ -97,9 +97,10 @@ export interface ClaimPRAutomationRoundParams extends PRAutomationKey {
   /**
    * The pull request the delivery is for. A delivery for a pull request the record is no
    * longer bound to cannot claim a round, so an event that arrives after a rebind is rejected
-   * instead of spending the new pull request's budget.
+   * instead of spending the new pull request's budget. The epoch the delivery was admitted
+   * under is part of it, so a delivery for a run that was restarted is rejected too.
    */
-  binding: PRAutomationBinding;
+  binding: PRAutomationRunFence;
   maxRounds: number;
   maxMinutes: number;
   /** The head the round will work on; recorded so a stale event can be recognized. */

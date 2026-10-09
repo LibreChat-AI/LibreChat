@@ -31,13 +31,19 @@ const enableWith = async (params: Parameters<typeof methods.enablePRAutomation>[
   return result.value;
 };
 const enable = (binding = pullOne) => enableWith({ ...key, binding });
-const claim = (n: number, extra: { now?: Date; binding?: typeof pullOne } = {}) =>
+/** The current run of a record, as a webhook handler would read it before claiming. */
+const currentEpoch = async (target = key) =>
+  (await methods.getPRAutomation(target))?.epoch ?? 'none';
+const claim = async (
+  n: number,
+  { binding = pullOne, ...extra }: { now?: Date; binding?: typeof pullOne; epoch?: string } = {},
+) =>
   methods.claimPRAutomationRound({
     ...key,
     ...limits,
-    binding: pullOne,
     headSha: head(n),
     ...extra,
+    binding: { ...binding, epoch: extra.epoch ?? (await currentEpoch()) },
   });
 /** Claims a round that must succeed and returns the record it started. */
 const startRound = async (n: number) => {
@@ -68,10 +74,17 @@ const seedConversation = (fields: Record<string, unknown> = {}) =>
     ...fields,
   });
 
-/** Runs `during` right after the claim's atomic write, before the claim checks again. */
-function interleave(during: () => Promise<unknown>) {
-  const original = PRAutomation.findOneAndUpdate.bind(PRAutomation);
-  return jest.spyOn(PRAutomation, 'findOneAndUpdate').mockImplementationOnce(((
+/**
+ * Runs `during` right after the next `findOneAndUpdate` of `model` resolves, which for the
+ * default is the claim's atomic write, before the claim checks again.
+ */
+function interleave(
+  during: () => Promise<unknown>,
+  model: mongoose.Model<unknown> = PRAutomation,
+  method: 'findOneAndUpdate' | 'findById' = 'findOneAndUpdate',
+) {
+  const original = (model[method] as typeof PRAutomation.findOneAndUpdate).bind(model);
+  return jest.spyOn(model, method as 'findOneAndUpdate').mockImplementationOnce(((
     ...args: Parameters<typeof PRAutomation.findOneAndUpdate>
   ) => {
     const query = original(...args);
@@ -389,6 +402,29 @@ describe('enabling for a conversation or owner that no longer exists', () => {
     expect(await claim(1)).toEqual({ ok: false, error: { code: 'not_found' } });
   });
 
+  test('does not roll back an enable that landed after the crossing enable was rejected', async () => {
+    await enable(pullOne);
+    const spy = interleaveEnable(async () => {
+      await startAccountDeletionNow();
+      /** After the rejected enable reads the owner, the deletion is cancelled and a newer
+       * enable rebinds the record before the rejected one undoes its write. */
+      interleave(
+        async () => {
+          await cancelAccountDeletion();
+          await enable(pullTwo);
+        },
+        mongoose.models.User as mongoose.Model<unknown>,
+        'findById',
+      );
+    });
+    try {
+      await methods.enablePRAutomation({ ...key, binding: pullOne });
+    } finally {
+      spy.mockRestore();
+    }
+    expect((await methods.getPRAutomation(key))?.pullNumber).toBe(2);
+  });
+
   test('keeps a record the crossing enable did not change', async () => {
     await enable(pullOne);
     await startRound(1);
@@ -454,11 +490,11 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
         depth: 1,
       },
     });
-  const claimChild = () =>
+  const claimChild = async () =>
     methods.claimPRAutomationRound({
       ...childKey,
       ...limits,
-      binding: pullOne,
+      binding: { ...pullOne, epoch: await currentEpoch(childKey) },
       headSha: head(1),
     });
 
@@ -510,7 +546,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
       await methods.claimPRAutomationRound({
         ...grandKey,
         ...limits,
-        binding: pullOne,
+        binding: { ...pullOne, epoch: await currentEpoch(grandKey) },
         headSha: head(1),
       }),
     ).toEqual({ ok: false, error: { code: 'conversation_gone' } });
@@ -542,7 +578,7 @@ describe('claiming for a subagent thread whose root conversation is gone', () =>
       await methods.claimPRAutomationRound({
         ...greatKey,
         ...limits,
-        binding: pullOne,
+        binding: { ...pullOne, epoch: await currentEpoch(greatKey) },
         headSha: head(1),
       }),
     ).toEqual({ ok: false, error: { code: 'conversation_gone' } });
@@ -708,7 +744,7 @@ describe('claimPRAutomationRound', () => {
       methods.claimPRAutomationRound({
         ...key,
         ...limits,
-        binding: pullOne,
+        binding: { ...pullOne, epoch: await currentEpoch() },
         headSha: 'a'.repeat(65),
       }),
     ).rejects.toThrow(RangeError);
@@ -720,10 +756,18 @@ describe('claimPRAutomationRound', () => {
     const result = await methods.claimPRAutomationRound({
       ...key,
       ...limits,
-      binding: pullOne,
+      binding: { ...pullOne, epoch: await currentEpoch() },
       headSha: 'b'.repeat(64),
     });
     expect(result.ok).toBe(true);
+  });
+
+  test('rejects a delivery from a run that was stopped and restarted on the same pull request', async () => {
+    await enable(pullOne);
+    const stale = await currentEpoch();
+    await methods.stopPRAutomation(key, 'user_stopped');
+    await enable(pullOne);
+    expect(await claim(1, { epoch: stale })).toEqual(mismatch);
   });
 
   test('rejects a claim while a round is already running', async () => {
@@ -797,7 +841,7 @@ describe('claimPRAutomationRound', () => {
     await enable(pullOne);
     const refused = await methods.claimPRAutomationRound({
       ...key,
-      binding: pullOne,
+      binding: { ...pullOne, epoch: await currentEpoch() },
       maxRounds: 0,
       maxMinutes: limits.maxMinutes,
       headSha: head(1),
@@ -1081,6 +1125,28 @@ describe('setPRAutomationTrust', () => {
 });
 
 describe('approved bots', () => {
+  test('keeps a bot reapproved after the record was rebound away and back', async () => {
+    await enable(pullOne);
+    const stale = { repository: 'acme/one', epoch: await currentEpoch() };
+    await enable(otherRepository);
+    await enable(pullOne);
+    await addBot(7);
+    await methods.removePRAutomationBot(key, 7, stale);
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([{ id: 7 }]);
+  });
+
+  test('keeps approved bots when the repository is named with different casing', async () => {
+    await enable(pullOne);
+    await addBot(7);
+    await enable({ repository: 'Acme/One', pullNumber: 1 });
+    expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([{ id: 7 }]);
+  });
+
+  test('claims for the bound repository named with different casing', async () => {
+    await enable(pullOne);
+    expect((await claim(1, { binding: { repository: 'ACME/one', pullNumber: 1 } })).ok).toBe(true);
+  });
+
   test('refuses an approval from before the record was rebound away and back', async () => {
     await enable(pullOne);
     const stale = { repository: 'acme/one', epoch: (await methods.getPRAutomation(key))!.epoch };
@@ -1167,7 +1233,10 @@ describe('approved bots', () => {
     await enable();
     await addBot(1);
     await addBot(2);
-    const record = await methods.removePRAutomationBot(key, 1, 'acme/one');
+    const record = await methods.removePRAutomationBot(key, 1, {
+      repository: 'acme/one',
+      epoch: await currentEpoch(),
+    });
     expect(record?.trustedBots).toEqual([{ id: 2 }]);
   });
 
@@ -1176,7 +1245,10 @@ describe('approved bots', () => {
     await addBot(7);
     await enable(otherRepository);
     await addBot(7, undefined, maxBots, 'acme/two');
-    const record = await methods.removePRAutomationBot(key, 7, 'acme/one');
+    const record = await methods.removePRAutomationBot(key, 7, {
+      repository: 'acme/one',
+      epoch: await currentEpoch(),
+    });
     expect(record).toBeNull();
     expect((await methods.getPRAutomation(key))?.trustedBots).toEqual([{ id: 7 }]);
   });
@@ -1184,7 +1256,10 @@ describe('approved bots', () => {
   test('removes an approval for the repository the record is bound to', async () => {
     await enable(pullOne);
     await addBot(7);
-    const record = await methods.removePRAutomationBot(key, 7, 'acme/one');
+    const record = await methods.removePRAutomationBot(key, 7, {
+      repository: 'acme/one',
+      epoch: await currentEpoch(),
+    });
     expect(record?.trustedBots).toEqual([]);
   });
 

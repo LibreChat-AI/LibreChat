@@ -28,11 +28,13 @@ type Gone = Extract<Liveness, 'conversation_gone' | 'owner_gone'>;
 const CLAIMABLE_STATES: PRAutomationState[] = ['idle', 'waiting'];
 const SETTLEABLE_STATES: PRAutomationState[] = ['fixing', 'needs_user'];
 const SETTLED_STATES: PRAutomationState[] = ['waiting', 'needs_user'];
-/** Everything that belongs to one run on one pull request, under a new epoch. */
-const runReset = (fields: Record<string, unknown> = {}) => ({
-  $set: { state: 'idle', round: 0, claimedHeads: [], epoch: randomUUID(), ...fields },
+/** Everything that belongs to one run on one pull request, under the given new epoch. */
+const runReset = (epoch: string, fields: Record<string, unknown> = {}) => ({
+  $set: { state: 'idle', round: 0, claimedHeads: [], epoch, ...fields },
   $unset: { stopCode: '', startedAt: '', lastHeadSha: '', runId: '' },
 });
+/** GitHub compares `owner/name` without case, so records store and match the lower case form. */
+const canonicalRepository = (repository: string) => repository.toLowerCase();
 const isGone = (liveness: Liveness): liveness is Gone =>
   liveness === 'conversation_gone' || liveness === 'owner_gone';
 
@@ -68,7 +70,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
   removePRAutomationBot: (
     key: t.PRAutomationKey,
     botId: number,
-    repository: string,
+    fence: t.PRAutomationBotFence,
   ) => Promise<t.IPRAutomation | null>;
 } {
   let indexesPromise: Promise<void> | null = null;
@@ -99,8 +101,10 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    * deletion has started (the same durable marker agent triggers use), and the conversation
    * and every conversation that controls it still exist and are inside their retention. A
    * subagent thread is controlled by every ancestor up to its root, and a deletion removes
-   * one generation before it discovers the next, so the whole parent chain is walked. Depth
-   * is capped by `MAX_SUBAGENT_DEPTH`, which bounds the walk; a longer chain fails closed.
+   * one generation before it discovers the next, so the whole parent chain is checked. One
+   * `$graphLookup` follows the chain through active conversations only, so it stops at the
+   * first missing or expired ancestor and reaches the root only when every link is live. The
+   * walk is bounded by `MAX_SUBAGENT_DEPTH`; a longer chain fails closed.
    * Deletions do not fence the record; enable and claim ask this on both sides of their write
    * instead.
    */
@@ -110,15 +114,37 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     }
     const Conversation = mongoose.models.Conversation;
     const active = activeExpirationFilter();
-    type Thread = { rootConversationId: string; parentConversationId: string };
-    type Lineage = { conversationId: string; subagentThread?: Thread };
-    const [owner, conversation] = await Promise.all([
+    const scope = { user: key.userId, ...active };
+    type Lineage = {
+      subagentThread?: { rootConversationId: string };
+      ancestors: { conversationId: string }[];
+    };
+    const [owner, lineage] = await Promise.all([
       mongoose.models.User.findById(key.userId)
         .select('agentTriggerDeletionStartedAt')
         .lean<{ agentTriggerDeletionStartedAt?: Date }>(),
-      Conversation.findOne({ user: key.userId, conversationId: key.conversationId, ...active })
-        .select('conversationId subagentThread')
-        .lean<Lineage>(),
+      Conversation.aggregate<Lineage>([
+        { $match: { ...scope, conversationId: key.conversationId } },
+        { $limit: 1 },
+        {
+          $graphLookup: {
+            from: 'conversations',
+            startWith: '$subagentThread.parentConversationId',
+            connectFromField: 'subagentThread.parentConversationId',
+            connectToField: 'conversationId',
+            as: 'ancestors',
+            maxDepth: MAX_SUBAGENT_DEPTH - 1,
+            restrictSearchWithMatch: scope,
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            'subagentThread.rootConversationId': 1,
+            'ancestors.conversationId': 1,
+          },
+        },
+      ]),
     ]);
     if (owner == null) {
       return 'owner_gone';
@@ -126,27 +152,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (owner.agentTriggerDeletionStartedAt != null) {
       return 'owner_inactive';
     }
+    const [conversation] = lineage;
     if (conversation == null) {
       return 'conversation_gone';
     }
-    const rootConversationId = conversation.subagentThread?.rootConversationId;
-    let current: Lineage | null = conversation;
-    for (let hops = 0; current?.subagentThread != null; hops++) {
-      if (hops >= MAX_SUBAGENT_DEPTH) {
-        return 'conversation_gone';
-      }
-      current = await Conversation.findOne({
-        user: key.userId,
-        conversationId: current.subagentThread.parentConversationId,
-        ...active,
-      })
-        .select('conversationId subagentThread')
-        .lean<Lineage>();
+    const root = conversation.subagentThread?.rootConversationId;
+    if (root == null) {
+      return 'live';
     }
-    if (current == null) {
-      return 'conversation_gone';
-    }
-    const reachedRoot = rootConversationId == null || current.conversationId === rootConversationId;
+    const reachedRoot = conversation.ancestors.some((ancestor) => ancestor.conversationId === root);
     return reachedRoot ? 'live' : 'conversation_gone';
   }
 
@@ -206,9 +220,13 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
    */
   async function enablePRAutomation({
     trust,
-    binding,
+    binding: requested,
     ...key
   }: t.EnablePRAutomationParams): Promise<t.EnablePRAutomationResult> {
+    const binding =
+      requested == null
+        ? undefined
+        : { ...requested, repository: canonicalRepository(requested.repository) };
     const before = await checkLiveness(key);
     if (before !== 'live') {
       return { ok: false, error: { code: isGone(before) ? goneCode(before) : before } };
@@ -216,8 +234,13 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     await ensureIndexes();
     const PRAutomation = mongoose.models.PRAutomation;
     const filter = keyFilter(key);
-    const reset = runReset;
-    /** What the record was before this attempt, so a crossed deletion can undo only its write. */
+    /**
+     * Every write of this attempt stamps the same new epoch, so the record carries it only when
+     * this attempt changed it. A crossed deletion undoes exactly that, and nothing a later
+     * enable wrote.
+     */
+    const attempt = randomUUID();
+    const reset = (fields: Record<string, unknown>) => runReset(attempt, fields);
     const previous = await PRAutomation.findOne(filter).lean<t.IPRAutomation>();
     const options = { runValidators: true };
     await PRAutomation.updateOne(
@@ -229,7 +252,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
           round: 0,
           trustedBots: [],
           claimedHeads: [],
-          epoch: randomUUID(),
+          epoch: attempt,
           trust: trust ?? 'approvedBots',
           ...binding,
         },
@@ -274,7 +297,7 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       return { ok: false, error: { code: goneCode(after) } };
     }
     if (after !== 'live') {
-      await undoEnable(filter, previous);
+      await undoEnable({ ...filter, epoch: attempt }, previous);
       return { ok: false, error: { code: after } };
     }
     const record = await getPRAutomation(key);
@@ -286,20 +309,15 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
 
   /**
    * Puts the record back as this enable found it when an account deletion started during the
-   * write, which can still be cancelled. The undo applies only while the record still carries
-   * the epoch the attempt left, so it never reverts a later enable. An attempt that changed
-   * nothing leaves the epoch as it was and is not touched.
+   * write, which can still be cancelled. `guard` names the epoch only this attempt wrote, so
+   * an attempt that changed nothing, or a record a later enable already replaced, is left
+   * alone.
    */
   async function undoEnable(
-    filter: ReturnType<typeof keyFilter>,
+    guard: ReturnType<typeof keyFilter> & { epoch: string },
     previous: t.IPRAutomation | null,
   ): Promise<void> {
     const PRAutomation = mongoose.models.PRAutomation;
-    const written = await PRAutomation.findOne(filter).select('epoch').lean<{ epoch: string }>();
-    if (written == null || written.epoch === previous?.epoch) {
-      return;
-    }
-    const guard = { ...filter, epoch: written.epoch };
     if (previous == null) {
       await PRAutomation.deleteOne(guard);
       return;
@@ -339,7 +357,13 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
       throw new RangeError('headSha must be a full commit SHA');
     }
     const PRAutomation = mongoose.models.PRAutomation;
-    const filter = { ...keyFilter(key), ...binding };
+    const repository = canonicalRepository(binding.repository);
+    const filter = {
+      ...keyFilter(key),
+      repository,
+      pullNumber: binding.pullNumber,
+      epoch: binding.epoch,
+    };
     const cutoff = new Date(now.getTime() - maxMinutes * 60_000);
     const runId = randomUUID();
 
@@ -412,7 +436,11 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     if (current == null) {
       return { ok: false, error: { code: 'not_found' } };
     }
-    if (current.repository !== binding.repository || current.pullNumber !== binding.pullNumber) {
+    if (
+      current.repository !== repository ||
+      current.pullNumber !== binding.pullNumber ||
+      current.epoch !== binding.epoch
+    ) {
       return { ok: false, error: { code: 'binding_mismatch' } };
     }
     if (!CLAIMABLE_STATES.includes(current.state)) {
@@ -483,7 +511,11 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     const condition =
       user || fence == null
         ? {}
-        : { repository: fence.repository, pullNumber: fence.pullNumber, epoch: fence.epoch };
+        : {
+            repository: canonicalRepository(fence.repository),
+            pullNumber: fence.pullNumber,
+            epoch: fence.epoch,
+          };
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
       { ...keyFilter(key), ...condition, state: { $ne: 'stopped' } },
@@ -538,8 +570,10 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     key: t.PRAutomationKey,
     bot: t.IPRAutomationBot,
     maxBots: number,
-    { repository, epoch }: t.PRAutomationBotFence,
+    fence: t.PRAutomationBotFence,
   ): Promise<t.PRAutomationBotResult> {
+    const repository = canonicalRepository(fence.repository);
+    const { epoch } = fence;
     if (!Number.isInteger(maxBots) || maxBots < 1 || maxBots > MAX_PR_AUTOMATION_BOTS) {
       throw new RangeError(`maxBots must be an integer from 1 to ${MAX_PR_AUTOMATION_BOTS}`);
     }
@@ -572,15 +606,18 @@ export function createPRAutomationMethods(mongoose: typeof import('mongoose')): 
     return { ok: false, error: { code: 'bot_limit' } };
   }
 
-  /** Names the repository like an approval does, so a delayed removal cannot delete a newer approval. */
+  /**
+   * Names the repository and epoch like an approval does, so a delayed removal cannot delete
+   * an approval made for a later binding, including one away and back to the same repository.
+   */
   async function removePRAutomationBot(
     key: t.PRAutomationKey,
     botId: number,
-    repository: string,
+    { repository, epoch }: t.PRAutomationBotFence,
   ): Promise<t.IPRAutomation | null> {
     const PRAutomation = mongoose.models.PRAutomation;
     return PRAutomation.findOneAndUpdate(
-      { ...keyFilter(key), repository },
+      { ...keyFilter(key), repository: canonicalRepository(repository), epoch },
       { $pull: { trustedBots: { id: botId } } },
       { new: true, select: PROJECTION },
     ).lean<t.IPRAutomation>();
