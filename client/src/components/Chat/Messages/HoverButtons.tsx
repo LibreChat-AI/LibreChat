@@ -230,9 +230,7 @@ const HoverButtons = ({
           disabled={!canCopy}
           className={cn(
             'ml-0 flex items-center gap-1.5 text-xs',
-            isSubmitting && isCreatedByUser
-              ? 'group-hover:opacity-100 [@media(hover:hover)]:opacity-0'
-              : '',
+            isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
           )}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}
         />

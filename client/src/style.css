@@ -396,8 +396,9 @@ p > small {
   }
 }
 
-/* Show the message time when the row is hovered. Tailwind group-hover
-   loses to `[@media(hover:hover)]:opacity-0` (same specificity, :where()).
+/* Show the message time when the row is hovered, on a device with no coarse
+   pointer: `(hover: hover)` alone is true on a 2-in-1, whose trackpad hovers
+   while its touchscreen cannot, and would hide the time from a finger there.
 
    Keyboard focus reveals it too, but only `:focus-visible`: a pointer that
    clicks a tool card or an expand toggle inside the row leaves focus sitting
@@ -409,7 +410,7 @@ p > small {
    matches its own subject. Text-entry controls are excluded, because they
    match `:focus-visible` on a plain mouse click. See `revealOnRowHoverClasses`
    in `components/Chat/Messages/styles.ts` for the full reasoning. */
-@media (hover: hover) {
+@media not all and (any-pointer: coarse) {
   .message-render .message-timestamp {
     opacity: 0;
   }

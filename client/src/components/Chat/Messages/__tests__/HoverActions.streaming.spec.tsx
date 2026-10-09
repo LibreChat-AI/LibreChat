@@ -311,7 +311,7 @@ describe('streaming hover actions', () => {
     renderStreamingRow(structured);
 
     expect(screen.getByRole('navigation', { name: 'com_ui_sibling_navigation' })).toHaveClass(
-      '[@media(hover:hover)]:opacity-0',
+      'no-touch:opacity-0',
     );
   });
 

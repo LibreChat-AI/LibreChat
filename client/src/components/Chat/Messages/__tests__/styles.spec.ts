@@ -1,6 +1,6 @@
 import { hoverButtonClasses, revealOnRowHoverClasses } from '../styles';
 
-const FADE = '[@media(hover:hover)]:opacity-0';
+const FADE = 'no-touch:opacity-0';
 
 /** The row-wide keyboard-focus condition, as two variants. It cannot be one
  *  `group-[&:is(...)]`: that form makes Tailwind emit a bare `.group$` rule
