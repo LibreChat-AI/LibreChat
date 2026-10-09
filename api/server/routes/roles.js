@@ -16,6 +16,7 @@ const {
 const { hasCapability, requireCapability } = require('~/server/middleware/roles/capabilities');
 const { updateRoleByName, getRoleByName } = require('~/models');
 const { requireJwtAuth } = require('~/server/middleware');
+const { sanitizeJsonResponse } = require('~/server/utils/sanitization');
 
 const router = express.Router();
 router.use(requireJwtAuth);
@@ -102,7 +103,8 @@ const createPermissionUpdateHandler = (permissionKey) => {
       };
 
       const updatedRole = await updateRoleByName(roleName, mergedUpdates);
-      res.status(200).send(updatedRole);
+      const safeRole = updatedRole && typeof updatedRole === 'object' ? updatedRole : {};
+      res.status(200).send(sanitizeJsonResponse(safeRole));
     } catch (error) {
       return res.status(400).send({ message: config.errorMessage, error: error.errors });
     }
@@ -145,8 +147,8 @@ router.get('/:roleName', async (req, res) => {
     if (!role) {
       return res.status(404).send({ message: 'Role not found' });
     }
-
-    res.status(200).send(role);
+    const safeRole = role && typeof role === 'object' ? role : {};
+    res.status(200).send(sanitizeJsonResponse(safeRole));
   } catch (error) {
     logger.error('[GET /roles/:roleName] Error:', error);
     return res.status(500).send({ message: 'Failed to retrieve role' });

@@ -1,4 +1,3 @@
-const fs = require('fs').promises;
 const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
@@ -13,6 +12,7 @@ const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 const { filterFile } = require('~/server/services/Files/process');
+const { safeReadFile, safeUnlink } = require('~/server/utils/pathValidation');
 
 const router = express.Router();
 
@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
 
     const userId = req.user.id;
     const { manual } = req.body;
-    const input = await fs.readFile(req.file.path);
+    const input = await safeReadFile(req.file.path);
 
     if (!userId) {
       throw new Error('User ID is undefined');
@@ -64,7 +64,7 @@ router.post('/', async (req, res) => {
     res.status(500).json({ message });
   } finally {
     try {
-      await fs.unlink(req.file.path);
+      await safeUnlink(req.file.path);
       logger.debug('[/files/images/avatar] Temp. image upload file deleted');
     } catch {
       logger.debug('[/files/images/avatar] Temp. image upload file already deleted');

@@ -69,6 +69,7 @@ export default function StreamAudio({ index = 0 }) {
         /** Keyed by the spoken text, as manual playback is, so audio cached from an
          *  unfiltered message (reasoning included) is never replayed. */
         let cacheKey = latestMessage ? getSpeechText(latestMessage) : '';
+        cacheKey = cacheKey.replace(/[^\w\s-]/g, '').substring(0, 100);
         const cache = await caches.open('tts-responses');
         const cachedResponse = await cache.match(cacheKey);
 
@@ -146,6 +147,7 @@ export default function StreamAudio({ index = 0 }) {
               logger.warn('Cache key not found, skipping audio cache');
             } else {
               logger.log('Adding audio to cache');
+              cacheKey = cacheKey.replace(/[^\w\s-]/g, '').substring(0, 100);
               await cache.put(cacheKey, new Response(audioBlob));
             }
           }

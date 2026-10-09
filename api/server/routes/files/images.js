@@ -1,5 +1,4 @@
 const path = require('path');
-const fs = require('fs').promises;
 const express = require('express');
 const { logger, SystemCapabilities } = require('@librechat/data-schemas');
 const {
@@ -38,6 +37,7 @@ const {
 const { checkPermission } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const db = require('~/models');
+const { safeUnlink } = require('~/server/utils/pathValidation');
 
 const router = express.Router();
 
@@ -178,7 +178,7 @@ router.post('/', async (req, res) => {
         req.user.id,
         path.basename(req.file.filename),
       );
-      await fs.unlink(filepath);
+      await safeUnlink(filepath);
     } catch (cleanupError) {
       logger.error('[/files/images] Error deleting file:', getSafeErrorMetadata(cleanupError));
     }
@@ -211,7 +211,7 @@ router.post('/', async (req, res) => {
     }
   } finally {
     try {
-      await fs.unlink(req.file.path);
+      await safeUnlink(req.file.path);
       logger.debug('[/files/images] Temp. image upload file deleted');
     } catch {
       logger.debug('[/files/images] Temp. image upload file already deleted');

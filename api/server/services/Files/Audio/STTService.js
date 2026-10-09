@@ -1,5 +1,4 @@
 const axios = require('axios');
-const fs = require('fs').promises;
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const { logger } = require('@librechat/data-schemas');
@@ -22,6 +21,8 @@ const {
   listConfiguredSpeechProviders,
 } = require('librechat-data-provider');
 const { getAppConfig } = require('~/server/services/Config');
+const { validateUrl } = require('~/server/utils/urlValidation');
+const { safeReadFile, safeUnlink } = require('~/server/utils/pathValidation');
 
 /**
  * Maps MIME types to their corresponding file extensions for audio files.
@@ -321,7 +322,18 @@ class STTService {
     applySSRFSafeAgentIfDirect(options, url, allowedAddresses);
 
     try {
-      const response = await axios.post(url, data, options);
+      validateUrl(url);
+      if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+        throw new Error('Invalid URL provided');
+      }
+      const sanitizedURL = url.trim();
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid request data');
+      }
+      if (!sanitizedURL.match(/^https?:\/\/[a-zA-Z0-9.-]*/)) {
+        throw new Error('Invalid URL format');
+      }
+      const response = await axios.post(sanitizedURL, data, options);
 
       if (response.status !== 200) {
         throw new Error('Invalid response from the STT API');
@@ -419,7 +431,7 @@ class STTService {
       res.sendStatus(500);
     } finally {
       try {
-        await fs.unlink(req.file.path);
+        await safeUnlink(req.file.path);
         logger.debug('[/speech/stt] Temp. audio upload file deleted');
       } catch {
         logger.debug('[/speech/stt] Temp. audio upload file already deleted');

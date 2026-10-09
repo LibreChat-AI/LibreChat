@@ -98,6 +98,7 @@ const { instructionsPromptAccess } = require('~/server/services/Agents/instructi
 const { getMCPServersRegistry } = require('~/config');
 const { getLogStores } = require('~/cache');
 const db = require('~/models');
+const { safeReadFile, safeUnlink } = require('~/server/utils/pathValidation');
 
 const systemTools = {
   [Tools.execute_code]: true,
@@ -1950,7 +1951,7 @@ const uploadAgentAvatarHandler = async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
-    const buffer = await fs.readFile(req.file.path);
+    const buffer = await safeReadFile(req.file.path);
     const fileStrategy = getFileStrategy(appConfig, { isAvatar: true });
     const resizedBuffer = await resizeAvatar({
       userId: req.user.id,
@@ -2022,7 +2023,7 @@ const uploadAgentAvatarHandler = async (req, res) => {
     res.status(500).json({ message });
   } finally {
     try {
-      await fs.unlink(req.file.path);
+      await safeUnlink(req.file.path);
       logger.debug('[/:agent_id/avatar] Temp. image upload file deleted');
     } catch {
       logger.debug('[/:agent_id/avatar] Temp. image upload file already deleted');

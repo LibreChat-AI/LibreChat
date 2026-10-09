@@ -116,6 +116,7 @@ afterEach(() => {
   if (currentTestUser !== testUsers.owner) {
     currentTestUser = testUsers.owner;
   }
+  sanitizeJsonResponse.mockClear();
 });
 
 afterAll(async () => {

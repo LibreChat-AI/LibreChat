@@ -14,6 +14,7 @@ const {
 } = require('librechat-data-provider');
 const { getRandomVoiceId, createChunkProcessor, splitTextIntoChunks } = require('./streamAudio');
 const { getAppConfig } = require('~/server/services/Config');
+const { validateUrl } = require('~/server/utils/urlValidation');
 
 /**
  * Service class for handling Text-to-Speech (TTS) operations.
@@ -278,7 +279,18 @@ class TTSService {
     applySSRFSafeAgentIfDirect(options, url, allowedAddresses);
 
     try {
-      return await axios.post(url, data, options);
+      validateUrl(url);
+      if (!url || typeof url !== 'string' || !url.startsWith('http')) {
+        throw new Error('Invalid URL provided');
+      }
+      const sanitizedURL = url.trim();
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid request data');
+      }
+      if (!sanitizedURL.match(/^https?:\/\/[a-zA-Z0-9.-]*/)) {
+        throw new Error('Invalid URL format');
+      }
+      return await axios.post(sanitizedURL, data, options);
     } catch (error) {
       logAxiosError({ message: `TTS request failed for provider ${provider}:`, error });
       throw error;
@@ -328,12 +340,19 @@ class TTSService {
 
       for (const chunk of textChunks) {
         try {
+          const sanitizedInput = typeof chunk.text === 'string' ? chunk.text : '';
+          if (!provider || typeof provider !== 'string') {
+            throw new Error('Invalid provider');
+          }
+          if (!ttsSchema || typeof ttsSchema !== 'object') {
+            throw new Error('Invalid TTS schema');
+          }
           const response = await this.ttsRequest(
             provider,
             ttsSchema,
             {
               voice,
-              input: chunk.text,
+              input: sanitizedInput,
               stream: true,
             },
             allowedAddresses,
@@ -416,12 +435,19 @@ class TTSService {
 
         for (const update of updates) {
           try {
+            const sanitizedInput = typeof update.text === 'string' ? update.text : '';
+            if (!provider || typeof provider !== 'string') {
+              throw new Error('Invalid provider');
+            }
+            if (!ttsSchema || typeof ttsSchema !== 'object') {
+              throw new Error('Invalid TTS schema');
+            }
             const response = await this.ttsRequest(
               provider,
               ttsSchema,
               {
                 voice,
-                input: update.text,
+                input: sanitizedInput,
                 stream: true,
               },
               allowedAddresses,

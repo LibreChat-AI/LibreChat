@@ -11,6 +11,7 @@ const mongoose = require('mongoose');
 const passport = require('passport');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
+const escapeHtml = require('escape-html');
 const mongoSanitize = require('express-mongo-sanitize');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
 const {
