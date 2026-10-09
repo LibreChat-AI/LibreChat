@@ -129,14 +129,24 @@
   --color-border-light: rgb(var(--border-light) / var(--border-light-alpha, 1));
   --color-border-medium: rgb(var(--border-medium) / var(--border-medium-alpha, 1));
   /* border-light, at the share the theme keeps for chrome outlines and inset hairlines. */
-  --color-border-chrome: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  --color-border-chrome: rgb(
+    var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-chrome-alpha, 1))
+  );
   /* border-heavy, at the chrome share: the pressed or selected outline of a control that is chrome. */
-  --color-border-chrome-heavy: rgb(var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  --color-border-chrome-heavy: rgb(
+    var(--border-heavy) / calc(var(--border-heavy-alpha, 1) * var(--theme-border-chrome-alpha, 1))
+  );
   /* border-medium, at the chrome share: the hover outline of a chrome control. */
-  --color-border-chrome-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1)));
+  --color-border-chrome-medium: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-chrome-alpha, 1))
+  );
   /* border-medium, at the inset share: the box edges of a form that sits on a stroked page. */
-  --color-border-inset-medium: rgb(var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1)));
-  --color-border-inset: rgb(var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1)));
+  --color-border-inset-medium: rgb(
+    var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
+  --color-border-inset: rgb(
+    var(--border-light) / calc(var(--border-light-alpha, 1) * var(--theme-border-inset-alpha, 1))
+  );
   --color-border-medium-alt: rgb(var(--border-medium-alt));
   --color-border-heavy: rgb(var(--border-heavy) / var(--border-heavy-alpha, 1));
   --color-border-xheavy: rgb(var(--border-xheavy) / var(--border-xheavy-alpha, 1));
@@ -202,6 +212,8 @@
   --color-series-6: rgb(var(--series-6));
   --color-series-7: rgb(var(--series-7));
   --color-series-8: rgb(var(--series-8));
+  /* Follows the slot it was painted in before its role, for a stylesheet that predates it. */
+  --color-category-icon: rgb(var(--category-icon, var(--series-4)));
 
   /* charts and controls */
   --color-chart-widget-surface: rgb(var(--chart-widget-surface));

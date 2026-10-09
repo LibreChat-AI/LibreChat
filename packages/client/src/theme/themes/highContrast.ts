@@ -226,6 +226,7 @@ export const highContrastLightTheme: IThemeRGB = {
   'rgb-series-6': '77 26 153', // #4d1a99
   'rgb-series-7': '15 92 15', // #0f5c0f
   'rgb-series-8': '0 0 0', // #000000 (neutral text stop)
+  'rgb-category-icon': '92 74 0', // #5c4a00 (matching series-4)
 
   /** Unchecked switch track. The stock 58%/40% greys land at 2.9:1 and 2.2:1
    *  against these canvases. This clears 3:1 three ways at once: 5.74:1 against
@@ -436,6 +437,7 @@ export const highContrastDarkTheme: IThemeRGB = {
   'rgb-series-6': '200 163 255', // #c8a3ff
   'rgb-series-7': '140 230 140', // #8ce68c
   'rgb-series-8': '255 255 255', // #ffffff (neutral text stop)
+  'rgb-category-icon': '255 224 102', // #ffe066 (matching series-4)
 
   /** Unchecked switch track: 5.32:1 against the page and the `surface-primary`
    *  thumb, 3.95:1 against the checked `surface-inverted` track. */

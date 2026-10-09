@@ -644,6 +644,29 @@ describe('theme registry', () => {
     expect(resolved.colors['rgb-alert-error-border']).toBe('7 8 9');
   });
 
+  it('keeps the category icons on the series slot a theme repainted, unless it names them', () => {
+    const inherited = resolveTheme(
+      {
+        version: 1,
+        name: 'legacy-series',
+        modes: { light: { colors: { 'rgb-series-4': '4 5 6' } } },
+      },
+      'light',
+    );
+    const explicit = resolveTheme(
+      {
+        version: 1,
+        name: 'explicit-category-icon',
+        modes: { light: { colors: { 'rgb-series-4': '4 5 6', 'rgb-category-icon': '7 8 9' } } },
+      },
+      'light',
+    );
+
+    expect(inherited.colors['rgb-category-icon']).toBe('4 5 6');
+    expect(explicit.colors['rgb-category-icon']).toBe('7 8 9');
+    expect(explicit.colors['rgb-series-4']).toBe('4 5 6');
+  });
+
   it('preserves an explicit tooltip surface and falls back to the bundled one otherwise', () => {
     const explicit = resolveTheme(
       {

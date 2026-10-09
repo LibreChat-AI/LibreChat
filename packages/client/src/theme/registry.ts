@@ -177,10 +177,11 @@ export const overlayFallbackSources: ReadonlyArray<readonly [keyof IThemeRGB, ke
   ['rgb-text-tooltip', 'rgb-text-primary'],
   ['rgb-alert-error-fill', 'rgb-status-error-subtle'],
   ['rgb-alert-error-border', 'rgb-status-error-border'],
+  ['rgb-category-icon', 'rgb-series-4'],
 ];
 
-/** A theme that repaints a source role keeps the tooltip and the error alert on it, unless it
- *  names them. */
+/** A theme that repaints a source role keeps the tooltip, the error alert and the category icons on
+ *  it, unless it names them. */
 export function overlayFallbacks(colors: IThemeRGB): IThemeRGB {
   return Object.fromEntries(
     overlayFallbackSources.flatMap(([role, source]) => {

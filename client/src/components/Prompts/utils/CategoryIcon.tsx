@@ -38,9 +38,9 @@ const categoryColorMap: Record<string, string> = {
   code: 'text-series-5',
   misc: 'text-series-1',
   shop: 'text-series-6',
-  idea: 'text-series-4',
+  idea: 'text-category-icon',
   write: 'text-series-6',
-  travel: 'text-series-4',
+  travel: 'text-category-icon',
   finance: 'text-series-2',
   roleplay: 'text-series-2',
   teach_or_explain: 'text-series-1',
@@ -49,7 +49,7 @@ const categoryColorMap: Record<string, string> = {
   rd: 'text-series-6',
   it: 'text-series-5',
   sales: 'text-series-2',
-  aftersales: 'text-series-4',
+  aftersales: 'text-category-icon',
 };
 
 export default function CategoryIcon({

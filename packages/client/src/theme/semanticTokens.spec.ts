@@ -920,3 +920,40 @@ describe('scrim defaults', () => {
     expect(scrimRoles.map((role) => defaultAppearance[role])).toEqual(['0.8', '0.9', '0.65']);
   });
 });
+
+/** The stock and high contrast palettes keep the category icons on the series slot they drew in. */
+describe.each([
+  ['default', defaultTheme],
+  ['dark', darkTheme],
+  ['high contrast light', highContrastLightTheme],
+  ['high contrast dark', highContrastDarkTheme],
+])('%s category icons', (_name, theme: IThemeRGB) => {
+  it('paint in series-4', () => {
+    expect(theme['rgb-category-icon']).toBe(theme['rgb-series-4']);
+  });
+});
+
+/** ClickHouse quiets the category icons apart from its chart slot, and each one is a graphical
+ *  object under WCAG 1.4.11, so it owes 3:1 on the panel and on a hovered or selected row. */
+describe.each([
+  ['clickhouse light', clickHouseLightTheme],
+  ['clickhouse dark', clickHouseDarkTheme],
+])('%s category icons', (_name, theme: IThemeRGB) => {
+  it('clear the 3:1 mark floor on every row surface without moving series-4', () => {
+    const icon = toRgb(theme, 'rgb-category-icon');
+    const surfaces: Array<keyof IThemeRGB> = [
+      'rgb-surface-primary',
+      'rgb-surface-primary-alt',
+      'rgb-surface-nav-hover',
+      'rgb-surface-nav-selected',
+    ];
+
+    const failures = surfaces.flatMap((surface) => {
+      const ratio = contrast(icon, toRgb(theme, surface));
+      return ratio < WCAG_MARK_MIN ? [`${surface}: ${ratio.toFixed(2)}:1`] : [];
+    });
+
+    expect(failures).toEqual([]);
+    expect(theme['rgb-category-icon']).not.toBe(theme['rgb-series-4']);
+  });
+});
