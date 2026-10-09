@@ -241,7 +241,7 @@ const buttonVariantRecipe = cva(
         sm: 'h-theme-button-sm rounded-lg px-3',
         lg: 'h-theme-button-lg rounded-lg px-8',
         /** The height of a sign-in form's submit button, the `authButtonHeight` role. */
-        auth: 'h-theme-auth-button px-theme-button-x py-2',
+        auth: 'h-theme-auth-button px-theme-button-x',
         /** Default height with the generous pad of a dialog's confirming action. */
         wide: 'h-theme-button px-8',
         /** Default height with a snug pad, for a text action that sits close to its neighbors. */
