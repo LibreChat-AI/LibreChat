@@ -34,4 +34,12 @@ describe('InputNumber', () => {
     expect(wrapper).toHaveClass('border-0', 'reset-rc-number-input', 'text-right', 'w-12');
     expect(wrapper).not.toHaveClass('w-full');
   });
+
+  it('paints the option variant focus state on the wrapper of the input that takes focus', () => {
+    render(<InputNumber aria-label="count" variant="option" />);
+    const wrapper = screen.getByRole('spinbutton').closest('.rc-input-number');
+
+    expect(wrapper).toHaveClass('focus-within:bg-surface-secondary');
+    expect(wrapper).not.toHaveClass('focus:bg-surface-secondary');
+  });
 });

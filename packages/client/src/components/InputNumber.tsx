@@ -13,11 +13,12 @@ import './InputNumber.css';
 // React.ComponentPropsWithoutRef<typeof LabelPrimitive.Root>
 
 /** `option` is the borderless value that sits beside a setting's label, such as a slider's
- *  number: it reads as text until the row is hovered or the field is focused. */
+ *  number: it reads as text until the row is hovered or the field is focused. Focus and the
+ *  placeholder belong to the nested input rc-input-number renders, so they are matched there. */
 const INPUT_NUMBER_VARIANTS: Record<'default' | 'option', string> = {
   default: '',
   option:
-    'h-auto border-0 border-transparent p-0 pr-1 text-right shadow-none outline-hidden transition-colors hover:bg-surface-hover focus:border-border-heavy focus:bg-surface-secondary focus:ring-text-primary/20 focus:ring-offset-2 focus-within:placeholder:text-text-primary focus:placeholder:text-text-primary placeholder:text-text-secondary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
+    'h-auto border-0 border-transparent p-0 pr-1 text-right shadow-none outline-hidden transition-colors hover:bg-surface-hover focus-within:bg-surface-secondary [&_input]:placeholder:text-text-secondary [&_input:focus]:placeholder:text-text-primary group-hover/temp:border-border-light reset-rc-number-input reset-rc-number-input-text-right',
 };
 
 export type InputNumberProps = InputNumberPrimitive.InputNumberProps<ValueType> & {
