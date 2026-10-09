@@ -182,6 +182,7 @@
     "@simplewebauthn/server": "^13.3.2",
     "cluster-key-slot": "^1.1.2",
     "croner": "^10.0.1",
+    "emf-converter": "4.8.7",
     "express-rate-limit": "^8.5.1",
     "helmet": "^8.3.0",
     "proxy-from-env": "^2.1.0",
