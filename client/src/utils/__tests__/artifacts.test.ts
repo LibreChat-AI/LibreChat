@@ -1329,6 +1329,9 @@ describe('normalizeArtifactType', () => {
   it('ignores case and surrounding whitespace in an authored spelling', () => {
     expect(normalizeArtifactType(' React ')).toBe(TOOL_ARTIFACT_TYPES.REACT);
     expect(normalizeArtifactType('HTML')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(normalizeArtifactType('APPLICATION/VND.REACT')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType(' text/html ')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(getTemplate('Application/Vnd.React')).toBe('react-ts');
   });
 
   it('leaves canonical and unknown types as written', () => {

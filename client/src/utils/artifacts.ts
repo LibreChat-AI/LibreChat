@@ -563,9 +563,15 @@ const ARTIFACT_TYPE_ALIASES: Record<string, string> = {
   svg: 'image/svg+xml',
 };
 
+const CANONICAL_ARTIFACT_TYPES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(TOOL_ARTIFACT_TYPES),
+  'image/svg+xml',
+]);
+
 /** The canonical type for any spelling an artifact arrives in; every type lookup goes through it. */
 export function normalizeArtifactType(type: string): string {
-  return lookupOwn(ARTIFACT_TYPE_ALIASES, type.trim().toLowerCase()) ?? type;
+  const key = type.trim().toLowerCase();
+  return lookupOwn(ARTIFACT_TYPE_ALIASES, key) ?? (CANONICAL_ARTIFACT_TYPES.has(key) ? key : type);
 }
 
 const ARTIFACT_ROW_KINDS: Record<string, ArtifactRowKind> = {
