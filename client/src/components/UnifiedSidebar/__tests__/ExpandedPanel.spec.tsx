@@ -196,6 +196,26 @@ describe('ExpandedPanel', () => {
       expect(onClick).toHaveBeenCalledTimes(1);
       expect(onNavigate).toHaveBeenCalledTimes(1);
     });
+
+    it('marks only the current panel pressed and paints it with the navigation roles', () => {
+      renderPanel({ expanded: true });
+      const active = screen.getByRole('button', { name: 'com_ui_chat_history' });
+      const idle = screen.getByRole('button', { name: 'com_ui_prompts' });
+
+      expect(active).toHaveAttribute('aria-pressed', 'true');
+      expect(idle).toHaveAttribute('aria-pressed', 'false');
+      for (const button of [active, idle]) {
+        expect(button).toHaveClass(
+          'hover:bg-surface-nav-hover',
+          'aria-pressed:bg-surface-nav-selected',
+        );
+        expect(button).not.toHaveClass('bg-surface-active-alt');
+      }
+
+      fireEvent.click(idle);
+      expect(idle).toHaveAttribute('aria-pressed', 'true');
+      expect(active).toHaveAttribute('aria-pressed', 'false');
+    });
   });
 
   describe('NewChatButton panel switch', () => {
