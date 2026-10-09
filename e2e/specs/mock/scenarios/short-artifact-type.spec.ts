@@ -16,7 +16,7 @@ import { messagesView } from '../helpers';
  * take the React path. The component computes its text, so a static template, which would show
  * the source instead of running it, cannot produce the asserted string.
  */
-test.describe.configure({ timeout: 120_000 });
+test.describe.configure({ timeout: 180_000 });
 
 const ROOT_PARENT = '00000000-0000-0000-0000-000000000000';
 const REACT_ARTIFACT = [
@@ -57,9 +57,16 @@ test('a short react type renders as a React artifact @scenario:short-react-type-
     await row.click();
     const panel = page.locator('#artifact-viewer');
     await expect(panel).toBeVisible();
-    await expect(
-      panel.locator('iframe').contentFrame().getByText('Sum is 5', { exact: true }),
-    ).toBeVisible({ timeout: 60000 });
+    /** The React template boots Sandpack's hosted runtime, which can time out on a slow network;
+     *  Sandpack then offers its own retry, so a timed-out boot is retried rather than failed. */
+    const preview = panel.locator('iframe').contentFrame();
+    await expect(async () => {
+      const retry = preview.getByRole('button', { name: 'Try again' });
+      if (await retry.isVisible()) {
+        await retry.click();
+      }
+      await expect(preview.getByText('Sum is 5', { exact: true })).toBeVisible({ timeout: 30000 });
+    }).toPass({ timeout: 100000 });
   } finally {
     await deleteMessagesByConversation([conversationId]);
     await deleteConversations([conversationId]);
