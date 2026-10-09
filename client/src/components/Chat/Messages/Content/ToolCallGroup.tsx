@@ -1,7 +1,7 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
-import { ChevronDown, ListChecks, MessageCircleQuestion, Users } from 'lucide-react';
+import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
 import type { ToolMeta } from './outcome';
@@ -608,6 +608,9 @@ export default function ToolCallGroup({
   } else if (allAskQuestions) {
     CategoryIcon = MessageCircleQuestion;
   }
+  const partialMarkerFallback =
+    activityLabel?.status === 'partial' &&
+    (activitySummary.failedCount === 0 || activitySummary.failedCount >= count);
   const iconStatus = getOutcomeStatus({
     failed: activityFailed ? count : activitySummary.failedCount,
     cancelled: activitySummary.cancelledCount,
@@ -646,31 +649,35 @@ export default function ToolCallGroup({
           aria-label={groupAriaLabel}
         >
           <RailGlyph hover={railHover}>
-            {iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
-              /** Homogeneous categories keep the same glyph as their individual
-               *  cards instead of stacking identical tool icons. */
-              <div
-                className={cn(
-                  ROW_GLYPH_SLOT,
-                  'text-text-secondary',
-                  isGroupLive && 'text-text-primary animate-pulse',
-                )}
-                aria-hidden="true"
-              >
-                <CategoryIcon size={14} />
-              </div>
-            ) : (
-              <div className={ROW_GLYPH_SLOT} aria-hidden="true">
-                <StackedToolIcons
-                  toolNames={iconToolNames}
-                  mcpIconMap={mcpIconMap}
-                  maxIcons={4}
-                  sourceDomains={sourceDomains}
-                  status={iconStatus}
-                  isAnimating={isGroupLive}
-                />
-              </div>
+            {partialMarkerFallback && (
+              <TriangleAlert className="text-status-warning size-4 shrink-0" aria-hidden="true" />
             )}
+            {!partialMarkerFallback &&
+              (iconStatus == null && (allSubagents || allAskQuestions || allTaskChecks) ? (
+                /** Homogeneous categories keep the same glyph as their individual
+                 *  cards instead of stacking identical tool icons. */
+                <div
+                  className={cn(
+                    ROW_GLYPH_SLOT,
+                    'text-text-secondary',
+                    isGroupLive && 'text-text-primary animate-pulse',
+                  )}
+                  aria-hidden="true"
+                >
+                  <CategoryIcon size={14} />
+                </div>
+              ) : (
+                <div className={ROW_GLYPH_SLOT} aria-hidden="true">
+                  <StackedToolIcons
+                    toolNames={iconToolNames}
+                    mcpIconMap={mcpIconMap}
+                    maxIcons={4}
+                    sourceDomains={sourceDomains}
+                    status={iconStatus}
+                    isAnimating={isGroupLive}
+                  />
+                </div>
+              ))}
           </RailGlyph>
           <span
             className="tool-status-text min-w-0 truncate font-medium"

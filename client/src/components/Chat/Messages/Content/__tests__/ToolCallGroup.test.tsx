@@ -1779,6 +1779,26 @@ describe('ToolCallGroup failure fast path', () => {
     ).toHaveClass('text-status-error');
   });
 
+  it.each(['created', 'Error processing tool: unavailable'])(
+    'preserves a sparse partial batch with output %s',
+    (output) => {
+      renderGroup({
+        ...props(jest.fn()),
+        parts: [{ part: makePart('remaining', output, 'create_file'), idx: 0 }],
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Created the config files',
+            pending: false,
+            status: 'partial',
+          } as TMessageContentParts,
+          idx: 1,
+        },
+      });
+      expect(screen.getByText('warning')).toBeInTheDocument();
+    },
+  );
+
   it('does not tint the title of a partially failed labeled group', () => {
     renderGroup({
       ...props(jest.fn()),
